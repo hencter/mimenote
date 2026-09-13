@@ -32,6 +32,7 @@
 | `vitest` | MIT | 单元/集成测试 |
 | `jsdom` | MIT | 让 Markdown 净化测试（DOMPurify）有 DOM 环境 |
 | `@testing-library/react` | MIT | 组件测试（仅在需要渲染时使用） |
+| `playwright-core` | Apache-2.0 | E2E：驱动系统 Edge（UI 层）与真实应用的 WebView2（CDP 连接）。**不含浏览器二进制**，因此不下载 Chromium |
 | `@tauri-apps/cli` | MIT/Apache-2.0 | `tauri dev` / `tauri build` / `tauri icon` |
 
 ## Rust 依赖

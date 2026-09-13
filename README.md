@@ -14,7 +14,9 @@
 
 | 能力 | 说明 |
 | --- | --- |
-| 打开 Vault | 系统目录选择框 → Rust 侧迭代式扫描（不跟随符号链接、忽略 `.git`/`node_modules` 等）→ 一次调用返回概要与完整条目表 |
+| 能力 | 说明 |
+| --- | --- |
+| 打开 Vault | 系统目录选择框，或命令行 `mimenote.exe <目录>` 直接打开 → Rust 侧迭代式扫描（不跟随符号链接、忽略 `.git`/`node_modules` 等）→ 一次调用返回概要与完整条目表 |
 | 文件树 | **虚拟列表**（固定行高 + overscan，10 万条目也只挂载几十行 DOM）、键盘导航（↑↓←→/Enter/Delete）、中文与数字自然排序、子串过滤并自动保留祖先 |
 | 编辑器 | CodeMirror 6 + Markdown 语法高亮、行号、搜索面板（Ctrl+F）、Markdown 语法高亮、自动换行；**输入路径零 IO、零全量重渲染** |
 | 保存 | 防抖自动保存（默认 600ms）+ Ctrl+S；写入串行化；**原子替换**（同目录临时文件 → fsync → rename）；状态栏显示每次写入实测耗时 |
@@ -52,6 +54,9 @@ pnpm install                 # 安装前端依赖（Cargo 依赖在首次构建�
 
 pnpm tauri:dev               # 启动桌面应用（开发模式，热更新）
 pnpm dev                     # 仅启动前端（浏览器里跑 Mock Vault，用于调界面）
+
+# 直接用某个文件夹启动（命令行参数 / 快捷方式 / "打开方式"）
+target\release\mimenote.exe D:\我的笔记
 ```
 
 首次 `pnpm tauri:dev` 需要编译约 400 个 crate（本机约 4~5 分钟），之后为增量编译。
@@ -78,7 +83,50 @@ pnpm test         # vitest（前端单元 + 集成测试）
 pnpm test:rust    # cargo test --workspace
 pnpm lint:rust    # cargo clippy --workspace --all-targets -- -D warnings
 pnpm fmt:rust     # cargo fmt --all
+pnpm test:e2e     # 两层端到端测试（见下）
 ```
+
+### 端到端测试（E2E）
+
+分两层，各自解决不同的问题：
+
+| 层 | 命令 | 被测对象 | 平台 |
+| --- | --- | --- | --- |
+| **真实应用** | `pnpm test:e2e:app` | `tauri build` 产出的 **release 二进制**：真实 WebView2、真实 IPC、**真实磁盘写入** | 仅 Windows（需要 WebView2 的远程调试） |
+| **UI 层** | `pnpm test:e2e:ui` | **系统 Edge** + `dist/` 构建产物 + 内存 Mock Vault：真实 Chromium 布局与交互 | 跨平台，秒级，适合 CI |
+
+运行前提：
+
+```bash
+pnpm --filter @mimenote/desktop build                          # UI 层需要 dist/
+pnpm --filter @mimenote/desktop exec tauri build --no-bundle   # 应用层需要 release 二进制
+```
+
+覆盖的场景：
+
+- **应用层**（`e2e/real-app.e2e.test.ts`）：命令行参数自动打开 Vault、文件树渲染、**未选中任何笔记时布局即铺满窗口**、打开笔记 → 编辑器载入 → 输入 → **防抖后内容真的落到磁盘**、文件被外部修改 → 冲突横幅 → **磁盘未被覆盖** → 重新加载恢复
+- **UI 层**（`e2e/ui.e2e.test.ts`）：门闸 → 打开 Vault → 树、**缩小窗口后布局跟随**、打开笔记前后布局不变、预览渲染表格/代码块、过滤保留祖先、主题即时切换、三种视图模式
+
+#### 为什么是"Playwright + WebView2 CDP"而不是 tauri-driver
+
+Tauri 官方文档的 E2E 路径是 `tauri-driver` + WebdriverIO：`tauri-driver` 是一个 **WebDriver 服务端**，
+而 Playwright 不走 WebDriver 协议，两者无法对接；走那条路还要一个与 WebView2 版本**精确匹配**的
+`msedgedriver.exe`。WebView2 支持 `--remote-debugging-port`（通过环境变量
+`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 传入），Playwright 的 `chromium.connectOverCDP()`
+可以直接接管它 —— 于是既保留了 Playwright，又能跑真实二进制。
+
+实现见 `e2e/support/harness.ts`，其中记了两个坑：
+
+1. 端口被别的程序（浏览器、其它调试实例）占用时，WebView2 会退到 IPv6 `[::1]`，
+   而 IPv4 上仍是别人在监听 —— 探到的 404 是别人的。**必须先申请一个空闲端口**。
+2. 不通过 `Emulation.setDeviceMetricsOverride` 测窗口缩放：WebView2 的 CDP 不暴露该域，
+   缩放场景放在 UI 层（真实 Chromium）验证。
+
+### 手工验收
+
+自动化已经覆盖了"打开 Vault → 编辑 → 保存 → 冲突保护"与布局链路的**行为**；
+剩下需要人眼判断的是观感（配色、字号、间距、动画是否舒服）。用仓库自带的示例 Vault：
+`examples/demo-vault/`。
 
 10k 笔记扫描基准（会真实创建 1 万个文件，默认忽略）：
 
@@ -151,9 +199,11 @@ macOS 上 `Ctrl` 自动换成 `Cmd`（`Mod`）。命令表在 `src/app/builtin-c
 
 | 命令 | 结果 |
 | --- | --- |
-| `cargo test -p mn-core` | 33 个单元测试 + 2 个集成测试全部通过（1 个性能基准默认忽略） |
-| `cargo test -p mimenote` | 14 个宿主单元测试全部通过（IPC 错误映射、路径解析、建笔记、片段读取、写锁串行化） |
-| `pnpm test` | 10 个测试文件 / 119 个测试全部通过 |
+| `cargo test -p mn-core` | 33 个单元测试 + 2 个集成测试通过（另有 1 个性能基准默认忽略） |
+| `cargo test -p mimenote` | 21 个宿主单元测试通过（IPC 错误映射、路径解析、建笔记、片段读取、写锁串行化、启动参数） |
+| `pnpm test` | 11 个测试文件 / 130 个测试全部通过 |
+| `pnpm test:e2e:ui` | 8 个用例通过（系统 Edge，约 3 秒） |
+| `pnpm test:e2e:app` | 4 个用例通过（真实 release 二进制 + 真实磁盘，约 7 秒） |
 | `pnpm typecheck` | 无错误（TypeScript 严格模式 + `noUncheckedIndexedAccess`） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 无告警 |
 | `cargo fmt --all --check` | 无差异 |
@@ -238,6 +288,9 @@ INFO mimenote_lib::commands] IPC 握手成功：app 0.1.0 / mn-core 0.1.0 / taur
 | 现象 | 原因 / 处理 |
 | --- | --- |
 | 窗口一片空白，提示"无法访问 127.0.0.1" | 用 `cargo build --release` 而不是 Tauri CLI 构建的：生产二进制里被写入 devUrl。改用 `pnpm tauri:build`（见"构建"一节） |
+| 点开笔记后编辑区是空白 | 已修复（CodeMirror 实例漏创建）。若再出现，跑 `pnpm test:e2e:ui` 一眼就能定位 |
+| E2E 报"找不到应用二进制" | 先跑 `pnpm --filter @mimenote/desktop exec tauri build --no-bundle`（release 才内嵌前端资源） |
+| E2E 应用层在非 Windows 上被跳过 | WebView2 的远程调试只在 Windows 上存在；这是显式跳过而不是"通过" |
 | `pnpm tauri:dev` 起不来，`pnpm dev` 正常 | 检查 1420 端口是否被占用（`vite.config.ts` 与 `tauri.conf.json` 都约定 `127.0.0.1:1420`） |
 | 保存报 `IO` 错误 | 目标目录可能是 OneDrive 同步目录或只读；日志文件里有系统错误码（`detail` 字段） |
 | 提示"文件已被外部修改" | 这是**保护**：别处改过同一文件。选择覆盖或重新加载（见 ADR-0004） |
