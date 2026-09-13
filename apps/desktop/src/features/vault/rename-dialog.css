@@ -1,0 +1,58 @@
+/*
+ * 重命名对话框：复用 `.mn-dialog` 的基础样式，这里只补输入行与选项行。
+ *
+ * 为什么单独成文件：这个样式只服务一个组件，放独立文件后改动不会外溢到全局
+ * `styles/app.css`（对话框布局、颜色仍全部走主题变量）。
+ */
+
+.mn-dialog--rename .mn-dialog__header {
+  color: var(--mn-fg);
+}
+
+.mn-rename__hint {
+  color: var(--mn-accent);
+}
+
+.mn-rename__field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.mn-rename__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 9px;
+  font-family: var(--mn-font-ui);
+  font-size: var(--mn-font-size-ui);
+  color: var(--mn-fg);
+  background: var(--mn-bg);
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+}
+
+.mn-rename__input:focus {
+  outline: none;
+  border-color: var(--mn-accent);
+}
+
+.mn-rename__input:disabled {
+  opacity: 0.6;
+}
+
+.mn-rename__ext {
+  flex: 0 0 auto;
+  font-family: var(--mn-font-mono);
+  color: var(--mn-fg-muted);
+}
+
+.mn-rename__option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 16px;
+  color: var(--mn-fg-muted);
+  cursor: pointer;
+  user-select: none;
+}

@@ -10,6 +10,48 @@ import { describe, expect, it } from 'vitest'
 
 import { renderInline, renderMarkdown, sanitizeHtml } from '@/domain/markdown'
 
+describe('本地图片（asset: 协议，ADR-0007）', () => {
+  const source = '![示例图](../附件/图.png)'
+
+  it('没有解析器时渲染占位元素（含原始地址，便于用户看懂缺了什么）', () => {
+    const html = renderMarkdown(source)
+    expect(html).toContain('mn-image-placeholder')
+    expect(html).not.toContain('<img')
+    // markdown-it 会把非 ASCII 路径百分号编码，所以要解码后再比对
+    expect(decodeURIComponent(html)).toContain('../附件/图.png')
+  })
+
+  it('解析器返回 URL 时渲染 img，并把原始地址留在 data-mn-src 上（加载失败回退用）', () => {
+    const html = renderMarkdown(source, {
+      resolveImage: (src: string) => `http://asset.localhost/${encodeURIComponent(src)}`,
+    })
+    expect(html).toContain('<img')
+    expect(html).toContain('class="mn-image"')
+    expect(html).toContain('alt="示例图"')
+    expect(decodeURIComponent(html)).toContain('data-mn-src="../附件/图.png"')
+  })
+
+  it('解析器返回 null（外部地址/越界路径）时回退占位元素', () => {
+    const html = renderMarkdown('![x](https://example.com/a.png)', { resolveImage: () => null })
+    expect(html).not.toContain('<img')
+    expect(html).toContain('mn-image-placeholder')
+  })
+
+  it('`asset:` scheme 能通过净化（否则 macOS/Linux 上图片会被静默剥掉）', () => {
+    const html = renderMarkdown(source, {
+      resolveImage: () => 'asset://localhost/%E5%9B%BE.png',
+    })
+    expect(html).toContain('asset://localhost/%E5%9B%BE.png')
+  })
+
+  it('解析器给出可疑 scheme 时不渲染 img（渲染层只认白名单）', () => {
+    const html = renderMarkdown('![x](图.png)', { resolveImage: () => 'javascript:alert(1)' })
+    expect(html).not.toContain('<img')
+    expect(html).toContain('mn-image-placeholder')
+    expect(html).not.toMatch(/src\s*=\s*"javascript:/i)
+  })
+})
+
 describe('renderMarkdown 基础渲染', () => {
   it('标题', () => {
     expect(renderMarkdown('# 标题')).toContain('<h1>标题</h1>')

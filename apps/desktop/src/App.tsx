@@ -25,15 +25,18 @@ import { Splitter } from '@/components/Splitter'
 import { Toasts } from '@/components/Toasts'
 import { MarkdownEditor } from '@/features/editor/MarkdownEditor'
 import { LinksPanel } from '@/features/links/LinksPanel'
+import { PaletteHost } from '@/features/palette/PaletteHost'
 import { MarkdownPreview } from '@/features/preview/MarkdownPreview'
 import { ConflictBanner } from '@/features/status/ConflictBanner'
 import { StatusBar } from '@/features/status/StatusBar'
+import { TagsPanel } from '@/features/tags/TagsPanel'
 import { FileTree } from '@/features/vault/FileTree'
 import { TreeToolbar } from '@/features/vault/TreeToolbar'
 import { VaultGate } from '@/features/vault/VaultGate'
 import { formatDuration } from '@/domain/format'
 import { subscribeIndexStatus, useLinksStore } from '@/state/links-store'
 import { flushAutosave, hasUnsavedChanges, useNoteStore } from '@/state/note-store'
+import { useTagsStore } from '@/state/tags-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 import { applyTheme, getTheme } from '@/theme/apply'
@@ -54,6 +57,7 @@ export function App() {
   const snippetsEnabled = useUiStore((state) => state.snippetsEnabled)
   const linksPanelVisible = useUiStore((state) => state.linksPanelVisible)
   const linksPanelWidth = useUiStore((state) => state.linksPanelWidth)
+  const tagsPanelVisible = useTagsStore((state) => state.open)
   const setSidebarWidth = useUiStore((state) => state.setSidebarWidth)
   const setPreviewRatio = useUiStore((state) => state.setPreviewRatio)
   const setLinksPanelWidth = useUiStore((state) => state.setLinksPanelWidth)
@@ -145,6 +149,9 @@ export function App() {
       <>
         <VaultGate />
         <ConfirmDialog />
+        {/* 门闸页也挂面板：Ctrl+K / Ctrl+P 在没有 Vault 时同样要能打开
+            （命令面板把依赖 Vault 的命令置灰，快速切换给"还没有打开 Vault"空态） */}
+        <PaletteHost />
         <Toasts />
       </>
     )
@@ -231,10 +238,14 @@ export function App() {
             </div>
           </>
         )}
+
+        {/* 标签面板：宽度由自己的样式固定（内容窄，不需要拖拽分隔条） */}
+        {tagsPanelVisible && <TagsPanel />}
       </div>
 
       <StatusBar />
       <ConfirmDialog />
+      <PaletteHost />
       <Toasts />
     </div>
   )

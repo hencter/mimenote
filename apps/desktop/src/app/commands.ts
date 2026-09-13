@@ -18,6 +18,13 @@ export interface Command {
   keybinding?: string | string[]
   /** 生效条件；返回 false 时快捷键不响应、面板置灰。 */
   when?: () => boolean
+  /**
+   * `when` 为 false 时给用户看的原因（命令面板里显示在置灰项旁边）。
+   *
+   * 只影响**展示**：是否可执行始终以 `when()` 为唯一判据，
+   * 面板也不会据此自己做判断 —— 否则就有两套状态可以不一致。
+   */
+  unavailableReason?: string
   run: () => void | Promise<void>
 }
 

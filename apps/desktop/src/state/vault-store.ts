@@ -11,7 +11,7 @@ import { buildTree, collectDirectoryPaths, ancestorsOf, type TreeNode } from '@/
 import { parentOf } from '@/domain/paths'
 import { ipc } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
-import type { EntryMeta, NoteContent, TrashRecord, VaultInfo, VaultSnapshot } from '@/ipc/types'
+import type { EntryMeta, NoteContent, RenameOutcome, TrashRecord, VaultInfo, VaultSnapshot } from '@/ipc/types'
 import { loadJson, loadString, saveJson, saveString } from './persist'
 import { toast } from './toast-store'
 
@@ -48,6 +48,8 @@ interface VaultState {
 
   registerCreatedNote: (note: NoteContent) => void
   registerDeletedEntry: (record: TrashRecord) => void
+  /** 重命名成功后就地替换条目（不重扫；改名不改变条目数量）。 */
+  registerRenamedNote: (outcome: RenameOutcome) => void
 }
 
 /** 从快照派生概要信息。 */
@@ -271,6 +273,29 @@ export const useVaultStore = create<VaultState>((set, get) => ({
           : { ...info, entryCount: entries.length, noteCount: info.noteCount + 1 },
     })
     persistExpanded(info?.rootPath ?? '', expanded)
+  },
+
+  registerRenamedNote: (outcome) => {
+    const entries = get().entries.map((entry) =>
+      entry.relPath === outcome.oldRelPath
+        ? {
+            ...entry,
+            relPath: outcome.newRelPath,
+            name: outcome.newRelPath.split('/').pop() ?? outcome.newRelPath,
+            mtimeMs: outcome.newMtimeMs,
+          }
+        : entry,
+    )
+    const selected = get().selected
+    const selectedAfter = selected === outcome.oldRelPath ? outcome.newRelPath : selected
+    if (selectedAfter !== null && selectedAfter !== selected) {
+      const expanded = new Set(get().expanded)
+      for (const ancestor of ancestorsOf(selectedAfter)) expanded.add(ancestor)
+      persistExpanded(get().info?.rootPath ?? '', expanded)
+      set({ entries, tree: buildTree(entries), selected: selectedAfter, expanded })
+      return
+    }
+    set({ entries, tree: buildTree(entries), selected: selectedAfter })
   },
 
   registerDeletedEntry: (record) => {

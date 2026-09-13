@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react'
 
 import { FOCUS_FILTER_EVENT } from '@/app/dom-events'
-import { createNoteHere, openVaultInteractive, rescanVault } from '@/app/actions'
+import { createNoteHere, openVaultInteractive, renameSelected, rescanVault } from '@/app/actions'
 import { Icon } from '@/components/Icon'
 import { useVaultStore } from '@/state/vault-store'
 
@@ -63,6 +63,15 @@ export function TreeToolbar() {
           onClick={() => void createNoteHere()}
         >
           <Icon name="plus" />
+        </button>
+        <button
+          type="button"
+          className="mn-icon-button"
+          title="重命名选中笔记（F2，会同时更新指向它的链接）"
+          aria-label="重命名选中笔记"
+          onClick={() => renameSelected()}
+        >
+          <Icon name="pencil" />
         </button>
         <button
           type="button"

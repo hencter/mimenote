@@ -1082,6 +1082,181 @@ kbd {
   border-bottom-style: double;
 }
 
+/* ------------------------------------------------- 命令面板 / 快速切换 / 全文搜索（M2） */
+
+/*
+ * 三个面板共用一套样式（`CommandPalette` 是同一个组件，只是 mode 不同）。
+ * 颜色全部来自 `--mn-*` 变量 → 换主题不需要改这里。
+ */
+
+.mn-overlay--palette {
+  /* 面板贴在窗口上方（而不是像确认框那样居中）：这是"呼之即来"的临时层，
+     视觉重心靠上才不会挡住正在编辑的内容。 */
+  align-items: flex-start;
+  padding-top: 10vh;
+  /* 高于确认框（50）：面板是最后打开的那一层 */
+  z-index: 60;
+}
+
+.mn-palette {
+  display: flex;
+  flex-direction: column;
+  width: min(620px, calc(100vw - 40px));
+  max-height: min(60vh, 520px);
+  border: 1px solid var(--mn-border);
+  border-radius: calc(var(--mn-radius) + 2px);
+  background: var(--mn-bg-elevated);
+  box-shadow: var(--mn-shadow);
+  overflow: hidden;
+}
+
+.mn-palette__field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--mn-border);
+  color: var(--mn-fg-subtle);
+}
+
+.mn-palette__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--mn-fg);
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.mn-palette__mode {
+  flex: 0 0 auto;
+  color: var(--mn-fg-subtle);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.mn-palette__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  overflow: auto;
+}
+
+.mn-palette__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--mn-radius);
+  cursor: pointer;
+  /* 行数上限只有 50，不需要虚拟化；但仍要避免长路径把行撑变形 */
+  white-space: nowrap;
+}
+
+.mn-palette__item--active {
+  background: var(--mn-active);
+}
+
+.mn-palette__item--disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mn-palette__item-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mn-palette__item-meta {
+  flex: 0 0 auto;
+  color: var(--mn-fg-subtle);
+  font-size: 11px;
+}
+
+/*
+ * 全文搜索的结果：两行（主行路径 / 副行「行号: 片段」）。
+ * 片段最长约 120 字符，必须单行截断 —— 让每行高度一致，扫列表时不会忽高忽低。
+ */
+.mn-palette__item--stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  white-space: normal;
+}
+
+.mn-palette__item-sub {
+  color: var(--mn-fg-muted);
+  font-size: 12px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 页脚的进行中状态：搜索是异步的，有旧结果时不换掉列表，只在这里提示 */
+.mn-palette__status {
+  color: var(--mn-accent);
+  white-space: nowrap;
+}
+
+.mn-palette__reason {
+  flex: 0 0 auto;
+  color: var(--mn-warning);
+  font-size: 11px;
+}
+
+/* 命中高亮：`<mark>` 的浏览器默认样式（黄底）必须清掉，改走主题强调色 */
+.mn-palette__hit {
+  background: transparent;
+  color: var(--mn-accent);
+  font-weight: 700;
+}
+
+.mn-palette__empty {
+  margin: 0;
+  padding: 20px 14px;
+  color: var(--mn-fg-muted);
+  text-align: center;
+  white-space: normal;
+}
+
+/* 空态里的错误（搜索失败）：警示色 —— "搜失败"不该长得像"没有结果" */
+.mn-palette__empty--error {
+  color: var(--mn-danger);
+}
+
+.mn-palette__footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border-top: 1px solid var(--mn-border);
+  color: var(--mn-fg-subtle);
+  font-size: 11px;
+}
+
+.mn-palette__hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.mn-palette__more {
+  margin-left: auto;
+  color: var(--mn-fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ------------------------------------------------------------ 滚动条 */
 
 * {

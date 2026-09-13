@@ -12,6 +12,17 @@ import { loadJson, saveJson } from './persist'
 
 export type ViewMode = 'editor' | 'split' | 'preview'
 
+/**
+ * 面板的模式（`null` = 未打开）。
+ *
+ * 三种模式共用同一个面板组件，区别只有"数据源"与"激活后做什么"：
+ * - `commands`：命令注册表，同步过滤（每次按键一次 O(n) 扫描）；
+ * - `quickSwitch`：Vault 条目表派生的笔记索引，同步过滤；
+ * - `search`：宿主（SQLite FTS5）的全文搜索结果，**异步** —— 防抖 + 竞态丢弃
+ *   （见 `features/palette/use-search.ts`），这是它与前两种模式最大的不同。
+ */
+export type PaletteMode = 'commands' | 'quickSwitch' | 'search'
+
 export interface UiPreferences {
   viewMode: ViewMode
   sidebarVisible: boolean
@@ -78,6 +89,21 @@ const initial: UiPreferences = {
 }
 
 interface UiState extends UiPreferences {
+  /**
+   * 面板是否打开 / 打开哪一个。
+   *
+   * 为什么放在这个 store 而不是组件内 state：
+   * 它是**跨组件共享**的应用级状态 —— 调用方既有 React 组件，也有非 React 的
+   * 全局快捷键监听与命令注册表（`palette.open` / `palette.quickSwitch` / `search.open`），
+   * 组件内状态给不了它们。查询串、高亮下标与搜索结果则相反（面板私有、每次打开都要重置），
+   * 留在组件与 `usePaletteSearch` 里，见 `features/palette/CommandPalette.tsx`。
+   *
+   * 刻意**不持久化**（见 `persist()` 的白名单）：重启后不该自动弹出一个面板。
+   */
+  paletteMode: PaletteMode | null
+  openPalette: (mode: PaletteMode) => void
+  closePalette: () => void
+
   setViewMode: (mode: ViewMode) => void
   cycleViewMode: () => void
   toggleSidebar: () => void
@@ -91,6 +117,7 @@ interface UiState extends UiPreferences {
 }
 
 function persist(state: UiState): void {
+  // 白名单式持久化：只写用户偏好，不写瞬时状态（例如 paletteMode）
   saveJson(STORAGE_KEY, {
     viewMode: state.viewMode,
     sidebarVisible: state.sidebarVisible,
@@ -105,6 +132,17 @@ function persist(state: UiState): void {
 
 export const useUiStore = create<UiState>((set, get) => ({
   ...initial,
+
+  paletteMode: null,
+
+  openPalette: (mode) => {
+    // 不调用 persist()：面板开关不是需要记住的偏好
+    set({ paletteMode: mode })
+  },
+
+  closePalette: () => {
+    set({ paletteMode: null })
+  },
 
   setViewMode: (viewMode) => {
     set({ viewMode })

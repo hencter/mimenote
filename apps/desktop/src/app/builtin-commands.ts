@@ -2,14 +2,17 @@
 
 import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
+import { useTagsStore } from '@/state/tags-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
+import { isMarkdown } from '@/domain/paths'
 import {
   closeVault,
   createNoteHere,
   deleteSelected,
   openVaultInteractive,
   reloadCurrentNote,
+  renameSelected,
   rescanVault,
   saveCurrentNote,
   showAbout,
@@ -25,7 +28,61 @@ const hasVault = (): boolean => useVaultStore.getState().info !== null
 const hasDocument = (): boolean => useNoteStore.getState().doc !== null
 const hasSelection = (): boolean => useVaultStore.getState().selected !== null
 
+/** 文件树选中项若是 Markdown 笔记则返回它（重命名只支持笔记，目录推迟到 M3）。 */
+function selectedMarkdownNote(): string | null {
+  const { selected, entries } = useVaultStore.getState()
+  if (selected === null) return null
+  const entry = entries.find((candidate) => candidate.relPath === selected)
+  if (entry === undefined || entry.isDir) return null
+  return isMarkdown(selected) ? selected : null
+}
+
+/**
+ * 面板相关命令的稳定 ID。
+ *
+ * 面板的**全局按键**（`features/palette/use-palette-hotkeys.ts`）不写死快捷键字符串，
+ * 而是拿 `commands.byChord()` 反查这几个 ID：命令表始终是快捷键的唯一事实来源，
+ * 将来做按键重映射时不会出现"面板监听还认识旧键"的半截状态。
+ */
+export const PALETTE_COMMAND_IDS = {
+  open: 'palette.open',
+  quickSwitch: 'palette.quickSwitch',
+  search: 'search.open',
+} as const
+
 export const BUILTIN_COMMANDS: readonly Command[] = [
+  {
+    id: PALETTE_COMMAND_IDS.open,
+    title: '命令面板…',
+    category: '通用',
+    keybinding: 'Mod+K',
+    run: () => {
+      useUiStore.getState().openPalette('commands')
+    },
+  },
+  {
+    id: PALETTE_COMMAND_IDS.quickSwitch,
+    title: '快速切换笔记…',
+    category: '通用',
+    keybinding: 'Mod+P',
+    // 刻意**不设 when**：未打开 Vault 时也要能打开面板（显示"还没有打开 Vault"空态），
+    // 否则 Ctrl+P 在门闸页上毫无反应，用户无从知道原因。
+    run: () => {
+      useUiStore.getState().openPalette('quickSwitch')
+    },
+  },
+  {
+    id: PALETTE_COMMAND_IDS.search,
+    title: '全文搜索…',
+    category: '通用',
+    // 与快速切换同理：不设 when —— 未打开 Vault 时打开面板，给出"还没有打开 Vault"空态，
+    // 总好过 Ctrl+Shift+F 在门闸页上毫无反应。
+    keybinding: 'Mod+Shift+F',
+    run: () => {
+      useUiStore.getState().openPalette('search')
+    },
+  },
+
   {
     id: 'vault.open',
     title: '打开 Vault…',
@@ -39,6 +96,7 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     category: 'Vault',
     keybinding: 'Mod+Alt+R',
     when: hasVault,
+    unavailableReason: '需要先打开 Vault',
     run: rescanVault,
   },
   {
@@ -46,6 +104,7 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     title: '关闭 Vault',
     category: 'Vault',
     when: hasVault,
+    unavailableReason: '需要先打开 Vault',
     run: closeVault,
   },
 
@@ -55,6 +114,7 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     category: '笔记',
     keybinding: 'Mod+N',
     when: hasVault,
+    unavailableReason: '需要先打开 Vault',
     run: createNoteHere,
   },
   {
@@ -63,6 +123,7 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     category: '笔记',
     keybinding: 'Mod+S',
     when: hasDocument,
+    unavailableReason: '需要先打开一篇笔记',
     run: saveCurrentNote,
   },
   {
@@ -71,6 +132,7 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     category: '笔记',
     keybinding: 'Mod+Alt+L',
     when: hasDocument,
+    unavailableReason: '需要先打开一篇笔记',
     run: reloadCurrentNote,
   },
   {
@@ -78,7 +140,18 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     title: '删除到回收站',
     category: '笔记',
     when: hasSelection,
+    unavailableReason: '需要先在文件树里选中条目',
     run: () => deleteSelected(),
+  },
+  {
+    id: 'note.rename',
+    title: '重命名笔记…',
+    category: '笔记',
+    keybinding: 'F2',
+    // 只对"文件树里选中的 Markdown 笔记"生效：目录重命名推迟到 M3（与拖拽整理一起做）
+    when: () => selectedMarkdownNote() !== null,
+    unavailableReason: '需要先选中一篇 Markdown 笔记',
+    run: () => renameSelected(),
   },
 
   {
@@ -101,6 +174,16 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
   },
 
   {
+    id: 'view.toggleTagsPanel',
+    title: '显示 / 隐藏标签面板（标签与 Frontmatter）',
+    category: '视图',
+    keybinding: 'Mod+Shift+T',
+    run: () => {
+      useTagsStore.getState().toggle()
+    },
+  },
+
+  {
     id: 'view.toggleLinksPanel',
     title: '显示 / 隐藏链接面板（反向链接）',
     category: '视图',
@@ -114,6 +197,7 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     title: '刷新当前笔记的链接',
     category: '笔记',
     when: hasDocument,
+    unavailableReason: '需要先打开一篇笔记',
     run: () => {
       const relPath = useNoteStore.getState().doc?.relPath ?? null
       void useLinksStore.getState().refresh(relPath)
@@ -134,6 +218,7 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     title: '启用 / 停用 CSS 片段',
     category: '外观',
     when: hasVault,
+    unavailableReason: '需要先打开 Vault',
     run: toggleSnippets,
   },
 
@@ -143,6 +228,7 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     category: '文件树',
     keybinding: 'Mod+Alt+E',
     when: hasVault,
+    unavailableReason: '需要先打开 Vault',
     run: () => {
       useVaultStore.getState().expandAll()
     },
@@ -153,6 +239,7 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     category: '文件树',
     keybinding: 'Mod+Alt+W',
     when: hasVault,
+    unavailableReason: '需要先打开 Vault',
     run: () => {
       useVaultStore.getState().collapseAll()
     },
@@ -161,8 +248,11 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     id: 'tree.focusFilter',
     title: '聚焦文件过滤框',
     category: '文件树',
-    keybinding: 'Mod+Shift+F',
+    // 原来是 `Mod+Shift+F`：全文搜索（`search.open`）要用它 —— 一个是"聚焦侧栏输入框"，
+    // 一个是"搜索正文"，后者更值得占用更顺手的组合键，于是过滤框挪到 `Mod+Shift+E`。
+    keybinding: 'Mod+Shift+E',
     when: hasVault,
+    unavailableReason: '需要先打开 Vault',
     run: () => {
       requestFilterFocus()
     },

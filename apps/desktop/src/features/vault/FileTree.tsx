@@ -8,7 +8,7 @@
 
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import { createNoteHere, deleteSelected, openNote } from '@/app/actions'
+import { createNoteHere, deleteSelected, openNote, renameSelected } from '@/app/actions'
 import { REVEAL_ROW_EVENT } from '@/app/dom-events'
 import { Icon } from '@/components/Icon'
 import { formatBytes } from '@/domain/format'
@@ -17,6 +17,7 @@ import { flattenTree, type FlatRow } from '@/domain/tree'
 import { computeWindow, scrollTopToReveal } from '@/domain/virtual-list'
 import { useNoteStore } from '@/state/note-store'
 import { useVaultStore } from '@/state/vault-store'
+import { RenameDialog } from './RenameDialog'
 
 const ROW_HEIGHT = 26
 const OVERSCAN = 10
@@ -212,6 +213,12 @@ export function FileTree() {
           void deleteSelected(entry.relPath)
           return
         }
+        case 'F2': {
+          // 与 Windows 资源管理器一致：F2 重命名（目录暂不支持，renameSelected 里说明原因）
+          event.preventDefault()
+          renameSelected(entry.relPath)
+          return
+        }
         default:
           return
       }
@@ -239,24 +246,29 @@ export function FileTree() {
   }
 
   return (
-    <div
-      className="mn-tree"
-      ref={scrollRef}
-      role="tree"
-      aria-label="文件树"
-      aria-activedescendant={selected === null ? undefined : rowId(selected)}
-      tabIndex={0}
-      onScroll={handleScroll}
-      onKeyDown={handleKeyDown}
-    >
-      <div className="mn-tree__spacer" style={{ height: range.totalHeight }}>
-        <div className="mn-tree__window" style={{ transform: `translateY(${range.offsetY}px)` }}>
-          {visibleRows.map((row) => (
-            <FileTreeRow key={row.node.entry.relPath} row={row} onActivate={activateRow} />
-          ))}
+    <>
+      <div
+        className="mn-tree"
+        ref={scrollRef}
+        role="tree"
+        aria-label="文件树"
+        aria-activedescendant={selected === null ? undefined : rowId(selected)}
+        tabIndex={0}
+        onScroll={handleScroll}
+        onKeyDown={handleKeyDown}
+      >
+        <div className="mn-tree__spacer" style={{ height: range.totalHeight }}>
+          <div className="mn-tree__window" style={{ transform: `translateY(${range.offsetY}px)` }}>
+            {visibleRows.map((row) => (
+              <FileTreeRow key={row.node.entry.relPath} row={row} onActivate={activateRow} />
+            ))}
+          </div>
         </div>
       </div>
-    </div>
+      {/* 对话框挂在这里而不是 App：叠加层是 fixed 定位，位置与挂载点无关，
+          而"谁能请求重命名"的信息（选中行、F2）本来就属于文件树。 */}
+      <RenameDialog />
+    </>
   )
 }
 

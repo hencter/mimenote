@@ -358,6 +358,127 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(text).toContain('还不存在的笔记')
   })
 
+  it('重命名笔记：F2 → 改名 → 指向它的链接跟着改（并验证可逆）', async () => {
+    // 自足：先打开目标笔记，让树与编辑器状态确定
+    await openNoteInTree(page, '项目/设计.md')
+
+    // F2 打开重命名对话框：文件名预填、扩展名单独显示（不进输入框）
+    await page.locator('.mn-tree').press('F2')
+    await page.waitForSelector('.mn-dialog--rename', { state: 'visible' })
+    expect(await page.getByLabel('新文件名').inputValue()).toBe('设计')
+
+    await page.getByLabel('新文件名').fill('架构设计')
+    await page.getByLabel('新文件名').press('Enter')
+
+    // 树里的行真的换了：旧行消失、新行出现
+    await ensureTreeRow(page, '项目/架构设计.md')
+    expect(await treeRow(page, '项目/设计.md').count()).toBe(0)
+
+    // 正在编辑的笔记原地换路径（不重新读取、内容不变）
+    await waitUntil(
+      async () =>
+        ((await page.locator('.mn-editor__path').textContent()) ?? '').includes('项目/架构设计.md'),
+      10_000,
+      '编辑器切到新路径',
+    )
+
+    // 指向它的链接被改写：打开来源笔记，预览里不再是悬空链接
+    await openNoteInTree(page, '项目/路线图.md')
+    await waitUntil(
+      async () =>
+        ((await page.locator('.mn-preview__body').textContent()) ?? '').includes('架构设计'),
+      10_000,
+      '链接被改写为新名字',
+    )
+    expect(await page.locator('a.mn-wikilink--unresolved').count()).toBe(0)
+
+    // 改回去：既验证可逆，也让后续用例看到与初始一致的 Vault
+    await openNoteInTree(page, '项目/架构设计.md')
+    await page.locator('.mn-tree').press('F2')
+    await page.waitForSelector('.mn-dialog--rename', { state: 'visible' })
+    await page.getByLabel('新文件名').fill('设计')
+    await page.getByLabel('新文件名').press('Enter')
+
+    await ensureTreeRow(page, '项目/设计.md')
+    expect(await treeRow(page, '项目/架构设计.md').count()).toBe(0)
+    await openNoteInTree(page, '项目/路线图.md')
+    await waitUntil(
+      async () =>
+        ((await page.locator('.mn-preview__body').textContent()) ?? '').includes('设计细节见 设计'),
+      10_000,
+      '链接改回原名',
+    )
+  })
+
+  it('命令面板：编辑器聚焦时 Ctrl+K 也能打开，过滤后回车执行命令', async () => {
+    await openNoteInTree(page, '项目/设计.md')
+    // 关键：焦点在编辑器里。CodeMirror 自己把 Ctrl+K 绑成了 deleteToLineEnd，
+    // 面板必须在捕捉阶段抢在它前面，否则"打开面板"会变成"删掉半行"。
+    await page.locator('.cm-content').click()
+
+    const themeBefore = await page.locator('html').getAttribute('data-theme')
+    await page.keyboard.press('Control+k')
+    await page.waitForSelector('.mn-palette', { state: 'visible' })
+    expect(await page.locator('.mn-palette').getAttribute('aria-label')).toBe('命令面板')
+    expect(await page.locator('.mn-palette [role="option"]').count()).toBeGreaterThan(5)
+
+    await page.locator('.mn-palette__input').fill('切换主题')
+    await waitUntil(
+      async () => (await page.locator('.mn-palette [role="option"]').count()) === 1,
+      5_000,
+      '过滤到唯一命令',
+    )
+    await page.locator('.mn-palette__input').press('Enter')
+
+    await waitUntil(
+      async () => (await page.locator('html').getAttribute('data-theme')) !== themeBefore,
+      5_000,
+      '命令被执行（主题真的切换了）',
+    )
+    expect(await page.locator('.mn-palette').count()).toBe(0)
+  })
+
+  it('快速切换：Ctrl+P 只列笔记、回车打开、Esc 关闭且不改动', async () => {
+    await page.keyboard.press('Control+p')
+    await page.waitForSelector('.mn-palette', { state: 'visible' })
+    expect(await page.locator('.mn-palette').getAttribute('aria-label')).toBe('快速切换笔记')
+
+    // 目录不出现在结果里（只列笔记文件）
+    await page.locator('.mn-palette__input').fill('项目')
+    await waitUntil(
+      async () => (await page.locator('.mn-palette [role="option"]').count()) > 0,
+      5_000,
+      '有匹配结果',
+    )
+    const paths = await page
+      .locator('.mn-palette [role="option"]')
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-rel-path')))
+    expect(paths).not.toContain('项目')
+
+    await page.locator('.mn-palette__input').fill('路线图')
+    await waitUntil(
+      async () =>
+        (await page.locator('.mn-palette [role="option"]').first().getAttribute('data-rel-path')) ===
+        '项目/路线图.md',
+      5_000,
+      '第一条命中路线图',
+    )
+    await page.locator('.mn-palette__input').press('Enter')
+    await waitUntil(
+      async () =>
+        ((await page.locator('.mn-editor__path').textContent()) ?? '').includes('项目/路线图.md'),
+      10_000,
+      '打开选中的笔记',
+    )
+
+    // Esc 只关闭面板，不打开别的笔记
+    await page.keyboard.press('Control+p')
+    await page.waitForSelector('.mn-palette', { state: 'visible' })
+    await page.keyboard.press('Escape')
+    await waitUntil(async () => (await page.locator('.mn-palette').count()) === 0, 5_000, 'Esc 关闭面板')
+    expect(((await page.locator('.mn-editor__path').textContent()) ?? '')).toContain('项目/路线图.md')
+  })
+
   it('视图模式切换：仅编辑 / 分栏 / 仅预览', async () => {
     // 状态栏三个视图按钮
     await page.locator('button[aria-label="仅预览"]').click()

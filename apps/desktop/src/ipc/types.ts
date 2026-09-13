@@ -149,6 +149,107 @@ export interface NoteLinks {
   unresolvedCount: number
 }
 
+/** 标签来源（`mn_core::tags::TagSource`）。 */
+export type TagSource = 'frontmatter' | 'inline'
+
+/** 抽取到的一个标签（`mn_core::tags::TagRef`）。 */
+export interface TagRef {
+  /** 显示写法：**不含**开头的 `#`，保留原有大小写与层级。 */
+  tag: string
+  source: TagSource
+  /** 1 起的行号。 */
+  line: number
+}
+
+/**
+ * frontmatter 字段值（`mn_core::frontmatter::FrontmatterValue`）。
+ *
+ * 内部标签枚举（`kind` 判别），与 Rust 侧 serde 形状逐字一致：数字**保留原始文本**，
+ * 不做类型推断（`1.50` 就是 `"1.50"`）。
+ */
+export type FrontmatterValue =
+  | { kind: 'scalar'; value: string }
+  | { kind: 'list'; value: string[] }
+  | { kind: 'bool'; value: boolean }
+  | { kind: 'number'; value: string }
+  | { kind: 'null' }
+
+/** frontmatter 的一个字段（`mn_core::frontmatter::FrontmatterField`，保序）。 */
+export interface FrontmatterField {
+  key: string
+  value: FrontmatterValue
+  /** 1 起的绝对行号（首行 `---` 是第 1 行）。 */
+  line: number
+}
+
+/** 某篇笔记的标签与属性（`mimenote_lib::commands::NoteTags`）。 */
+export interface NoteTags {
+  relPath: string
+  /** frontmatter 与正文行内标签（frontmatter 在前，已按归一化键去重）。 */
+  tags: TagRef[]
+  /** frontmatter 字段（保序）；没有 frontmatter 时为空数组。 */
+  frontmatter: FrontmatterField[]
+}
+
+/** 全库标签概览中的一项（`mimenote_lib::commands::TagSummary`）。 */
+export interface TagSummary {
+  /** 归一化后的键（小写、去首尾 `/`）。 */
+  key: string
+  /** 首次出现的原始写法（带大小写与层级）。 */
+  tag: string
+  /** 含该标签的笔记数。 */
+  count: number
+}
+
+/** 某个标签下的笔记（`mimenote_lib::commands::TagNotes`）。 */
+export interface TagNotes {
+  key: string
+  /** 笔记相对路径（字典序）。 */
+  notes: string[]
+}
+
+/** 一条搜索命中（`mimenote_lib::commands::SearchHit`）。 */
+export interface SearchHit {
+  relPath: string
+  /** 命中的行号（1 起）。 */
+  line: number
+  /** 命中行的纯文本片段（已裁剪到一行、约 120 字符以内，不含 Markdown 语法）。 */
+  snippet: string
+  /** 相关性分数（越大越相关，仅用于排序，不展示给用户）。 */
+  score: number
+}
+
+/** 搜索结果（`mimenote_lib::commands::SearchResult`）。 */
+export interface SearchResult {
+  /** 原样回显查询串（丢弃过期响应时用于比对）。 */
+  query: string
+  /** 命中列表（已按 score 降序、同分按 relPath/line 升序；最多 `limit` 条）。 */
+  hits: SearchHit[]
+  /** 命中总数（可能大于 `hits.length`）。 */
+  total: number
+  elapsedMs: number
+}
+
+/** 重命名时被改写了链接的某个文件（`mimenote_lib::commands::RenameLinkUpdate`）。 */
+export interface RenameLinkUpdate {
+  relPath: string
+  /** 该文件内被改写的链接条数。 */
+  count: number
+}
+
+/** 重命名结果（`mimenote_lib::commands::RenameOutcome`）。 */
+export interface RenameOutcome {
+  oldRelPath: string
+  newRelPath: string
+  /** 改名后磁盘上的 mtime（新的版本令牌）。 */
+  newMtimeMs: number
+  /** 被改写了链接的文件（按 relPath 排序）。 */
+  updatedLinks: RenameLinkUpdate[]
+  /** 改写链接总数（= `updatedLinks` 的 count 之和）。 */
+  updatedLinkCount: number
+  elapsedMs: number
+}
+
 /** 索引阶段（`mimenote_lib::indexer::IndexPhase`）。 */
 export type IndexPhase = 'idle' | 'building' | 'ready' | 'cancelled' | 'failed'
 

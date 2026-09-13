@@ -9,13 +9,16 @@ import { formatBytes } from '@/domain/format'
 import { basename, isMarkdown, parentOf } from '@/domain/paths'
 import { currentAdapterKind, ipc } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
+import type { RenameOutcome } from '@/ipc/types'
 import { useConfirmStore } from '@/state/confirm-store'
+import { useLinksStore } from '@/state/links-store'
 import { hasUnsavedChanges, useNoteStore } from '@/state/note-store'
 import { toast } from '@/state/toast-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 import { applyVaultSnippets, unloadSnippets } from '@/theme/snippets'
 import { pickDirectory } from './dialogs'
+import { requestRename } from './dom-events'
 
 // ---------------------------------------------------------------------------
 // Vault
@@ -180,6 +183,97 @@ export async function deleteSelected(relPath?: string): Promise<void> {
   } catch (cause) {
     toast.error(describeError(MimenoteError.from(cause), '删除失败'))
   }
+}
+
+// ---------------------------------------------------------------------------
+// 重命名
+// ---------------------------------------------------------------------------
+
+/**
+ * 重命名笔记（同目录改名）并改写全库指向它的链接。
+ *
+ * 顺序约束集中在这里（组件不需要知道）：
+ * 1. **先落盘**：改名会就地重写其他文件里的链接；若当前还有未保存内容，
+ *    磁盘改写会让编辑器里的版本令牌失效（下次保存必报冲突）。落盘失败就整体放弃，
+ *    不留"文件已改名、内容没写"的半截状态。
+ * 2. 宿主负责改名 + 精确改写链接（保 BOM/换行，跳过代码块）+ 增量更新索引。
+ * 3. 前端状态收尾：
+ *    - 被改名的笔记正在编辑 → 原路径换新路径（内容没变，保留光标与撤销历史）；
+ *      若它自己也被改写（自链接）→ 关掉重新读取；
+ *    - 其他被改写的文件正在编辑 → 重新读取（磁盘内容已变，用旧文本保存会覆盖改写）。
+ */
+export async function renameNote(
+  relPath: string,
+  newTitle: string,
+  options: { updateLinks?: boolean } = {},
+): Promise<RenameOutcome | null> {
+  const title = newTitle.trim()
+  if (title === '') return null
+
+  const updateLinks = options.updateLinks ?? true
+  const openRelPath = useNoteStore.getState().doc?.relPath ?? null
+
+  try {
+    if (hasUnsavedChanges()) {
+      const saved = await useNoteStore.getState().saveNow()
+      if (!saved && hasUnsavedChanges()) {
+        toast.error('已取消重命名', '当前笔记有未保存的修改，请先解决保存冲突')
+        return null
+      }
+    }
+
+    const outcome = await ipc.noteRename(relPath, title, updateLinks)
+    const vault = useVaultStore.getState()
+    vault.registerRenamedNote(outcome)
+    vault.revealPath(outcome.newRelPath)
+
+    const rewritten = new Set(outcome.updatedLinks.map((item) => item.relPath))
+    if (openRelPath === outcome.oldRelPath) {
+      // 宿主用**旧路径**上报"被改名文件自身也被改写"（自链接），但这里两种口径都认 ——
+      // 判错的代价是"保留旧文本继续编辑"，随后一次保存就会把链接改写覆盖掉，代价太高。
+      if (rewritten.has(outcome.oldRelPath) || rewritten.has(outcome.newRelPath)) {
+        useNoteStore.getState().close()
+        await openNote(outcome.newRelPath)
+      } else {
+        useNoteStore.getState().retarget(outcome.newRelPath, outcome.newMtimeMs)
+      }
+    } else if (openRelPath !== null && rewritten.has(openRelPath)) {
+      await useNoteStore.getState().reload()
+    }
+
+    void useLinksStore.getState().refresh(useNoteStore.getState().doc?.relPath ?? null)
+
+    const summary =
+      outcome.updatedLinkCount === 0
+        ? updateLinks
+          ? '没有其他文件需要更新链接'
+          : '按要求未改动任何链接'
+        : `更新了 ${outcome.updatedLinkCount} 条链接（涉及 ${outcome.updatedLinks.length} 个文件）`
+    toast.success(
+      '已重命名',
+      `${outcome.oldRelPath} → ${outcome.newRelPath}\n${summary}，耗时 ${Math.round(outcome.elapsedMs)}ms`,
+    )
+    return outcome
+  } catch (cause) {
+    toast.error(describeError(MimenoteError.from(cause), '重命名失败'))
+    return null
+  }
+}
+
+/** 请求重命名文件树选中项（目录重命名推迟到 M3）。 */
+export function renameSelected(relPath?: string): void {
+  const target = relPath ?? useVaultStore.getState().selected
+  if (target === null || target === undefined) return
+  const entry = useVaultStore.getState().entries.find((candidate) => candidate.relPath === target)
+  if (entry?.isDir === true) {
+    toast.warn('目录重命名暂未支持', '当前只能重命名单篇笔记；目录重命名在 M3 与拖拽整理一起做')
+    return
+  }
+  if (!isMarkdown(target)) {
+    toast.warn('只能重命名 Markdown 笔记', target)
+    return
+  }
+  requestRename(target)
 }
 
 // ---------------------------------------------------------------------------

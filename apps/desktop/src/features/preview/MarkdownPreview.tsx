@@ -15,24 +15,74 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef } from 'react
 
 import { createNoteFromLink, openNote } from '@/app/actions'
 import { Icon } from '@/components/Icon'
+import { resolveVaultAssetPath } from '@/domain/assets'
+import { frontmatterBody } from '@/domain/frontmatter'
 import { isInternalNoteHref, normalizeLinkTarget } from '@/domain/links'
-import { renderMarkdown } from '@/domain/markdown'
+import { imagePlaceholderHtml, renderMarkdown } from '@/domain/markdown'
+import { isTauriRuntime } from '@/ipc/client'
+import { convertAssetUrl } from '@/ipc/tauri-adapter'
 import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
 import { toast } from '@/state/toast-store'
+import { useVaultStore } from '@/state/vault-store'
 
 export function MarkdownPreview() {
   const relPath = useNoteStore((state) => state.doc?.relPath ?? null)
   const text = useNoteStore((state) => state.doc?.text ?? '')
   const links = useLinksStore((state) => state.links)
+  const rootPath = useVaultStore((state) => state.info?.rootPath ?? null)
   const bodyRef = useRef<HTMLElement | null>(null)
 
   const deferredText = useDeferredValue(text)
+
+  /**
+   * 图片地址解析（ADR-0007）：只有真实宿主 + 已知 Vault 根时才产出 asset URL。
+   *
+   * 浏览器预览（`pnpm dev`）没有 asset 协议，解析器缺席 → 直接渲染占位元素，
+   * 而不是产出一堆必然加载失败的 URL。
+   */
+  const imageEnv = useMemo(() => {
+    if (!isTauriRuntime() || rootPath === null || relPath === null) return {}
+    return {
+      resolveImage: (src: string): string | null => {
+        const absolute = resolveVaultAssetPath(rootPath, relPath, src)
+        if (absolute === null) return null
+        return convertAssetUrl(absolute)
+      },
+    }
+  }, [rootPath, relPath])
+
+  // 预览只渲染正文：frontmatter 是"元数据"，它已经由标签面板的属性表展示，
+  // 渲染出来只会变成一条横线加几行 `key: value`（见 domain/frontmatter.ts 的判定口径）
   const html = useMemo(
-    () => (relPath === null ? '' : renderMarkdown(deferredText)),
-    [relPath, deferredText],
+    () => (relPath === null ? '' : renderMarkdown(frontmatterBody(deferredText), imageEnv)),
+    [relPath, deferredText, imageEnv],
   )
   const stale = deferredText !== text
+
+  /**
+   * 图片加载失败 → 就地换成占位元素。
+   *
+   * 为什么必须做：作用域没覆盖到、文件被删掉、路径其实是外部资源……都会让 `<img>` 变成裂图，
+   * 那比"没有图片"更糟。这里用**捕获阶段**的 error（error 事件不冒泡）+ 原始地址回退成占位。
+   */
+  useEffect(() => {
+    const root = bodyRef.current
+    if (root === null) return
+    const onError = (event: Event): void => {
+      const target = event.target
+      if (!(target instanceof HTMLImageElement) || !target.classList.contains('mn-image')) return
+      const src = target.getAttribute('data-mn-src') ?? target.getAttribute('src') ?? ''
+      const holder = document.createElement('span')
+      holder.innerHTML = imagePlaceholderHtml(src, target.getAttribute('alt') ?? '')
+      const node = holder.firstElementChild
+      if (node !== null) target.replaceWith(node)
+    }
+    root.addEventListener('error', onError, true)
+    return () => {
+      root.removeEventListener('error', onError, true)
+    }
+  }, [html])
 
   // 把宿主索引的解析结果"贴"到渲染出来的 wikilink 上（不重新渲染 HTML）
   useEffect(() => {

@@ -369,3 +369,204 @@ describe.skipIf(!supported)('真实应用：编辑与保存（真实磁盘）', 
     expect(index).toContain('notes/to-delete.md')
   })
 })
+
+/**
+ * 标签与属性面板（M2）：真实 IPC（`note_tags` / `tags_list` / `tag_notes`）+ 真实磁盘。
+ *
+ * Mock 层的抽取规则由 `tests/tags.test.tsx` 覆盖，这里验证"合起来在真实二进制里成立"：
+ * 标签索引是否真的在保存/打开后建立、点标签能否列出笔记、以及**预览不再渲染 frontmatter**。
+ */
+describe.skipIf(!supported)('真实应用：标签与属性面板（真实 IPC）', () => {
+  let app: LaunchedApp
+  let vault: TempVault
+
+  beforeAll(async () => {
+    vault = await createTempVault({
+      '项目/设计.md': '---\ntitle: 设计\ntags: [项目, 进行中]\n---\n\n正文段落。#架构 与 #项目。\n',
+      '项目/路线图.md': '# 路线图\n\n标签：#项目\n',
+      '随手记.md': '# 随手记\n\n这一篇没有标签。\n',
+    })
+    app = await launchApp({ vaultPath: vault.path })
+    await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
+  }, 120_000)
+
+  afterAll(async () => {
+    if (app !== undefined) await app.close()
+    if (vault !== undefined) await vault.cleanup()
+  })
+
+  it('面板显示 frontmatter 与行内标签、属性表，预览不再渲染 frontmatter', async () => {
+    await openNoteInTree(app.page, '项目/设计.md')
+
+    // 预览只渲染正文：frontmatter 的键值不应该出现在预览里
+    await waitUntil(
+      async () => ((await app.page.locator('.mn-preview__body').textContent()) ?? '').includes('正文段落'),
+      15_000,
+      '预览渲染正文',
+    )
+    const preview = (await app.page.locator('.mn-preview__body').textContent()) ?? ''
+    expect(preview).not.toContain('title')
+    expect(preview).not.toContain('进行中')
+
+    await app.page.keyboard.press('Control+Shift+T')
+    await app.page.waitForSelector('.mn-tags', { state: 'visible', timeout: 10_000 })
+
+    // frontmatter 的 tags（数组）与正文行内的 #标签 都要出现（按去重后的键，保留首次写法）
+    for (const tag of ['项目', '进行中', '架构']) {
+      await waitUntil(
+        async () => (await app.page.locator(`.mn-tags [data-tag="${tag}"]`).count()) === 1,
+        15_000,
+        `标签 ${tag} 出现在面板里`,
+      )
+    }
+    // 属性表显示 frontmatter 字段
+    const panelText = (await app.page.locator('.mn-tags').textContent()) ?? ''
+    expect(panelText).toContain('title')
+    expect(panelText).toContain('设计')
+  })
+
+  it('点标签 → 列出含它的笔记 → 点笔记打开它；再按快捷键收起面板', async () => {
+    await app.page.locator('.mn-tags [data-tag="项目"]').click()
+    await waitUntil(
+      async () => (await app.page.locator('.mn-tags [data-tag-note]').count()) === 2,
+      15_000,
+      '该标签下有两篇笔记',
+    )
+    const paths = await app.page
+      .locator('.mn-tags [data-tag-note]')
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-tag-note')))
+    expect(paths).toContain('项目/设计.md')
+    expect(paths).toContain('项目/路线图.md')
+
+    await app.page.locator('.mn-tags [data-tag-note="项目/路线图.md"]').click()
+    await waitUntil(
+      async () =>
+        ((await app.page.locator('.mn-editor__path').textContent()) ?? '').includes('项目/路线图.md'),
+      15_000,
+      '点击后打开了路线图',
+    )
+
+    await app.page.keyboard.press('Control+Shift+T')
+    await waitUntil(async () => (await app.page.locator('.mn-tags').count()) === 0, 10_000, '面板收起')
+  })
+})
+
+/**
+ * 重命名 + 全库链接改写（M2）。
+ *
+ * 这一条**只信磁盘**：断言的是被改写文件的真实字节 —— 精确 span 改写（不改错相邻的同前缀链接）、
+ * 跨目录相对路径、别名与锚点保留、代码块/行内代码不被动、CRLF 保真。
+ * Mock 适配器与 Rust 单测都覆盖了各自的那一半，这里验证"合起来在真实二进制里成立"。
+ */
+describe.skipIf(!supported)('真实应用：重命名与全库链接改写（真实磁盘）', () => {
+  let app: LaunchedApp
+  let vault: TempVault
+
+  const OLD = 'notes/beta.md'
+  const NEW = 'notes/beta-renamed.md'
+  const NEW_TITLE = 'beta-renamed'
+
+  beforeAll(async () => {
+    vault = await createTempVault({
+      'README.md': '# 欢迎\n',
+      [OLD]: '# Beta\n\n正文。\n',
+      // 同目录：裸名 wikilink + 带 `.md` 的 Markdown 链接
+      'notes/alpha.md': '# Alpha\n\n见 [[beta]] 与 [带扩展名](beta.md)。\n',
+      // 前缀陷阱：`[[beta-extra]]` 指向另一篇，绝不能被误改
+      'notes/beta-extra.md': '# Beta extra\n\n另一篇。\n',
+      'notes/prefix.md': '# 前缀陷阱\n\n[[beta]] 与 [[beta-extra]] 同时出现。\n',
+      // 跨目录：相对路径 + 锚点 + 别名
+      'other/gamma.md': '# Gamma\n\n跨目录引用 [[../notes/beta#小节|贝塔]]。\n',
+      // 代码块与行内代码里的链接不参与改写
+      'notes/code.md': '# 代码\n\n```\n[[beta]]\n```\n\n行内 `[[beta]]` 也不算。\n',
+      // 换行保真：CRLF 文件被改写后必须仍是 CRLF
+      'notes/crlf.md': '# CRLF\r\n\r\n链接 [[beta]] 保持换行。\r\n',
+    })
+    app = await launchApp({ vaultPath: vault.path })
+    await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
+  }, 120_000)
+
+  afterAll(async () => {
+    if (app !== undefined) await app.close()
+    if (vault !== undefined) await vault.cleanup()
+  })
+
+  it('F2 改名后：文件名变了、全库链接精确改写、代码块与换行不受影响', async () => {
+    await openNoteInTree(app.page, OLD)
+
+    await app.page.locator('.mn-tree').focus()
+    await app.page.keyboard.press('F2')
+    await app.page.waitForSelector('.mn-dialog--rename', { state: 'visible', timeout: 10_000 })
+    expect(await app.page.getByLabel('新文件名').inputValue()).toBe('beta')
+
+    await app.page.getByLabel('新文件名').fill(NEW_TITLE)
+    await app.page.getByLabel('新文件名').press('Enter')
+
+    // 文件真的改名了（真实磁盘）
+    await waitUntil(() => Promise.resolve(existsSync(vault.absolute(NEW))), 15_000, '新文件名出现在磁盘上')
+    expect(existsSync(vault.absolute(OLD))).toBe(false)
+
+    // 正在编辑的笔记原地跟到新路径（内容不变）
+    await waitUntil(
+      async () =>
+        ((await app.page.locator('.mn-editor__path').textContent()) ?? '').includes(NEW),
+      15_000,
+      '编辑器切到新路径',
+    )
+    expect(await app.page.locator(`.mn-tree [data-rel-path="${NEW}"]`).count()).toBe(1)
+    expect(await app.page.locator(`.mn-tree [data-rel-path="${OLD}"]`).count()).toBe(0)
+
+    // 同目录裸名链接 → 新裸名；Markdown 链接保留 `.md`
+    const alpha = await vault.read('notes/alpha.md')
+    expect(alpha).toContain('[[beta-renamed]]')
+    expect(alpha).toContain('[带扩展名](beta-renamed.md)')
+    expect(alpha).not.toContain('[[beta]]')
+
+    // 前缀陷阱：只改真正指向 beta 的那一条
+    const prefix = await vault.read('notes/prefix.md')
+    expect(prefix).toContain('[[beta-renamed]]')
+    expect(prefix).toContain('[[beta-extra]]')
+
+    // 跨目录：相对路径 + 锚点 + 别名都保留
+    const gamma = await vault.read('other/gamma.md')
+    expect(gamma).toContain('[[../notes/beta-renamed#小节|贝塔]]')
+
+    // 代码块与行内代码里的 `[[beta]]` 一个字都不能动
+    const code = await vault.read('notes/code.md')
+    expect(code).toContain('```\n[[beta]]\n```')
+    expect(code).toContain('`[[beta]]`')
+    expect(code).not.toContain('beta-renamed')
+
+    // 换行保真：仍然是 CRLF，没有被"顺手"改成 LF
+    const crlf = await vault.read('notes/crlf.md')
+    expect(crlf).toContain('[[beta-renamed]]')
+    expect(crlf).toContain('\r\n')
+    expect(/[^\r]\n/.test(crlf)).toBe(false)
+  })
+
+  it('索引同步：改写后的链接立刻能解析（不必重扫 Vault）', async () => {
+    await openNoteInTree(app.page, 'notes/alpha.md')
+    // 预览里的 wikilink 应解析到新文件（没有未解析标记）
+    await waitUntil(
+      async () =>
+        (await app.page.locator('.mn-preview__body a.mn-wikilink').count()) >= 1,
+      15_000,
+      '预览里出现 wikilink',
+    )
+    await waitUntil(
+      async () => (await app.page.locator('a.mn-wikilink--unresolved').count()) === 0,
+      15_000,
+      'wikilink 全部解析成功',
+    )
+
+    // 反向链接面板：新名字的笔记应看到来源 notes/alpha.md
+    await openNoteInTree(app.page, NEW)
+    await ensureLinksPanel(app.page)
+    await waitUntil(
+      async () =>
+        (await app.page.locator('.mn-links__item-name').allTextContents()).includes('alpha.md'),
+      15_000,
+      '新笔记的反向链接里出现来源笔记',
+    )
+  })
+})

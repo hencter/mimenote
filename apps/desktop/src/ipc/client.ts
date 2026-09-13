@@ -14,7 +14,12 @@ import type {
   IndexStatus,
   NoteContent,
   NoteLinks,
+  NoteTags,
+  RenameOutcome,
+  SearchResult,
   SnippetFile,
+  TagNotes,
+  TagSummary,
   TrashRecord,
   VaultInfo,
   VaultSnapshot,
@@ -87,6 +92,13 @@ export const ipc = {
   noteDelete: (relPath: string, confirm: boolean) =>
     call<TrashRecord>('note_delete', { relPath, confirm }),
   noteStats: (relPath: string) => call<DocumentStats>('note_stats', { relPath }),
+  /**
+   * 重命名笔记（同目录改名）并改写全库指向它的链接。
+   *
+   * `newTitle` 不带扩展名；`updateLinks=false` 时只改名、不动任何链接。
+   */
+  noteRename: (relPath: string, newTitle: string, updateLinks = true) =>
+    call<RenameOutcome>('note_rename', { relPath, newTitle, updateLinks }),
 
   /** 命令行指定的 Vault（`mimenote.exe <目录>`）；无则返回 null。 */
   startupVault: () => call<string | null>('startup_vault'),
@@ -95,6 +107,23 @@ export const ipc = {
   indexStatus: () => call<IndexStatus>('index_status'),
   /** 某篇笔记的出链与反向链接。 */
   noteLinks: (relPath: string) => call<NoteLinks>('note_links', { relPath }),
+
+  /** 某篇笔记的标签与 frontmatter 属性。 */
+  noteTags: (relPath: string) => call<NoteTags>('note_tags', { relPath }),
+  /** 全库标签概览（按笔记数降序）。 */
+  tagsList: () => call<TagSummary[]>('tags_list'),
+  /** 某个标签下的笔记（`key` 为归一化键）。 */
+  tagNotes: (key: string) => call<TagNotes>('tag_notes', { key }),
+
+  /**
+   * 全文搜索（宿主侧 SQLite FTS5 索引）。
+   *
+   * 语义（与 Rust 侧一致）：
+   * - 大小写不敏感、**子串**匹配；`query` 为空时宿主返回空结果，
+   *   但前端本就不该发这个请求（见 `features/palette/use-search.ts`）；
+   * - `hits` 已按 `score` 降序排好，上限 `limit` 条；`total` 是命中总数，可能大于 `hits.length`。
+   */
+  searchQuery: (query: string, limit = 50) => call<SearchResult>('search_query', { query, limit }),
 
   snippetsList: () => call<SnippetFile[]>('snippets_list'),
   versionInfo: () => call<VersionInfo>('version_info'),

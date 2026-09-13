@@ -58,6 +58,14 @@ interface NoteState {
   saveNow: (options?: { force?: boolean }) => Promise<boolean>
   resolveConflict: (choice: 'overwrite' | 'reload') => Promise<void>
   reload: () => Promise<void>
+  /**
+   * 改名后把当前文档**原地换到新路径**。
+   *
+   * 为什么不是"关掉再打开"：改名不改变文件内容，重新读取会整篇替换编辑器文本，
+   * 顺带丢掉光标位置与撤销历史。这里只换路径与版本令牌，编辑体验连续。
+   * （若文件内容也被改写过 —— 例如自链接 —— 调用方应改用 `open()` 重新读取。）
+   */
+  retarget: (newRelPath: string, mtimeMs: number) => void
   close: () => void
   refreshDiskStats: () => Promise<void>
 }
@@ -297,6 +305,17 @@ export const useNoteStore = create<NoteState>((set, get) => ({
     cancelAutosave()
     readToken += 1
     set({ doc: null, status: 'idle', dirty: false, conflict: null, error: null, diskStats: null })
+  },
+  retarget: (newRelPath, mtimeMs) => {
+    const doc = get().doc
+    if (doc === null) return
+    cancelAutosave()
+    set({
+      doc: { ...doc, relPath: newRelPath, baseMtimeMs: mtimeMs },
+      status: 'ready',
+      error: null,
+      conflict: null,
+    })
   },
 
   refreshDiskStats: async () => {

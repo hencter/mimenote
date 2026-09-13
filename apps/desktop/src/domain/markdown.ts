@@ -74,15 +74,51 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   return defaultLinkOpen(tokens, idx, options, env, self)
 }
 
-// 图片占位（M1 限制，见 docs/architecture.md §8.1）
-md.renderer.rules.image = (tokens, idx, _options, _env, _self) => {
+/**
+ * 解析结果只允许这几种 scheme。
+ *
+ * 解析器是我们自己的代码（只会产出 asset URL），但仍然做一次白名单 —— 渲染层是安全边界，
+ * 不该假设上游永远正确；不匹配就退回占位元素，绝不让可疑 URL 进到 `<img src>`。
+ */
+const SAFE_IMAGE_URL = /^(?:https?:\/\/|asset:\/\/|blob:|data:image\/)/i
+
+/**
+ * 图片渲染。
+ *
+ * "这张图能不能显示"由调用方决定（`env.resolveImage`，见 ADR-0007）：
+ * - 返回 URL → 渲染 `<img class="mn-image">`，并保留**原始地址**在 `data-mn-src` 上，
+ *   加载失败时预览层据此回退成占位元素（失败即降级，绝不留裂图）；
+ * - 返回 null / 不安全的 URL → 直接渲染占位元素（外部地址、越界路径、非 Tauri 运行时都会走这里）。
+ */
+md.renderer.rules.image = (tokens, idx, _options, env, _self) => {
   const token = tokens[idx]
   const src = String(token?.attrGet('src') ?? '')
   const alt = String(token?.content ?? '')
+  const title = token?.attrGet('title') ?? null
+  const resolver = (env as { resolveImage?: (source: string) => string | null } | undefined)
+    ?.resolveImage
+  const resolved = typeof resolver === 'function' ? resolver(src) : null
+  if (resolved === null || !SAFE_IMAGE_URL.test(resolved)) return imagePlaceholderHtml(src, alt)
+
   return (
-    `<span class="mn-image-placeholder" title="M1 暂不渲染本地图片：${escapeHtml(src)}">` +
+    `<img class="mn-image" src="${escapeHtml(resolved)}" alt="${escapeHtml(alt)}"` +
+    ` data-mn-src="${escapeHtml(src)}" loading="lazy" decoding="async"` +
+    (title === null ? '' : ` title="${escapeHtml(String(title))}"`) +
+    ' />'
+  )
+}
+
+/**
+ * 图片占位元素的 HTML（渲染时与"加载失败回退"时共用，保证两种情况下结构与类名一致）。
+ *
+ * `src` 放在 `title` 上，让用户至少能看懂"这里原本应该显示什么"。
+ */
+export function imagePlaceholderHtml(src: string, alt: string): string {
+  const label = alt === '' ? src : alt
+  return (
+    `<span class="mn-image-placeholder" title="${escapeHtml(src)}">` +
     `<span class="mn-image-placeholder__icon" aria-hidden="true">▧</span>` +
-    `<span class="mn-image-placeholder__alt">${escapeHtml(alt === '' ? src : alt)}</span>` +
+    `<span class="mn-image-placeholder__alt">${escapeHtml(label)}</span>` +
     `</span>`
   )
 }
@@ -100,8 +136,12 @@ const PURIFY_CONFIG = {
   FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'link', 'meta', 'base'],
   FORBID_ATTR: ['srcset', 'formaction', 'ping', 'onerror', 'onload'],
   ALLOW_DATA_ATTR: false,
-  // wikilink 的 data-* 是我们自己渲染的（ALLOW_DATA_ATTR=false 会一律剥掉，因此显式放行）
-  ADD_ATTR: ['target', 'rel', 'data-target', 'data-anchor'],
+  // wikilink 的 data-* 与图片的 data-mn-src 是我们自己渲染的（ALLOW_DATA_ATTR=false 会一律剥掉，因此显式放行）
+  ADD_ATTR: ['target', 'rel', 'data-target', 'data-anchor', 'data-mn-src', 'loading', 'decoding'],
+  // 默认白名单里没有 `asset:`（macOS/Linux 上 asset URL 就是 `asset://…`）；不加这一条会出现
+  // "Windows 正常、macOS 图片全被净化掉"的平台差异（Windows 上是 http://asset.localhost）。
+  ALLOWED_URI_REGEXP:
+    /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|asset):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
 }
 
 /** 净化一段 HTML。 */
@@ -109,9 +149,9 @@ export function sanitizeHtml(html: string): string {
   return DOMPurify.sanitize(html, PURIFY_CONFIG)
 }
 
-/** 渲染 Markdown 为**已净化**的 HTML。 */
-export function renderMarkdown(source: string): string {
-  return sanitizeHtml(md.render(source))
+/** 渲染 Markdown 为**已净化**的 HTML。`env` 会原样传给 markdown-it 规则（例如 `resolveImage`）。 */
+export function renderMarkdown(source: string, env: Record<string, unknown> = {}): string {
+  return sanitizeHtml(md.render(source, env))
 }
 
 /** 渲染行内 Markdown（标题、列表项等场景）。 */
