@@ -18,6 +18,8 @@ use mn_core::path_guard::sanitize_file_stem;
 use mn_core::scanner::{scan, EntryMeta, ScanOptions};
 use mn_core::trash::{move_to_trash, TrashRecord};
 use mn_core::{Error, VaultRoot};
+use mn_index::rename::{LinkUpdate, RenameReport};
+use mn_index::tags::TagSummary;
 use mn_index::NoteLinks;
 
 use crate::error::IpcError;
@@ -95,6 +97,45 @@ pub struct WriteOutcome {
     pub written_in_ms: u64,
 }
 
+/// 重命名时被改写了链接的某个文件。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameLinkUpdate {
+    pub rel_path: String,
+    /// 该文件里被改写的链接条数。
+    pub count: u32,
+}
+
+impl From<LinkUpdate> for RenameLinkUpdate {
+    fn from(update: LinkUpdate) -> Self {
+        Self {
+            rel_path: update.rel_path,
+            count: update.count,
+        }
+    }
+}
+
+/// 重命名结果。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameOutcome {
+    pub old_rel_path: String,
+    pub new_rel_path: String,
+    /// 改名后的新版本令牌（口径与 `NoteContent.mtimeMs` 一致）。
+    ///
+    /// 类型刻意跟随现有 DTO 用 `u64`（JSON 里同样是数字，前端镜像为 `number` 即可）。
+    pub new_mtime_ms: u64,
+    /// 被改写了链接的文件，按 `relPath` 字典序。
+    ///
+    /// 被改名的笔记**自身**若含自链接，它的条目用**旧路径**报告 —— 前端要在"改名前的
+    /// 坐标系"里判断"我正在编辑的这一篇也被改写了"（见 `app/actions.ts`）。
+    pub updated_links: Vec<RenameLinkUpdate>,
+    /// 被改写链接的总数（`updated_links` 的 count 之和）。
+    pub updated_link_count: u32,
+    /// 整条命令的实测耗时（毫秒）。
+    pub elapsed_ms: u64,
+}
+
 /// 用户 CSS 片段。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -121,6 +162,49 @@ pub struct DocumentStats {
     pub size_bytes: u64,
     pub mtime_ms: u64,
     pub stats: mn_core::TextStats,
+}
+
+/// 某篇笔记的标签与 frontmatter 属性。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTags {
+    pub rel_path: String,
+    /// frontmatter 与正文行内标签（frontmatter 在前，已按归一化键去重）。
+    pub tags: Vec<mn_core::TagRef>,
+    /// frontmatter 字段（保序）。**没有 frontmatter 时是空数组，不是 `null`**。
+    pub frontmatter: Vec<mn_core::frontmatter::FrontmatterField>,
+}
+
+/// 全库标签概览中的一项。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagSummaryDto {
+    /// 归一化后的键（小写、去首尾 `/`）。
+    pub key: String,
+    /// 首次出现的原始写法（保留大小写与层级）。
+    pub tag: String,
+    /// 含该标签的笔记数。
+    pub count: u32,
+}
+
+impl From<TagSummary> for TagSummaryDto {
+    fn from(summary: TagSummary) -> Self {
+        Self {
+            key: summary.key,
+            tag: summary.tag,
+            count: summary.count,
+        }
+    }
+}
+
+/// 某个标签下的笔记。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagNotes {
+    /// **归一化后**的键（前端拿到的永远是索引里那个键，便于高亮当前展开项）。
+    pub key: String,
+    /// 笔记相对路径（字典序）。
+    pub notes: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -383,6 +467,41 @@ pub async fn note_create(
     Ok(note)
 }
 
+/// 重命名笔记：同目录改名 + 全库指向它的链接精确改写。
+///
+/// `update_links` 缺省 `true`（`false` = 只改名、不碰任何其他文件）。
+///
+/// 宿主在这里只做三件事：拿状态、把结果搬成 DTO、增量更新条目缓存 ——
+/// 改名与改写规则全在 `mn_index::rename`（见 `docs/architecture.md` §2 第 3 条）。
+#[tauri::command]
+pub async fn note_rename(
+    state: State<'_, Arc<AppState>>,
+    rel_path: String,
+    new_title: String,
+    update_links: Option<bool>,
+) -> Result<RenameOutcome, IpcError> {
+    let started = Instant::now();
+    let app = Arc::clone(state.inner());
+    let rel = rel_path;
+    let update = update_links.unwrap_or(true);
+
+    let report = run_blocking(move || rename_note_in(&app, &rel, &new_title, update)).await?;
+
+    // 条目缓存增量更新：换掉旧路径（笔记数不变），不重扫目录
+    apply_renamed_entry(&state, &report);
+
+    let outcome = rename_outcome_from(report, started.elapsed().as_millis() as u64);
+    log::info!(
+        "重命名：{} → {}（改写 {} 个文件 / {} 条链接，耗时 {}ms）",
+        outcome.old_rel_path,
+        outcome.new_rel_path,
+        outcome.updated_links.len(),
+        outcome.updated_link_count,
+        outcome.elapsed_ms
+    );
+    Ok(outcome)
+}
+
 /// 删除笔记/目录（移入回收站）。必须 `confirm = true`。
 #[tauri::command]
 pub async fn note_delete(
@@ -428,6 +547,41 @@ pub async fn note_links(
     let rel = rel_path.clone();
     let links: NoteLinks = run_blocking(move || Ok(indexer::note_links(&app, &rel))).await?;
     Ok(links)
+}
+
+// ---------------------------------------------------------------------------
+// 标签与 frontmatter 属性
+// ---------------------------------------------------------------------------
+
+/// 某篇笔记的标签与 frontmatter 属性。
+///
+/// 标签走**索引**（与全库概览同一份数据，编辑保存后由 `note_write` 顺带更新）；
+/// frontmatter 字段**现读现解析** —— 索引只保存标签，不保存所有属性，而属性面板要的是
+/// 这篇文件的完整字段（所以这里仍要读一次文件，顺便也把 `NOT_FOUND` 语义定死）。
+#[tauri::command]
+pub async fn note_tags(
+    state: State<'_, Arc<AppState>>,
+    rel_path: String,
+) -> Result<NoteTags, IpcError> {
+    let root = state.vault_root()?;
+    let app = Arc::clone(state.inner());
+    let rel = rel_path.clone();
+    run_blocking(move || note_tags_in(&root, &app, &rel)).await
+}
+
+/// 全库标签概览（笔记数降序 → 键字典序）。
+#[tauri::command]
+pub async fn tags_list(state: State<'_, Arc<AppState>>) -> Result<Vec<TagSummaryDto>, IpcError> {
+    let app = Arc::clone(state.inner());
+    run_blocking(move || Ok(tags_list_in(&app))).await
+}
+
+/// 某个标签下的笔记（`key` 传原始写法或归一化键都行）。
+#[tauri::command]
+pub async fn tag_notes(state: State<'_, Arc<AppState>>, key: String) -> Result<TagNotes, IpcError> {
+    let app = Arc::clone(state.inner());
+    let query = key.clone();
+    run_blocking(move || tag_notes_in(&app, &query)).await
 }
 
 // ---------------------------------------------------------------------------
@@ -582,6 +736,105 @@ fn unique_note_path(
     )))
 }
 
+/// 重命名命令的主体（与 Tauri 无关，可单测）。
+///
+/// 与保存共用同一把写锁：改名与链接改写必须在"没有并发写"的临界区里完成（ADR-0004），
+/// 否则改名瞬间可能撞上一次自动保存，把刚改好的链接又写回旧名字。
+fn rename_note_in(
+    state: &AppState,
+    rel_path: &str,
+    new_title: &str,
+    update_links: bool,
+) -> mn_core::Result<RenameReport> {
+    let root = state.vault_root()?;
+    let _write_guard = state.write_guard();
+    let mut index = state.index_write();
+    // 链接索引由 mn-index 在同一临界区里增量同步（旧路径移除、新路径 upsert）
+    mn_index::rename::rename_note(&root, &mut index, rel_path, new_title, update_links)
+}
+
+/// 改名成功后增量更新条目缓存（纯内存，不重扫目录）。
+fn apply_renamed_entry(state: &AppState, report: &RenameReport) {
+    let old_rel = report.old_rel_path.clone();
+    let new_rel = report.new_rel_path.clone();
+    let mtime_ms = report.mtime_ms;
+    let size_bytes = report.size_bytes;
+    state.update_vault(|ctx| {
+        // 先删后加：笔记数净变化为 0，目录计数不受影响
+        ctx.remove(&old_rel);
+        ctx.upsert(EntryMeta {
+            rel_path: new_rel.clone(),
+            name: file_name_of(&new_rel),
+            is_dir: false,
+            size_bytes,
+            mtime_ms: Some(mtime_ms),
+            ext: ext_of(&new_rel),
+        });
+    });
+}
+
+/// `mn-index` 的结果 → IPC DTO（宿主唯一的"搬运"职责）。
+fn rename_outcome_from(report: RenameReport, elapsed_ms: u64) -> RenameOutcome {
+    RenameOutcome {
+        old_rel_path: report.old_rel_path,
+        new_rel_path: report.new_rel_path,
+        new_mtime_ms: report.mtime_ms,
+        updated_links: report
+            .updated_links
+            .into_iter()
+            .map(RenameLinkUpdate::from)
+            .collect(),
+        updated_link_count: report.updated_link_count,
+        elapsed_ms,
+    }
+}
+
+/// `note_tags` 的主体（与 Tauri 无关，可单测）。
+fn note_tags_in(root: &VaultRoot, state: &AppState, rel_path: &str) -> mn_core::Result<NoteTags> {
+    let path = root.resolve_existing(rel_path)?;
+    let meta = std::fs::metadata(&path).map_err(|e| Error::io(&path, e))?;
+    if meta.is_dir() {
+        return Err(Error::IsDirectory(rel_path.to_string()));
+    }
+    let text = read_text(&path, MAX_READ_BYTES)?;
+
+    // 索引里有就用索引的（与全库概览严格一致）；索引还没收录（构建中、超大被跳过、
+    // 非笔记）才现算 —— 否则面板会显示"这篇没有标签"，那是错的。
+    let tags = indexer::tags_of(state, rel_path).unwrap_or_else(|| mn_core::extract_tags(&text));
+    let frontmatter = mn_core::parse_frontmatter(&text)
+        .map(|frontmatter| frontmatter.fields)
+        .unwrap_or_default();
+
+    Ok(NoteTags {
+        rel_path: rel_path.to_string(),
+        tags,
+        frontmatter,
+    })
+}
+
+/// `tags_list` 的主体（与 Tauri 无关，可单测）。
+fn tags_list_in(state: &AppState) -> Vec<TagSummaryDto> {
+    indexer::tag_summary(state)
+        .into_iter()
+        .map(TagSummaryDto::from)
+        .collect()
+}
+
+/// `tag_notes` 的主体（与 Tauri 无关，可单测）：空键 → `PATH_INVALID`。
+fn tag_notes_in(state: &AppState, key: &str) -> mn_core::Result<TagNotes> {
+    // 空键（`""`、`"#"`、只有空白）归一化后是空串，等于"查询所有空标签"：明确拒绝，
+    // 别让它悄悄返回一个空列表（那会让 UI 以为"这个标签下没有笔记"）
+    let normalized = mn_core::normalize_tag(key);
+    if normalized.is_empty() {
+        return Err(Error::invalid(key, "标签键为空"));
+    }
+
+    Ok(TagNotes {
+        notes: indexer::notes_with_tag(state, &normalized),
+        key: normalized,
+    })
+}
+
 fn list_snippets(root: &VaultRoot) -> mn_core::Result<Vec<SnippetFile>> {
     let dir = root.path().join(".mimenote").join("snippets");
     let mut out = Vec::new();
@@ -686,6 +939,385 @@ mod tests {
         let (entry, note) = create_note(&root, "", "   ").unwrap();
         assert_eq!(entry.rel_path, "未命名.md");
         assert_eq!(note.text, "", "空标题不写占位标题行");
+    }
+
+    // -- 重命名（note_rename） ----------------------------------------------
+
+    /// 建一个"已打开 Vault + 已建索引"的应用状态（与 App 启动链路一致）。
+    fn state_with(files: &[(&str, &str)]) -> (tempfile::TempDir, AppState) {
+        let dir = tempfile::tempdir().unwrap();
+        for (rel, text) in files {
+            let path = dir
+                .path()
+                .join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&path, text).unwrap();
+        }
+        let root = VaultRoot::open(dir.path()).unwrap();
+        let options = ScanOptions::default();
+        let report = scan(root.path(), &options).unwrap();
+        let entries = report.entries.clone();
+        let (index, _) = mn_index::build_index(
+            root.path(),
+            &entries,
+            &mn_index::BuildOptions::default(),
+            None,
+            |_done, _total| {},
+        );
+
+        let state = AppState::default();
+        state.set_vault(VaultCtx::new(root, options, report));
+        *state.index_write() = index;
+        (dir, state)
+    }
+
+    fn read_file(dir: &std::path::Path, rel: &str) -> String {
+        std::fs::read_to_string(dir.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR))).unwrap()
+    }
+
+    #[test]
+    fn rename_rejects_invalid_titles() {
+        let (dir, state) = state_with(&[("笔记/甲.md", "[[乙]]\n"), ("笔记/乙.md", "# 乙\n")]);
+
+        for title in [
+            "", "   ", " 乙 ", "乙\n", "子/乙", "子\\乙", "..\\乙", "...", "con", "丙:丁",
+        ] {
+            let error = rename_note_in(&state, "笔记/乙.md", title, true).unwrap_err();
+            assert_eq!(
+                error.code(),
+                mn_core::ErrorCode::PathInvalid,
+                "应拒绝标题：{title:?}"
+            );
+        }
+
+        // 校验失败必须是"什么都没发生"
+        assert!(dir.path().join("笔记").join("乙.md").exists());
+        assert_eq!(read_file(dir.path(), "笔记/甲.md"), "[[乙]]\n");
+    }
+
+    #[test]
+    fn rename_reports_missing_directory_and_existing_target() {
+        let (dir, state) = state_with(&[("乙.md", "# 乙\n"), ("目标.md", "")]);
+        std::fs::create_dir_all(dir.path().join("某个目录")).unwrap();
+
+        assert_eq!(
+            rename_note_in(&state, "不存在.md", "新名", true)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::NotFound
+        );
+        assert_eq!(
+            rename_note_in(&state, "某个目录", "新名", true)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::IsDirectory,
+            "目录重命名不在本轮范围"
+        );
+        assert_eq!(
+            rename_note_in(&state, "乙.md", "目标", true)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::AlreadyExists
+        );
+        assert!(dir.path().join("乙.md").exists(), "失败时源文件不能被动过");
+    }
+
+    #[test]
+    fn rename_without_vault_is_rejected() {
+        let state = AppState::default();
+        assert_eq!(
+            rename_note_in(&state, "乙.md", "丙", true)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::VaultNotSet
+        );
+    }
+
+    #[test]
+    fn rename_rewrites_backlinks_and_updates_caches() {
+        let (dir, state) = state_with(&[
+            ("笔记/甲.md", "见 [[乙]] 与 [x](乙.md)\n"),
+            ("笔记/层级/丙.md", "[[笔记/乙]]\n"),
+            ("笔记/乙.md", "# 乙\n"),
+        ]);
+
+        let report = rename_note_in(&state, "笔记/乙.md", "戊", true).unwrap();
+        assert_eq!(report.old_rel_path, "笔记/乙.md");
+        assert_eq!(report.new_rel_path, "笔记/戊.md");
+        assert_eq!(report.updated_link_count, 3);
+        assert_eq!(report.updated_links.len(), 2);
+        assert_eq!(
+            read_file(dir.path(), "笔记/甲.md"),
+            "见 [[戊]] 与 [x](戊.md)\n"
+        );
+        assert_eq!(read_file(dir.path(), "笔记/层级/丙.md"), "[[../戊]]\n");
+        assert!(report.mtime_ms > 0);
+
+        // 条目缓存 + 索引都在同一条命令里同步好了
+        apply_renamed_entry(&state, &report);
+        state
+            .with_vault(|ctx| {
+                assert!(!ctx.entries.contains_key("笔记/乙.md"));
+                assert!(ctx.entries.contains_key("笔记/戊.md"));
+                assert_eq!(ctx.entries["笔记/戊.md"].name, "戊.md");
+                assert_eq!(ctx.entries["笔记/戊.md"].ext.as_deref(), Some("md"));
+                assert_eq!(ctx.note_count, 3, "改名不改变笔记数");
+                assert!(ctx.order.contains(&"笔记/戊.md".to_string()));
+                Ok(())
+            })
+            .unwrap();
+
+        let mut index = state.index_write();
+        assert!(!index.contains("笔记/乙.md"), "旧路径必须从索引里消失");
+        assert!(index.contains("笔记/戊.md"));
+        // 甲.md 里两条链接 + 丙.md 里一条 = 3 条反链
+        assert_eq!(index.backlinks_of("笔记/戊.md").len(), 3);
+    }
+
+    #[test]
+    fn rename_with_update_links_false_touches_no_other_file() {
+        let (dir, state) = state_with(&[("甲.md", "[[乙]]\n"), ("乙.md", "# 乙\n")]);
+        let before = std::fs::metadata(dir.path().join("甲.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
+
+        let report = rename_note_in(&state, "乙.md", "丙", false).unwrap();
+
+        assert_eq!(report.new_rel_path, "丙.md");
+        assert!(report.updated_links.is_empty());
+        assert_eq!(report.updated_link_count, 0);
+        assert_eq!(read_file(dir.path(), "甲.md"), "[[乙]]\n");
+        assert_eq!(
+            std::fs::metadata(dir.path().join("甲.md"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            before,
+            "不更新链接时连 mtime 都不该变（说明根本没写）"
+        );
+        assert!(dir.path().join("丙.md").exists());
+        assert!(!dir.path().join("乙.md").exists());
+        // 索引也必须切到新路径，而不是留下旧路径的幽灵条目
+        assert!(!state.index_write().contains("乙.md"));
+        assert!(state.index_write().contains("丙.md"));
+    }
+
+    // -- 标签与 frontmatter（note_tags / tags_list / tag_notes） -----------------
+
+    #[test]
+    fn note_tags_returns_index_tags_and_frontmatter_fields() {
+        let (_dir, state) = state_with(&[(
+            "笔记/甲.md",
+            "---\ntitle: 甲\ntags: [项目/甲]\n---\n\n正文 #行内\n",
+        )]);
+        let root = state.vault_root().unwrap();
+
+        let result = note_tags_in(&root, &state, "笔记/甲.md").unwrap();
+        assert_eq!(result.rel_path, "笔记/甲.md");
+        assert_eq!(
+            result
+                .tags
+                .iter()
+                .map(|tag| (tag.tag.as_str(), tag.line))
+                .collect::<Vec<_>>(),
+            vec![("项目/甲", 3), ("行内", 6)],
+            "frontmatter 在前、正文在后，行号是全文绝对行号"
+        );
+        assert_eq!(result.tags[0].source, mn_core::TagSource::Frontmatter);
+        assert_eq!(result.tags[1].source, mn_core::TagSource::Inline);
+
+        let keys: Vec<&str> = result
+            .frontmatter
+            .iter()
+            .map(|field| field.key.as_str())
+            .collect();
+        assert_eq!(keys, vec!["title", "tags"], "字段保序");
+        assert_eq!(result.frontmatter[0].line, 2);
+        assert_eq!(
+            result.frontmatter[0].value.as_str(),
+            Some("甲"),
+            "标量值已去引号"
+        );
+        assert_eq!(
+            result.frontmatter[1].value.as_list(),
+            Some(["项目/甲".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn note_tags_without_frontmatter_uses_empty_array_not_null() {
+        let (_dir, state) = state_with(&[("甲.md", "正文 #甲\n")]);
+        let root = state.vault_root().unwrap();
+
+        let result = note_tags_in(&root, &state, "甲.md").unwrap();
+        assert!(result.frontmatter.is_empty());
+
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"relPath\":\"甲.md\""), "实际：{json}");
+        assert!(json.contains("\"frontmatter\":[]"), "必须是空数组：{json}");
+        assert!(json.contains("\"tags\":[{"), "实际：{json}");
+        assert!(json.contains("\"source\":\"inline\""), "实际：{json}");
+        assert!(json.contains("\"line\":1"), "实际：{json}");
+    }
+
+    #[test]
+    fn note_tags_reports_missing_file_and_directory() {
+        let (dir, state) = state_with(&[("甲.md", "#甲\n")]);
+        let root = state.vault_root().unwrap();
+        std::fs::create_dir_all(dir.path().join("某个目录")).unwrap();
+
+        assert_eq!(
+            note_tags_in(&root, &state, "不存在.md").unwrap_err().code(),
+            mn_core::ErrorCode::NotFound
+        );
+        assert_eq!(
+            note_tags_in(&root, &state, "某个目录").unwrap_err().code(),
+            mn_core::ErrorCode::IsDirectory
+        );
+    }
+
+    #[test]
+    fn note_tags_computes_from_text_when_note_is_not_indexed() {
+        // 附件之类不在索引里；标签仍要现算出来，而不是显示成"没有标签"
+        let (dir, state) = state_with(&[("甲.md", "#甲\n")]);
+        let root = state.vault_root().unwrap();
+        std::fs::write(dir.path().join("附件.md"), "正文 #现算\n").unwrap();
+
+        let result = note_tags_in(&root, &state, "附件.md").unwrap();
+        assert_eq!(
+            result
+                .tags
+                .iter()
+                .map(|tag| tag.tag.as_str())
+                .collect::<Vec<_>>(),
+            vec!["现算"]
+        );
+    }
+
+    #[test]
+    fn tags_list_orders_by_count_then_key() {
+        let (_dir, state) = state_with(&[
+            ("a.md", "正文 #共享 与 #独有\n"),
+            ("b.md", "---\ntags: [共享]\n---\n正文\n"),
+            ("c.md", "正文 #共享\n"),
+        ]);
+
+        let summary = tags_list_in(&state);
+        assert_eq!(summary.len(), 2);
+        assert_eq!(summary[0].key, "共享");
+        assert_eq!(summary[0].count, 3, "count 是笔记数");
+        assert_eq!(summary[1].key, "独有");
+        assert_eq!(summary[1].count, 1);
+
+        let json = serde_json::to_string(&summary).unwrap();
+        for key in ["\"key\"", "\"tag\"", "\"count\""] {
+            assert!(json.contains(key), "缺少字段 {key}：{json}");
+        }
+        assert!(!json.contains("keyCount"), "字段名必须是 camelCase：{json}");
+    }
+
+    #[test]
+    fn tag_notes_normalizes_input_and_rejects_empty_key() {
+        let (_dir, state) = state_with(&[("b.md", "正文 #Rust\n"), ("a.md", "正文 #rust\n")]);
+
+        // 传原始写法（带 `#`、任意大小写）也能命中，返回的 key 是归一化后的键
+        let result = tag_notes_in(&state, "#RUST").unwrap();
+        assert_eq!(result.key, "rust");
+        assert_eq!(
+            result.notes,
+            vec!["a.md".to_string(), "b.md".to_string()],
+            "字典序"
+        );
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"key\":\"rust\""), "实际：{json}");
+        assert!(json.contains("\"notes\":["), "实际：{json}");
+
+        // 不存在的标签 → 空列表（不是错误）
+        assert!(tag_notes_in(&state, "没有这个标签")
+            .unwrap()
+            .notes
+            .is_empty());
+
+        // 空键 → PATH_INVALID
+        for key in ["", "   ", "#", "/"] {
+            assert_eq!(
+                tag_notes_in(&state, key).unwrap_err().code(),
+                mn_core::ErrorCode::PathInvalid,
+                "应拒绝空键：{key:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tags_follow_save_rename_and_delete() {
+        let (dir, state) = state_with(&[("笔记/甲.md", "正文，还没有标签\n")]);
+        assert!(tags_list_in(&state).is_empty());
+
+        // 保存 = 落盘 + 增量更新索引（note_write 里正是这两步），之后标签立刻可见
+        let saved = "正文 #新标签\n";
+        std::fs::write(dir.path().join("笔记").join("甲.md"), saved).unwrap();
+        indexer::update_note(&state, "笔记/甲.md", saved);
+        assert_eq!(tags_list_in(&state)[0].key, "新标签");
+        assert_eq!(
+            tag_notes_in(&state, "新标签").unwrap().notes,
+            vec!["笔记/甲.md".to_string()],
+            "编辑笔记加标签，面板立刻能看到"
+        );
+
+        // 重命名（mn-index 的 rename 走的是同一对 remove/upsert）后标签跟着换路径
+        let report = rename_note_in(&state, "笔记/甲.md", "乙", true).unwrap();
+        assert_eq!(report.new_rel_path, "笔记/乙.md");
+        assert_eq!(
+            tag_notes_in(&state, "新标签").unwrap().notes,
+            vec!["笔记/乙.md".to_string()],
+            "标签必须跟着新路径"
+        );
+
+        // 删除 → 标签一起清掉，概览里不留空标签
+        indexer::remove_note(&state, "笔记/乙.md");
+        assert!(tags_list_in(&state).is_empty());
+        assert!(tag_notes_in(&state, "新标签").unwrap().notes.is_empty());
+    }
+
+    #[test]
+    fn rename_outcome_serializes_to_the_frontend_contract() {
+        let (_dir, state) = state_with(&[("笔记/甲.md", "[[乙]]\n"), ("笔记/乙.md", "")]);
+        let report = rename_note_in(&state, "笔记/乙.md", "丙", true).unwrap();
+        let outcome = rename_outcome_from(report, 7);
+
+        assert_eq!(outcome.old_rel_path, "笔记/乙.md");
+        assert_eq!(outcome.new_rel_path, "笔记/丙.md");
+        assert_eq!(outcome.updated_link_count, 1);
+        assert_eq!(outcome.elapsed_ms, 7);
+        assert!(outcome.new_mtime_ms > 0);
+        assert_eq!(outcome.updated_links.len(), 1);
+
+        let json = serde_json::to_string(&outcome).unwrap();
+        for key in [
+            "oldRelPath",
+            "newRelPath",
+            "newMtimeMs",
+            "updatedLinks",
+            "updatedLinkCount",
+            "elapsedMs",
+            "relPath",
+            "count",
+        ] {
+            assert!(
+                json.contains(&format!("\"{key}\"")),
+                "缺少字段 {key}：{json}"
+            );
+        }
+        assert!(json.contains("\"relPath\":\"笔记/甲.md\""), "实际：{json}");
+        assert!(json.contains("\"count\":1"), "实际：{json}");
+        assert!(json.contains("\"elapsedMs\":7"), "实际：{json}");
+        assert!(
+            !json.contains("old_rel_path"),
+            "字段名必须是 camelCase：{json}"
+        );
     }
 
     #[test]

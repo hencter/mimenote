@@ -14,7 +14,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use mn_core::scanner::EntryMeta;
+use mn_core::tags::TagRef;
 use mn_core::VaultRoot;
+use mn_index::tags::TagSummary;
 use mn_index::{build_index, BuildOptions, IndexStats, NoteLinks};
 
 use crate::state::AppState;
@@ -162,7 +164,7 @@ pub fn spawn_build(state: Arc<AppState>, app: AppHandle, root: VaultRoot, entrie
         emit(&app, &state.index_status_snapshot());
 
         log::info!(
-            "链接索引{}：{} 篇 / {} 条链接（解析 {}，悬空 {}，歧义 {}），耗时 {}ms，跳过 {}",
+            "链接索引{}：{} 篇 / {} 条链接（解析 {}，悬空 {}，歧义 {}）/ {} 个标签，耗时 {}ms，跳过 {}",
             if outcome.cancelled {
                 "被取消"
             } else {
@@ -173,6 +175,7 @@ pub fn spawn_build(state: Arc<AppState>, app: AppHandle, root: VaultRoot, entrie
             stats.resolved,
             stats.unresolved,
             stats.ambiguous,
+            stats.tags,
             outcome.duration_ms,
             outcome.skipped
         );
@@ -203,6 +206,25 @@ pub fn remove_note(state: &AppState, rel_path: &str) {
 /// 查询某篇笔记的出链与反向链接（重活，调用方负责放到后台线程）。
 pub fn note_links(state: &AppState, rel_path: &str) -> NoteLinks {
     state.index_write().note_links(rel_path)
+}
+
+/// 某篇笔记的标签（索引里的权威数据）。
+///
+/// 返回 `None` 表示**索引里没有这篇笔记**（还在构建、太大被跳过、或不是笔记）——
+/// 与"收录了但这篇没有标签"（`Some(vec![])`）是两件事，调用方据此决定要不要现算。
+pub fn tags_of(state: &AppState, rel_path: &str) -> Option<Vec<TagRef>> {
+    let index = state.index_write();
+    index.contains(rel_path).then(|| index.tags_of(rel_path))
+}
+
+/// 全库标签概览（`count` 降序 → `key` 升序）。
+pub fn tag_summary(state: &AppState) -> Vec<TagSummary> {
+    state.index_write().tag_summary()
+}
+
+/// 某个标签下的笔记（字典序；`key` 传原始写法也能命中）。
+pub fn notes_with_tag(state: &AppState, key: &str) -> Vec<String> {
+    state.index_write().notes_with_tag(key)
 }
 
 /// 当前索引状态快照。

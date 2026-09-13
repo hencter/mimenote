@@ -12,16 +12,23 @@
 
 pub mod atomic;
 pub mod error;
+pub mod frontmatter;
 pub mod links;
 pub mod path_guard;
 pub mod scanner;
+pub mod tags;
 pub mod text_stats;
 pub mod trash;
 
 pub use error::{Error, ErrorCode, Result};
+pub use frontmatter::{
+    body as frontmatter_body, parse as parse_frontmatter, set_tags, Frontmatter, FrontmatterField,
+    FrontmatterValue,
+};
 pub use links::{extract_links, LinkKind, LinkRef};
 pub use path_guard::VaultRoot;
 pub use scanner::{scan, EntryMeta, ScanOptions, ScanReport};
+pub use tags::{extract_tags, normalize_tag, TagRef, TagSource};
 pub use text_stats::TextStats;
 pub use trash::TrashRecord;
 

@@ -10,7 +10,12 @@
 //! * **不在启动时同步解析全库**：1 万篇笔记 ≈ 秒级，必须放到后台并报告进度，
 //!   否则冷启动预算（≤1.5s）立刻爆掉；
 //! * 解析只做"从文本里找链接"（`mn_core::links`），不依赖 Markdown AST，
-//!   因此可以快速、可预测地增量更新。
+//!   因此可以快速、可预测地增量更新；
+//! * 标签（`#标签` / frontmatter `tags`，见 [`tags::TagIndex`]）与链接共用同一次
+//!   `upsert`/`remove`：同一份文本顺手算出来，不做第二次 IO，也不会出现两者不同步。
+
+pub mod rename;
+pub mod tags;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -22,6 +27,9 @@ use serde::Serialize;
 use mn_core::atomic::read_text;
 use mn_core::links::{extract_links, join_relative, normalize_target, LinkKind, LinkRef};
 use mn_core::scanner::EntryMeta;
+use mn_core::tags::TagRef;
+
+use tags::{TagIndex, TagSummary};
 
 /// 单篇笔记参与索引的大小上限（超过则跳过，避免大文件拖慢构建）。
 pub const MAX_INDEX_BYTES: u64 = 4 * 1024 * 1024;
@@ -82,6 +90,8 @@ pub struct IndexStats {
     pub backlink_entries: usize,
     /// 存在歧义（同名多篇）的链接数。
     pub ambiguous: usize,
+    /// 不同标签的个数（概览里的行数）。
+    pub tags: usize,
 }
 
 /// 链接索引。
@@ -98,6 +108,8 @@ pub struct LinkIndex {
     backlinks: HashMap<String, Vec<BacklinkRef>>,
     /// `backlinks` 是否需要重建。
     dirty: bool,
+    /// 标签数据：与链接同源同生命周期，只在 [`Self::upsert`] / [`Self::remove`] 里更新。
+    tags: TagIndex,
 }
 
 impl LinkIndex {
@@ -114,15 +126,18 @@ impl LinkIndex {
         self.by_path.clear();
         self.by_stem.clear();
         self.backlinks.clear();
+        self.tags.clear();
         self.dirty = false;
     }
 
-    /// 新增/更新一篇笔记的出链。
+    /// 新增/更新一篇笔记的出链与标签。
     pub fn upsert(&mut self, rel_path: &str, text: &str) {
         self.remove(rel_path);
 
         let rel = rel_path.replace('\\', "/");
         let links = extract_links(text);
+        // 标签与链接同一份文本、同一个时机算出来：不额外读文件，也不可能不同步
+        self.tags.upsert(&rel, text);
 
         self.by_path.insert(normalize_target(&rel), rel.clone());
         if let Some(stem) = stem_of(&rel) {
@@ -135,9 +150,11 @@ impl LinkIndex {
         self.dirty = true;
     }
 
-    /// 移除一篇笔记（删除/重扫时调用）。
+    /// 移除一篇笔记（删除/重扫时调用）：链接与标签一起清掉。
     pub fn remove(&mut self, rel_path: &str) {
         let rel = rel_path.replace('\\', "/");
+        // 标签数据独立于链接数据，必须无条件清理 —— 否则删掉笔记后标签面板里还留着它
+        self.tags.remove(&rel);
         if self.files.remove(&rel).is_none() {
             return;
         }
@@ -217,6 +234,37 @@ impl LinkIndex {
             .unwrap_or_default()
     }
 
+    /// 用索引的解析规则把一个链接目标解析成具体笔记（`None` = 悬空）。
+    ///
+    /// 重命名改写必须与索引看到**同一套**规则：否则会出现"反链面板能解析、
+    /// 改写后却悬空"这种最难查的不一致。
+    pub fn resolve(&self, from_rel: &str, raw_target: &str) -> Option<String> {
+        self.resolve_target(from_rel, raw_target).0
+    }
+
+    /// 所有出链解析到 `target_rel` 的笔记（重命名改写"候选集"的唯一来源）。
+    ///
+    /// 与 [`Self::backlinks_of`] 的差别：这里**包含自引用** —— `甲.md` 里的 `[[甲]]`
+    /// 在改名后必须跟着改；而反链面板刻意不含自引用（那是 UI 噪音）。
+    /// 纯锚点链接（`[[#小节]]`、`[x](#锚点)`）指向文件自身、改名后依然成立，不算在内。
+    pub fn referrers_of(&self, target_rel: &str) -> Vec<String> {
+        let target = target_rel.replace('\\', "/");
+        let mut out: Vec<String> = Vec::new();
+        for (from_rel, refs) in &self.files {
+            let hit = refs.iter().any(|link| {
+                !link.raw_target.trim().is_empty()
+                    && self.resolve_target(from_rel, &link.raw_target).0.as_deref()
+                        == Some(target.as_str())
+            });
+            if hit {
+                out.push(from_rel.clone());
+            }
+        }
+        // HashMap 的遍历顺序不稳定；排序后调用方（改写计划的日志与结果）才是可复现的
+        out.sort();
+        out
+    }
+
     /// 索引概况。
     pub fn stats(&mut self) -> IndexStats {
         self.ensure_backlinks();
@@ -245,7 +293,32 @@ impl LinkIndex {
             unresolved: links - resolved,
             backlink_entries: self.backlinks.values().map(|list| list.len()).sum(),
             ambiguous,
+            tags: self.tags.key_count(),
         }
+    }
+
+    // -- 标签（数据由 `upsert`/`remove` 顺带维护，这里只做查询） -------------------
+
+    /// 某篇笔记的标签（保序：frontmatter 在前、正文在后）。未收录 → 空。
+    ///
+    /// 注意"未收录"与"收录了但没有标签"都返回空：调用方若要区分，用 [`Self::contains`]。
+    pub fn tags_of(&self, rel_path: &str) -> Vec<TagRef> {
+        self.tags.tags_of(rel_path)
+    }
+
+    /// 全库标签概览（`count` 降序 → `key` 升序）。
+    pub fn tag_summary(&self) -> Vec<TagSummary> {
+        self.tags.summary()
+    }
+
+    /// 某个标签下的笔记（字典序）。`key` 传原始写法（含 `#`、任意大小写）也能命中。
+    pub fn notes_with_tag(&self, key: &str) -> Vec<String> {
+        self.tags.notes_of(key)
+    }
+
+    /// 不同标签的个数。
+    pub fn tag_count(&self) -> usize {
+        self.tags.key_count()
     }
 
     /// 把一条原始链接解析成具体笔记。
@@ -721,6 +794,73 @@ mod tests {
     }
 
     #[test]
+    fn tags_follow_upsert_and_remove() {
+        // 标签与链接共用同一个 upsert/remove：同一次写入里两者都必须更新
+        let mut index = index_of(&[("笔记/甲.md", "正文 #甲 与 [[乙]]\n"), ("乙.md", "#乙\n")]);
+
+        assert_eq!(index.tags_of("笔记/甲.md").len(), 1);
+        assert_eq!(index.tag_count(), 2);
+        assert_eq!(index.notes_with_tag("#甲"), vec!["笔记/甲.md".to_string()]);
+        assert_eq!(index.stats().tags, 2);
+        assert_eq!(index.stats().links, 1, "标签不影响链接统计");
+
+        // 保存后改了标签 → 旧键消失、新键立刻可查（"编辑笔记加标签，面板立刻能看到"的前提）
+        index.upsert("笔记/甲.md", "换成了 #新标签\n");
+        assert!(
+            index.notes_with_tag("甲").is_empty(),
+            "旧标签必须随重算一起消失"
+        );
+        assert_eq!(
+            index.notes_with_tag("新标签"),
+            vec!["笔记/甲.md".to_string()]
+        );
+
+        // 删除 → 标签与链接一起清掉
+        index.remove("笔记/甲.md");
+        assert!(index.tags_of("笔记/甲.md").is_empty());
+        assert!(index.notes_with_tag("新标签").is_empty());
+        assert_eq!(index.tag_count(), 1, "只剩 乙.md 的 #乙");
+        assert_eq!(index.stats().links, 0);
+
+        // 重扫（clear）后标签也清空，不会留下上一轮 Vault 的标签
+        index.clear();
+        assert_eq!(index.tag_count(), 0);
+        assert!(index.tag_summary().is_empty());
+    }
+
+    #[test]
+    fn build_index_collects_tags_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("甲.md"),
+            "---\ntags: [项目/甲]\n---\n\n正文 #行内\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("乙.md"), "正文 #行内 与 #其它\n").unwrap();
+        std::fs::write(dir.path().join("图.png"), "binary").unwrap();
+
+        let entries = vec![note("甲.md"), note("乙.md")];
+        let (index, _) = build_index(
+            dir.path(),
+            &entries,
+            &BuildOptions::default(),
+            None,
+            |_done, _total| {},
+        );
+
+        let summary = index.tag_summary();
+        assert_eq!(summary.len(), 3, "项目/甲、行内、其它：{summary:?}");
+        let shared = summary.iter().find(|item| item.key == "行内").unwrap();
+        assert_eq!(shared.count, 2, "两篇都有 #行内");
+        assert_eq!(
+            index.notes_with_tag("行内"),
+            vec!["乙.md".to_string(), "甲.md".to_string()],
+            "按路径字典序"
+        );
+        assert_eq!(index.tags_of("甲.md")[0].tag, "项目/甲");
+    }
+
+    #[test]
     fn builds_from_disk_and_reports_outcome() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("甲.md"), "# 甲\n\n[[乙]]\n").unwrap();
@@ -745,6 +885,72 @@ mod tests {
         assert_eq!(stats.links, 2);
         assert_eq!(stats.resolved, 1);
         assert_eq!(stats.unresolved, 1);
+    }
+
+    /// 性能基准：1 万笔记的索引构建耗时（链接 + 标签在同一次解析里算出来）。
+    ///
+    /// 运行：`cargo test -p mn-index --release -- --ignored --nocapture bench_build_index_10k_notes`
+    ///
+    /// 同时分别打印 `extract_links` / `extract_tags` 各自跑 1 万遍的耗时 ——
+    /// 那是"给索引加标签"这件事的真实增量成本（扫描本身的预算见 mn-core 的 bench）。
+    #[test]
+    #[ignore]
+    fn bench_build_index_10k_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "---\ntags: [项目/甲, 乙]\n---\n\n正文 #行内 与 [[另一篇]] 结束\n";
+        for d in 0..100 {
+            let sub = dir.path().join(format!("dir{d:03}"));
+            std::fs::create_dir_all(&sub).unwrap();
+            for f in 0..100 {
+                std::fs::write(sub.join(format!("note{f:03}.md")), body).unwrap();
+            }
+        }
+        let entries: Vec<EntryMeta> = (0..100)
+            .flat_map(|d| (0..100).map(move |f| note(&format!("dir{d:03}/note{f:03}.md"))))
+            .collect();
+
+        let (mut index, outcome) = build_index(
+            dir.path(),
+            &entries,
+            &BuildOptions::default(),
+            None,
+            |_done, _total| {},
+        );
+
+        let started = Instant::now();
+        let mut links = 0usize;
+        for _ in 0..10_000 {
+            links += extract_links(body).len();
+        }
+        let links_ms = started.elapsed().as_millis();
+
+        let started = Instant::now();
+        let mut tags = 0usize;
+        for _ in 0..10_000 {
+            tags += mn_core::extract_tags(body).len();
+        }
+        let tags_ms = started.elapsed().as_millis();
+
+        let stats = index.stats();
+        eprintln!(
+            "build_index 1 万笔记：{} ms（索引 {} 篇 / {} 链接 / {} 反链 / {} 个标签）\n\
+             纯解析 1 万遍：extract_links {} ms（{} 条），extract_tags {} ms（{} 条）",
+            outcome.duration_ms,
+            outcome.indexed,
+            stats.links,
+            stats.backlink_entries,
+            stats.tags,
+            links_ms,
+            links,
+            tags_ms,
+            tags
+        );
+        // 建索引含 1 万次小文件读 + fsync 之后的元数据，放宽到 8s 只用来挡住"灾难性回退"
+        assert!(
+            outcome.duration_ms <= 8_000,
+            "索引构建耗时超回归阈值：{}ms",
+            outcome.duration_ms
+        );
     }
 
     #[test]
