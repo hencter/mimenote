@@ -8,6 +8,7 @@
 //!
 //! 业务逻辑一律放在 `mn-core`，本层不做判断、不做遍历、不做拼接路径。
 
+pub mod assets;
 pub mod commands;
 pub mod error;
 pub mod indexer;
@@ -44,6 +45,8 @@ pub fn run() {
             commands::note_tags,
             commands::tags_list,
             commands::tag_notes,
+            commands::search_query,
+            assets::asset_authorize,
             commands::snippets_list,
             commands::startup_vault,
             commands::version_info,

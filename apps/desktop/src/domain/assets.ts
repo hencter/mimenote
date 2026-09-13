@@ -4,9 +4,9 @@
  * 领域层规则：纯字符串处理、不碰文件系统、不 import React/Tauri —— 这样"越界拒绝"
  * 这类安全判定可以在 vitest 里逐条钉死，而不是等到真实 WebView 里才发现。
  *
- * 为什么需要它：Markdown 里的 `![](图.png)` 是**相对当前笔记**的（Obsidian 口径），
- * 要交给 Tauri 的 asset 协议就得先算出它在磁盘上的绝对路径；而绝对路径**绝不能**
- * 由笔记内容随意拼出来（`../../../../etc/passwd`），所以这里逐段校验并拒绝越界。
+ * 输出是**Vault 相对路径**（POSIX 风格），与 IPC 契约一致（跨 IPC 只传相对路径）；
+ * 由宿主用 `mn_core::path_guard` 把它变成磁盘绝对路径 —— 那一步才会逐级检查符号链接，
+ * 避免"Vault 内的符号链接指向外部文件"被读出来（见 ADR-0007）。
  */
 
 import { parentOf } from './paths'
@@ -24,7 +24,6 @@ function isReservedName(segment: string): boolean {
 
 /** 段里是否有 Windows 非法字符或控制字符。 */
 function hasIllegalChars(segment: string): boolean {
-  // eslint-disable-next-line no-control-regex -- 就是要拦控制字符
   return /[<>:"|?*\u0000-\u001f]/.test(segment)
 }
 
@@ -38,7 +37,7 @@ function safeDecode(value: string): string {
 }
 
 /**
- * 把 Markdown 里的资源地址解析成 Vault 内的**绝对路径**。
+ * 把 Markdown 里的资源地址解析成**Vault 相对路径**（POSIX）。
  *
  * 支持三种写法（与 Obsidian 一致）：
  * - 相对当前笔记：`图.png`、`./子目录/图.png`、`../附件/图.png`
@@ -47,11 +46,7 @@ function safeDecode(value: string): string {
  * 返回 `null` 的场合（调用方应回退到占位元素，而不是拼出一个越界路径）：
  * 空串、外部地址、`..` 越出 Vault、含 Windows 非法字符或保留设备名、只解析到根目录。
  */
-export function resolveVaultAssetPath(
-  rootPath: string,
-  noteRelPath: string,
-  href: string,
-): string | null {
+export function resolveVaultAssetRel(noteRelPath: string, href: string): string | null {
   const raw = href.trim()
   if (raw === '' || isExternalAssetHref(raw)) return null
 
@@ -69,7 +64,8 @@ export function resolveVaultAssetPath(
   for (const part of normalized.replace(/^\/+/, '').split('/')) {
     if (part === '' || part === '.') continue
     if (part === '..') {
-      // 越界：不允许沿着 `..` 走出 Vault
+      // 越界：口径是"过程中任何时候越出根都拒绝"（哪怕后文又用子目录绕回来）——
+      // 允许"出去再回来"会让判定依赖整条路径，容易在后续改动里被绕过。
       if (segments.length === 0) return null
       segments.pop()
       continue
@@ -79,8 +75,5 @@ export function resolveVaultAssetPath(
   }
 
   if (segments.length === 0) return null
-
-  const separator = rootPath.includes('\\') ? '\\' : '/'
-  const trimmedRoot = rootPath.replace(/[\\/]+$/, '')
-  return [trimmedRoot, ...segments].join(separator)
+  return segments.join('/')
 }

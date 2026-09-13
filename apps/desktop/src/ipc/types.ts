@@ -208,6 +208,15 @@ export interface TagNotes {
   notes: string[]
 }
 
+/** 一张本地图片的读取授权（`mimenote_lib::assets::AssetGrant`，见 ADR-0007）。 */
+export interface AssetGrant {
+  /** 图片的 Vault 相对路径（与请求里的写法一致，POSIX）。 */
+  relPath: string
+  /** 磁盘上的绝对路径（前端交给 `convertAssetUrl` 变成 asset URL）。 */
+  absolutePath: string
+  sizeBytes: number
+}
+
 /** 一条搜索命中（`mimenote_lib::commands::SearchHit`）。 */
 export interface SearchHit {
   relPath: string

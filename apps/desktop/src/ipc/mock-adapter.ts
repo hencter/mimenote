@@ -9,6 +9,7 @@
  */
 
 import type {
+  AssetGrant,
   BacklinkRef,
   EntryMeta,
   FrontmatterField,
@@ -1095,6 +1096,24 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
           const query = String(a.query ?? '')
           const limit = a.limit === undefined ? 50 : Number(a.limit)
           return mockSearch(files, query, limit) as T
+        }
+        case 'asset_authorize': {
+          // 逐文件授权的 Mock（ADR-0007）：真实宿主用 `path_guard::resolve_existing` 逐级检查
+          // 符号链接并拒绝越界；这里只做形状与最基础的越界拒绝 —— 浏览器预览不渲染本地图片，
+          // 这个分支主要用于让契约保持完整（前端只有在 Tauri 运行时才会调用它）。
+          const requested = Array.isArray(a.relPaths) ? a.relPaths : []
+          const grants: AssetGrant[] = []
+          for (const raw of requested) {
+            const rel = String(raw)
+            validate(rel)
+            const separator = rootPath.includes('\\') ? '\\' : '/'
+            grants.push({
+              relPath: rel,
+              absolutePath: `${rootPath.replace(/[\\/]+$/, '')}${separator}${rel.replaceAll('/', separator)}`,
+              sizeBytes: new TextEncoder().encode(files.get(rel)?.text ?? '').length,
+            })
+          }
+          return grants as T
         }
         case 'snippets_list': {
           const snippets = [

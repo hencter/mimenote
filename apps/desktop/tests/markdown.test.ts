@@ -17,13 +17,25 @@ describe('本地图片（asset: 协议，ADR-0007）', () => {
     const html = renderMarkdown(source)
     expect(html).toContain('mn-image-placeholder')
     expect(html).not.toContain('<img')
+    expect(html).not.toContain('data-mn-asset')
     // markdown-it 会把非 ASCII 路径百分号编码，所以要解码后再比对
     expect(decodeURIComponent(html)).toContain('../附件/图.png')
   })
 
-  it('解析器返回 URL 时渲染 img，并把原始地址留在 data-mn-src 上（加载失败回退用）', () => {
+  it('解析器说"未授权"时渲染带 data-mn-asset 标记的占位元素（等宿主授权）', () => {
     const html = renderMarkdown(source, {
-      resolveImage: (src: string) => `http://asset.localhost/${encodeURIComponent(src)}`,
+      resolveImage: () => ({ kind: 'unauthorized', rel: '附件/图.png' }),
+    })
+    expect(html).not.toContain('<img')
+    expect(html).toContain('data-mn-asset="附件/图.png"')
+  })
+
+  it('解析器说"已授权"时渲染 img，并把原始地址留在 data-mn-src 上（加载失败回退用）', () => {
+    const html = renderMarkdown(source, {
+      resolveImage: (src: string) => ({
+        kind: 'ready',
+        url: `http://asset.localhost/${encodeURIComponent(src)}`,
+      }),
     })
     expect(html).toContain('<img')
     expect(html).toContain('class="mn-image"')
@@ -35,17 +47,20 @@ describe('本地图片（asset: 协议，ADR-0007）', () => {
     const html = renderMarkdown('![x](https://example.com/a.png)', { resolveImage: () => null })
     expect(html).not.toContain('<img')
     expect(html).toContain('mn-image-placeholder')
+    expect(html).not.toContain('data-mn-asset')
   })
 
   it('`asset:` scheme 能通过净化（否则 macOS/Linux 上图片会被静默剥掉）', () => {
     const html = renderMarkdown(source, {
-      resolveImage: () => 'asset://localhost/%E5%9B%BE.png',
+      resolveImage: () => ({ kind: 'ready', url: 'asset://localhost/%E5%9B%BE.png' }),
     })
     expect(html).toContain('asset://localhost/%E5%9B%BE.png')
   })
 
   it('解析器给出可疑 scheme 时不渲染 img（渲染层只认白名单）', () => {
-    const html = renderMarkdown('![x](图.png)', { resolveImage: () => 'javascript:alert(1)' })
+    const html = renderMarkdown('![x](图.png)', {
+      resolveImage: () => ({ kind: 'ready', url: 'javascript:alert(1)' }),
+    })
     expect(html).not.toContain('<img')
     expect(html).toContain('mn-image-placeholder')
     expect(html).not.toMatch(/src\s*=\s*"javascript:/i)

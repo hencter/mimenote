@@ -14,9 +14,44 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 
 use mn_core::scanner::{EntryMeta, ScanOptions, ScanReport};
 use mn_core::{Error, Result, VaultRoot};
-use mn_index::LinkIndex;
+use mn_index::{LinkIndex, SearchIndex};
 
 use crate::indexer::IndexStatus;
+
+/// 全文搜索索引在"找不到原因"时用的路径标签（错误信息里给用户看的位置）。
+const SEARCH_LABEL: &str = ".mimenote/cache/search.db";
+
+/// 全文搜索索引的会话状态。
+///
+/// 三态是刻意的：**未就绪**（正在构建）、**可用**、**不可用**（只读 Vault、磁盘满……）。
+/// 后两者的区别是"要不要把原因显示给用户"，所以原因串必须留着 —— 只写日志的话，
+/// 用户只会看到"搜索没有结果"，而不是"索引建不起来"。
+#[derive(Default)]
+pub enum SearchSlot {
+    /// 尚未构建（刚打开 Vault、正在构建、或还没打开）。
+    #[default]
+    Building,
+    /// 可用。
+    Ready(SearchIndex),
+    /// 打不开（原因面向用户可显示）。
+    Failed(String),
+}
+
+impl SearchSlot {
+    fn index(&self) -> Result<&SearchIndex> {
+        match self {
+            Self::Ready(index) => Ok(index),
+            Self::Building => Err(Error::io(
+                SEARCH_LABEL,
+                std::io::Error::other("全文搜索索引正在构建，请稍候重试"),
+            )),
+            Self::Failed(reason) => Err(Error::io(
+                SEARCH_LABEL,
+                std::io::Error::other(reason.clone()),
+            )),
+        }
+    }
+}
 
 /// 已打开的 Vault 上下文。
 #[derive(Debug)]
@@ -130,6 +165,8 @@ pub struct AppState {
     startup_vault: Option<String>,
     /// 链接索引（M2）。索引是缓存，可从文件重建。
     index: RwLock<LinkIndex>,
+    /// 全文搜索索引（M2，SQLite FTS5）。`Connection` 不是 `Sync`，所以只能用 `Mutex`。
+    search: Mutex<SearchSlot>,
     /// 索引构建状态（推送给前端显示进度）。
     index_status: RwLock<IndexStatus>,
     /// 正在进行的构建任务的取消句柄。
@@ -230,6 +267,41 @@ impl AppState {
     /// 取写锁：保证"校验 mtime → 原子写"是临界区，避免并发写互相覆盖。
     pub fn write_guard(&self) -> MutexGuard<'_, ()> {
         self.write_lock.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    // -- 全文搜索索引 -----------------------------------------------------------
+
+    /// 用搜索索引跑一段**只读**操作；未就绪/不可用时返回 `IO` 错误（原因可显示）。
+    pub fn with_search<T>(&self, f: impl FnOnce(&SearchIndex) -> Result<T>) -> Result<T> {
+        let guard = self.search.lock().unwrap_or_else(|e| e.into_inner());
+        f(guard.index()?)
+    }
+
+    /// 用搜索索引跑一段**写**操作；未就绪/不可用时返回 `None`。
+    ///
+    /// 增量更新用这个：索引还没建好时静默跳过即可（下一轮全量构建会把内容补上），
+    /// 不该因为"搜索还没准备好"就让一次保存失败或者刷一堆日志。
+    pub fn try_search<T>(&self, f: impl FnOnce(&SearchIndex) -> Result<T>) -> Option<Result<T>> {
+        let guard = self.search.lock().unwrap_or_else(|e| e.into_inner());
+        guard.index().ok().map(f)
+    }
+
+    /// 安装构建好的搜索索引（替换旧连接）。
+    pub fn install_search(&self, index: SearchIndex) {
+        let mut guard = self.search.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = SearchSlot::Ready(index);
+    }
+
+    /// 记录"搜索不可用"及其原因。
+    pub fn fail_search(&self, reason: impl Into<String>) {
+        let mut guard = self.search.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = SearchSlot::Failed(reason.into());
+    }
+
+    /// 清空搜索索引状态（关闭 Vault / 重扫前）。
+    pub fn clear_search(&self) {
+        let mut guard = self.search.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = SearchSlot::Building;
     }
 }
 

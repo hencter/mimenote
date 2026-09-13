@@ -11,20 +11,23 @@
  * - 外部链接不在应用内打开（M2 尚未接入系统浏览器），给出提示而不是让 WebView 跳走。
  */
 
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 
 import { createNoteFromLink, openNote } from '@/app/actions'
 import { Icon } from '@/components/Icon'
-import { resolveVaultAssetPath } from '@/domain/assets'
+import { resolveVaultAssetRel } from '@/domain/assets'
 import { frontmatterBody } from '@/domain/frontmatter'
 import { isInternalNoteHref, normalizeLinkTarget } from '@/domain/links'
-import { imagePlaceholderHtml, renderMarkdown } from '@/domain/markdown'
-import { isTauriRuntime } from '@/ipc/client'
+import { imagePlaceholderHtml, renderMarkdown, type ImageResolution } from '@/domain/markdown'
+import { ipc, isTauriRuntime } from '@/ipc/client'
 import { convertAssetUrl } from '@/ipc/tauri-adapter'
 import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
 import { toast } from '@/state/toast-store'
 import { useVaultStore } from '@/state/vault-store'
+
+/** 单次授权请求的图片数上限（宿主也有自己的上限；超出部分留到下一轮渲染再请求）。 */
+const ASSET_REQUEST_BATCH = 200
 
 export function MarkdownPreview() {
   const relPath = useNoteStore((state) => state.doc?.relPath ?? null)
@@ -32,6 +35,26 @@ export function MarkdownPreview() {
   const links = useLinksStore((state) => state.links)
   const rootPath = useVaultStore((state) => state.info?.rootPath ?? null)
   const bodyRef = useRef<HTMLElement | null>(null)
+
+  /**
+   * 已授权的图片：键是 `Vault 根 + 相对路径`（换 Vault 后旧条目不会被误用），值是 asset URL。
+   *
+   * 为什么需要它：本地图片要**逐文件**向宿主换取读权限（ADR-0007 —— 目录级作用域会被
+   * Vault 内的符号链接绕过），因此渲染分两步：先渲染带 `data-mn-asset` 的占位元素，
+   * 拿到授权后再重渲染成真正的 `<img>`。
+   */
+  const [assetUrls, setAssetUrls] = useState<ReadonlyMap<string, string>>(() => new Map())
+  /** 正在请求中的键：避免同一张图在多次渲染之间重复请求。 */
+  const pendingAssetsRef = useRef<Set<string>>(new Set())
+  /** 已请求过但失败/不存在的键：不再反复请求。 */
+  const deniedAssetsRef = useRef<Set<string>>(new Set())
+
+  // 换 Vault 就清空授权缓存与去重集合
+  useEffect(() => {
+    setAssetUrls(new Map())
+    pendingAssetsRef.current = new Set()
+    deniedAssetsRef.current = new Set()
+  }, [rootPath])
 
   const deferredText = useDeferredValue(text)
 
@@ -44,13 +67,15 @@ export function MarkdownPreview() {
   const imageEnv = useMemo(() => {
     if (!isTauriRuntime() || rootPath === null || relPath === null) return {}
     return {
-      resolveImage: (src: string): string | null => {
-        const absolute = resolveVaultAssetPath(rootPath, relPath, src)
-        if (absolute === null) return null
-        return convertAssetUrl(absolute)
+      resolveImage: (src: string): ImageResolution | null => {
+        const rel = resolveVaultAssetRel(relPath, src)
+        if (rel === null) return null
+        const key = `${rootPath}\u0000${rel}`
+        const url = assetUrls.get(key)
+        return url === undefined ? { kind: 'unauthorized', rel } : { kind: 'ready', url }
       },
     }
-  }, [rootPath, relPath])
+  }, [rootPath, relPath, assetUrls])
 
   // 预览只渲染正文：frontmatter 是"元数据"，它已经由标签面板的属性表展示，
   // 渲染出来只会变成一条横线加几行 `key: value`（见 domain/frontmatter.ts 的判定口径）
@@ -59,6 +84,57 @@ export function MarkdownPreview() {
     [relPath, deferredText, imageEnv],
   )
   const stale = deferredText !== text
+
+  /**
+   * 为这一屏里"能解析但还没授权"的图片**批量**换取读权限。
+   *
+   * 一次 IPC 拿一整批（不是每张图一次往返），每批上限见 {@link ASSET_REQUEST_BATCH}：
+   * 宿主单次请求有上限，超出的部分留在占位态，由**下一轮渲染**继续请求（授权结果写进
+   * `assetUrls` → `imageEnv` 变 → `html` 变 → 本效果再跑一次），因此不会丢图。
+   *
+   * 宿主的返回里只含**通过校验**的路径（越界、符号链接逃逸、非图片扩展名都会被跳过），
+   * 没返回的就是拿不到授权，永久留在占位态（不再反复请求）。
+   */
+  useEffect(() => {
+    const root = bodyRef.current
+    if (root === null || !isTauriRuntime() || rootPath === null) return
+
+    const wanted = new Set<string>()
+    for (const element of Array.from(root.querySelectorAll('[data-mn-asset]'))) {
+      const rel = element.getAttribute('data-mn-asset')
+      if (rel === null || rel === '') continue
+      const key = `${rootPath}\u0000${rel}`
+      if (pendingAssetsRef.current.has(key) || deniedAssetsRef.current.has(key)) continue
+      wanted.add(rel)
+      if (wanted.size >= ASSET_REQUEST_BATCH) break
+    }
+    if (wanted.size === 0) return
+
+    const keys = [...wanted].map((rel) => `${rootPath}\u0000${rel}`)
+    for (const key of keys) pendingAssetsRef.current.add(key)
+
+    void (async () => {
+      try {
+        const grants = await ipc.assetAuthorize([...wanted])
+        setAssetUrls((current) => {
+          const next = new Map(current)
+          for (const grant of grants) {
+            next.set(`${rootPath}\u0000${grant.relPath}`, convertAssetUrl(grant.absolutePath))
+          }
+          return next
+        })
+        const granted = new Set(grants.map((grant) => grant.relPath))
+        for (const rel of wanted) {
+          if (!granted.has(rel)) deniedAssetsRef.current.add(`${rootPath}\u0000${rel}`)
+        }
+      } catch {
+        // 授权失败（旧宿主没有这个命令、Vault 只读等）：永久回退占位元素，不刷屏报错
+        for (const key of keys) deniedAssetsRef.current.add(key)
+      } finally {
+        for (const key of keys) pendingAssetsRef.current.delete(key)
+      }
+    })()
+  }, [html, rootPath])
 
   /**
    * 图片加载失败 → 就地换成占位元素。

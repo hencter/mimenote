@@ -20,7 +20,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
-tauri = { version = "2", features = [] }
+# `protocol-asset` 是渲染本地图片的前提（ADR-0007）；作用域不写在配置里，
+# 而是打开 Vault 时按实际目录动态注入（用户选的任意目录，静态 scope 覆盖不到）
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 
 [dev-dependencies]

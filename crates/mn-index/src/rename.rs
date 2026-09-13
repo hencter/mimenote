@@ -22,7 +22,7 @@ use mn_core::links::{extract_links_with_spans, normalize_target, replace_link_ta
 use mn_core::path_guard::{validate_relative_path, VaultRoot};
 use mn_core::{Error, Result};
 
-use crate::{parent_of, LinkIndex};
+use crate::{parent_of, LinkIndex, SearchIndex};
 
 /// 改写时单个文件的读取上限。
 ///
@@ -118,6 +118,9 @@ pub fn rename_targets(old_rel_path: &str, new_title: &str) -> Result<RenameTarge
 ///
 /// 调用方（宿主）只负责：拿写锁、把参数从 IPC 搬过来。业务判断全在这里。
 ///
+/// `search` 是全文搜索索引（可选）：给了就顺带把路径搬过去、并把被改写文件的新文本重新入库。
+/// 搜索是不可重建的**派生**数据里最不重要的那一份，因此它的失败只记日志、不影响改名结果。
+///
 /// 阶段顺序是刻意的：
 ///
 /// 1. **先算改写计划**：此时索引里还是旧名字，才能用同一套解析规则找出"谁指向它"；
@@ -134,6 +137,7 @@ pub fn rename_note(
     old_rel_path: &str,
     new_title: &str,
     update_links: bool,
+    search: Option<&SearchIndex>,
 ) -> Result<RenameReport> {
     let started = Instant::now();
     let targets = rename_targets(old_rel_path, new_title)?;
@@ -181,6 +185,13 @@ pub fn rename_note(
     // 2) 改名：同目录 rename 是原子的
     std::fs::rename(&old_path, &new_path).map_err(|e| Error::io(&new_path, e))?;
 
+    // 全文搜索：把行搬到新路径（`rel_path` 不是 FTS 列，所以不必重建索引）
+    if let Some(search) = search {
+        if let Err(error) = search.rename_note(&old_rel, &new_rel) {
+            log::warn!("全文搜索索引改名失败（{old_rel} → {new_rel}）：{error}");
+        }
+    }
+
     // 3) 写回被改写的文件
     let mut updated_links: Vec<LinkUpdate> = Vec::new();
     let mut updated_link_count = 0u32;
@@ -206,6 +217,12 @@ pub fn rename_note(
                 });
                 updated_link_count += item.count;
                 index.upsert(&rel_after, &item.new_text);
+                // 被改写的文件正文变了（链接目标变了），全文搜索的行要跟着重写
+                if let Some(search) = search {
+                    if let Err(error) = search.upsert_note(&rel_after, &item.new_text) {
+                        log::warn!("全文搜索索引更新失败（{rel_after}）：{error}");
+                    }
+                }
             }
             Err(error) => {
                 // 不回滚改名：只把这一篇排除出结果（前端会照常显示改名成功）
@@ -602,7 +619,7 @@ mod tests {
     #[test]
     fn rewrites_bare_name_link_and_syncs_index() {
         let (dir, root, mut index) = vault(&[("甲.md", "见 [[乙]] 结束\n"), ("乙.md", "# 乙\n")]);
-        let report = rename_note(&root, &mut index, "乙.md", "丙", true).unwrap();
+        let report = rename_note(&root, &mut index, "乙.md", "丙", true, None).unwrap();
 
         assert_eq!(report.old_rel_path, "乙.md");
         assert_eq!(report.new_rel_path, "丙.md");
@@ -636,7 +653,7 @@ mod tests {
             ("深/层/引用.md", "[[别的/乙]]\n"),
             ("别的/乙.md", "# 乙\n"),
         ]);
-        let report = rename_note(&root, &mut index, "别的/乙.md", "新名", true).unwrap();
+        let report = rename_note(&root, &mut index, "别的/乙.md", "新名", true, None).unwrap();
 
         assert_eq!(report.new_rel_path, "别的/新名.md");
         assert_eq!(
@@ -668,7 +685,7 @@ mod tests {
             ),
             ("乙.md", "# 乙\n"),
         ]);
-        let report = rename_note(&root, &mut index, "乙.md", "丙", true).unwrap();
+        let report = rename_note(&root, &mut index, "乙.md", "丙", true, None).unwrap();
 
         assert_eq!(
             read(dir.path(), "甲.md"),
@@ -684,7 +701,7 @@ mod tests {
             ("甲.md", "[[乙]] 与 [乙](乙.md) 与 [[乙|别名]]\n"),
             ("乙.md", ""),
         ]);
-        let report = rename_note(&root, &mut index, "乙.md", "更长的新名字", true).unwrap();
+        let report = rename_note(&root, &mut index, "乙.md", "更长的新名字", true, None).unwrap();
 
         assert_eq!(
             read(dir.path(), "甲.md"),
@@ -699,7 +716,7 @@ mod tests {
             ("甲.md", "[x](子/乙.md) 与 [y](<子/乙.md>)\n"),
             ("子/乙.md", ""),
         ]);
-        let report = rename_note(&root, &mut index, "子/乙.md", "丙 丁", true).unwrap();
+        let report = rename_note(&root, &mut index, "子/乙.md", "丙 丁", true, None).unwrap();
 
         assert_eq!(
             read(dir.path(), "甲.md"),
@@ -713,7 +730,7 @@ mod tests {
     fn keeps_dots_inside_the_new_file_name() {
         let (dir, root, mut index) =
             vault(&[("甲.md", "[[乙]] 与 [x](子/乙.md)\n"), ("子/乙.md", "")]);
-        let report = rename_note(&root, &mut index, "子/乙.md", "v1.2", true).unwrap();
+        let report = rename_note(&root, &mut index, "子/乙.md", "v1.2", true, None).unwrap();
 
         assert_eq!(report.new_rel_path, "子/v1.2.md");
         assert_eq!(
@@ -726,7 +743,7 @@ mod tests {
     #[test]
     fn skips_targets_that_wikilink_syntax_cannot_express() {
         let (dir, root, mut index) = vault(&[("甲.md", "[[乙]]\n"), ("乙.md", "")]);
-        let report = rename_note(&root, &mut index, "乙.md", "丙#丁", true).unwrap();
+        let report = rename_note(&root, &mut index, "乙.md", "丙#丁", true, None).unwrap();
 
         assert_eq!(report.new_rel_path, "丙#丁.md");
         assert!(
@@ -743,7 +760,7 @@ mod tests {
     fn leaves_code_blocks_inline_code_and_escapes_untouched() {
         let original = "# 标题\n\n```text\n[[乙]]\n```\n\n~~~\n[乙](乙.md)\n~~~\n\n行内 `[[乙]]` 与 `[x](乙.md)` 结束\n\n转义 \\[[乙]] 也保留\n\n真的 [[乙]]\n";
         let (dir, root, mut index) = vault(&[("甲.md", original), ("乙.md", "")]);
-        let report = rename_note(&root, &mut index, "乙.md", "丙", true).unwrap();
+        let report = rename_note(&root, &mut index, "乙.md", "丙", true, None).unwrap();
 
         let expected = original.replace("真的 [[乙]]", "真的 [[丙]]");
         assert_eq!(read(dir.path(), "甲.md"), expected);
@@ -756,7 +773,7 @@ mod tests {
             ("甲.md", "自指 [[甲]] 与 [[甲虫]] 与 [[甲虫.md]]\n"),
             ("甲虫.md", "# 甲虫\n"),
         ]);
-        let report = rename_note(&root, &mut index, "甲.md", "甲新", true).unwrap();
+        let report = rename_note(&root, &mut index, "甲.md", "甲新", true, None).unwrap();
 
         assert_eq!(
             read(dir.path(), "甲新.md"),
@@ -792,7 +809,7 @@ mod tests {
             ("甲.md", "行一\r\n[[乙]] 与 [x](乙.md)\r\n行三\r\n"),
             ("乙.md", ""),
         ]);
-        let report = rename_note(&root, &mut index, "乙.md", "丙", true).unwrap();
+        let report = rename_note(&root, &mut index, "乙.md", "丙", true, None).unwrap();
 
         assert_eq!(
             read(dir.path(), "甲.md"),
@@ -805,7 +822,7 @@ mod tests {
     fn preserves_utf8_bom() {
         let (dir, root, mut index) =
             vault(&[("甲.md", "\u{feff}# 标题\r\n[[乙]]\r\n"), ("乙.md", "")]);
-        rename_note(&root, &mut index, "乙.md", "丙", true).unwrap();
+        rename_note(&root, &mut index, "乙.md", "丙", true, None).unwrap();
 
         assert_eq!(read(dir.path(), "甲.md"), "\u{feff}# 标题\r\n[[丙]]\r\n");
         let bytes = std::fs::read(dir.path().join("甲.md")).unwrap();
@@ -815,7 +832,7 @@ mod tests {
     #[test]
     fn keeps_bom_and_lf_when_there_is_no_bom() {
         let (dir, root, mut index) = vault(&[("甲.md", "# 标题\n[[乙]]\n"), ("乙.md", "")]);
-        rename_note(&root, &mut index, "乙.md", "丙", true).unwrap();
+        rename_note(&root, &mut index, "乙.md", "丙", true, None).unwrap();
 
         let bytes = std::fs::read(dir.path().join("甲.md")).unwrap();
         assert_eq!(bytes, "# 标题\n[[丙]]\n".as_bytes());
@@ -827,13 +844,13 @@ mod tests {
     fn rejects_missing_source_and_directory() {
         let (dir, root, mut index) = vault(&[("乙.md", ""), ("目录/里面的.md", "")]);
         assert_eq!(
-            rename_note(&root, &mut index, "不存在.md", "丙", true)
+            rename_note(&root, &mut index, "不存在.md", "丙", true, None)
                 .unwrap_err()
                 .code(),
             ErrorCode::NotFound
         );
         assert_eq!(
-            rename_note(&root, &mut index, "目录", "丙", true)
+            rename_note(&root, &mut index, "目录", "丙", true, None)
                 .unwrap_err()
                 .code(),
             ErrorCode::IsDirectory
@@ -845,7 +862,7 @@ mod tests {
     fn rejects_existing_target_without_touching_anything() {
         let (dir, root, mut index) =
             vault(&[("甲.md", "[[乙]]\n"), ("乙.md", ""), ("目标.md", "")]);
-        let error = rename_note(&root, &mut index, "乙.md", "目标", true).unwrap_err();
+        let error = rename_note(&root, &mut index, "乙.md", "目标", true, None).unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::AlreadyExists);
         assert!(dir.path().join("乙.md").exists(), "失败时源文件不能被动过");
@@ -859,7 +876,7 @@ mod tests {
     #[test]
     fn allows_case_only_rename() {
         let (dir, root, mut index) = vault(&[("Note.md", "# Note\n[[Note]]\n")]);
-        let report = rename_note(&root, &mut index, "Note.md", "note", true).unwrap();
+        let report = rename_note(&root, &mut index, "Note.md", "note", true, None).unwrap();
 
         assert_eq!(report.new_rel_path, "note.md");
         let names: Vec<String> = std::fs::read_dir(dir.path())
@@ -876,7 +893,7 @@ mod tests {
     #[test]
     fn renaming_to_the_same_title_is_a_no_op() {
         let (dir, root, mut index) = vault(&[("乙.md", "# 乙\n")]);
-        let report = rename_note(&root, &mut index, "乙.md", "乙", true).unwrap();
+        let report = rename_note(&root, &mut index, "乙.md", "乙", true, None).unwrap();
 
         assert_eq!(report.old_rel_path, "乙.md");
         assert_eq!(report.new_rel_path, "乙.md");
@@ -888,7 +905,7 @@ mod tests {
     #[test]
     fn update_links_false_only_renames_the_file() {
         let (dir, root, mut index) = vault(&[("甲.md", "[[乙]]\n"), ("乙.md", "# 乙\n")]);
-        let report = rename_note(&root, &mut index, "乙.md", "丙", false).unwrap();
+        let report = rename_note(&root, &mut index, "乙.md", "丙", false, None).unwrap();
 
         assert_eq!(report.new_rel_path, "丙.md");
         assert!(report.updated_links.is_empty());
@@ -910,7 +927,7 @@ mod tests {
     fn renaming_a_non_note_does_not_pollute_the_index() {
         let (dir, root, mut index) =
             vault(&[("附件/图.png", "not utf8 也照样改名"), ("甲.md", "")]);
-        let report = rename_note(&root, &mut index, "附件/图.png", "图2", true).unwrap();
+        let report = rename_note(&root, &mut index, "附件/图.png", "图2", true, None).unwrap();
 
         assert_eq!(report.new_rel_path, "附件/图2.png");
         assert!(dir.path().join("附件").join("图2.png").exists());
@@ -920,6 +937,42 @@ mod tests {
             "索引本来不收录附件，改名也不该把它收进来（否则 [[图2]] 会被劫持）"
         );
         assert_eq!(index.len(), 1, "索引里只剩那篇笔记");
+    }
+
+    #[test]
+    fn rename_keeps_the_search_index_in_step() {
+        let (_dir, root, mut index) = vault(&[
+            ("笔记/乙.md", "第一行\n命中这一行\n"),
+            ("笔记/甲.md", "[[乙]] 也有命中\n"),
+        ]);
+        let search = crate::SearchIndex::open_in_memory().unwrap();
+        search.begin_rebuild().unwrap();
+        search
+            .add_note("笔记/乙.md", "第一行\n命中这一行\n")
+            .unwrap();
+        search.add_note("笔记/甲.md", "[[乙]] 也有命中\n").unwrap();
+        search.finish_rebuild().unwrap();
+
+        rename_note(&root, &mut index, "笔记/乙.md", "丙", true, Some(&search)).unwrap();
+
+        // 路径搬过去了：旧路径搜不到、新路径搜得到
+        assert_eq!(paths_hit(&search, "第一行"), vec!["笔记/丙.md".to_string()]);
+        // 被改写的文件（`[[乙]]` → `[[丙]]`）正文变了：搜索里看到的必须是**新文本**
+        assert_eq!(paths_hit(&search, "丙"), vec!["笔记/甲.md".to_string()]);
+        assert!(
+            paths_hit(&search, "乙").is_empty(),
+            "旧链接文本不该留在搜索索引里"
+        );
+    }
+
+    fn paths_hit(search: &crate::SearchIndex, query: &str) -> Vec<String> {
+        search
+            .search(query, 50)
+            .unwrap()
+            .hits
+            .into_iter()
+            .map(|hit| hit.rel_path)
+            .collect()
     }
 
     #[test]

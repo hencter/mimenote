@@ -14,6 +14,8 @@
  */
 
 import { existsSync, readdirSync } from 'node:fs'
+import { mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 
 import type { Page } from 'playwright-core'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -371,6 +373,113 @@ describe.skipIf(!supported)('真实应用：编辑与保存（真实磁盘）', 
 })
 
 /**
+ * 本地图片渲染（M2，ADR-0007）：真实二进制 + 真实磁盘 + 真实 asset 协议。
+ *
+ * 这是唯一能证明"图片真的被解码出来"的层：断言 `naturalWidth > 0`（占位元素没有这个属性，
+ * 裂图的 naturalWidth 是 0）。同时验证安全边界：越界引用与**符号链接逃逸**都必须留在占位态。
+ */
+describe.skipIf(!supported)('真实应用：本地图片（asset 协议逐文件授权）', () => {
+  let app: LaunchedApp
+  let vault: TempVault
+
+  // 1×1 的透明 PNG（真实字节，能被 WebView2 解码）
+  const ONE_PIXEL_PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==',
+    'base64',
+  )
+
+  /** 等预览里出现一张**真的解码成功**的图片。 */
+  async function waitForLoadedImage(): Promise<number> {
+    let width = 0
+    await waitUntil(
+      async () => {
+        width = await app.page.evaluate(() => {
+          const image = document.querySelector<HTMLImageElement>(
+            '.mn-preview__body img.mn-image',
+          )
+          return image?.naturalWidth ?? 0
+        })
+        return width > 0
+      },
+      20_000,
+      '预览里的图片被真实解码',
+    )
+    return width
+  }
+
+  beforeAll(async () => {
+    vault = await createTempVault({
+      '笔记/图片.md': [
+        '# 图片',
+        '',
+        '正常引用：',
+        '',
+        '![图](../附件/图.png)',
+        '',
+        '越界引用（不该渲染）：',
+        '',
+        '![越界](../../外部.png)',
+        '',
+        '符号链接引用（不该渲染）：',
+        '',
+        '![链接](链接.png)',
+        '',
+      ].join('\n'),
+    })
+
+    // 真实图片（Vault 内）
+    await mkdir(vault.absolute('附件'), { recursive: true })
+    await writeFile(vault.absolute('附件/图.png'), ONE_PIXEL_PNG)
+    // Vault 外的图片：越界引用即使指向真实存在的文件也不该被读到
+    await writeFile(join(dirname(vault.path), `外部-${basename(vault.path)}.png`), ONE_PIXEL_PNG)
+    // Vault 内指向外部的符号链接：前端看不出区别，**只有宿主的 path_guard 能拦**
+    try {
+      await symlink(
+        join(dirname(vault.path), `外部-${basename(vault.path)}.png`),
+        vault.absolute('链接.png'),
+        'file',
+      )
+    } catch (cause) {
+      // Windows 上创建符号链接需要开发者模式/管理员权限：拿不到就只跳过这一条断言
+      console.warn('[e2e] 无法创建符号链接，跳过该项断言：', cause)
+    }
+
+    app = await launchApp({ vaultPath: vault.path })
+    await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
+  }, 120_000)
+
+  afterAll(async () => {
+    if (app !== undefined) await app.close()
+    if (vault !== undefined) {
+      await rm(join(dirname(vault.path), `外部-${basename(vault.path)}.png`), { force: true }).catch(
+        () => undefined,
+      )
+      await vault.cleanup()
+    }
+  })
+
+  it('Vault 内的图片被真实渲染（而不是占位元素）', async () => {
+    await openNoteInTree(app.page, '笔记/图片.md')
+
+    const width = await waitForLoadedImage()
+    expect(width).toBeGreaterThan(0)
+
+    // 相对路径被解析成了 Vault 内的绝对路径（asset URL 里带着它）
+    const src = await app.page.evaluate(
+      () => document.querySelector<HTMLImageElement>('.mn-preview__body img.mn-image')?.src ?? '',
+    )
+    expect(src.toLowerCase()).toContain('asset')
+    expect(decodeURIComponent(src)).toContain('图.png')
+
+    // 越界与符号链接那两张仍然是占位元素（没有被授权）
+    const images = await app.page.locator('.mn-preview__body img.mn-image').count()
+    expect(images).toBe(1)
+    const placeholders = await app.page.locator('.mn-preview__body .mn-image-placeholder').count()
+    expect(placeholders).toBeGreaterThanOrEqual(1)
+  })
+})
+
+/**
  * 标签与属性面板（M2）：真实 IPC（`note_tags` / `tags_list` / `tag_notes`）+ 真实磁盘。
  *
  * Mock 层的抽取规则由 `tests/tags.test.tsx` 覆盖，这里验证"合起来在真实二进制里成立"：
@@ -382,8 +491,10 @@ describe.skipIf(!supported)('真实应用：标签与属性面板（真实 IPC�
 
   beforeAll(async () => {
     vault = await createTempVault({
-      '项目/设计.md': '---\ntitle: 设计\ntags: [项目, 进行中]\n---\n\n正文段落。#架构 与 #项目。\n',
-      '项目/路线图.md': '# 路线图\n\n标签：#项目\n',
+      // 注意 `#标签` 前面必须是**空白或行首**（与 Obsidian 同口径）：`段落。#架构` 里的
+      // `#` 前面是全角句号，按规则不算标签 —— 用例里刻意留了空格
+      '项目/设计.md': '---\ntitle: 设计\ntags: [项目, 进行中]\n---\n\n正文段落。 #架构 与 #项目。\n',
+      '项目/路线图.md': '# 路线图\n\n标签： #项目\n',
       '随手记.md': '# 随手记\n\n这一篇没有标签。\n',
     })
     app = await launchApp({ vaultPath: vault.path })
@@ -423,6 +534,39 @@ describe.skipIf(!supported)('真实应用：标签与属性面板（真实 IPC�
     const panelText = (await app.page.locator('.mn-tags').textContent()) ?? ''
     expect(panelText).toContain('title')
     expect(panelText).toContain('设计')
+  })
+
+  it('全文搜索（真实 FTS5）：搜到命中 → 回车打开那一篇', async () => {
+    // 索引在 vault_open 之后后台构建，小 Vault 很快就好；这里等结果出现即可
+    await app.page.keyboard.press('Control+Shift+F')
+    await app.page.waitForSelector('.mn-palette', { state: 'visible', timeout: 10_000 })
+    expect(await app.page.locator('.mn-palette').getAttribute('aria-label')).toBe('全文搜索')
+
+    await app.page.locator('.mn-palette__input').fill('正文段落')
+    await waitUntil(
+      async () =>
+        (await app.page
+          .locator('.mn-palette [role="option"][data-rel-path="项目/设计.md"]')
+          .count()) === 1,
+      25_000,
+      '真实索引返回命中',
+    )
+    const text =
+      (await app.page
+        .locator('.mn-palette [role="option"][data-rel-path="项目/设计.md"]')
+        .textContent()) ?? ''
+    expect(text).toContain('正文段落')
+    // 结果行里有行号（`行: 片段` 的形态）
+    expect(text).toMatch(/\d/)
+
+    await app.page.locator('.mn-palette__input').press('Enter')
+    await waitUntil(
+      async () =>
+        ((await app.page.locator('.mn-editor__path').textContent()) ?? '').includes('项目/设计.md'),
+      15_000,
+      '回车打开命中的笔记',
+    )
+    expect(await app.page.locator('.mn-palette').count()).toBe(0)
   })
 
   it('点标签 → 列出含它的笔记 → 点笔记打开它；再按快捷键收起面板', async () => {

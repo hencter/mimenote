@@ -83,25 +83,44 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
 const SAFE_IMAGE_URL = /^(?:https?:\/\/|asset:\/\/|blob:|data:image\/)/i
 
 /**
+ * 图片解析结果。
+ *
+ * - `ready`：已拿到可用的 asset URL（或已经缓存过），直接渲染 `<img>`；
+ * - `unauthorized`：路径解析成功但**还没获得宿主的逐文件授权**（ADR-0007）——
+ *   先渲染带 `data-mn-asset` 标记的占位元素，预览层拿到授权后再重渲染成真正的图片。
+ */
+export type ImageResolution =
+  | { kind: 'ready'; url: string }
+  | { kind: 'unauthorized'; rel: string }
+
+/** 图片解析器（由预览层提供，`env.resolveImage`）。 */
+export type ImageResolver = (source: string) => ImageResolution | null
+
+/**
  * 图片渲染。
  *
  * "这张图能不能显示"由调用方决定（`env.resolveImage`，见 ADR-0007）：
- * - 返回 URL → 渲染 `<img class="mn-image">`，并保留**原始地址**在 `data-mn-src` 上，
+ * - `ready` → 渲染 `<img class="mn-image">`，并保留**原始地址**在 `data-mn-src` 上，
  *   加载失败时预览层据此回退成占位元素（失败即降级，绝不留裂图）；
- * - 返回 null / 不安全的 URL → 直接渲染占位元素（外部地址、越界路径、非 Tauri 运行时都会走这里）。
+ * - `unauthorized` → 带 `data-mn-asset` 的占位元素，等宿主授权；
+ * - `null` → 普通占位元素（外部地址、越界路径、非 Tauri 运行时都会走这里）。
  */
 md.renderer.rules.image = (tokens, idx, _options, env, _self) => {
   const token = tokens[idx]
   const src = String(token?.attrGet('src') ?? '')
   const alt = String(token?.content ?? '')
   const title = token?.attrGet('title') ?? null
-  const resolver = (env as { resolveImage?: (source: string) => string | null } | undefined)
-    ?.resolveImage
-  const resolved = typeof resolver === 'function' ? resolver(src) : null
-  if (resolved === null || !SAFE_IMAGE_URL.test(resolved)) return imagePlaceholderHtml(src, alt)
+  const resolver = (env as { resolveImage?: ImageResolver } | undefined)?.resolveImage
+  const resolution = typeof resolver === 'function' ? resolver(src) : null
+
+  if (resolution === null) return imagePlaceholderHtml(src, alt)
+  if (resolution.kind === 'unauthorized') {
+    return imagePlaceholderHtml(src, alt, resolution.rel)
+  }
+  if (!SAFE_IMAGE_URL.test(resolution.url)) return imagePlaceholderHtml(src, alt)
 
   return (
-    `<img class="mn-image" src="${escapeHtml(resolved)}" alt="${escapeHtml(alt)}"` +
+    `<img class="mn-image" src="${escapeHtml(resolution.url)}" alt="${escapeHtml(alt)}"` +
     ` data-mn-src="${escapeHtml(src)}" loading="lazy" decoding="async"` +
     (title === null ? '' : ` title="${escapeHtml(String(title))}"`) +
     ' />'
@@ -111,12 +130,14 @@ md.renderer.rules.image = (tokens, idx, _options, env, _self) => {
 /**
  * 图片占位元素的 HTML（渲染时与"加载失败回退"时共用，保证两种情况下结构与类名一致）。
  *
- * `src` 放在 `title` 上，让用户至少能看懂"这里原本应该显示什么"。
+ * `src` 放在 `title` 上，让用户至少能看懂"这里原本应该显示什么"；
+ * 传了 `assetRel` 就带上 `data-mn-asset`，预览层据此去宿主换取读权限。
  */
-export function imagePlaceholderHtml(src: string, alt: string): string {
+export function imagePlaceholderHtml(src: string, alt: string, assetRel?: string): string {
   const label = alt === '' ? src : alt
+  const marker = assetRel === undefined ? '' : ` data-mn-asset="${escapeHtml(assetRel)}"`
   return (
-    `<span class="mn-image-placeholder" title="${escapeHtml(src)}">` +
+    `<span class="mn-image-placeholder" title="${escapeHtml(src)}"${marker}>` +
     `<span class="mn-image-placeholder__icon" aria-hidden="true">▧</span>` +
     `<span class="mn-image-placeholder__alt">${escapeHtml(label)}</span>` +
     `</span>`
@@ -136,8 +157,17 @@ const PURIFY_CONFIG = {
   FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'link', 'meta', 'base'],
   FORBID_ATTR: ['srcset', 'formaction', 'ping', 'onerror', 'onload'],
   ALLOW_DATA_ATTR: false,
-  // wikilink 的 data-* 与图片的 data-mn-src 是我们自己渲染的（ALLOW_DATA_ATTR=false 会一律剥掉，因此显式放行）
-  ADD_ATTR: ['target', 'rel', 'data-target', 'data-anchor', 'data-mn-src', 'loading', 'decoding'],
+  // wikilink 的 data-* 与图片的 data-mn-* 是我们自己渲染的（ALLOW_DATA_ATTR=false 会一律剥掉，因此显式放行）
+  ADD_ATTR: [
+    'target',
+    'rel',
+    'data-target',
+    'data-anchor',
+    'data-mn-src',
+    'data-mn-asset',
+    'loading',
+    'decoding',
+  ],
   // 默认白名单里没有 `asset:`（macOS/Linux 上 asset URL 就是 `asset://…`）；不加这一条会出现
   // "Windows 正常、macOS 图片全被净化掉"的平台差异（Windows 上是 http://asset.localhost）。
   ALLOWED_URI_REGEXP:

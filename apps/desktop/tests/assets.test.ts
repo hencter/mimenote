@@ -1,13 +1,14 @@
 /**
  * 资源路径解析测试（`asset:` 协议的前置安全判定）。
  *
- * 重点不是"能拼出路径"，而是**该拒绝的都拒绝**：这是把笔记内容变成磁盘绝对路径的
- * 唯一入口，任何一条放行都可能让预览去读 Vault 之外的文件。
+ * 重点不是"能拼出路径"，而是**该拒绝的都拒绝**：这是把笔记内容变成宿主绝对路径的入口，
+ * 任何一条放行都可能让预览去读 Vault 之外的文件。真正的权威判定在宿主
+ * （`path_guard::resolve_existing`，含逐级符号链接检查），这里只是第一道闸。
  */
 
 import { describe, expect, it } from 'vitest'
 
-import { isExternalAssetHref, resolveVaultAssetPath } from '@/domain/assets'
+import { isExternalAssetHref, resolveVaultAssetRel } from '@/domain/assets'
 
 describe('isExternalAssetHref', () => {
   it('识别外部与内联地址', () => {
@@ -23,55 +24,46 @@ describe('isExternalAssetHref', () => {
   })
 })
 
-describe('resolveVaultAssetPath', () => {
-  const root = 'D:\\Vault'
-
-  it('相对当前笔记解析（跨目录用 ..）', () => {
-    expect(resolveVaultAssetPath(root, '项目/设计.md', '图.png')).toBe('D:\\Vault\\项目\\图.png')
-    expect(resolveVaultAssetPath(root, '项目/子/设计.md', '../图.png')).toBe('D:\\Vault\\项目\\图.png')
-    expect(resolveVaultAssetPath(root, '项目/设计.md', './子/图.png')).toBe('D:\\Vault\\项目\\子\\图.png')
-    expect(resolveVaultAssetPath(root, '顶层.md', '附件/图.png')).toBe('D:\\Vault\\附件\\图.png')
+describe('resolveVaultAssetRel', () => {
+  it('相对当前笔记解析（跨目录用 ..），输出 POSIX 相对路径', () => {
+    expect(resolveVaultAssetRel('项目/设计.md', '图.png')).toBe('项目/图.png')
+    expect(resolveVaultAssetRel('项目/子/设计.md', '../图.png')).toBe('项目/图.png')
+    expect(resolveVaultAssetRel('项目/设计.md', './子/图.png')).toBe('项目/子/图.png')
+    expect(resolveVaultAssetRel('顶层.md', '附件/图.png')).toBe('附件/图.png')
+    expect(resolveVaultAssetRel('a/b/c.md', '../../图.png')).toBe('图.png')
   })
 
   it('Vault 根绝对路径（`/` 开头）', () => {
-    expect(resolveVaultAssetPath(root, '项目/设计.md', '/附件/图.png')).toBe('D:\\Vault\\附件\\图.png')
+    expect(resolveVaultAssetRel('项目/设计.md', '/附件/图.png')).toBe('附件/图.png')
   })
 
   it('反斜杠与百分号编码按原样归一', () => {
-    expect(resolveVaultAssetPath(root, '项目/设计.md', '子\\图.png')).toBe('D:\\Vault\\项目\\子\\图.png')
-    expect(resolveVaultAssetPath(root, '项目/设计.md', '%E5%9B%BE.png')).toBe('D:\\Vault\\项目\\图.png')
-    // 非法编码不抛错，按原样处理
-    expect(resolveVaultAssetPath(root, '项目/设计.md', '%zz.png')).toBe('D:\\Vault\\项目\\%zz.png')
-  })
-
-  it('根路径结尾的分隔符不会拼出双斜杠', () => {
-    expect(resolveVaultAssetPath('D:\\Vault\\', '项目/设计.md', '图.png')).toBe('D:\\Vault\\项目\\图.png')
-    expect(resolveVaultAssetPath('/home/me/Vault/', 'a.md', '图.png')).toBe('/home/me/Vault/图.png')
+    expect(resolveVaultAssetRel('项目/设计.md', '子\\图.png')).toBe('项目/子/图.png')
+    expect(resolveVaultAssetRel('项目/设计.md', '%E5%9B%BE.png')).toBe('项目/图.png')
+    // 非法编码不抛错，按原样处理（`%` 不是 Windows 非法字符，所以会保留）
+    expect(resolveVaultAssetRel('项目/设计.md', '%zz.png')).toBe('项目/%zz.png')
   })
 
   it('拒绝越界（`..` 走出 Vault）', () => {
-    expect(resolveVaultAssetPath(root, '设计.md', '../图.png')).toBeNull()
-    expect(resolveVaultAssetPath(root, 'a/b.md', '../../图.png')).toBeNull()
-    expect(resolveVaultAssetPath(root, '设计.md', '../../../../etc/passwd')).toBeNull()
-    // 口径是"过程中任何时候越出根都拒绝"（哪怕后文又用 `a/` 绕回来）：
-    // 允许"出去再回来"会让判定依赖整条路径，容易在后续改动里被绕过。
-    expect(resolveVaultAssetPath(root, 'a/b.md', '../../a/图.png')).toBeNull()
-    // 没越界的多级 `..` 正常放行
-    expect(resolveVaultAssetPath(root, 'a/b/c.md', '../../图.png')).toBe('D:\\Vault\\图.png')
+    expect(resolveVaultAssetRel('设计.md', '../图.png')).toBeNull()
+    expect(resolveVaultAssetRel('a/b.md', '../../图.png')).toBeNull()
+    expect(resolveVaultAssetRel('设计.md', '../../../../etc/passwd')).toBeNull()
+    // 口径是"过程中任何时刻越出根都拒绝"
+    expect(resolveVaultAssetRel('a/b.md', '../../a/图.png')).toBeNull()
   })
 
   it('拒绝外部地址、空地址与"只解析到根"的地址', () => {
-    expect(resolveVaultAssetPath(root, '设计.md', 'https://x/y.png')).toBeNull()
-    expect(resolveVaultAssetPath(root, '设计.md', 'data:image/png;base64,AA')).toBeNull()
-    expect(resolveVaultAssetPath(root, '设计.md', '   ')).toBeNull()
-    expect(resolveVaultAssetPath(root, '设计.md', '.')).toBeNull()
-    expect(resolveVaultAssetPath(root, '设计.md', '..')).toBeNull()
+    expect(resolveVaultAssetRel('设计.md', 'https://x/y.png')).toBeNull()
+    expect(resolveVaultAssetRel('设计.md', 'data:image/png;base64,AA')).toBeNull()
+    expect(resolveVaultAssetRel('设计.md', '   ')).toBeNull()
+    expect(resolveVaultAssetRel('设计.md', '.')).toBeNull()
+    expect(resolveVaultAssetRel('设计.md', '..')).toBeNull()
   })
 
   it('拒绝 Windows 非法字符与保留设备名', () => {
-    expect(resolveVaultAssetPath(root, '设计.md', 'a:b.png')).toBeNull()
-    expect(resolveVaultAssetPath(root, '设计.md', 'a|b.png')).toBeNull()
-    expect(resolveVaultAssetPath(root, '设计.md', 'con.png')).toBeNull()
-    expect(resolveVaultAssetPath(root, '设计.md', 'COM1')).toBeNull()
+    expect(resolveVaultAssetRel('设计.md', 'a:b.png')).toBeNull()
+    expect(resolveVaultAssetRel('设计.md', 'a|b.png')).toBeNull()
+    expect(resolveVaultAssetRel('设计.md', 'con.png')).toBeNull()
+    expect(resolveVaultAssetRel('设计.md', 'COM1')).toBeNull()
   })
 })

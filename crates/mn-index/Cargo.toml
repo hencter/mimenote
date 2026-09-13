@@ -10,6 +10,9 @@ description = "Mimenote 索引层：链接索引（反向链接 / 出链），�
 mn-core = { workspace = true }
 serde = { workspace = true }
 log = { workspace = true }
+# 全文搜索（M2）：SQLite FTS5。`bundled` 自带 SQLite（含 FTS5），不依赖系统库、
+# 也不需要用户机器上装任何东西 —— 与"离线、可整体搬走"的产品约束一致。
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

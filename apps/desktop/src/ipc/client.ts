@@ -9,6 +9,7 @@
 
 import { MimenoteError } from './types'
 import type {
+  AssetGrant,
   DocumentStats,
   EntryMeta,
   IndexStatus,
@@ -114,6 +115,16 @@ export const ipc = {
   tagsList: () => call<TagSummary[]>('tags_list'),
   /** 某个标签下的笔记（`key` 为归一化键）。 */
   tagNotes: (key: string) => call<TagNotes>('tag_notes', { key }),
+
+  /**
+   * 为本地图片换取**逐文件**读取授权（ADR-0007）。
+   *
+   * 传 Vault 相对路径，拿回磁盘绝对路径；返回里只含**通过 `path_guard` 校验**的条目
+   * （越界、符号链接逃逸、非图片扩展名都会被跳过）。一次传一整篇笔记的图片，
+   * 避免"每张图一次 IPC"。
+   */
+  assetAuthorize: (relPaths: readonly string[]) =>
+    call<AssetGrant[]>('asset_authorize', { relPaths: [...relPaths] }),
 
   /**
    * 全文搜索（宿主侧 SQLite FTS5 索引）。

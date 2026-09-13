@@ -12,9 +12,12 @@
 //! * 解析只做"从文本里找链接"（`mn_core::links`），不依赖 Markdown AST，
 //!   因此可以快速、可预测地增量更新；
 //! * 标签（`#标签` / frontmatter `tags`，见 [`tags::TagIndex`]）与链接共用同一次
-//!   `upsert`/`remove`：同一份文本顺手算出来，不做第二次 IO，也不会出现两者不同步。
+//!   `upsert`/`remove`：同一份文本顺手算出来，不做第二次 IO，也不会出现两者不同步；
+//! * 全文搜索（SQLite FTS5，见 [`search::SearchIndex`]）也在**同一遍**里建：链接索引读到的
+//!   文本直接喂给搜索索引，1 万笔记场景不会为搜索再读一遍文件。
 
 pub mod rename;
+pub mod search;
 pub mod tags;
 
 use std::collections::HashMap;
@@ -29,6 +32,7 @@ use mn_core::links::{extract_links, join_relative, normalize_target, LinkKind, L
 use mn_core::scanner::EntryMeta;
 use mn_core::tags::TagRef;
 
+pub use search::SearchIndex;
 use tags::{TagIndex, TagSummary};
 
 /// 单篇笔记参与索引的大小上限（超过则跳过，避免大文件拖慢构建）。
@@ -519,7 +523,7 @@ impl Default for BuildOptions {
 }
 
 /// 构建结果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildOutcome {
     /// 已索引的笔记数。
     pub indexed: usize,
@@ -531,19 +535,36 @@ pub struct BuildOutcome {
     pub duration_ms: u64,
     /// 是否被取消（例如用户切换了 Vault）。
     pub cancelled: bool,
+    /// 全文搜索索引的构建结果（这一轮没建搜索索引时为 `None`）。
+    pub search: Option<SearchBuildOutcome>,
 }
 
-/// 从磁盘构建索引。
+/// 全文搜索索引的构建结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchBuildOutcome {
+    /// 写入的行数。
+    pub lines: usize,
+    /// 耗时（毫秒）。
+    pub duration_ms: u64,
+    /// 失败/取消导致这轮**没有提交**（库仍是上一轮的内容）。
+    pub aborted: bool,
+    /// 失败原因（有值时这轮搜索索引不可用，但链接索引不受影响）。
+    pub error: Option<String>,
+}
+
+/// 从磁盘构建索引（链接 + 标签，可选全文搜索）。
 ///
 /// `cancel` 用于在切换 Vault / 关闭应用时中断（每处理一个文件检查一次）。
 /// `progress` 每 `options.progress_every` 个文件回调一次 `(已处理, 总数)`。
+/// `search` 给了就**在这一遍里顺带建全文搜索索引**（同一份文本，不重读文件）。
 ///
 /// 返回 `(索引, 结果)`。
-pub fn build_index(
+pub fn build_indexes(
     root: &Path,
     entries: &[EntryMeta],
     options: &BuildOptions,
     cancel: Option<&AtomicBool>,
+    search: Option<&SearchIndex>,
     mut progress: impl FnMut(usize, usize),
 ) -> (LinkIndex, BuildOutcome) {
     let started = Instant::now();
@@ -558,6 +579,23 @@ pub fn build_index(
     let mut skipped = 0usize;
     let mut cancelled = false;
 
+    // 全文搜索：整轮写在一个事务里（外部内容表最后一次性 `rebuild`）。
+    // 任何一步失败都只让"搜索这一路"降级，链接索引照常建完。
+    let search_started = Instant::now();
+    let mut search_lines = 0usize;
+    let mut search_error: Option<String> = None;
+    let mut search_sink = match search {
+        Some(target) => match target.begin_rebuild() {
+            Ok(()) => Some(target),
+            Err(error) => {
+                log::warn!("全文搜索索引重建无法开始（本轮跳过）：{error}");
+                search_error = Some(error.to_string());
+                None
+            }
+        },
+        None => None,
+    };
+
     for (position, entry) in notes.iter().enumerate() {
         if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
             cancelled = true;
@@ -569,6 +607,19 @@ pub fn build_index(
             Ok(text) => {
                 index.upsert(&entry.rel_path, &text);
                 indexed += 1;
+                // 同一份文本顺手喂给全文搜索（**不重读文件**）
+                if let Some(target) = search_sink {
+                    match target.add_note(&entry.rel_path, &text) {
+                        Ok(lines) => search_lines += lines,
+                        Err(error) => {
+                            log::warn!(
+                                "全文搜索索引写入失败，本轮搜索索引放弃（链接索引不受影响）：{error}"
+                            );
+                            search_error = Some(error.to_string());
+                            search_sink = None;
+                        }
+                    }
+                }
             }
             Err(error) => {
                 // 单个文件读失败（被删、权限、非 UTF-8、过大）不应中断整轮索引
@@ -584,6 +635,39 @@ pub fn build_index(
 
     progress(indexed, total);
 
+    // 收尾：取消或出错都回滚（库仍是上一轮提交的内容），否则重建 FTS 索引并提交
+    let search = match (search, search_sink) {
+        (Some(target), Some(_)) if !cancelled => match target.finish_rebuild() {
+            Ok(()) => Some(SearchBuildOutcome {
+                lines: search_lines,
+                duration_ms: search_started.elapsed().as_millis() as u64,
+                aborted: false,
+                error: None,
+            }),
+            Err(error) => {
+                log::warn!("全文搜索索引提交失败（已回滚）：{error}");
+                target.abort_rebuild();
+                search_error = Some(error.to_string());
+                Some(SearchBuildOutcome {
+                    lines: 0,
+                    duration_ms: search_started.elapsed().as_millis() as u64,
+                    aborted: true,
+                    error: search_error,
+                })
+            }
+        },
+        (Some(target), _) => {
+            target.abort_rebuild();
+            Some(SearchBuildOutcome {
+                lines: 0,
+                duration_ms: search_started.elapsed().as_millis() as u64,
+                aborted: true,
+                error: search_error,
+            })
+        }
+        (None, _) => None,
+    };
+
     (
         index,
         BuildOutcome {
@@ -592,6 +676,7 @@ pub fn build_index(
             total,
             duration_ms: started.elapsed().as_millis() as u64,
             cancelled,
+            search,
         },
     )
 }
@@ -602,6 +687,17 @@ fn is_note(entry: &EntryMeta, extensions: &[String]) -> bool {
             .iter()
             .any(|allowed| allowed.eq_ignore_ascii_case(ext))
     })
+}
+
+/// 只建链接/标签索引（不碰全文搜索）。等价于 [`build_indexes`] 传 `None`。
+pub fn build_index(
+    root: &Path,
+    entries: &[EntryMeta],
+    options: &BuildOptions,
+    cancel: Option<&AtomicBool>,
+    progress: impl FnMut(usize, usize),
+) -> (LinkIndex, BuildOutcome) {
+    build_indexes(root, entries, options, cancel, None, progress)
 }
 
 #[cfg(test)]
@@ -887,7 +983,81 @@ mod tests {
         assert_eq!(stats.unresolved, 1);
     }
 
-    /// 性能基准：1 万笔记的索引构建耗时（链接 + 标签在同一次解析里算出来）。
+    #[test]
+    fn build_indexes_fills_the_search_index_in_the_same_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("甲.md"), "hello world\n第二行关键词\n").unwrap();
+        std::fs::write(dir.path().join("乙.md"), "关键词 也在\n").unwrap();
+        let entries = vec![note("甲.md"), note("乙.md")];
+
+        let search = SearchIndex::open_in_memory().unwrap();
+        let (index, outcome) = build_indexes(
+            dir.path(),
+            &entries,
+            &BuildOptions::default(),
+            None,
+            Some(&search),
+            |_done, _total| {},
+        );
+
+        let search_outcome = outcome.search.expect("这轮建了搜索索引");
+        assert!(!search_outcome.aborted, "{search_outcome:?}");
+        assert_eq!(search_outcome.lines, 3, "每篇 2 / 1 行");
+        assert_eq!(index.len(), 2, "链接索引不受影响");
+        assert_eq!(search.search("关键词", 10).unwrap().total, 2);
+        assert_eq!(search.search("hello", 10).unwrap().hits[0].line, 1);
+
+        // 没给搜索索引时，结果里不该出现 search 字段
+        let (_, plain) = build_index(
+            dir.path(),
+            &entries,
+            &BuildOptions::default(),
+            None,
+            |_, _| {},
+        );
+        assert!(plain.search.is_none());
+    }
+
+    #[test]
+    fn cancelled_build_rolls_the_search_index_back() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("甲.md"), "关键词\n").unwrap();
+        let entries = vec![note("甲.md")];
+        let search = SearchIndex::open_in_memory().unwrap();
+
+        // 第一轮：正常建好
+        let (_, first) = build_indexes(
+            dir.path(),
+            &entries,
+            &BuildOptions::default(),
+            None,
+            Some(&search),
+            |_, _| {},
+        );
+        assert!(!first.search.unwrap().aborted);
+        assert_eq!(search.search("关键词", 10).unwrap().total, 1);
+
+        // 第二轮：一开始就取消 → 回滚，库里仍是上一轮**完整**的内容（不是空的，也不是半截的）
+        let cancel = AtomicBool::new(true);
+        let (_, second) = build_indexes(
+            dir.path(),
+            &entries,
+            &BuildOptions::default(),
+            Some(&cancel),
+            Some(&search),
+            |_, _| {},
+        );
+        let cancelled = second.search.unwrap();
+        assert!(cancelled.aborted);
+        assert_eq!(cancelled.lines, 0);
+        assert!(second.cancelled);
+        assert_eq!(
+            search.search("关键词", 10).unwrap().total,
+            1,
+            "取消不能让搜索索引变空或半截"
+        );
+    }
+
     ///
     /// 运行：`cargo test -p mn-index --release -- --ignored --nocapture bench_build_index_10k_notes`
     ///
@@ -951,6 +1121,97 @@ mod tests {
             "索引构建耗时超回归阈值：{}ms",
             outcome.duration_ms
         );
+    }
+
+    /// 性能基准：1 万笔记 / 每篇 30 行的**全文搜索**构建与查询耗时。
+    ///
+    /// 运行：`cargo test -p mn-index --release -- --ignored --nocapture bench_full_text_search_10k_notes`
+    ///
+    /// 同一份数据连建两轮（不带搜索 / 带搜索），差值就是"全文搜索这一路"的真实成本。
+    #[test]
+    #[ignore]
+    fn bench_full_text_search_10k_notes() {
+        let dir = tempfile::tempdir().unwrap();
+
+        for d in 0..100 {
+            let sub = dir.path().join(format!("dir{d:03}"));
+            std::fs::create_dir_all(&sub).unwrap();
+            for f in 0..100 {
+                let mut body = String::new();
+                for i in 1..=29 {
+                    body.push_str(&format!(
+                        "第 {i} 行：这是用来测试全文搜索的中文正文，里面还有 search 这样的英文单词\n"
+                    ));
+                }
+                if f % 10 == 0 {
+                    body.push_str("这一行里有关键词，别的行没有\n");
+                }
+                body.push_str(&format!("末尾一行 [[note{f:03}]]\n"));
+                std::fs::write(sub.join(format!("note{f:03}.md")), body).unwrap();
+            }
+        }
+        let entries: Vec<EntryMeta> = (0..100)
+            .flat_map(|d| (0..100).map(move |f| note(&format!("dir{d:03}/note{f:03}.md"))))
+            .collect();
+        let options = BuildOptions::default();
+
+        // 第一轮：只建链接 + 标签（基线）
+        let (_, baseline) = build_index(dir.path(), &entries, &options, None, |_, _| {});
+
+        // 第二轮：同一批文件，顺带建全文搜索索引
+        let db_path = dir.path().join(".mimenote/cache/search.db");
+        let search = SearchIndex::open_for_rebuild(&db_path).unwrap();
+        let (_, with_search) = build_indexes(
+            dir.path(),
+            &entries,
+            &options,
+            None,
+            Some(&search),
+            |_, _| {},
+        );
+        let search_outcome = with_search.search.unwrap();
+        let counts = search.counts().unwrap();
+        let db_bytes = std::fs::metadata(&db_path)
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+
+        eprintln!(
+            "1 万笔记 / 每篇 30 行（共 {} 行）：\n\
+             \x20 链接+标签（基线）：{} ms\n\
+             \x20 全文搜索（同一次遍历里顺带建）：{} ms（库 {:.1} MB）\n\
+             \x20 合计：{} ms",
+            counts.lines,
+            baseline.duration_ms,
+            search_outcome.duration_ms,
+            db_bytes as f64 / 1_048_576.0,
+            with_search.duration_ms
+        );
+
+        for query in ["关键词", "全文搜索", "search", "关键"] {
+            let started = Instant::now();
+            let outcome = search.search(query, 50).unwrap();
+            eprintln!(
+                "  查询 {query:?}：{} ms（total={}，返回 {} 条）",
+                started.elapsed().as_millis(),
+                outcome.total,
+                outcome.hits.len()
+            );
+        }
+        let started = Instant::now();
+        for _ in 0..20 {
+            search.search("关键词", 50).unwrap();
+        }
+        eprintln!(
+            "  查询 \"关键词\" × 20 次平均：{:.2} ms",
+            started.elapsed().as_secs_f64() * 1000.0 / 20.0
+        );
+
+        assert!(
+            search_outcome.lines > 100_000,
+            "行数不对：{}",
+            search_outcome.lines
+        );
+        assert!(!search_outcome.aborted);
     }
 
     #[test]
