@@ -1,0 +1,26 @@
+[package]
+name = "mimenote"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Mimenote 桌面宿主：会话状态与 IPC 命令（业务逻辑在 mn-core）"
+
+[lib]
+name = "mimenote_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+mn-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,25 @@
+/*
+ * 用户 CSS 片段示例（Vault 内 .mimenote/snippets/*.css）。
+ *
+ * 这是内置扩展点之一：应用会在打开 Vault 时把它注入为 <style>，
+ * 用状态栏右下角的调色板按钮可以整体启用/停用（停用即彻底卸载）。
+ *
+ * 注意：片段只从你自己的 Vault 目录读取，不会加载任何远程样式。
+ */
+
+/* 预览区标题换一种强调方式 */
+.mn-preview__body h1 {
+  letter-spacing: 0.01em;
+}
+
+/* 引用块加一点背景 */
+.mn-preview__body blockquote {
+  background: var(--mn-bg-elevated);
+  border-radius: var(--mn-radius);
+  padding: 0.4em 1em;
+}
+
+/* 编辑器当前行更明显 */
+.cm-activeLine {
+  box-shadow: inset 2px 0 0 var(--mn-accent);
+}

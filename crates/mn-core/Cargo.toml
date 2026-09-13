@@ -1,0 +1,13 @@
+[package]
+name = "mn-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Mimenote 文件层：路径防护、原子写、Vault 扫描、回收站、文本统计（纯逻辑，不依赖 tauri）"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }

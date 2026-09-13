@@ -1,0 +1,47 @@
+{
+  "name": "@mimenote/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mimenote 桌面端前端（React + CodeMirror 6）",
+  "scripts": {
+    "dev": "vite",
+    "build": "pnpm typecheck && vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "icon": "tauri icon app-icon.png"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.11.0",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.7.4",
+    "@codemirror/view": "^6.43.11",
+    "@lezer/highlight": "^1.2.3",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "dompurify": "^3.4.15",
+    "markdown-it": "^15.0.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/markdown-it": "^14.2.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "jsdom": "^30.0.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.0"
+  }
+}

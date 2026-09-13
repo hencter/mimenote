@@ -1,0 +1,54 @@
+//! Mimenote 桌面宿主。
+//!
+//! 这一层**只做三件事**（见 `docs/architecture.md` §2）：
+//!
+//! 1. 持有会话状态（[`state::AppState`]）；
+//! 2. 把 `mn-core` 的能力暴露成 IPC 命令（[`commands`]）；
+//! 3. 把 `mn-core` 错误映射成**稳定错误码**（[`error::IpcError`]）。
+//!
+//! 业务逻辑一律放在 `mn-core`，本层不做判断、不做遍历、不做拼接路径。
+
+pub mod commands;
+pub mod error;
+pub mod logging;
+pub mod state;
+
+use std::sync::Arc;
+
+use state::AppState;
+
+/// 启动应用。
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .manage(Arc::new(AppState::default()))
+        .invoke_handler(tauri::generate_handler![
+            commands::vault_open,
+            commands::vault_info,
+            commands::vault_snapshot,
+            commands::vault_close,
+            commands::note_read,
+            commands::note_write,
+            commands::note_create,
+            commands::note_delete,
+            commands::note_stats,
+            commands::snippets_list,
+            commands::version_info,
+        ])
+        .setup(|app| {
+            // 日志必须在 setup 里初始化：此时才能解析用户的日志目录
+            let log_path = logging::init(app.handle());
+            log::info!(
+                "Mimenote {} 启动（mn-core {}，离线模式：无遥测、无出站请求）",
+                env!("CARGO_PKG_VERSION"),
+                mn_core::VERSION
+            );
+            if let Some(path) = log_path {
+                log::info!("日志文件：{}", path.display());
+            }
+            log::debug!("窗口已创建，等待前端请求 vault_open");
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("Tauri 应用启动失败");
+}
