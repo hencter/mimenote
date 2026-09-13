@@ -89,7 +89,10 @@ async function waitForCdp(port: number, timeoutMs: number): Promise<void> {
     }
     await delay(200)
   }
-  throw new Error(`等待 WebView2 CDP 端口 ${port} 超时（最后错误：${lastError}）`)
+  throw new Error(
+    `等待 WebView2 CDP 端口 ${port} 超时（最后错误：${lastError}）\n` +
+      '常见原因：另一个 WebView2 实例正在占用同一个用户数据目录（见 launchApp 里的说明）。',
+  )
 }
 
 export function delay(ms: number): Promise<void> {
@@ -101,6 +104,8 @@ export interface LaunchedApp {
   browser: Browser
   process: ChildProcess
   cdpPort: number
+  /** 本次实例专属的 WebView2 用户数据目录（便于排查）。 */
+  userDataDir: string
   /** 关闭连接并结束应用进程。 */
   close: () => Promise<void>
 }
@@ -119,12 +124,23 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
   assertBinaryExists()
 
   const port = options.cdpPort ?? (await findFreePort())
+
+  // 每个实例一份独立的用户数据目录 —— 这是本文件里最关键的一行。
+  //
+  // WebView2 是按**用户数据目录**共享浏览器进程的：如果用户自己开着 Mimenote
+  // （或上一次 E2E 留下的实例），新实例会附着到那个已存在的浏览器进程上。
+  // 那个进程没有带 `--remote-debugging-port`，于是 CDP 端口永远不开 ——
+  // 现象是"应用启动了、日志正常，但 E2E 连不上"，而且页面也可能因目录被占用而不加载。
+  // 独立目录同时带来另一个好处：每次运行都是干净的 localStorage，测试之间不会互相污染。
+  const userDataDir = await mkdtemp(join(tmpdir(), 'mimenote-e2e-profile-'))
+
   const args = options.vaultPath === undefined ? [] : [options.vaultPath]
   const child = spawn(appBinaryPath(), args, {
     env: {
       ...process.env,
       // WebView2 只认这个环境变量来附加浏览器参数
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
+      WEBVIEW2_USER_DATA_FOLDER: userDataDir,
     },
     stdio: 'ignore',
     windowsHide: false,
@@ -145,6 +161,7 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
   } catch (error) {
     if (browser !== null) await browser.close().catch(() => undefined)
     if (child.exitCode === null) child.kill()
+    await rm(userDataDir, { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined)
     throw error
   }
 
@@ -160,11 +177,13 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
     browser: connectedBrowser,
     process: child,
     cdpPort: port,
+    userDataDir,
     close: async () => {
       await connectedBrowser.close().catch(() => undefined)
       if (child.exitCode === null) child.kill()
       // 给进程一点时间退出，避免影响下一个用例
       await delay(300)
+      await rm(userDataDir, { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined)
     },
   }
 }
