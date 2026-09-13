@@ -52,10 +52,16 @@ const DEFAULT_NOTES: MockNote[] = [
     text: '# 一月一日\n\n- [x] 起床\n- [ ] 写笔记\n\n> 引用：本地优先。\n',
   },
   { relPath: '日记/2025-01-02.md', text: '# 一月二日\n\n今天研究了 CodeMirror 6 的扩展机制。\n' },
-  { relPath: '项目/设计.md', text: '# 设计\n\n参考 [[路线图]] 与 [[细节]]。\n\n| 层 | 职责 |\n| --- | --- |\n| 文件层 | 原子写 |\n| 索引层 | FTS5 |\n' },
+  { relPath: '项目/设计.md', text: '# 设计\n\n参考 [[路线图]] 与 [[细节]]。\n\n| 层 | 职责 |\n| --- | --- |\n| 文件层 | 原子写 |\n| 索引层 | FTS5 |\n\n#项目\n' },
   { relPath: '项目/路线图.md', text: '# 路线图\n\n1. M1 闭环\n2. M2 搜索\n3. M3 图谱\n\n设计细节见 [[设计]]。\n' },
   { relPath: '项目/子项目/细节.md', text: '# 细节\n\n```ts\nexport const answer = 42\n```\n\n还有一个还没写的笔记：[[还不存在的笔记]]。\n' },
   { relPath: '随手记.md', text: '字数统计测试：hello world 与中文混排。\n' },
+  // 专门用来演示「标签与属性面板」与「全文搜索」的笔记：
+  // 其它用例请勿依赖它的内容（改了会影响 UI 层 E2E 里的标签/搜索断言）。
+  {
+    relPath: '项目/标签示例.md',
+    text: '---\ntitle: 标签示例\ntags: [项目, 进行中]\n---\n\n这一段用来演示 #架构 与 #项目 标签的抽取。\n',
+  },
   { relPath: '附件/说明.txt', text: '非 Markdown 附件，M1 不可编辑。\n' },
 ]
 

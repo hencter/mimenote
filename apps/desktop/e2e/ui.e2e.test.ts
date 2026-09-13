@@ -410,6 +410,91 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     )
   })
 
+  it('标签面板：Ctrl+Shift+T 显示标签与属性，点标签列出笔记并可打开', async () => {
+    // 设计.md 末尾有一行 `#项目`（行内标签），与「标签示例.md」的 frontmatter 标签同名 ——
+    // 正好用来验证"跨笔记的标签索引"与"点标签列出笔记"
+    await openNoteInTree(page, '项目/设计.md')
+
+    await page.keyboard.press('Control+Shift+t')
+    await page.waitForSelector('.mn-tags', { state: 'visible' })
+    await waitUntil(
+      async () => (await page.locator('.mn-tags [data-tag="项目"]').count()) === 1,
+      10_000,
+      '本篇的行内标签出现在面板里',
+    )
+
+    // 点标签 → 列出含它的两篇笔记（本篇 + 标签示例）
+    await page.locator('.mn-tags [data-tag="项目"]').click()
+    await waitUntil(
+      async () =>
+        (await page.locator('.mn-tags [data-tag-note="项目/标签示例.md"]').count()) === 1 &&
+        (await page.locator('.mn-tags [data-tag-note="项目/设计.md"]').count()) === 1,
+      10_000,
+      '列出含该标签的笔记',
+    )
+
+    // 点另一篇 → 打开它；面板跟着切到它的标签与属性
+    await page.locator('.mn-tags [data-tag-note="项目/标签示例.md"]').click()
+    await waitUntil(
+      async () =>
+        ((await page.locator('.mn-editor__path').textContent()) ?? '').includes('项目/标签示例.md'),
+      10_000,
+      '点笔记后打开它',
+    )
+    for (const tag of ['项目', '进行中', '架构']) {
+      await waitUntil(
+        async () => (await page.locator(`.mn-tags [data-tag="${tag}"]`).count()) === 1,
+        10_000,
+        `切换笔记后面板显示标签 ${tag}`,
+      )
+    }
+    // 属性表里有 frontmatter 字段
+    const panelText = (await page.locator('.mn-tags').textContent()) ?? ''
+    expect(panelText).toContain('title')
+    expect(panelText).toContain('标签示例')
+
+    // 预览只渲染正文：frontmatter 不当正文渲染
+    await waitUntil(
+      async () => ((await page.locator('.mn-preview__body').textContent()) ?? '').includes('演示'),
+      10_000,
+      '预览渲染正文',
+    )
+    const preview = (await page.locator('.mn-preview__body').textContent()) ?? ''
+    expect(preview).not.toContain('title')
+
+    await page.keyboard.press('Control+Shift+t')
+    await waitUntil(async () => (await page.locator('.mn-tags').count()) === 0, 5_000, '面板收起')
+  })
+
+  it('全文搜索：Ctrl+Shift+F → 输入 → 回车打开命中的笔记', async () => {
+    await page.keyboard.press('Control+Shift+f')
+    await page.waitForSelector('.mn-palette', { state: 'visible' })
+    expect(await page.locator('.mn-palette').getAttribute('aria-label')).toBe('全文搜索')
+
+    // Mock 的搜索是逐行子串匹配（真实实现是 FTS5），"演示"只出现在标签示例那一篇里
+    await page.locator('.mn-palette__input').fill('演示')
+    await waitUntil(
+      async () =>
+        (await page.locator('.mn-palette [role="option"][data-rel-path="项目/标签示例.md"]').count()) ===
+        1,
+      10_000,
+      '出现命中的笔记',
+    )
+    const optionText = (await page.locator('.mn-palette [role="option"][data-rel-path="项目/标签示例.md"]').textContent()) ?? ''
+    expect(optionText).toContain('演示')
+    // 结果行里带行号与片段
+    expect(optionText).toMatch(/\d/)
+
+    await page.locator('.mn-palette__input').press('Enter')
+    await waitUntil(
+      async () =>
+        ((await page.locator('.mn-editor__path').textContent()) ?? '').includes('项目/标签示例.md'),
+      10_000,
+      '回车打开命中的笔记',
+    )
+    expect(await page.locator('.mn-palette').count()).toBe(0)
+  })
+
   it('命令面板：编辑器聚焦时 Ctrl+K 也能打开，过滤后回车执行命令', async () => {
     await openNoteInTree(page, '项目/设计.md')
     // 关键：焦点在编辑器里。CodeMirror 自己把 Ctrl+K 绑成了 deleteToLineEnd，
