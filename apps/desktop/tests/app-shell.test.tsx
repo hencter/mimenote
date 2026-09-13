@@ -18,6 +18,7 @@ import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { App } from '@/App'
+import { openNote } from '@/app/actions'
 import { registerBuiltinCommands } from '@/app/builtin-commands'
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter } from '@/ipc/mock-adapter'
@@ -112,6 +113,28 @@ describe('外壳渲染', () => {
       expect(document.querySelector('.mn-conflict')).toBeNull()
       expect(document.querySelector('.mn-body')).not.toBeNull()
       expect(document.querySelector('.mn-statusbar')).not.toBeNull()
+    })
+  })
+
+  it('打开第一篇笔记后编辑器真的被创建（回归：曾因 useEffect([]) 空转而空白）', async () => {
+    render(<App />)
+    await useVaultStore.getState().openVault('C:\\MockVault')
+    await waitFor(() => {
+      expect(document.querySelectorAll('.mn-tree-row').length).toBeGreaterThan(0)
+    })
+
+    // 启动时没有文档：此时渲染的是占位符，承载编辑器的 div 还不存在
+    expect(document.querySelector('.mn-editor__surface')).toBeNull()
+
+    await openNote('README.md')
+
+    // 笔记打开后，承载节点出现 → 编辑器必须被创建（回调 ref 负责）
+    await waitFor(() => {
+      expect(document.querySelector('.mn-editor__surface')).not.toBeNull()
+      expect(document.querySelector('.cm-editor'), '编辑器实例没有被创建').not.toBeNull()
+    })
+    await waitFor(() => {
+      expect(document.querySelector('.cm-content')?.textContent ?? '').toContain('示例 Vault')
     })
   })
 })
