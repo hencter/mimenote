@@ -40,8 +40,31 @@ pub struct LinkRef {
     pub line: u32,
 }
 
+/// 链接在**行内**的位置（字符偏移，不含换行符）。
+///
+/// 为什么需要它：重命名笔记时要精确改写指向它的链接 —— 必须能定位到"目标文本"
+/// 在原文里的位置，而不能靠字符串搜索猜（`[[甲]]` 与 `[[甲虫]]` 会互相误伤）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkSpan {
+    /// 行号（1 起，与 `LinkRef::line` 一致）。
+    pub line: u32,
+    /// 行内起始字符偏移（指向 `[` 或图片的 `!`）。
+    pub char_start: usize,
+    /// 行内结束字符偏移（开区间，指向 `]]` 之后 / `)` 之后）。
+    pub char_end: usize,
+}
+
 /// 抽取文本中的所有链接（按出现顺序，含行号）。
 pub fn extract_links(text: &str) -> Vec<LinkRef> {
+    extract_links_with_spans(text)
+        .into_iter()
+        .map(|(link, _span)| link)
+        .collect()
+}
+
+/// 抽取链接并带上它们在原文中的位置（重命名改写链接时使用）。
+pub fn extract_links_with_spans(text: &str) -> Vec<(LinkRef, LinkSpan)> {
     let mut out = Vec::new();
     let mut fence: Option<String> = None;
 
@@ -64,6 +87,77 @@ pub fn extract_links(text: &str) -> Vec<LinkRef> {
     }
 
     out
+}
+
+/// 用 `new_target` 替换某个链接的**目标部分**（保留别名、锚点与 Markdown 的 `<>` 包裹）。
+///
+/// 形态（`[[..]]` 还是 `[..](..)`）由**原文实际字符**判断，不看 `LinkKind` ——
+/// 因为 `Embed` 同时覆盖 `![[嵌入]]` 与 `![说明](x.md)` 两种写法。
+///
+/// 返回替换后的整行；若该位置上已经不是链接，返回 `None`（调用方应跳过而不是硬改）。
+pub fn replace_link_target(line: &str, span: &LinkSpan, new_target: &str) -> Option<String> {
+    let chars: Vec<char> = line.chars().collect();
+    if span.char_start >= chars.len() || span.char_end > chars.len() {
+        return None;
+    }
+
+    let at = |index: usize| chars.get(index).copied();
+    // 注意：Markdown 链接同样以 `[` 开头，因此必须看到 `[[` 才能判定为 wikilink
+    let wikilink = (at(span.char_start) == Some('[') && at(span.char_start + 1) == Some('['))
+        || (at(span.char_start) == Some('!')
+            && at(span.char_start + 1) == Some('[')
+            && at(span.char_start + 2) == Some('['));
+
+    let (target_start, target_end) = if wikilink {
+        // `[[目标|别名]]` / `[[目标#锚点]]`：目标从 `[[` 之后开始
+        let bracket = if at(span.char_start) == Some('!') {
+            span.char_start + 1
+        } else {
+            span.char_start
+        };
+        if at(bracket) != Some('[') || at(bracket + 1) != Some('[') {
+            return None;
+        }
+        let start = bracket + 2;
+        let mut end = start;
+        while end < chars.len() && !matches!(chars[end], '|' | '#' | '^' | ']') {
+            end += 1;
+        }
+        (start, end)
+    } else {
+        // `[文本](目标)` / `[文本](<有 空格.md>)`
+        let mut cursor = span.char_start;
+        while cursor < chars.len() && chars[cursor] != '(' {
+            cursor += 1;
+        }
+        if cursor >= chars.len() {
+            return None;
+        }
+        cursor += 1;
+        let angled = at(cursor) == Some('<');
+        let start = if angled { cursor + 1 } else { cursor };
+        let mut end = start;
+        while end < chars.len() {
+            let current = chars[end];
+            if angled && current == '>' {
+                break;
+            }
+            if !angled && (current == ')' || current == ' ' || current == '\t') {
+                break;
+            }
+            end += 1;
+        }
+        (start, end)
+    };
+
+    if target_start > target_end {
+        return None;
+    }
+
+    let mut replaced: String = chars[..target_start].iter().collect();
+    replaced.push_str(new_target);
+    replaced.extend(chars[target_end..].iter());
+    Some(replaced)
 }
 
 /// 归一化链接目标，得到**用于匹配的键**：小写、反斜杠转 `/`、去掉 `.md`/`.markdown`
@@ -108,10 +202,16 @@ pub fn is_markdown_target(raw: &str) -> bool {
     lowered.ends_with(".md") || lowered.ends_with(".markdown") || !lowered.contains('.')
 }
 
-fn scan_line(line: &str, line_no: u32, out: &mut Vec<LinkRef>) {
+fn scan_line(line: &str, line_no: u32, out: &mut Vec<(LinkRef, LinkSpan)>) {
     let chars: Vec<char> = line.chars().collect();
     let mut i = 0usize;
     let mut in_code = false;
+
+    let span = |start: usize, end: usize| LinkSpan {
+        line: line_no,
+        char_start: start,
+        char_end: end,
+    };
 
     while i < chars.len() {
         let current = chars[i];
@@ -133,12 +233,12 @@ fn scan_line(line: &str, line_no: u32, out: &mut Vec<LinkRef>) {
 
         if current == '!' && chars.get(i + 1) == Some(&'[') {
             if let Some((link, next)) = parse_wikilink(&chars, i + 1, line_no, LinkKind::Embed) {
-                out.push(link);
+                out.push((link, span(i, next)));
                 i = next;
                 continue;
             }
             if let Some((link, next)) = parse_markdown_link(&chars, i, line_no) {
-                out.push(link);
+                out.push((link, span(i, next)));
                 i = next;
                 continue;
             }
@@ -148,12 +248,12 @@ fn scan_line(line: &str, line_no: u32, out: &mut Vec<LinkRef>) {
 
         if current == '[' {
             if let Some((link, next)) = parse_wikilink(&chars, i, line_no, LinkKind::Wiki) {
-                out.push(link);
+                out.push((link, span(i, next)));
                 i = next;
                 continue;
             }
             if let Some((link, next)) = parse_markdown_link(&chars, i, line_no) {
-                out.push(link);
+                out.push((link, span(i, next)));
                 i = next;
                 continue;
             }
@@ -422,6 +522,77 @@ mod tests {
         assert_eq!(links.len(), 2, "实际：{links:?}");
         assert_eq!(links[0].raw_target, "中文 笔记-带空格");
         assert_eq!(links[1].raw_target, "a[b]c");
+    }
+
+    #[test]
+    fn spans_point_at_the_whole_link() {
+        let text = "前言 [[甲|别名]] 中间 [文本](乙.md) 结尾";
+        let found = extract_links_with_spans(text);
+        assert_eq!(found.len(), 2);
+        let line = text.lines().next().unwrap();
+
+        let (wiki, wiki_span) = &found[0];
+        assert_eq!(wiki.raw_target, "甲");
+        assert_eq!(slice_of(line, wiki_span), "[[甲|别名]]");
+
+        let (markdown, markdown_span) = &found[1];
+        assert_eq!(markdown.raw_target, "乙.md");
+        assert_eq!(slice_of(line, markdown_span), "[文本](乙.md)");
+    }
+
+    fn slice_of(line: &str, span: &LinkSpan) -> String {
+        line.chars()
+            .skip(span.char_start)
+            .take(span.char_end - span.char_start)
+            .collect()
+    }
+
+    #[test]
+    fn replaces_wikilink_target_and_keeps_alias_and_anchor() {
+        let line = "见 [[旧名字|别名]] 与 [[旧名字#小节]] 与 ![[旧名字]]";
+        let found = extract_links_with_spans(line);
+        assert_eq!(found.len(), 3);
+
+        // 从后往前替换，避免偏移失效
+        let mut current = line.to_string();
+        for (link, span) in found.iter().rev() {
+            assert_eq!(link.raw_target, "旧名字");
+            current = replace_link_target(&current, span, "新名字").expect("应能替换");
+        }
+        assert_eq!(
+            current,
+            "见 [[新名字|别名]] 与 [[新名字#小节]] 与 ![[新名字]]"
+        );
+    }
+
+    #[test]
+    fn replaces_markdown_link_target_and_keeps_angle_brackets() {
+        let line = "[文本](<旧 名字.md>) 和 [另一个](子目录/旧名字.md)";
+        let found = extract_links_with_spans(line);
+        assert_eq!(found.len(), 2);
+
+        let mut current = line.to_string();
+        for (_, span) in found.iter().rev() {
+            current = replace_link_target(&current, span, "新 名字.md").expect("应能替换");
+        }
+        assert_eq!(current, "[文本](<新 名字.md>) 和 [另一个](新 名字.md)");
+    }
+
+    #[test]
+    fn replace_refuses_when_position_is_not_a_link() {
+        let span = LinkSpan {
+            line: 1,
+            char_start: 0,
+            char_end: 4,
+        };
+        assert!(replace_link_target("这不是链接", &span, "X").is_none());
+        assert!(replace_link_target("", &span, "X").is_none());
+        let out_of_range = LinkSpan {
+            line: 1,
+            char_start: 0,
+            char_end: 99,
+        };
+        assert!(replace_link_target("[[甲]]", &out_of_range, "X").is_none());
     }
 
     #[test]
