@@ -38,6 +38,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
+    // 公共前置：目前是给 jsdom 补 CodeMirror 需要的 DOM 测量 API（见 tests/setup.ts）。
+    // 不补的话，"全部用例通过"的进程仍会因为异步 measure 里的 TypeError 以非零码退出。
+    setupFiles: ['tests/setup.ts'],
     clearMocks: true,
     restoreMocks: true,
   },
