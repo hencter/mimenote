@@ -54,6 +54,15 @@ export const SETTINGS_SECTION_KEY = 'mimenote.settings.section'
 /** 字号范围（px）。默认值与主题令牌 `--mn-font-size-ui` / `--mn-font-size-editor` 对齐。 */
 export const UI_FONT_SIZE_RANGE = { min: 11, max: 18, step: 1 } as const
 export const EDITOR_FONT_SIZE_RANGE = { min: 12, max: 28, step: 1 } as const
+/**
+ * 阅读视图字号范围。
+ *
+ * 为什么单独一项而不是跟着编辑器字号：**边写边看和纯阅读是两种姿势** ——
+ * 写作时要在一屏里看到更多上下文（字号偏小），阅读时要的是舒适（字号偏大）。
+ * 此前两者共用 `--mn-font-size-editor`，改一个必然动另一个（`--mn-font-size-reading`
+ * 的默认值取编辑器默认值，所以不调它时观感与从前完全一致）。
+ */
+export const READING_FONT_SIZE_RANGE = { min: 12, max: 30, step: 1 } as const
 
 /** 自动保存延迟的可选档位（ms）。默认 600ms，与 `note-store` 的默认值一致。 */
 export const AUTOSAVE_DELAY_OPTIONS: readonly number[] = [200, 400, 600, 1000, 2000]
@@ -66,6 +75,8 @@ export interface SettingsValues {
   uiFontSize: number
   /** 编辑器字号（px）→ `--mn-font-size-editor`。 */
   editorFontSize: number
+  /** 阅读视图字号（px）→ `--mn-font-size-reading`（不设置时回落到编辑器字号）。 */
+  readingFontSize: number
   /** 自动保存防抖延迟（ms）→ `configureAutosave({ delayMs })`。 */
   autosaveDelayMs: number
   /** Tab 宽度（字符数）→ `--mn-tab-size`。 */
@@ -82,6 +93,7 @@ export interface SettingsValues {
 export const DEFAULT_SETTINGS: SettingsValues = {
   uiFontSize: 13,
   editorFontSize: 15,
+  readingFontSize: 15,
   autosaveDelayMs: 600,
   tabWidth: 4,
   attachmentDir: DEFAULT_ATTACHMENT_DIR,
@@ -98,6 +110,8 @@ export interface SettingsState extends SettingsValues {
 
   setUiFontSize: (px: number) => void
   setEditorFontSize: (px: number) => void
+  /** 阅读视图字号（px）。 */
+  setReadingFontSize: (px: number) => void
   setAutosaveDelayMs: (ms: number) => void
   setTabWidth: (width: number) => void
   /** 附件目录（相对 Vault 根；空串 = Vault 根）。非法值会被归一化回默认值。 */
@@ -164,6 +178,12 @@ function restoreValues(): SettingsValues {
       EDITOR_FONT_SIZE_RANGE.max,
       DEFAULT_SETTINGS.editorFontSize,
     ),
+    readingFontSize: clampNumber(
+      saved['readingFontSize'],
+      READING_FONT_SIZE_RANGE.min,
+      READING_FONT_SIZE_RANGE.max,
+      DEFAULT_SETTINGS.readingFontSize,
+    ),
     autosaveDelayMs: snapToOption(
       saved['autosaveDelayMs'],
       AUTOSAVE_DELAY_OPTIONS,
@@ -189,6 +209,7 @@ function persistValues(state: SettingsValues): void {
   saveJson(SETTINGS_STORAGE_KEY, {
     uiFontSize: state.uiFontSize,
     editorFontSize: state.editorFontSize,
+    readingFontSize: state.readingFontSize,
     autosaveDelayMs: state.autosaveDelayMs,
     tabWidth: state.tabWidth,
     attachmentDir: state.attachmentDir,
@@ -241,6 +262,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     persistValues(get())
   },
 
+  setReadingFontSize: (px) => {
+    set({
+      readingFontSize: clampNumber(
+        px,
+        READING_FONT_SIZE_RANGE.min,
+        READING_FONT_SIZE_RANGE.max,
+        DEFAULT_SETTINGS.readingFontSize,
+      ),
+    })
+    persistValues(get())
+  },
+
   setAutosaveDelayMs: (ms) => {
     set({ autosaveDelayMs: snapToOption(ms, AUTOSAVE_DELAY_OPTIONS, DEFAULT_SETTINGS.autosaveDelayMs) })
     persistValues(get())
@@ -260,6 +293,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({
       uiFontSize: DEFAULT_SETTINGS.uiFontSize,
       editorFontSize: DEFAULT_SETTINGS.editorFontSize,
+      readingFontSize: DEFAULT_SETTINGS.readingFontSize,
     })
     persistValues(get())
   },

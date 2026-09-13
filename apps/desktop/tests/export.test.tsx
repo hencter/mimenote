@@ -28,7 +28,7 @@ import { openNote } from '@/app/actions'
 import { ExportButton } from '@/features/export/ExportButton'
 import { ExportDialog } from '@/features/export/ExportDialog'
 import { requestExport, requestExportKind } from '@/features/export/export-events'
-import { PRINT_ROOT_ID, PRINT_STYLE_ID, buildPrintCss } from '@/features/export/export-html'
+import { PRINT_ROOT_ID, PRINT_STYLE_ID, buildExportHtml, buildPrintCss } from '@/features/export/export-html'
 import { exportNoteHtml, printNote } from '@/features/export/export-note'
 import { setSavePathPicker } from '@/features/export/export-save'
 import { setIpcAdapter, type IpcAdapter } from '@/ipc/client'
@@ -388,6 +388,7 @@ describe('打印 / 另存为 PDF', () => {
       '--mn-bg': '#14161a',
       '--mn-fg': '#d7dce5',
       '--mn-font-size-editor': '17px',
+      '--mn-font-size-reading': '21px',
       '--mn-font-mono': "'Cascadia Code', monospace",
     })
 
@@ -395,9 +396,38 @@ describe('打印 / 另存为 PDF', () => {
     expect(style).not.toContain('#14161a')
     expect(style).toContain('--mn-fg: #000000')
     expect(style).toContain('--mn-font-size-editor: 17px')
+    expect(style).toContain('--mn-font-size-reading: 21px')
     expect(style).toContain('--mn-font-mono:')
     expect(style).toContain('white-space: pre-wrap')
     expect(style).toContain('@page')
+  })
+
+  it('导出件正文用"阅读视图字号"，没设置时回落到编辑器字号', () => {
+    const withReading = buildExportHtml({
+      title: '标题',
+      bodyHtml: '<p>正文</p>',
+      tokens: { '--mn-font-size-editor': '15px', '--mn-font-size-reading': '19px' },
+      appearance: 'light',
+      sourceRelPath: '笔记/导出.md',
+      exportedAtMs: Date.UTC(2025, 0, 1),
+    })
+    expect(withReading).toContain('font-size: var(--mn-font-size-reading, var(--mn-font-size-editor))')
+    // 两条令牌都写进了同一个文件里的 `:root`（自包含：不引外部样式）
+    expect(withReading).toContain('--mn-font-size-reading: 19px')
+
+    const withoutReading = buildExportHtml({
+      title: '标题',
+      bodyHtml: '<p>正文</p>',
+      tokens: { '--mn-font-size-editor': '15px' },
+      appearance: 'light',
+      sourceRelPath: '笔记/导出.md',
+      exportedAtMs: Date.UTC(2025, 0, 1),
+    })
+    // 缺失时变量不出现，但回落链仍在 —— 排版不会变成"没有字号"
+    expect(withoutReading).toContain(
+      'font-size: var(--mn-font-size-reading, var(--mn-font-size-editor))',
+    )
+    expect(withoutReading).toContain('--mn-font-size-editor: 15px')
   })
 
   it('把正文挂到打印容器里并调用 window.print()，打印后清理干净', async () => {

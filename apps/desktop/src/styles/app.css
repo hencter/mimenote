@@ -437,7 +437,10 @@ kbd {
   max-width: 820px;
   margin: 0 auto;
   color: var(--mn-fg);
-  font-size: var(--mn-font-size-editor);
+  /* 阅读视图有**自己**的字号（设置页里可单独调）：写作时要一屏看到更多上下文，
+     阅读时要的是舒适，两者不该互相绑架。变量没被写过时回落到编辑器字号 ——
+     所以"从没动过设置"的用户观感与从前完全一致。 */
+  font-size: var(--mn-font-size-reading, var(--mn-font-size-editor));
   line-height: 1.78;
   word-wrap: break-word;
 }

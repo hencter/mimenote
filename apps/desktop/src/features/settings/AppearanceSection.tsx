@@ -4,6 +4,7 @@ import { Icon } from '@/components/Icon'
 import {
   DEFAULT_SETTINGS,
   EDITOR_FONT_SIZE_RANGE,
+  READING_FONT_SIZE_RANGE,
   UI_FONT_SIZE_RANGE,
   useSettingsStore,
 } from '@/state/settings-store'
@@ -15,8 +16,10 @@ export function AppearanceSection() {
   const setThemeId = useUiStore((state) => state.setThemeId)
   const uiFontSize = useSettingsStore((state) => state.uiFontSize)
   const editorFontSize = useSettingsStore((state) => state.editorFontSize)
+  const readingFontSize = useSettingsStore((state) => state.readingFontSize)
   const setUiFontSize = useSettingsStore((state) => state.setUiFontSize)
   const setEditorFontSize = useSettingsStore((state) => state.setEditorFontSize)
+  const setReadingFontSize = useSettingsStore((state) => state.setReadingFontSize)
   const resetFontSizes = useSettingsStore((state) => state.resetFontSizes)
 
   return (
@@ -91,7 +94,7 @@ export function AppearanceSection() {
           <span className="mn-settings__row-label">
             <span className="mn-settings__row-title">编辑器字号</span>
             <span className="mn-settings__row-hint">
-              编辑区与预览正文（CSS 变量{' '}
+              只管编辑区（CSS 变量{' '}
               <code className="mn-settings__path">--mn-font-size-editor</code>）；改它不会重建编辑器
             </span>
           </span>
@@ -110,6 +113,29 @@ export function AppearanceSection() {
           </span>
         </div>
 
+        <div className="mn-settings__row">
+          <span className="mn-settings__row-label">
+            <span className="mn-settings__row-title">阅读视图字号</span>
+            <span className="mn-settings__row-hint">
+              只管阅读视图的正文，与编辑器分开调（CSS 变量{' '}
+              <code className="mn-settings__path">--mn-font-size-reading</code>）
+            </span>
+          </span>
+          <span className="mn-settings__row-control">
+            <input
+              className="mn-settings__range"
+              type="range"
+              aria-label="阅读视图字号"
+              min={READING_FONT_SIZE_RANGE.min}
+              max={READING_FONT_SIZE_RANGE.max}
+              step={READING_FONT_SIZE_RANGE.step}
+              value={readingFontSize}
+              onChange={(event) => setReadingFontSize(Number(event.target.value))}
+            />
+            <span className="mn-settings__value">{readingFontSize}px</span>
+          </span>
+        </div>
+
         <div className="mn-settings__actions">
           <button
             type="button"
@@ -117,7 +143,8 @@ export function AppearanceSection() {
             aria-label="恢复默认字号"
             disabled={
               uiFontSize === DEFAULT_SETTINGS.uiFontSize &&
-              editorFontSize === DEFAULT_SETTINGS.editorFontSize
+              editorFontSize === DEFAULT_SETTINGS.editorFontSize &&
+              readingFontSize === DEFAULT_SETTINGS.readingFontSize
             }
             onClick={resetFontSizes}
           >

@@ -60,6 +60,7 @@ export function SettingsDialog() {
 
   const uiFontSize = useSettingsStore((state) => state.uiFontSize)
   const editorFontSize = useSettingsStore((state) => state.editorFontSize)
+  const readingFontSize = useSettingsStore((state) => state.readingFontSize)
   const tabWidth = useSettingsStore((state) => state.tabWidth)
   const autosaveDelayMs = useSettingsStore((state) => state.autosaveDelayMs)
   const versionInfo = useSettingsStore((state) => state.versionInfo)
@@ -76,9 +77,9 @@ export function SettingsDialog() {
 
   // 字号 / Tab 宽度 → CSS 变量。卸载时整体撤掉（可逆副作用），字号回落到主题令牌。
   useEffect(() => {
-    applyAppearanceOverrides({ uiFontSize, editorFontSize, tabWidth })
+    applyAppearanceOverrides({ uiFontSize, editorFontSize, readingFontSize, tabWidth })
     return clearAppearanceOverrides
-  }, [uiFontSize, editorFontSize, tabWidth])
+  }, [uiFontSize, editorFontSize, readingFontSize, tabWidth])
 
   // 自动保存延迟 → 写盘流水线。卸载**不**恢复默认：这里只是把已持久化的偏好喂给
   // note-store 的模块级参数，没有注册任何监听或定时器需要撤销。

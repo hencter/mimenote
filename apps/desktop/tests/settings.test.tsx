@@ -26,6 +26,7 @@ import { useLinksStore } from '@/state/links-store'
 import { configureAutosave, useNoteStore } from '@/state/note-store'
 import {
   DEFAULT_SETTINGS,
+  READING_FONT_SIZE_RANGE,
   SETTINGS_SECTION_KEY,
   SETTINGS_STORAGE_KEY,
   useSettingsStore,
@@ -396,6 +397,44 @@ describe('设置对话框', () => {
     fireEvent.click(screen.getByRole('button', { name: '恢复默认字号' }))
     expect(useSettingsStore.getState().uiFontSize).toBe(DEFAULT_SETTINGS.uiFontSize)
     expect(document.documentElement.style.getPropertyValue('--mn-font-size-ui')).toBe('13px')
+  })
+
+  it('阅读视图字号与编辑器字号分开：各自写自己的变量、各自持久化、一起被重置', () => {
+    renderShell()
+    act(() => {
+      useSettingsStore.getState().openSettings()
+    })
+
+    const editor = screen.getByLabelText<HTMLInputElement>('编辑器字号')
+    const reading = screen.getByLabelText<HTMLInputElement>('阅读视图字号')
+    expect(editor.value).toBe(String(DEFAULT_SETTINGS.editorFontSize))
+    expect(reading.value).toBe(String(DEFAULT_SETTINGS.readingFontSize))
+
+    // 只动编辑器字号：阅读变量**不变**（此前两者共用同一个变量，改一个必然动另一个）
+    fireEvent.change(editor, { target: { value: '22' } })
+    expect(document.documentElement.style.getPropertyValue('--mn-font-size-editor')).toBe('22px')
+    expect(document.documentElement.style.getPropertyValue('--mn-font-size-reading')).toBe('15px')
+
+    // 只动阅读字号：编辑器不受影响
+    fireEvent.change(reading, { target: { value: '20' } })
+    expect(document.documentElement.style.getPropertyValue('--mn-font-size-reading')).toBe('20px')
+    expect(document.documentElement.style.getPropertyValue('--mn-font-size-editor')).toBe('22px')
+
+    const saved = JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY) ?? '{}') as {
+      readingFontSize?: number
+    }
+    expect(saved.readingFontSize).toBe(20)
+
+    // 「恢复默认字号」把三项一起拉回默认
+    fireEvent.click(screen.getByRole('button', { name: '恢复默认字号' }))
+    expect(useSettingsStore.getState().readingFontSize).toBe(DEFAULT_SETTINGS.readingFontSize)
+    expect(document.documentElement.style.getPropertyValue('--mn-font-size-reading')).toBe('15px')
+
+    // 越界值被夹回范围（滑杆本身不会给出越界值，但持久化里可能被手工改过）
+    act(() => {
+      useSettingsStore.getState().setReadingFontSize(999)
+    })
+    expect(useSettingsStore.getState().readingFontSize).toBe(READING_FONT_SIZE_RANGE.max)
   })
 
   it('主题下拉直接改 ui-store（应用仍由 App 的 applyTheme effect 统一负责）', () => {

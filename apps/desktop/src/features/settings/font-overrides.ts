@@ -2,9 +2,10 @@
  * 把设置页的字号与 Tab 宽度落到 DOM 上（可逆副作用）。
  *
  * **为什么字号走 CSS 变量而不是重渲染组件树**：
- * `--mn-font-size-editor` 同时被编辑器（`features/editor/cm/theme.ts` 里
- * `EditorView.theme` 的 `&{fontSize}`）与预览（`styles/app.css` 的 `.mn-preview__body`）
- * 引用，`--mn-font-size-ui` 被 `body` 引用。写变量 = 浏览器只做一次样式重算，
+ * `--mn-font-size-editor` 被编辑器（`features/editor/cm/theme.ts` 里
+ * `EditorView.theme` 的 `&{fontSize}`）引用，`--mn-font-size-reading` 被预览正文
+ * （`styles/app.css` 的 `.mn-preview__body`）引用，`--mn-font-size-ui` 被 `body` 引用。
+ * 写变量 = 浏览器只做一次样式重算，
  * CodeMirror 的实例、React 组件树、撤销历史、光标位置**全都不用动**；
  * 反过来"把字号当 props 往下传"会重建编辑器、丢掉正在编辑的状态 —— 这是纯亏。
  *
@@ -27,11 +28,14 @@ const STYLE_ELEMENT_ID = 'mn-settings-font-overrides'
 
 export const UI_FONT_SIZE_PROPERTY = '--mn-font-size-ui'
 export const EDITOR_FONT_SIZE_PROPERTY = '--mn-font-size-editor'
+/** 阅读视图字号：**本项目私有**的变量（主题令牌里没有它），因此不会被 `applyTheme` 覆盖。 */
+export const READING_FONT_SIZE_PROPERTY = '--mn-font-size-reading'
 export const TAB_SIZE_PROPERTY = '--mn-tab-size'
 
 export interface AppearanceOverrides {
   uiFontSize: number
   editorFontSize: number
+  readingFontSize: number
   tabWidth: number
 }
 
@@ -52,15 +56,19 @@ export function applyAppearanceOverrides(overrides: AppearanceOverrides): void {
   const root = document.documentElement
   root.style.setProperty(UI_FONT_SIZE_PROPERTY, `${overrides.uiFontSize}px`)
   root.style.setProperty(EDITOR_FONT_SIZE_PROPERTY, `${overrides.editorFontSize}px`)
+  root.style.setProperty(READING_FONT_SIZE_PROPERTY, `${overrides.readingFontSize}px`)
   root.style.setProperty(TAB_SIZE_PROPERTY, String(overrides.tabWidth))
 
   const style = styleElement()
   if (style === null) return
-  // tab-size 是继承属性，写在 html 上即可覆盖编辑器、预览代码块与设置页自身
+  // tab-size 是继承属性，写在 html 上即可覆盖编辑器、预览代码块与设置页自身。
+  // 三条字号规则都带 `!important`：作者样式表里的 important 声明优先于内联的普通声明，
+  // 因此换主题时 `applyTheme` 整批重写内联令牌也冲不掉用户的选择（理由见文件头）。
   style.textContent = [
     ':root {',
     `  ${UI_FONT_SIZE_PROPERTY}: ${overrides.uiFontSize}px !important;`,
     `  ${EDITOR_FONT_SIZE_PROPERTY}: ${overrides.editorFontSize}px !important;`,
+    `  ${READING_FONT_SIZE_PROPERTY}: ${overrides.readingFontSize}px !important;`,
     '}',
     `html { tab-size: var(${TAB_SIZE_PROPERTY}, 4); }`,
     '',
@@ -73,6 +81,7 @@ export function clearAppearanceOverrides(): void {
   const root = document.documentElement
   root.style.removeProperty(UI_FONT_SIZE_PROPERTY)
   root.style.removeProperty(EDITOR_FONT_SIZE_PROPERTY)
+  root.style.removeProperty(READING_FONT_SIZE_PROPERTY)
   root.style.removeProperty(TAB_SIZE_PROPERTY)
   document.getElementById(STYLE_ELEMENT_ID)?.remove()
 }

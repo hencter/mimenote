@@ -14,6 +14,7 @@ import { frontmatterBody } from '@/domain/frontmatter'
 import { stem } from '@/domain/paths'
 import { ipc, isTauriRuntime } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
+import { READING_FONT_SIZE_PROPERTY } from '@/features/settings/font-overrides'
 import { useNoteStore } from '@/state/note-store'
 import { toast } from '@/state/toast-store'
 import { useUiStore } from '@/state/ui-store'
@@ -81,6 +82,11 @@ export function readExportTokens(): { tokens: Record<string, string>; appearance
     const value = fromComputed !== '' ? fromComputed : fromInline !== '' ? fromInline : (theme.tokens[name] ?? '')
     if (value !== '') tokens[name] = value
   }
+  // 阅读视图字号**不是主题令牌**（它是设置页私有的覆盖变量，见 `font-overrides.ts`），
+  // 所以不会被上面的循环捞到。但导出件是给人读的，排版该跟阅读视图一致 ——
+  // 这里补一条：拿不到就让它缺席，导出件里的 `var(..., var(--mn-font-size-editor))` 会回落到编辑器字号。
+  const reading = computed?.getPropertyValue(READING_FONT_SIZE_PROPERTY).trim() ?? ''
+  if (reading !== '') tokens[READING_FONT_SIZE_PROPERTY] = reading
   return { tokens, appearance: theme.appearance }
 }
 

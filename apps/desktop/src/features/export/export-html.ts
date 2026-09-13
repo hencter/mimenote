@@ -94,7 +94,10 @@ ${scope} {
   background: var(--mn-bg);
   color: var(--mn-fg);
   font-family: var(--mn-font-ui);
-  font-size: var(--mn-font-size-editor);
+  /* 与阅读视图同口径：导出件是给人**读**的，所以用"阅读视图字号"（设置页可单独调）。
+     --mn-font-size-reading 不是主题令牌、可能没被写过，因此回落到编辑器字号 ——
+     与 styles/app.css 的 .mn-preview__body 用的是同一条回落链。 */
+  font-size: var(--mn-font-size-reading, var(--mn-font-size-editor));
   line-height: 1.78;
   word-wrap: break-word;
   -webkit-text-size-adjust: 100%;
