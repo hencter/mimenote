@@ -71,6 +71,27 @@
 1. **全局快捷键装在捕捉阶段**，注册过的组合键赢过编辑器自己的绑定 —— 否则 `Ctrl+G` 会被编辑器侧吃掉（见 `app/keymap.ts` 的注释）；
 2. **弹层不进 `.cm-content`**：`wiki-complete` 的浮层挂在 `.cm-editor` 下当兄弟节点，否则它会被当成文档内容参与排版测量。
 
+### 2.2 设置页与应用菜单的接线
+
+**一个原则：能力只有一份实现，界面只是它的投影。**
+
+| 界面 | 投影自 | 为什么 |
+| --- | --- | --- |
+| 应用菜单（标题栏） | **命令注册表**（`app/builtin-commands.ts` 的 `BUILTIN_COMMANDS`，按 `category` 分组） | 菜单与命令面板读同一份数据。若菜单自己维护一张表，"面板里能搜到、菜单里没有"这种漂移迟早出现；菜单只**跳过**面板自己托管的那几条命令（避免同一个动作出现两行） |
+| 命令面板 | 同上 | 依赖 Vault 的命令按 `when()` 置灰并显示 `unavailableReason` —— 判据只有一处 |
+| 设置页的值 | `state/settings-store.ts`（localStorage `mimenote.settings.v1`），每个值落到"一个可逆副作用" | 见下表 |
+
+设置项的落点（每一项都必须**即时生效 + 可逆**，且**不重建编辑器**）：
+
+| 设置 | 落到哪里 | 为什么这样接 |
+| --- | --- | --- |
+| 主题 | `theme/apply.ts` 写一组 CSS 变量 + `data-theme` | 颜色全部来自令牌（`theme/tokens.ts` 是唯一契约，单测校验每个内置主题都提供全部令牌） |
+| 界面 / 编辑器 / **阅读视图**字号 | `features/settings/font-overrides.ts` 写 `--mn-font-size-*`（内联 + 一条 `!important` 作者样式表） | 浏览器只做一次样式重算；**CodeMirror 实例、撤销历史、光标位置全都不用动**。两条路径一起写是因为换主题会整批重写内联令牌，只写内联会被覆盖回去（见该文件头） |
+| Tab 宽度 | `--mn-tab-size` + 编辑器里的 `tabSizeCompartment` | 纯 CSS 那条管预览与设置页自身，compartment 那条管编辑器的**列宽语义**（列表层级、光标列计算都依赖它） |
+| 自动保存延迟 | `note-store` 的 `configureAutosave({ delayMs })` | 它是模块级参数，设置页只是把已持久化的偏好喂进去 |
+| 附件目录 | `attachment_save` 的 `dirRel`（粘贴/拖入图片落盘处） | 值是 **Vault 内相对目录**，所以换 Vault 仍然指向"那个 Vault 里的同名目录" |
+| 阅读视图字号 | `--mn-font-size-reading`（阅读正文、导出件、打印容器共用） | 它**不是主题令牌**：主题 JSON 里没有它，因此不会被换主题覆盖；导出件额外读一次这个变量（`readExportTokens`），因为导出件是给人**读**的 |
+
 ## 3. 接口与数据流
 
 ### 3.1 IPC 契约
