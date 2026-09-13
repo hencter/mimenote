@@ -50,6 +50,47 @@ function readLayout(page: Page) {
   })
 }
 
+/**
+ * 文件树里的某一行。
+ *
+ * 注意必须限定在 `.mn-tree` 内：预览里的 wikilink 解析成功后也会带 `data-rel-path`，
+ * 不加范围会命中两个元素（Playwright 严格模式会直接报错）。
+ */
+function treeRow(page: Page, relPath: string) {
+  return page.locator(`.mn-tree [data-rel-path="${relPath}"]`)
+}
+
+/**
+ * 确保文件树里某一行可见（必要时先展开父目录）。
+ *
+ * 为什么需要：用例之间会互相影响树的展开/选中状态（例如键盘导航用例按 Enter
+ * 会折叠目录）。每条用例都应该自足，而不是依赖"上一条用例刚好把树留在什么状态"。
+ */
+async function ensureTreeRow(page: Page, relPath: string): Promise<void> {
+  const row = treeRow(page, relPath)
+  if ((await row.count()) === 0) {
+    const index = relPath.lastIndexOf('/')
+    if (index > 0) {
+      const parent = relPath.slice(0, index)
+      await ensureTreeRow(page, parent)
+      await treeRow(page, parent).click()
+    }
+  }
+  await row.waitFor({ state: 'visible', timeout: 10_000 })
+}
+
+/** 在文件树里打开某篇笔记，并等到编辑器确实载入它。 */
+async function openNoteInTree(page: Page, relPath: string): Promise<void> {
+  await ensureTreeRow(page, relPath)
+  await treeRow(page, relPath).click()
+  await waitUntil(
+    async () =>
+      ((await page.locator('.mn-editor__path').textContent()) ?? '').includes(relPath),
+    10_000,
+    `打开 ${relPath}`,
+  )
+}
+
 describe('UI 层（Edge + dist + Mock Vault）', () => {
   let server: StaticServer
   let browser: Browser
@@ -97,7 +138,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
   it('打开笔记后布局不变（编辑/预览是"填充"，不是"撑开"）', async () => {
     const before = await readLayout(page)
 
-    await page.locator('[data-rel-path="项目/设计.md"]').click()
+    await page.locator('.mn-tree [data-rel-path="项目/设计.md"]').click()
     await page.waitForSelector('.cm-content', { state: 'visible' })
     await waitUntil(
       async () =>
@@ -120,8 +161,8 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(html).toContain('<h1')
 
     // 切到带围栏代码块的笔记（先展开它的父目录）
-    await page.locator('[data-rel-path="项目/子项目"]').click()
-    await page.locator('[data-rel-path="项目/子项目/细节.md"]').click()
+    await page.locator('.mn-tree [data-rel-path="项目/子项目"]').click()
+    await page.locator('.mn-tree [data-rel-path="项目/子项目/细节.md"]').click()
     await waitUntil(
       async () =>
         ((await page.locator('.mn-preview__body').innerHTML()) ?? '').includes('<pre>'),
@@ -152,7 +193,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
   it('切换主题即时生效（CSS 变量驱动，不重建编辑器）', async () => {
     // 先确保有一篇打开的笔记，才能验证"主题切换不会重建编辑器"
-    await page.locator('[data-rel-path="随手记.md"]').click()
+    await page.locator('.mn-tree [data-rel-path="随手记.md"]').click()
     await page.waitForSelector('.cm-content', { state: 'visible' })
     const textBefore = (await page.locator('.mn-editor__path').textContent()) ?? ''
 
@@ -178,7 +219,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
   })
 
   it('缩小窗口后布局立刻跟随（不需要任何点击）', async () => {
-    await page.locator('[data-rel-path="项目/设计.md"]').click()
+    await page.locator('.mn-tree [data-rel-path="项目/设计.md"]').click()
     await page.waitForSelector('.cm-content', { state: 'visible' })
 
     await page.setViewportSize({ width: 1000, height: 620 })
@@ -197,6 +238,124 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(layout.tree.height).toBeGreaterThan(100)
 
     await page.setViewportSize({ width: 1280, height: 800 })
+  })
+
+  it('文件树键盘导航：方向键移动选中项，Enter 打开笔记', async () => {
+    await page.locator('.mn-tree [data-rel-path="随手记.md"]').click()
+    await page.locator('.mn-tree').focus()
+
+    const selectedPath = () =>
+      page.locator('.mn-tree-row--selected').getAttribute('data-rel-path')
+
+    await page.keyboard.press('ArrowDown')
+    const afterDown = await selectedPath()
+    expect(afterDown).not.toBeNull()
+
+    await page.keyboard.press('ArrowUp')
+    const afterUp = await selectedPath()
+    expect(afterUp).not.toBeNull()
+    expect(afterUp).not.toBe(afterDown)
+
+    // Enter 打开当前选中项（目录则展开/折叠）
+    await page.keyboard.press('Enter')
+    // 选中项若为文件，编辑器应载入该文件
+    const chosen = await selectedPath()
+    if (chosen !== null && chosen.endsWith('.md')) {
+      await waitUntil(
+        async () =>
+          ((await page.locator('.mn-editor__path').textContent()) ?? '').includes(chosen),
+        8_000,
+        `Enter 打开 ${chosen}`,
+      )
+    }
+  })
+
+  it('拖拽分隔条改变侧栏宽度，且布局仍然铺满', async () => {
+    const before = await page.locator('.mn-sidebar').evaluate((el) => el.getBoundingClientRect().width)
+    const handle = await page.locator('.mn-splitter').first().boundingBox()
+    expect(handle).not.toBeNull()
+    if (handle === null) return
+
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(handle.x + handle.width / 2 + 120, handle.y + handle.height / 2, { steps: 8 })
+    await page.mouse.up()
+
+    await waitUntil(
+      async () =>
+        (await page.locator('.mn-sidebar').evaluate((el) => el.getBoundingClientRect().width)) >
+        before + 60,
+      5_000,
+      '侧栏被拖宽',
+    )
+
+    const layout = await readLayout(page)
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
+    expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
+  })
+
+  it('链接面板：显示反向链接，点击跳转到来源笔记', async () => {
+    await openNoteInTree(page, '项目/设计.md')
+
+    await page.locator('button[aria-label="链接面板"]').click()
+    await page.waitForSelector('.mn-links', { state: 'visible' })
+
+    // 反向链接里应出现「路线图.md」（它链接了「设计」）
+    await waitUntil(
+      async () =>
+        (await page.locator('.mn-links__item-name').allTextContents()).includes('路线图.md'),
+      10_000,
+      '反向链接列表出现来源笔记',
+    )
+
+    // 出链里应有已解析的「路线图」
+    const outbound = await page.locator('[data-outbound-target]').evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute('data-outbound-target')),
+    )
+    expect(outbound).toContain('路线图')
+
+    await page.locator('[data-backlink-from="项目/路线图.md"]').click()
+    await waitUntil(
+      async () =>
+        ((await page.locator('.mn-editor__path').textContent()) ?? '').includes('项目/路线图.md'),
+      10_000,
+      '点击反向链接后跳转到来源笔记',
+    )
+
+    await page.locator('button[aria-label="关闭链接面板"]').click()
+    expect(await page.locator('.mn-links').count()).toBe(0)
+  })
+
+  it('预览里的 wikilink 可点击跳转，且布局仍然铺满', async () => {
+    // 自足：先打开带 wikilink 的笔记（不依赖上一条用例留下的状态）
+    await openNoteInTree(page, '项目/路线图.md')
+    await page.waitForSelector('a.mn-wikilink', { state: 'visible' })
+    await waitUntil(
+      async () => (await page.locator('a.mn-wikilink').first().getAttribute('data-rel-path')) !== null,
+      10_000,
+      'wikilink 被标记为已解析',
+    )
+
+    await page.locator('a.mn-wikilink').first().click()
+    await waitUntil(
+      async () =>
+        ((await page.locator('.mn-editor__path').textContent()) ?? '').includes('项目/设计.md'),
+      10_000,
+      '点击 wikilink 后打开目标笔记',
+    )
+
+    const layout = await readLayout(page)
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
+    expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
+  })
+
+  it('悬空 wikilink 标记为未解析', async () => {
+    await openNoteInTree(page, '项目/子项目/细节.md')
+    await page.waitForSelector('a.mn-wikilink--unresolved', { state: 'visible', timeout: 10_000 })
+    const text = (await page.locator('a.mn-wikilink--unresolved').textContent()) ?? ''
+    expect(text).toContain('还不存在的笔记')
   })
 
   it('视图模式切换：仅编辑 / 分栏 / 仅预览', async () => {

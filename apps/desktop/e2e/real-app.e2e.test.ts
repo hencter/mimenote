@@ -13,6 +13,8 @@
  * 平台限制：WebView2 的远程调试只在 Windows 上存在。其它平台会跳过（不假装通过）。
  */
 
+import { existsSync, readdirSync } from 'node:fs'
+
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import {
@@ -61,7 +63,7 @@ describe.skipIf(!supported)('真实应用：启动与布局（不打开任何笔
     await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
     expect(await app.page.locator('.mn-tree-row').count()).toBeGreaterThanOrEqual(3)
     // 目录节点也在（notes 目录）
-    await app.page.locator('[data-rel-path="notes"]').waitFor({ state: 'visible', timeout: 5_000 })
+    await app.page.locator('.mn-tree [data-rel-path="notes"]').waitFor({ state: 'visible', timeout: 5_000 })
     // 门闸页不应该还在
     expect(await app.page.locator('.mn-gate').count()).toBe(0)
   })
@@ -108,6 +110,93 @@ describe.skipIf(!supported)('真实应用：启动与布局（不打开任何笔
   // 见 e2e/ui.e2e.test.ts 的"缩小窗口后布局跟随"。
 })
 
+describe.skipIf(!supported)('真实应用：链接索引（真实 wikilink 解析）', () => {
+  let app: LaunchedApp
+  let vault: TempVault
+
+  beforeAll(async () => {
+    vault = await createTempVault({
+      '笔记/甲.md': '# 甲\n\n见 [[乙]] 与 [[丙]]，还有一个还没写的 [[丁]]。\n',
+      '笔记/乙.md': '# 乙\n\n回到 [[甲]]。\n',
+      '笔记/丙.md': '# 丙\n\n没有出链。\n',
+    })
+    app = await launchApp({ vaultPath: vault.path })
+    await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
+  }, 120_000)
+
+  afterAll(async () => {
+    if (app !== undefined) await app.close()
+    if (vault !== undefined) await vault.cleanup()
+  })
+
+  it('后台索引完成后，面板里能看到出链与反向链接', async () => {
+    await app.page.locator('.mn-tree [data-rel-path="笔记"]').click()
+    await app.page.locator('.mn-tree [data-rel-path="笔记/甲.md"]').click()
+    await app.page.waitForSelector('.cm-content', { state: 'visible', timeout: 15_000 })
+
+    await app.page.locator('button[aria-label="链接面板"]').click()
+    await app.page.waitForSelector('.mn-links', { state: 'visible' })
+
+    // 索引在后台跑，状态标签会从"索引中"变为"已索引"
+    await waitUntil(
+      async () => ((await app.page.locator('.mn-links__status').textContent()) ?? '').includes('已索引'),
+      30_000,
+      '后台索引完成',
+    )
+
+    // 出链：乙、丙（已解析）+ 丁（悬空）
+    const outbound = await app.page.locator('[data-outbound-target]').evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute('data-outbound-target')),
+    )
+    expect(outbound).toContain('乙')
+    expect(outbound).toContain('丙')
+    expect(outbound).toContain('丁')
+
+    // 反向链接：乙指向甲
+    await waitUntil(
+      async () => (await app.page.locator('[data-backlink-from="笔记/乙.md"]').count()) === 1,
+      15_000,
+      '反向链接里出现乙',
+    )
+  })
+
+  it('点击反向链接跳转，点击悬空链接创建真实文件', async () => {
+    // 点反向链接 → 打开乙
+    await app.page.locator('[data-backlink-from="笔记/乙.md"]').click()
+    await waitUntil(
+      async () => ((await app.page.locator('.mn-editor__path').textContent()) ?? '').includes('笔记/乙.md'),
+      15_000,
+      '跳转到乙',
+    )
+    // 乙 的反向链接里应有甲
+    await waitUntil(
+      async () => (await app.page.locator('[data-backlink-from="笔记/甲.md"]').count()) === 1,
+      15_000,
+      '乙的反向链接里出现甲',
+    )
+
+    // 回到甲，点悬空链接「丁」→ 真的在磁盘上创建笔记
+    await app.page.locator('.mn-tree [data-rel-path="笔记/甲.md"]').click()
+    await waitUntil(
+      async () => (await app.page.locator('[data-outbound-target="丁"]').count()) === 1,
+      15_000,
+      '甲 的出链里出现丁',
+    )
+    expect(existsSync(vault.absolute('笔记/丁.md'))).toBe(false)
+
+    await app.page.locator('[data-outbound-target="丁"]').click()
+    await waitUntil(() => Promise.resolve(existsSync(vault.absolute('笔记/丁.md'))), 15_000, '丁.md 被创建')
+    await waitUntil(
+      async () => ((await app.page.locator('.mn-editor__path').textContent()) ?? '').includes('笔记/丁.md'),
+      15_000,
+      '创建后自动打开丁',
+    )
+    // 新笔记里应写入标题
+    const created = await vault.read('笔记/丁.md')
+    expect(created).toContain('丁')
+  })
+})
+
 describe.skipIf(!supported)('真实应用：编辑与保存（真实磁盘）', () => {
   let app: LaunchedApp
   let vault: TempVault
@@ -116,6 +205,7 @@ describe.skipIf(!supported)('真实应用：编辑与保存（真实磁盘）', 
     vault = await createTempVault({
       [NOTE_MAIN]: '# 你好\n\n这是 E2E 用的笔记。\n',
       [NOTE_CONFLICT]: '# 冲突测试\n\n初始内容。\n',
+      'notes/to-delete.md': '# 待删除\n\n这篇会被移入回收站。\n',
     })
     app = await launchApp({ vaultPath: vault.path })
     await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
@@ -127,7 +217,7 @@ describe.skipIf(!supported)('真实应用：编辑与保存（真实磁盘）', 
   })
 
   it('打开笔记 → 编辑器载入磁盘内容 → 输入 → 自动保存写回磁盘', async () => {
-    await app.page.locator(`[data-rel-path="${NOTE_MAIN}"]`).click()
+    await app.page.locator(`.mn-tree [data-rel-path="${NOTE_MAIN}"]`).click()
     await app.page.waitForSelector('.cm-content', { state: 'visible', timeout: 15_000 })
 
     await waitUntil(
@@ -156,7 +246,7 @@ describe.skipIf(!supported)('真实应用：编辑与保存（真实磁盘）', 
   })
 
   it('文件被外部修改 → 冲突横幅 → 不覆盖磁盘 → 重新加载恢复', async () => {
-    await app.page.locator(`[data-rel-path="${NOTE_CONFLICT}"]`).click()
+    await app.page.locator(`.mn-tree [data-rel-path="${NOTE_CONFLICT}"]`).click()
     await app.page.waitForSelector('.cm-content', { state: 'visible', timeout: 15_000 })
     await waitUntil(
       async () => ((await app.page.locator('.cm-content').textContent()) ?? '').includes('初始内容'),
@@ -192,5 +282,41 @@ describe.skipIf(!supported)('真实应用：编辑与保存（真实磁盘）', 
       '编辑器恢复为磁盘内容',
     )
     expect(await app.page.locator('.mn-conflict').count()).toBe(0)
+  })
+
+  it('删除到回收站：需要二次确认，文件真的进 .mimenote/trash', async () => {
+    const target = 'notes/to-delete.md'
+    const absolute = vault.absolute(target)
+    expect(existsSync(absolute)).toBe(true)
+
+    // 选中该笔记（顺带验证点开后编辑器载入）
+    await app.page.locator(`.mn-tree [data-rel-path="${target}"]`).click()
+    await app.page.waitForSelector('.cm-content', { state: 'visible', timeout: 15_000 })
+
+    // 在文件树上按 Delete → 出现二次确认
+    await app.page.locator('.mn-tree').focus()
+    await app.page.keyboard.press('Delete')
+    await app.page.waitForSelector('.mn-dialog', { state: 'visible', timeout: 10_000 })
+    const dialogText = (await app.page.locator('.mn-dialog').textContent()) ?? ''
+    expect(dialogText).toContain('移入回收站')
+    expect(dialogText).toContain('.mimenote/trash')
+
+    await app.page.locator('.mn-dialog button', { hasText: '移入回收站' }).click()
+
+    // 原位置消失、树里的行消失
+    await waitUntil(async () => !existsSync(absolute), 10_000, '原文件被移走')
+    await waitUntil(
+      async () => (await app.page.locator(`.mn-tree [data-rel-path="${target}"]`).count()) === 0,
+      10_000,
+      '文件树中的行消失',
+    )
+
+    // 回收站里有它，且有台账
+    const trashDir = vault.absolute('.mimenote/trash')
+    expect(existsSync(trashDir)).toBe(true)
+    const trashed = readdirSync(trashDir).filter((name) => name.endsWith('__to-delete.md'))
+    expect(trashed.length).toBe(1)
+    const index = await vault.read('.mimenote/index.jsonl')
+    expect(index).toContain('notes/to-delete.md')
   })
 })
