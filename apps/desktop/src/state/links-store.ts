@@ -40,6 +40,39 @@ interface LinksState {
  */
 let requestSeq = 0
 
+/**
+ * 索引进度：事件是主通道，但**事件可能早于订阅**。
+ *
+ * 真实竞态：宿主在 `vault_open` 返回后立刻开始后台构建，小 Vault 1ms 就建完并发出
+ * 完成事件；而前端订阅要走一次动态 import + 注册监听（几十毫秒）。事件丢了就会
+ * 永久停在"索引中…"。
+ *
+ * 因此：订阅成功后立刻查一次状态；只要状态仍是 `building`，就以 500ms 自终止轮询兜底
+ * （建完即停，最多 60 秒）。
+ */
+const STATUS_POLL_MS = 500
+const STATUS_POLL_MAX_ATTEMPTS = 120
+let statusPollTimer: ReturnType<typeof setTimeout> | null = null
+let statusPollAttempts = 0
+
+function stopStatusPolling(): void {
+  if (statusPollTimer !== null) {
+    clearTimeout(statusPollTimer)
+    statusPollTimer = null
+  }
+  statusPollAttempts = 0
+}
+
+function scheduleStatusPoll(): void {
+  if (statusPollTimer !== null) return
+  if (statusPollAttempts >= STATUS_POLL_MAX_ATTEMPTS) return
+  statusPollTimer = setTimeout(() => {
+    statusPollTimer = null
+    statusPollAttempts += 1
+    void useLinksStore.getState().refreshStatus()
+  }, STATUS_POLL_MS)
+}
+
 export const useLinksStore = create<LinksState>((set) => ({
   status: IDLE_STATUS,
   links: null,
@@ -69,6 +102,11 @@ export const useLinksStore = create<LinksState>((set) => ({
     try {
       const status = await ipc.indexStatus()
       set({ status })
+      if (status.phase === 'building') {
+        scheduleStatusPoll()
+      } else {
+        stopStatusPolling()
+      }
     } catch {
       // 索引状态拿不到不影响主流程（浏览器预览模式下就没有这个命令）
     }
@@ -76,6 +114,7 @@ export const useLinksStore = create<LinksState>((set) => ({
 
   clear: () => {
     requestSeq += 1
+    stopStatusPolling()
     set({ links: null, loading: false, error: null, status: IDLE_STATUS })
   },
 }))
@@ -100,12 +139,23 @@ export function subscribeIndexStatus(): () => void {
       const { listen } = await import('@tauri-apps/api/event')
       const stop = await listen<IndexStatus>(INDEX_STATUS_EVENT, (event) => {
         applyIndexStatus(event.payload)
+        // 收到终态就停止兜底轮询
+        if (event.payload.phase !== 'building') stopStatusPolling()
       })
-      if (disposed) stop()
-      else unlisten = stop
+      if (disposed) {
+        stop()
+        return
+      }
+      unlisten = stop
+
+      // 关键：订阅注册**之后**立刻查一次状态 ——
+      // 补上"事件在本监听注册之前已经发出"的那些情况（见 scheduleStatusPoll 的说明）。
+      await useLinksStore.getState().refreshStatus()
     } catch (cause) {
       // 浏览器预览模式（没有 Tauri 事件系统）会走到这里，属于预期降级
       console.debug('[index] 订阅索引进度事件失败，改用状态查询：', cause)
+      // 事件不可用时完全依赖状态查询
+      await useLinksStore.getState().refreshStatus()
     }
   })()
 
@@ -113,5 +163,6 @@ export function subscribeIndexStatus(): () => void {
     disposed = true
     unlisten?.()
     unlisten = null
+    stopStatusPolling()
   }
 }

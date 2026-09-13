@@ -5,7 +5,7 @@
  * 契约字段、请求竞态、以及"前端拿到的数据足以驱动面板与预览"。
  */
 
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter, MOCK_VAULT_PATH, type MockAdapter } from '@/ipc/mock-adapter'
@@ -89,6 +89,44 @@ describe('links store', () => {
     const status = useLinksStore.getState().status
     expect(status.phase).toBe('ready')
     expect(status.links).toBeGreaterThan(0)
+  })
+
+  it('索引进度事件丢失时由轮询兜底（回归：事件早于订阅发出）', async () => {
+    vi.useFakeTimers()
+    try {
+      let phase: 'building' | 'ready' = 'building'
+      setIpcAdapter({
+        kind: 'test',
+        invoke: <T,>(method: string): Promise<T> => {
+          if (method === 'index_status') {
+            return Promise.resolve({
+              phase,
+              indexed: phase === 'ready' ? 10 : 1,
+              total: 10,
+              durationMs: phase === 'ready' ? 8 : 0,
+              links: phase === 'ready' ? 3 : 0,
+            } as unknown as T)
+          }
+          return Promise.reject(new Error(`未预期的调用：${method}`))
+        },
+      })
+
+      await useLinksStore.getState().refreshStatus()
+      expect(useLinksStore.getState().status.phase).toBe('building')
+
+      // 宿主建完了，但"完成事件"在前端订阅之前就发过了 —— 只有轮询能发现
+      phase = 'ready'
+      await vi.advanceTimersByTimeAsync(600)
+      expect(useLinksStore.getState().status.phase).toBe('ready')
+      expect(useLinksStore.getState().status.links).toBe(3)
+
+      // 终态后不再继续轮询
+      const settled = useLinksStore.getState().status
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(useLinksStore.getState().status).toEqual(settled)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('宿主推送的进度的处理函数可用（事件订阅的落点）', () => {
