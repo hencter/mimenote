@@ -15,6 +15,7 @@
 
 import { existsSync, readdirSync } from 'node:fs'
 
+import type { Page } from 'playwright-core'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import {
@@ -39,6 +40,49 @@ async function waitUntil(check: () => Promise<boolean>, timeoutMs: number, what:
     await delay(150)
   }
   throw new Error(`等待超时：${what}`)
+}
+
+/** 文件树里的某一行（限定在 `.mn-tree` 内：预览里的 wikilink 也会带 data-rel-path）。 */
+function treeRow(page: Page, relPath: string) {
+  return page.locator(`.mn-tree [data-rel-path="${relPath}"]`)
+}
+
+/**
+ * 确保文件树里某一行可见。
+ *
+ * ⚠️ **只在行不存在时**才去点父目录展开它。先前这里无条件点父目录，
+ * 而顶层目录默认就是展开的 —— 那一下反而把它折叠了，子行随即消失（用例因此超时）。
+ */
+async function ensureTreeRow(page: Page, relPath: string): Promise<void> {
+  const row = treeRow(page, relPath)
+  if ((await row.count()) === 0) {
+    const index = relPath.lastIndexOf('/')
+    if (index > 0) {
+      const parent = relPath.slice(0, index)
+      await ensureTreeRow(page, parent)
+      await treeRow(page, parent).click()
+    }
+  }
+  await row.waitFor({ state: 'visible', timeout: 10_000 })
+}
+
+/** 打开某篇笔记（自足：不依赖上一条用例留下的树/面板状态）。 */
+async function openNoteInTree(page: Page, relPath: string): Promise<void> {
+  await ensureTreeRow(page, relPath)
+  await treeRow(page, relPath).click()
+  await waitUntil(
+    async () => ((await page.locator('.mn-editor__path').textContent()) ?? '').includes(relPath),
+    15_000,
+    `打开 ${relPath}`,
+  )
+}
+
+/** 确保链接面板已打开。 */
+async function ensureLinksPanel(page: Page): Promise<void> {
+  if ((await page.locator('.mn-links').count()) === 0) {
+    await page.locator('button[aria-label="链接面板"]').click()
+  }
+  await page.waitForSelector('.mn-links', { state: 'visible', timeout: 10_000 })
 }
 
 describe.skipIf(!supported)('真实应用：启动与布局（不打开任何笔记）', () => {
@@ -130,12 +174,8 @@ describe.skipIf(!supported)('真实应用：链接索引（真实 wikilink 解�
   })
 
   it('后台索引完成后，面板里能看到出链与反向链接', async () => {
-    await app.page.locator('.mn-tree [data-rel-path="笔记"]').click()
-    await app.page.locator('.mn-tree [data-rel-path="笔记/甲.md"]').click()
-    await app.page.waitForSelector('.cm-content', { state: 'visible', timeout: 15_000 })
-
-    await app.page.locator('button[aria-label="链接面板"]').click()
-    await app.page.waitForSelector('.mn-links', { state: 'visible' })
+    await openNoteInTree(app.page, '笔记/甲.md')
+    await ensureLinksPanel(app.page)
 
     // 索引在后台跑，状态标签会从"索引中"变为"已索引"
     await waitUntil(
@@ -161,6 +201,15 @@ describe.skipIf(!supported)('真实应用：链接索引（真实 wikilink 解�
   })
 
   it('点击反向链接跳转，点击悬空链接创建真实文件', async () => {
+    // 自足：不依赖上一条用例留下的树/面板状态
+    await openNoteInTree(app.page, '笔记/甲.md')
+    await ensureLinksPanel(app.page)
+    await waitUntil(
+      async () => (await app.page.locator('[data-backlink-from="笔记/乙.md"]').count()) === 1,
+      30_000,
+      '反向链接里出现乙',
+    )
+
     // 点反向链接 → 打开乙
     await app.page.locator('[data-backlink-from="笔记/乙.md"]').click()
     await waitUntil(
@@ -176,7 +225,7 @@ describe.skipIf(!supported)('真实应用：链接索引（真实 wikilink 解�
     )
 
     // 回到甲，点悬空链接「丁」→ 真的在磁盘上创建笔记
-    await app.page.locator('.mn-tree [data-rel-path="笔记/甲.md"]').click()
+    await openNoteInTree(app.page, '笔记/甲.md')
     await waitUntil(
       async () => (await app.page.locator('[data-outbound-target="丁"]').count()) === 1,
       15_000,
