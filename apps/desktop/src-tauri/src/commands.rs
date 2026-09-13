@@ -222,6 +222,15 @@ pub fn vault_close(state: State<'_, Arc<AppState>>) -> Result<(), IpcError> {
     Ok(())
 }
 
+/// 命令行指定的 Vault 路径（`mimenote.exe <目录>`）。
+///
+/// 前端在启动时优先打开它；返回 `null` 表示没有（例如双击启动），
+/// 此时回退到"上次打开的 Vault"。
+#[tauri::command]
+pub fn startup_vault(state: State<'_, Arc<AppState>>) -> Option<String> {
+    state.startup_vault().map(|path| path.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // 笔记读写
 // ---------------------------------------------------------------------------

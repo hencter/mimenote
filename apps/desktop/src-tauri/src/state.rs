@@ -122,9 +122,24 @@ fn is_note(entry: &EntryMeta, options: &ScanOptions) -> bool {
 pub struct AppState {
     vault: RwLock<Option<VaultCtx>>,
     write_lock: Mutex<()>,
+    /// 命令行指定的 Vault（`mimenote.exe <目录>`），供前端启动时自动打开。
+    startup_vault: Option<String>,
 }
 
 impl AppState {
+    /// 带启动参数构造（`startup_vault` 必须是已校验的目录）。
+    pub fn with_startup_vault(startup_vault: Option<String>) -> Self {
+        Self {
+            startup_vault,
+            ..Self::default()
+        }
+    }
+
+    /// 命令行指定的 Vault 路径（面向用户展示的绝对路径）。
+    pub fn startup_vault(&self) -> Option<&str> {
+        self.startup_vault.as_deref()
+    }
+
     /// 只读访问当前 Vault；未打开时返回 `VAULT_NOT_SET`。
     pub fn with_vault<T>(&self, f: impl FnOnce(&VaultCtx) -> Result<T>) -> Result<T> {
         let guard = self.vault.read().unwrap_or_else(|e| e.into_inner());
@@ -287,5 +302,16 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(max_seen.load(Ordering::SeqCst), 1, "写临界区不可并发进入");
+    }
+
+    #[test]
+    fn startup_vault_is_exposed_only_when_provided() {
+        let state = AppState::default();
+        assert_eq!(state.startup_vault(), None);
+
+        let state = AppState::with_startup_vault(Some("C:/vault".to_string()));
+        assert_eq!(state.startup_vault(), Some("C:/vault"));
+        // 启动参数不等于"已打开 Vault"
+        assert!(!state.is_open());
     }
 }

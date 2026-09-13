@@ -17,6 +17,9 @@ interface MockNote {
   text: string
 }
 
+/** 内存示例 Vault 的根路径（浏览器预览模式下"打开 Vault"打开的就是它）。 */
+export const MOCK_VAULT_PATH = 'C:\\MockVault'
+
 const DEFAULT_NOTES: MockNote[] = [
   { relPath: 'README.md', text: '# 示例 Vault\n\n这是**内存 Mock Vault**，用于浏览器预览与自动化测试。\n' },
   {
@@ -34,6 +37,8 @@ const DEFAULT_NOTES: MockNote[] = [
 export interface MockAdapterOptions {
   notes?: MockNote[]
   rootPath?: string
+  /** 模拟命令行指定的 Vault（`startup_vault` 命令）。 */
+  startupVaultPath?: string
   /** 模拟写入延迟（毫秒），用于验证 UI 的"保存中"状态。 */
   writeLatencyMs?: number
 }
@@ -46,7 +51,7 @@ export interface MockAdapter extends IpcAdapter {
 }
 
 export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter {
-  const rootPath = options.rootPath ?? 'C:\\MockVault'
+  const rootPath = options.rootPath ?? MOCK_VAULT_PATH
   const writeLatencyMs = options.writeLatencyMs ?? 0
   const files = new Map<string, MockNote>()
   const dirs = new Set<string>()
@@ -179,6 +184,8 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
         }
         case 'vault_close':
           return undefined as T
+        case 'startup_vault':
+          return (options.startupVaultPath ?? null) as T
         case 'note_read': {
           const relPath = String(a.relPath ?? '')
           validate(relPath)

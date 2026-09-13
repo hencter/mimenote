@@ -86,6 +86,9 @@ export const ipc = {
     call<TrashRecord>('note_delete', { relPath, confirm }),
   noteStats: (relPath: string) => call<DocumentStats>('note_stats', { relPath }),
 
+  /** 命令行指定的 Vault（`mimenote.exe <目录>`）；无则返回 null。 */
+  startupVault: () => call<string | null>('startup_vault'),
+
   snippetsList: () => call<SnippetFile[]>('snippets_list'),
   versionInfo: () => call<VersionInfo>('version_info'),
 } as const

@@ -194,3 +194,74 @@ describe('重扫', () => {
     expect(entry?.sizeBytes).toBeGreaterThan(0)
   })
 })
+
+describe('启动 Vault（命令行参数）', () => {
+  it('命令行指定的 Vault 优先于"上次打开"', async () => {
+    // 上次打开的是 MockVault
+    setIpcAdapter(createMockAdapter({ rootPath: 'C:\\LastVault' }))
+    await useVaultStore.getState().openVault('C:\\LastVault')
+    expect(useVaultStore.getState().info?.name).toBe('MockVault')
+
+    // 换成"命令行指定了另一个 Vault"的宿主
+    setIpcAdapter(
+      createMockAdapter({ rootPath: 'C:\\ArgVault', startupVaultPath: 'C:\\ArgVault' }),
+    )
+    useVaultStore.setState({ info: null, entries: [], tree: [], selected: null })
+
+    await useVaultStore.getState().restoreLastVault()
+    expect(useVaultStore.getState().info?.rootPath).toBe('C:\\ArgVault')
+  })
+
+  it('命令行 Vault 打不开时回退到上次打开的 Vault', async () => {
+    await useVaultStore.getState().openVault('C:\\MockVault')
+    expect(useVaultStore.getState().info?.rootPath).toBe('C:\\MockVault')
+
+    // 宿主声称有一个已被删除的启动 Vault；其余命令正常
+    const missing = 'D:\\已经不在了'
+    setIpcAdapter({
+      kind: 'test',
+      invoke: <T,>(method: string, args?: Record<string, unknown>): Promise<T> => {
+        if (method === 'startup_vault') return Promise.resolve(missing as unknown as T)
+        if (method === 'vault_open') {
+          const path = String(args?.['path'] ?? '')
+          if (path === missing) {
+            return Promise.reject({
+              code: 'NOT_FOUND',
+              message: '目标不存在',
+              detail: null,
+              currentMtimeMs: null,
+            })
+          }
+          return Promise.resolve({
+            rootPath: path,
+            name: 'LastVault',
+            entries: [],
+            noteCount: 0,
+            folderCount: 0,
+            truncated: false,
+            skipped: 0,
+            scanMs: 1,
+            generatedAtMs: Date.now(),
+          } as unknown as T)
+        }
+        return Promise.reject(new Error(`未预期的调用：${method}`))
+      },
+    })
+
+    useVaultStore.setState({ info: null, entries: [], tree: [], selected: null })
+    await useVaultStore.getState().restoreLastVault()
+
+    // 启动 Vault 失败 → 回退到上次打开的 Vault，并且最终是可用状态
+    const state = useVaultStore.getState()
+    expect(state.status).toBe('ready')
+    expect(state.info?.rootPath).toBe('C:\\MockVault')
+  })
+
+  it('没有启动 Vault 时沿用上次打开的 Vault', async () => {
+    await useVaultStore.getState().openVault('C:\\MockVault')
+    useVaultStore.setState({ info: null, entries: [], tree: [], selected: null })
+
+    await useVaultStore.getState().restoreLastVault()
+    expect(useVaultStore.getState().info?.rootPath).toBe('C:\\MockVault')
+  })
+})

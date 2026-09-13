@@ -23,13 +23,17 @@ import { pickDirectory } from './dialogs'
 
 /** 弹出目录选择框并打开 Vault。 */
 export async function openVaultInteractive(): Promise<void> {
-  const path = await pickDirectory('选择 Vault 文件夹')
-  if (path === null) {
-    if (currentAdapterKind() === 'mock') {
-      toast.info('浏览器预览模式', '当前使用内存 Mock Vault；在 Tauri 中运行才能选择本机文件夹')
-    }
+  // 浏览器预览模式没有系统目录选择框：直接打开内存里的示例 Vault，
+  // 否则这个按钮点下去只有一句提示，等于死路（也挡住了 UI 层的自动化测试）。
+  if (currentAdapterKind() === 'mock') {
+    const { MOCK_VAULT_PATH } = await import('@/ipc/mock-adapter')
+    toast.info('浏览器预览模式', '没有系统目录选择框，已打开内存示例 Vault（不会读写本机文件）')
+    await useVaultStore.getState().openVault(MOCK_VAULT_PATH)
     return
   }
+
+  const path = await pickDirectory('选择 Vault 文件夹')
+  if (path === null) return
   await useVaultStore.getState().openVault(path)
 }
 

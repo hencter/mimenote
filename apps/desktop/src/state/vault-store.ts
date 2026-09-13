@@ -138,6 +138,19 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   },
 
   restoreLastVault: async () => {
+    // 1. 命令行参数优先：`mimenote.exe <vault 目录>`（快捷方式/"打开方式"/E2E）
+    try {
+      const fromArgs = await ipc.startupVault()
+      if (fromArgs !== null && fromArgs !== '') {
+        const opened = await get().openVault(fromArgs)
+        if (opened) return
+        toast.warn('命令行指定的 Vault 打不开', `${fromArgs}（回退到上次打开的 Vault）`)
+      }
+    } catch {
+      // 命令不存在（旧版本宿主/测试替身）时静默跳过，不影响启动
+    }
+
+    // 2. 上次打开的 Vault
     const root = get().lastRoot
     if (root === null || root === '') return
     const ok = await get().openVault(root)

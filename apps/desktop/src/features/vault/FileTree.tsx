@@ -282,6 +282,7 @@ const FileTreeRow = memo(function FileTreeRow({ row, onActivate }: RowProps) {
   return (
     <div
       id={rowId(relPath)}
+      data-rel-path={relPath}
       className={[
         'mn-tree-row',
         isSelected ? 'mn-tree-row--selected' : '',

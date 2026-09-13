@@ -11,6 +11,7 @@
 pub mod commands;
 pub mod error;
 pub mod logging;
+pub mod startup;
 pub mod state;
 
 use std::sync::Arc;
@@ -19,9 +20,13 @@ use state::AppState;
 
 /// 启动应用。
 pub fn run() {
+    let startup_vault = startup::resolve(&std::env::args().collect::<Vec<_>>());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(Arc::new(AppState::default()))
+        .manage(Arc::new(AppState::with_startup_vault(
+            startup_vault.path_for_frontend(),
+        )))
         .invoke_handler(tauri::generate_handler![
             commands::vault_open,
             commands::vault_info,
@@ -33,9 +38,10 @@ pub fn run() {
             commands::note_delete,
             commands::note_stats,
             commands::snippets_list,
+            commands::startup_vault,
             commands::version_info,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             // 日志必须在 setup 里初始化：此时才能解析用户的日志目录
             let log_path = logging::init(app.handle());
             log::info!(
@@ -46,6 +52,7 @@ pub fn run() {
             if let Some(path) = log_path {
                 log::info!("日志文件：{}", path.display());
             }
+            startup_vault.log();
             log::debug!("窗口已创建，等待前端请求 vault_open");
             Ok(())
         })
