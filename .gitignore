@@ -33,3 +33,7 @@ desktop.ini
 playwright-report/
 test-results/
 tmp/
+
+# 索引缓存是派生数据（可删除重建，见 ADR-0002）：示例 Vault 里的是运行时产生的
+examples/demo-vault/.mimenote/cache/
+examples/demo-vault/.mimenote/trash/

@@ -5,15 +5,13 @@
 **你的笔记就是普通文件夹里的普通 Markdown 文件** —— 可被 Git 管理、可被任何编辑器打开、随时可以整体搬走。
 应用不联网、不遥测、不上传；所有派生数据（未来的索引、图谱）都可以从文件重建。
 
-> 当前状态：**M1（最小可用闭环）已实现并可运行**。
+> 当前状态：**M1 与 M1.5 已交付；M2（核心体验）进行中**（双链/反链、重命名与全库链接改写已可用）。
 > 范围与后续里程碑见 [`docs/milestones.md`](docs/milestones.md)，架构与决策见 [`docs/architecture.md`](docs/architecture.md)。
 
 ---
 
 ## M1 做了什么
 
-| 能力 | 说明 |
-| --- | --- |
 | 能力 | 说明 |
 | --- | --- |
 | 打开 Vault | 系统目录选择框，或命令行 `mimenote.exe <目录>` 直接打开 → Rust 侧迭代式扫描（不跟随符号链接、忽略 `.git`/`node_modules` 等）→ 一次调用返回概要与完整条目表 |
@@ -24,14 +22,21 @@
 | 换行保真 | 识别并保留 CRLF / LF 与 UTF-8 BOM，避免"保存一次 = 全文 diff" |
 | 预览 | `markdown-it`（关闭 raw HTML）+ DOMPurify 二次净化的实时预览；`useDeferredValue` 降优先级 |
 | 双链与反链 | `[[笔记]]` / `[[笔记\|别名]]` / `[[笔记#小节]]` / `![[嵌入]]` 解析与点击跳转；右侧链接面板显示**反向链接与出链**；悬空链接标黄并**点击即创建**；同名多篇按「同目录 → 更短路径 → 字典序」消歧并标记 |
+| 重命名 | 文件树 `F2`（或工具栏铅笔）改名：宿主**同步改写全库指向它的链接**（保留别名/锚点、跳过代码块、BOM 与换行保真）并增量更新索引；正在编辑的笔记**原地换路径**（保留光标与撤销历史），其他被改写的文件自动重新加载 |
+| 标签与属性 | `mn-core` 抽取 frontmatter 的 `tags`/`tag` 字段与正文行内 `#标签`（跳过代码块、行内代码、HTML 注释、标题行；`#父/子` 层级；`#Rust` 与 `#rust` 归为一个）；右侧**标签面板**显示本篇标签、frontmatter 属性表与全库标签（可点标签展开"哪些笔记用了它"→ 点笔记直接打开） |
+| 快速切换与命令面板 | `Ctrl+P` 在当前 Vault 的笔记里模糊搜索（子序列匹配 + 命中高亮，1 万篇下按键路径仍是一次 O(n) 扫描）；`Ctrl+K` 列出全部命令并执行（依赖 Vault 的命令置灰并说明原因）；两者共用同一个面板，`↑↓`/`Enter`/`Esc` 与点选都支持 |
+| 全文搜索 | `Ctrl+Shift+F` 搜索正文（SQLite FTS5 + `bm25` 排序，中文与多词都支持）；结果按笔记分组显示行号与片段并高亮命中词，回车打开命中笔记。索引是**缓存**：`<Vault>/.mimenote/cache/search.db`，删掉即自动重建 |
+| 本地图片 | 预览渲染 `![](附件/图.png)`（相对路径、`../`、根绝对三种写法）。图片经 **asset 协议逐文件授权**：路径先由 `path_guard` 逐级检查符号链接与越界，只放行通过校验的那一个文件（见 ADR-0007）；加载失败会**回退成占位元素**而不是裂图 |
 | 删除保护 | 必须二次确认；文件移入 Vault 内 `.mimenote/trash/` 并写台账（可恢复），不做 `unlink` |
 | 可定制 | 命令注册表 + 快捷键、JSON 主题（CSS 变量）、Vault 内 `.mimenote/snippets/*.css` 用户样式片段（可整体卸载） |
 | 安全 | 路径越界/符号链接逃逸/Windows 保留名拦截、严格 CSP、能力声明最小化（仅 `core:default` + `dialog:allow-open`） |
 
 ## 还没有做（明确推迟）
 
-重命名（含全库链接更新）、标签与 Frontmatter、全文搜索（SQLite FTS5）、快速切换与命令面板、
-图谱视图、第三方插件系统、Git 集成、同步、内嵌图片渲染。
+图谱视图、第三方插件系统（M4）、Git 集成、同步。
+**M2「核心体验」的范围已全部交付**：双链与反链、重命名（含全库链接改写）、标签与 Frontmatter、
+全文搜索、快速切换与命令面板、本地图片渲染。
+**目录重命名与跨目录移动**、**标签重命名/合并**、**命中行跳转**推迟到 M3/M4。
 详见 [`docs/architecture.md` §8](docs/architecture.md) 与 [`docs/milestones.md`](docs/milestones.md)。
 
 ---
@@ -105,8 +110,8 @@ pnpm --filter @mimenote/desktop exec tauri build --no-bundle   # 应用层需要
 
 覆盖的场景：
 
-- **应用层**（`e2e/real-app.e2e.test.ts`）：命令行参数自动打开 Vault、文件树渲染、**未选中任何笔记时布局即铺满窗口**、打开笔记 → 编辑器载入 → 输入 → **防抖后内容真的落到磁盘**、文件被外部修改 → 冲突横幅 → **磁盘未被覆盖** → 重新加载恢复、删除到回收站（二次确认 + 真实 `.mimenote/trash`）、**后台索引完成后反向链接可见 → 点击跳转 → 悬空链接一键创建真实文件**
-- **UI 层**（`e2e/ui.e2e.test.ts`）：门闸 → 打开 Vault → 树、**缩小窗口后布局跟随**、打开笔记前后布局不变、预览渲染表格/代码块、**wikilink 点击跳转与悬空标记**、**链接面板反向链接跳转**、过滤保留祖先、主题即时切换、三种视图模式、文件树键盘导航、分隔条拖拽
+- **应用层**（`e2e/real-app.e2e.test.ts`）：命令行参数自动打开 Vault、文件树渲染、**未选中任何笔记时布局即铺满窗口**、打开笔记 → 编辑器载入 → 输入 → **防抖后内容真的落到磁盘**、文件被外部修改 → 冲突横幅 → **磁盘未被覆盖** → 重新加载恢复、删除到回收站（二次确认 + 真实 `.mimenote/trash`）、**后台索引完成后反向链接可见 → 点击跳转 → 悬空链接一键创建真实文件**、**重命名：`F2` 改名后磁盘上的文件名与全库链接都被改写（跨目录相对路径、别名与锚点保留、`[[甲]]` 不误伤 `[[甲虫]]`、代码块与行内代码不动、CRLF 保真），且索引立刻同步**、**标签面板（真实 IPC）：frontmatter 与行内标签、属性表、点标签列出笔记、切换笔记后跟随刷新**、**全文搜索（真实 FTS5）命中 → 回车打开**、**本地图片真的被解码（`naturalWidth > 0`），而 Vault 越界引用与符号链接引用都留在占位态**
+- **UI 层**（`e2e/ui.e2e.test.ts`）：门闸 → 打开 Vault → 树、**缩小窗口后布局跟随**、打开笔记前后布局不变、预览渲染表格/代码块、**wikilink 点击跳转与悬空标记**、**链接面板反向链接跳转**、过滤保留祖先、主题即时切换、三种视图模式、文件树键盘导航、分隔条拖拽、**重命名对话框（`F2` → 改名 → 预览里的链接跟着改 → 再改回来）**、**标签面板（`Ctrl+Shift+T`）**、**命令面板（编辑器聚焦时 `Ctrl+K` 也能打开、过滤后回车执行）**、**快速切换（`Ctrl+P` 只列笔记、回车打开、`Esc` 关闭）**、**全文搜索（`Ctrl+Shift+F` → 输入 → 回车打开）**
 
 #### 为什么是"Playwright + WebView2 CDP"而不是 tauri-driver
 
@@ -147,12 +152,20 @@ mimenote/
 │  ├─ src/scanner.rs                迭代式 Vault 扫描（忽略规则、深度与条目上限）
 │  ├─ src/trash.rs                  回收站（移动 + jsonl 台账）
 │  ├─ src/text_stats.rs             CJK 感知统计
+│  ├─ src/links.rs                  链接抽取（含字符 span，重命名精确改写用）
+│  ├─ src/frontmatter.rs            极简 YAML 子集解析 + 最小 diff 改写
+│  ├─ src/tags.rs                   标签抽取与归一化（`normalize_tag` 是唯一判同键）
 │  └─ tests/vault_ops.rs            端到端文件层测试
+├─ crates/mn-index/                 索引层（纯 Rust 库，索引是可重建的缓存）
+│  ├─ src/lib.rs                    链接索引 + 标签索引（挂在同一个 upsert/remove 上）
+│  ├─ src/rename.rs                 重命名：候选集计划 → 精确改写 → 索引同步
+│  └─ src/search.rs                 SQLite FTS5 全文索引（`.mimenote/cache/search.db`）
 ├─ apps/desktop/
 │  ├─ src-tauri/                    Tauri 宿主（状态 + IPC + 错误码，不含业务逻辑）
 │  │  ├─ src/lib.rs                 应用装配与命令注册
-│  │  ├─ src/state.rs               会话状态（Vault 缓存、写锁）
+│  │  ├─ src/state.rs               会话状态（Vault 缓存、写锁、索引与搜索句柄）
 │  │  ├─ src/commands.rs            IPC 命令与 DTO
+│  │  ├─ src/assets.rs              本地图片的逐文件读取授权（ADR-0007）
 │  │  ├─ src/error.rs               mn-core 错误 → 稳定错误码
 │  │  ├─ capabilities/default.json  最小能力声明
 │  │  └─ tauri.conf.json            CSP / 窗口 / 打包配置
@@ -160,9 +173,11 @@ mimenote/
 │  │  ├─ app/                       bootstrap、命令注册表、快捷键、高层动作
 │  │  ├─ domain/                    纯函数：树、虚拟列表、EOL、Markdown、统计、格式化
 │  │  ├─ ipc/                       IPC 契约类型 + 可替换适配器（tauri / mock）
-│  │  ├─ state/                     zustand store（vault / note / ui / toast / confirm）
-│  │  ├─ features/                  vault（门闸、工具栏、虚拟化文件树）
+│  │  ├─ state/                     zustand store（vault / note / ui / links / tags / toast / confirm）
+│  │  ├─ features/                  vault（门闸、工具栏、虚拟化文件树、重命名对话框）
 │  │  │                             editor（CM6 装配与主题）、preview、status
+│  │  │                             links（反向链接面板）、tags（标签与属性面板）
+│  │  │                             palette（命令面板 / 快速切换）
 │  │  ├─ theme/                     主题令牌、JSON 主题、CSS 片段装载
 │  │  ├─ components/                Icon、Splitter、Toasts、确认框、错误边界
 │  │  └─ styles/app.css             布局与组件样式（颜色全部走 CSS 变量）
@@ -176,15 +191,20 @@ mimenote/
 
 | 快捷键 | 命令 |
 | --- | --- |
+| `Ctrl+K` | 命令面板（当前所有命令，可模糊搜索后执行） |
+| `Ctrl+P` | 快速切换笔记（模糊搜索当前 Vault 的笔记） |
+| `Ctrl+Shift+F` | 全文搜索（搜索笔记正文，支持中文与多词；`↑↓` 选择、`Enter` 打开） |
 | `Ctrl+O` | 打开 Vault |
 | `Ctrl+N` | 新建笔记（在选中目录 / 选中文件的父目录） |
 | `Ctrl+S` | 保存 |
 | `Ctrl+Alt+L` | 从磁盘重新加载（丢弃内存改动，会二次确认） |
 | `Delete` | 删除到回收站（树上有焦点时，会二次确认） |
+| `F2` | 重命名选中笔记（会同时改写全库指向它的链接） |
 | `Ctrl+E` | 循环切换 编辑 / 分栏 / 预览 |
 | `Ctrl+B` | 显示 / 隐藏侧栏 |
 | `Ctrl+Shift+L` | 显示 / 隐藏链接面板（反向链接 / 出链） |
-| `Ctrl+Shift+F` | 聚焦文件过滤框 |
+| `Ctrl+Shift+T` | 显示 / 隐藏标签面板（标签与 Frontmatter 属性） |
+| `Ctrl+Shift+E` | 聚焦文件过滤框（`Ctrl+Shift+F` 让给了全文搜索） |
 | `Ctrl+Alt+E` / `Ctrl+Alt+W` | 展开 / 折叠全部目录 |
 | `Ctrl+Alt+R` | 重新扫描 Vault |
 | `Ctrl+Alt+T` | 切换主题 |
@@ -201,12 +221,13 @@ macOS 上 `Ctrl` 自动换成 `Cmd`（`Mod`）。命令表在 `src/app/builtin-c
 
 | 命令 | 结果 |
 | --- | --- |
-| `cargo test -p mn-core` | 46 个单元测试 + 2 个集成测试通过（另有 1 个性能基准默认忽略） |
-| `cargo test -p mn-index` | 16 个单元测试通过（链接解析、歧义消解、增量更新、构建取消） |
-| `cargo test -p mimenote` | 21 个宿主单元测试通过（IPC 错误映射、路径解析、建笔记、片段、写锁、启动参数） |
-| `pnpm test` | 13 个测试文件 / 160 个测试通过 |
-| `pnpm test:e2e:ui` | 13 个用例通过（系统 Edge，约 4 秒） |
-| `pnpm test:e2e:app` | 7 个用例通过（真实 release 二进制 + 真实磁盘，约 15 秒） |
+| `cargo test -p mn-core` | 106 个单元测试 + 12 个集成测试通过（另有 1 个性能基准默认忽略） |
+| `cargo test -p mn-index` | 65 个单元测试通过（链接解析/歧义消解/增量更新/构建取消、重命名与链接精确改写、标签索引、FTS5 搜索与恶意查询）（另有 2 个基准默认忽略） |
+| `cargo test -p mimenote` | 47 个宿主单元测试通过（IPC 错误映射、路径解析、建笔记、重命名、标签、搜索、图片授权、片段、写锁、启动参数） |
+| `pnpm test` | 19 个测试文件 / 236 个测试通过 |
+| `pnpm test:e2e:ui` | 18 个用例通过（系统 Edge，真实 Chromium，约 5 秒） |
+| `pnpm test:e2e:app` | 13 个用例通过（真实 release 二进制 + 真实磁盘，约 17 秒） |
+| `pnpm check` | 以上三类一次跑完，全绿 |
 | `pnpm typecheck` | 无错误（TypeScript 严格模式 + `noUncheckedIndexedAccess`） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 无告警 |
 | `cargo fmt --all --check` | 无差异 |
@@ -234,6 +255,11 @@ INFO mimenote_lib::commands] IPC 握手成功：app 0.1.0 / mn-core 0.1.0 / taur
 
 - `tests/note-store.test.ts`：自动保存、切换文档前落盘、保存期间继续输入、**外部修改冲突**（不覆盖 / 重新加载 / 强制覆盖）、CRLF 保真
 - `tests/vault-flow.test.ts`：打开 Vault、树结构、新建（重名避让）、删除（取消 / 确认 / 目录连带后代）、重扫
+- `tests/rename.test.tsx`：改名 + 全库链接改写、条目表原地更新、**改名前的落盘顺序**、`updateLinks=false`、重名/非法名拒绝、目录拒绝、对话框交互与 Esc 取消、自链接重读
+- `tests/tags.test.tsx`：frontmatter 与行内标签抽取（代码块/标题行/`#123`/`a#b` 不抽）、属性保序与类型标注、全库标签计数、面板渲染与"点标签 → 点笔记 → 打开"
+- `tests/palette.test.tsx`：`Ctrl+K`/`Ctrl+P` 开关、子序列过滤与高亮、键盘选择与执行、置灰项、结果上限、焦点归还、Esc 不冒泡
+- `tests/search.test.tsx`：Mock 搜索（大小写不敏感、命中行号、片段裁剪、排序）；面板的防抖只发一次请求、竞态丢弃、结果高亮、回车打开、错误态
+- `tests/assets.test.ts`：图片路径解析的**拒绝面**（越界 `..`、外部 scheme、Windows 非法字符与保留设备名、空地址）
 - `tests/markdown.test.ts`：**XSS 防护**（script、事件属性、`javascript:`、`data:text/html`、iframe、style）
 - `tests/tree.test.ts` / `tests/virtual-list.test.ts`：树构建与排序、过滤保留祖先、虚拟窗口计算与滚动定位
 - `tests/eol.test.ts` / `tests/stats.test.ts` / `tests/commands.test.ts` / `tests/theme.test.ts`：换行与 BOM 往返、统计口径、快捷键解析、主题令牌完整性
@@ -251,19 +277,25 @@ INFO mimenote_lib::commands] IPC 握手成功：app 0.1.0 / mn-core 0.1.0 / taur
 7. **冲突验证**：用记事本打开 `README.md` 并改几个字保存 → 回到应用里输入一个字 → 顶部出现冲突横幅 → 选「用我的内容覆盖」或「丢弃我的修改并重新加载」
 8. **原子写验证**：保存时观察 Vault 目录，正常情况下不应残留 `.mimenote-*.tmp`
 9. **删除验证**：选中 `附件/示例说明.txt` 按 `Delete` → 二次确认 → 文件出现在 `.mimenote/trash/`，台账 `.mimenote/index.jsonl` 多一行
-10. **大 Vault 验证**：把示例 Vault 复制成多份或生成 1 万个小文件，打开后滚动文件树应保持顺滑（DOM 行数恒定）
+10. **重命名验证**：选中 `项目/设计文档.md` 按 `F2` → 输入新名字回车 → 文件树里的行改名；打开 `项目/路线图.md` 看预览里的 `[[设计文档]]` 是否已跟着改成新名字（用 `git status`/编辑器看磁盘内容也行）
+11. **标签与属性验证**：按 `Ctrl+Shift+T` 打开标签面板 → 当前笔记的 `#标签` 与 frontmatter 属性列出来；点某个标签 → 展开"哪些笔记用了它" → 点笔记直接打开
+12. **命令面板 / 快速切换验证**：`Ctrl+P` 输入"设计"回车 → 打开对应笔记；在编辑器里按 `Ctrl+K`（应弹出面板，而不是删掉一行后半截）→ 输入"主题"回车 → 主题切换
+13. **全文搜索验证**：`Ctrl+Shift+F` 输入"原子写"→ 结果里应出现 `项目/设计文档.md`（带行号与片段）→ 回车打开它；中文与多词（如"原子 写"）都应命中；删掉 `.mimenote/cache/search.db` 后重开 Vault 应自动重建
+14. **本地图片验证**：打开 `项目/设计文档.md` → 预览顶部应显示出图片（`附件/示例图片.png`）。若显示占位方块，说明该图没拿到授权（文件不存在、路径越界、或扩展名不在白名单里）
+15. **大 Vault 验证**：把示例 Vault 复制成多份或生成 1 万个小文件，打开后滚动文件树应保持顺滑（DOM 行数恒定），`Ctrl+P` 输入时也不应卡顿
 
 ### 已知限制与风险
 
-见 [`docs/architecture.md` §8/§9](docs/architecture.md)。M1 最主要的几条：
+见 [`docs/architecture.md` §8/§9](docs/architecture.md)。当前最主要的几条：
 
-1. 预览不渲染本地图片（`asset:` 协议作用域按 Vault 动态注入留到 M2），图片显示为占位元素
-2. `[[双链]]` 按普通文本显示
-3. 没有全文搜索、快速切换、命令面板 UI
+1. 预览不渲染本地图片：`asset:` 协议需要按 Vault 动态注入作用域，仍未做（图片显示为占位元素）
+2. 重命名只支持**单篇笔记的同目录改名**：目录重命名与跨目录移动推迟到 M3（与拖拽整理一起做）。
+   新文件名里含 `#`/`^` 时，指向它的链接**不会被改写**（wikilink 语法无法表达这种目标），宿主会记日志并跳过
+3. 全文搜索（SQLite FTS5）尚未实现；标签面板只做**展示与跳转**，改标签目前要手动编辑 frontmatter 或正文
 4. 删除走 Vault 内回收站，未对接系统回收站；恢复界面在 M2
 5. 冲突检测基于 mtime（同毫秒内两次独立修改理论上有漏检窗口）
 6. 大文档（>5MB）预览仍在主线程渲染
-7. 尚未做 Playwright + tauri-driver 的 E2E
+7. E2E 未覆盖：多窗口、插件（M4）、搜索（功能未实现）
 
 ---
 

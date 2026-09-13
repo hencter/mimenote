@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | **M1 最小可用闭环** | 打开 Vault、文件树（虚拟化）、编辑 Markdown、原子保存、基础预览、冲突处理、主题/命令扩展点、回收站删除 | `pnpm tauri:dev` 起应用 → 打开 Vault → 建笔记 → 编辑保存（状态栏显示耗时）→ 预览同步 → 删除进 `.mimenote/trash` | ✅ 已交付 |
 | **M1.5 测试与自动化** | 两层 E2E（真实二进制 / 真实 Chromium）、命令行打开 Vault、日志落盘、布局回归门禁 | `pnpm test:e2e` 全绿；`mimenote.exe <vault>` 可直接打开 | ✅ 已交付（提前于 M5） |
-| **M2 核心体验** | wikilink 双链、反向链接、重命名（含链接更新）、标签、Frontmatter、全文搜索（SQLite FTS5）、快速切换、命令面板 UI、`asset:` 图片渲染 | ✅ **进行中**：双链 + 反向链接 + 悬空链接一键创建已交付（`mn-core::links` + `mn-index` + 链接面板 + 预览跳转）；下一步：重命名 → 标签/Frontmatter → 搜索 → 快速切换/命令面板 → 图片 |
+| **M2 核心体验** | wikilink 双链、反向链接、重命名（含链接更新）、标签、Frontmatter、全文搜索（SQLite FTS5）、快速切换、命令面板 UI、`asset:` 图片渲染 | ✅ **已交付**：双链 + 反向链接 + 悬空链接一键创建；重命名（同目录改名 + 全库链接精确改写 + `F2` 对话框）；标签与 Frontmatter（`mn-core` 抽取 + 索引 + `Ctrl+Shift+T` 面板）；全文搜索（FTS5 + `bm25` + 第三个面板模式 + `Ctrl+Shift+F`）；快速切换与命令面板（`Ctrl+P` / `Ctrl+K`）；本地图片（asset 协议**逐文件授权**，见 ADR-0007）。目录重命名/跨目录移动、标签重命名/合并、命中行跳转推迟 |
 | **M3 高级功能** | 图谱视图、工作区布局持久化、导出 HTML/PDF、多标签页、拖拽整理文件 | 布局重启后恢复、导出产物可在浏览器打开 | 待开始 |
 | **M4 插件系统** | manifest（id/name/version/minAppVersion/permissions）、版本化 API、Worker 隔离、权限确认 UI、错误边界、卸载清理 | 示例插件在权限最小化前提下加载并卸载无残留 | 待开始 |
 | **M5 性能与稳定性** | 增量索引、缓存、Web Worker 预览、基准测试套件 + CI 阈值、E2E 扩到更多场景 | `pnpm bench` 输出与 §6 预算对比；E2E 覆盖 M1 闭环 | 待开始（**E2E 底座已提前交付**） |

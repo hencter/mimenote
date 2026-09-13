@@ -38,7 +38,7 @@
 ├──────────────────────────────────────────────────────────────────────┤
 │  应用层 (Rust)            src-tauri：状态、命令、错误码、能力声明、后台索引       │
 ├──────────────────────────────────────────────────────────────────────┤
-│  索引层 (Rust, mn-index)  链接索引（出链/反链，M2）· SQLite FTS5（后续）         │
+│  索引层 (Rust, mn-index)  链接索引（出链/反链）· 标签索引 · SQLite FTS5 全文搜索（缓存可重建）  │
 ├──────────────────────────────────────────────────────────────────────┤
 │  文件层 (Rust, mn-core)   路径防护 · 原子写 · 扫描 · 回收站 · 文本统计 · 链接抽取  │
 └──────────────────────────────────────────────────────────────────────┘
@@ -47,7 +47,7 @@
 **边界规则**（可据此判断新代码放哪）：
 
 1. `mn-core` 是**纯 Rust 库**，不依赖 `tauri`，可 `cargo test -p mn-core` 独立验证。凡是"与 UI 框架无关、且必须在 Rust 侧做"的逻辑（路径安全、原子写、大目录扫描、回收站、链接抽取）都放这里。
-2. `mn-index` 同样不依赖 `tauri`，只依赖 `mn-core`：**索引是缓存，可从文件重建**；链接索引与后续的 FTS5 全文搜索都落在这里，IPC 契约不变。
+2. `mn-index` 同样不依赖 `tauri`，只依赖 `mn-core`：**索引是缓存，可从文件重建**；链接索引、标签索引与 FTS5 全文搜索都落在这里，IPC 契约不变。三者共用同一遍扫描与同一份文本（`LinkIndex::upsert` 里顺手算链接与标签，FTS5 的行表由后台构建写入 `<Vault>/.mimenote/cache/search.db`）。
 3. `src-tauri` 只做三件事：持有会话状态、把 mn-core/mn-index 能力暴露成 IPC 命令、把错误映射成稳定错误码。**不放业务逻辑**。
 4. `domain/` 是纯函数 + 纯数据结构，禁止 import React/Zustand/Tauri。
 5. 组件不直接调用 IPC，必须经 store；store 不直接 `invoke`，必须经 `ipc/client`。
@@ -74,9 +74,15 @@
 | `note_write` | `relPath, text, baseMtimeMs?, force` | `WriteOutcome` | 冲突检查 + 原子写 + 返回新 mtime |
 | `note_create` | `parentRel, title` | `NoteContent` | 唯一命名，返回新笔记 |
 | `note_delete` | `relPath, confirm` | `TrashRecord` | `confirm=false` 时返回 `CONFIRMATION_REQUIRED` |
+| `note_rename` | `relPath, newTitle, updateLinks?` | `RenameOutcome` | 同目录改名 + **全库链接精确改写**（默认 `updateLinks=true`）：按字符 span 改写，保留别名/锚点、跳过代码块、BOM/换行保真；返回被改写的文件与条数 |
 | `note_stats` | `relPath` | `DocumentStats` | 磁盘上文档的真实统计（`mn_core::text_stats`），与编辑器内即时统计互为校验 |
 | `index_status` | — | `IndexStatus` | 链接索引进度/概况（`idle`/`building`/`ready`/`cancelled`/`failed`） |
 | `note_links` | `relPath` | `NoteLinks` | 该笔记的出链与反向链接（含悬空与歧义标记） |
+| `note_tags` | `relPath` | `NoteTags` | 该笔记的标签（frontmatter + 正文行内，带来源与行号）与 frontmatter 属性表（保序） |
+| `tags_list` | — | `TagSummary[]` | 全库标签概览（按笔记数降序；`key` 是归一化键，`tag` 是首次出现的写法） |
+| `tag_notes` | `key` | `TagNotes` | 某个标签下的笔记（传原始写法也可以：宿主入口会再归一化一次） |
+| `search_query` | `query, limit?` | `SearchResult` | 全文搜索（SQLite FTS5，倒排索引缓存于 `<Vault>/.mimenote/cache/search.db`）：`-bm25` 排序，返回命中行号与裁剪后的片段；`total` 是命中总数（可大于 `hits.length`） |
+| `asset_authorize` | `relPaths[]` | `AssetGrant[]` | 本地图片的**逐文件**读取授权（ADR-0007）：路径经 `path_guard::resolve_existing` 校验后，只把这一个文件加进 asset 作用域并返回磁盘绝对路径；**未通过校验的条目不会出现在返回值里**（调用方留在占位态） |
 | `snippets_list` | — | `SnippetFile[]` | 读取 `.mimenote/snippets/*.css` |
 | `version_info` | — | `VersionInfo` | 应用 / mn-core / Tauri 版本 |
 
@@ -124,6 +130,8 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | [ADR-0003](adr/0003-ipc-contract-and-async-isolation.md) | IPC 契约 + 文件 IO 全部 `spawn_blocking` 隔离 | 已采纳 |
 | [ADR-0004](adr/0004-atomic-write-and-conflict.md) | 原子写 + mtime 版本令牌 + 显式冲突解决 | 已采纳 |
 | [ADR-0005](adr/0005-plugin-model-deferred.md) | 第三方插件推迟到 M4，先做内置扩展点 | 已采纳 |
+| [ADR-0006](adr/0006-tags-and-frontmatter.md) | 标签/Frontmatter：解析在 `mn-core`、索引在 `mn-index`、`normalize_tag` 判同、改标签走既有写路径 | 已采纳 |
+| [ADR-0007](adr/0007-local-images-asset-protocol.md) | 本地图片走 `asset:` 协议，作用域按 Vault 动态注入（而非 IPC 传 base64 或自定义协议） | 已采纳 |
 
 ## 5. 安全模型
 
@@ -131,6 +139,7 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | --- | --- | --- |
 | 路径遍历（`../../etc`） | 相对路径成分白名单校验 + canonicalize 后 `starts_with(root)` 复查 | `mn-core/path_guard.rs` |
 | 符号链接逃逸 | 逐级 `symlink_metadata` 检查，符号链接目标必须仍在 Vault 内；扫描默认不跟随链接 | `mn-core/path_guard.rs`、`scanner.rs` |
+| 预览读取 Vault 外的文件（本地图片） | asset 协议**逐文件授权**：`path_guard::resolve_existing` 逐级检查符号链接 + 越界拒绝，只把通过校验的那一个文件加进作用域。**不用目录级作用域** —— Tauri 的 asset 协议按路径字符串匹配后直接 `File::open`（不 canonicalize），目录级放行会被 Vault 内的符号链接绕过（ADR-0007） | `src-tauri/src/assets.rs`、`mn-core/path_guard.rs` |
 | Windows 保留名/ADS（`con.md`、`a:b`） | 段级黑名单校验 | `mn-core/path_guard.rs` |
 | 半写文件（断电/崩溃） | 临时文件 + fsync + rename 覆盖 | `mn-core/atomic.rs` |
 | 误删数据 | 删除必须 `confirm=true`，文件移入 `.mimenote/trash` 并记 jsonl 台账（可恢复） | `mn-core/trash.rs` |
@@ -175,18 +184,23 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 
 ## 7. 里程碑
 
-见 [milestones.md](milestones.md)。当前进度：**M1（本目录）**。
+见 [milestones.md](milestones.md)。当前进度：**M1 / M1.5 已交付，M2（核心体验）进行中**
+（双链与反链、重命名与全库链接改写、标签与 Frontmatter、全文搜索、快速切换与命令面板、
+本地图片渲染均已交付）。
 
 ## 8. 已知限制
 
-1. **预览不渲染本地图片**：`asset:` 协议需要在运行时按 Vault 动态注入作用域，M2 随「附件规则」一起做。当前 `<img>` 显示为占位（alt 文本）。
-2. **重命名尚未实现**：改文件名不会同步更新指向它的 `[[链接]]`（重命名 + 全库链接更新是 M2 的下一步）。
-3. `[[双链]]` **已可解析、渲染、跳转与反向链接**（M2 已交付）；但**标签**（`#标签`）与 Frontmatter 尚未抽取。
-4. 无全文搜索 / 快速切换 / 命令面板 UI（M2 计划中）。命令注册表与快捷键机制已就绪，调用方是 M2 的 UI。
-5. 删除走 Vault 内 `.mimenote/trash`（可见、可入 Git 忽略），未对接系统回收站；`restore` 尚未提供 UI。
-6. 外部变更检测依赖 mtime（毫秒）。同一毫秒内的外部改动理论上有漏检窗口（概率极低；M5 引入内容哈希作为二级令牌）。
-7. 大文档（>5MB）预览仍在主线程渲染（已用 `useDeferredValue` 降级）；M5 迁移到 Web Worker。
-8. E2E 覆盖"打开/编辑/保存/冲突/布局/主题/视图/链接/删除到回收站/键盘导航/分隔条拖拽"等主干路径，但**未覆盖**：多窗口、插件（M4）、标签与搜索（功能未实现）。
+1. **本地图片已可渲染（M2 已交付）**，走 asset 协议**逐文件授权**（ADR-0007）：路径先经 `path_guard` 校验，只放行通过的那一个文件。仍未做的：`![[嵌入]]` 形式（wikilink 嵌入）在预览里仍是"`!` + 链接"，不是图片；图片也不支持点击放大、缩放、图注等附件规则。
+2. **重命名已交付（M2）**：同目录改名 + 全库链接精确改写（字符 span 定位，`[[甲]]` 不会误伤 `[[甲虫]]`）+ 索引增量更新；**目录重命名与跨目录移动**仍未做，推迟到 M3 与拖拽整理一起。
+3. `[[双链]]` **已可解析、渲染、跳转与反向链接**（M2 已交付）；**标签与 Frontmatter 已可抽取、展示与跳转**（M2 已交付），但面板是**只读**的 —— 改标签要手动编辑 frontmatter 或正文（`mn_core::frontmatter::set_tags` 已经就绪，接线时走 `note_read → set_tags → note_write`，复用 ADR-0004 的冲突令牌，不开新写路径）。标签重命名/合并、按标签过滤文件树也未做。
+4. **快速切换与命令面板已交付**（`Mod+K` / `Mod+P`）；**全文搜索已交付**（`Mod+Shift+F`，SQLite FTS5 + `bm25`，第三个面板模式 + 带竞态丢弃的异步查询）。仍未做：**回车不跳到命中行**（编辑器还没有"定位到某行"的入口 —— 要接的话应由 editor 侧提供 `openAt(relPath, line)`，而不是在搜索面板里自己滚列表）。
+5. **frontmatter 会计入正文统计**（`text_stats` 拿的是磁盘原文，前端即时统计同样如此）：字数/行数/阅读时长里包含 `---` 分隔行与键值。要改必须**两侧同时改**（`mn_core::frontmatter::body` + TS 侧对应实现），否则"编辑器统计"与"磁盘统计"会互相打架。
+6. 删除走 Vault 内 `.mimenote/trash`（可见、可入 Git 忽略），未对接系统回收站；`restore` 尚未提供 UI。
+7. 外部变更检测依赖 mtime（毫秒）。同一毫秒内的外部改动理论上有漏检窗口（概率极低；M5 引入内容哈希作为二级令牌）。
+8. 大文档（>5MB）预览仍在主线程渲染（已用 `useDeferredValue` 降级）；M5 迁移到 Web Worker。
+9. 重命名时，若新文件名含 `#` 或 `^`，指向它的链接**不会被改写**（wikilink/Markdown 语法无法表达这种目标）：宿主跳过该条并记 warn 日志，而不是写出必然悬空的链接。
+10. 索引后台构建期间（`indexStatus.phase === 'building'`）重命名，新路径可能被"构建完成时整轮替换索引"覆盖掉（要等一次重扫）；这是 `indexer::spawn_build` 的既有行为，未在本轮修。
+11. E2E 覆盖"打开/编辑/保存/冲突/布局/主题/视图/链接/重命名/删除到回收站/键盘导航/分隔条拖拽/命令面板/快速切换"等主干路径，但**未覆盖**：多窗口、插件（M4）、搜索（功能未实现）。
 
 ## 8.1 测试策略（分层）
 

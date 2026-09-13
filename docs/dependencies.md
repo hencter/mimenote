@@ -45,6 +45,21 @@
 | `thiserror` | MIT/Apache-2.0 | 错误类型派生 | 零运行时开销的样板消除 |
 | `tempfile` | MIT/Apache-2.0 | 原子写的临时文件 | 它保证 `persist` 在 Windows 上是 `MoveFileEx(REPLACE_EXISTING)` 语义，即真正的原子覆盖；自己写这段更容易出错 |
 | `log` / `env_logger` | MIT/Apache-2.0 | 结构化日志 | Rust 侧不被前端能力系统约束，输出到 stderr 便于开发排查 |
+| `rusqlite` 0.37（`bundled`） | MIT（`libsqlite3-sys` 0.35 同为 MIT；SQLite 本体为 public domain） | 全文搜索：FTS5 倒排索引 + `MATCH` + `bm25()` 排序 | 见下方说明 |
+
+### 为什么引入 SQLite/FTS5，而不是自己在内存里做搜索
+
+全文搜索要同时解决四件事：**分词**、**倒排索引**、**相关性排序**、**增量更新**。自己在内存里写一遍，
+等于把"半个数据库"塞进应用（而且大概率在 1 万笔记规模上先撞上内存与排序质量的问题）。
+SQLite 的 FTS5 是这几件事的成熟实现，且它带来的缓存是**纯派生数据**：`<Vault>/.mimenote/cache/search.db`
+删掉即可从文件重建（ADR-0002）。
+
+`bundled` 的含义与代价：
+
+- **从源码编译 SQLite 并静态链接进二进制**，不依赖用户机器上的 `sqlite3.dll`（Windows 上系统不带 SQLite，
+  依赖动态库等于给安装包加一个"可能缺 Dll"的坑），也保证 **FTS5 一定可用**（系统库是否编译了 FTS5 不可控）。
+- 代价：首次构建变慢、二进制体积增加（约 1~2 MB）。属于一次性成本。
+- 因此本次引入的传递依赖只有 `libsqlite3-sys` 与其构建期依赖，未引入 `serde_yaml` 之类的额外东西。
 
 **刻意没有引入**：
 
