@@ -617,6 +617,30 @@ describe.skipIf(!supported)('真实应用：本地图片（asset 协议逐文件
     const placeholders = await app.page.locator('.mn-preview__body .mn-image-placeholder').count()
     expect(placeholders).toBeGreaterThanOrEqual(1)
   })
+
+  it('编辑器（所见即所得）里的图片也能点开放大 —— 这是默认视图', async () => {
+    await openNoteInTree(app.page, '笔记/图片.md')
+    // 默认就是编辑视图；把光标放到文档开头，图片所在行不在光标处 ⇒ 渲染成图片 widget
+    const editorImage = app.page.locator('.cm-content img.mn-md-image')
+    await waitUntil(async () => (await editorImage.count()) === 1, 15_000, '编辑器里渲染出图片 widget')
+
+    await editorImage.click()
+    await app.page.waitForSelector('.mn-lightbox', { state: 'visible', timeout: 5_000 })
+    // 真的显示的是这张图（灯箱里的大图已被解码）
+    const decoded = await app.page.evaluate(
+      () => document.querySelector<HTMLImageElement>('.mn-lightbox__image')?.naturalWidth ?? 0,
+    )
+    expect(decoded).toBeGreaterThan(0)
+
+    await app.page.keyboard.press('Escape')
+    await waitUntil(
+      async () => (await app.page.locator('.mn-lightbox').count()) === 0,
+      5_000,
+      'Esc 关闭灯箱',
+    )
+    // 关掉之后编辑器里的图片还在（放大不改文档）
+    expect(await editorImage.count()).toBe(1)
+  })
 })
 
 /**

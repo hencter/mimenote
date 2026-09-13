@@ -94,6 +94,29 @@
 }
 
 /*
+ * 编辑器（所见即所得）里的图片同样会被 `max-height: 420px` 裁短，而编辑器是**默认视图** ——
+ * 那里没有图注元素可用，于是在容器上挂一个伪元素提示（悬停/聚焦才出现，见 `.mn-md-image-wrap`
+ * 的定位要求：它必须是定位上下文）。
+ */
+.mn-md-image-wrap {
+  position: relative;
+}
+
+.mn-md-image-wrap[data-mn-clipped]::after {
+  content: '点击查看原图';
+  position: absolute;
+  top: 12px;
+  right: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.7;
+  pointer-events: none;
+}
+
+/*
  * 加载失败时，预览层会把 `<img>` **就地**换成占位元素（外层容器保留）：这时图注与提示
  * 会变成"占位下面又跟一行同样的话"，所以容器里没有图片时把它们收起来。
  * `:has()` 需要 Chrome 105+，本项目构建目标是 chrome110（WebView2 / 系统 Edge 都满足）。

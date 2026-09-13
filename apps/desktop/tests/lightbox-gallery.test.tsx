@@ -16,6 +16,7 @@ import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { openNote } from '@/app/actions'
+import { MarkdownEditor } from '@/features/editor/MarkdownEditor'
 import { ImageLightbox } from '@/features/lightbox/ImageLightbox'
 import { MarkdownPreview } from '@/features/preview/MarkdownPreview'
 import { setIpcAdapter } from '@/ipc/client'
@@ -223,5 +224,92 @@ describe('灯箱多图翻页', () => {
       fireEvent.click(again[0] as HTMLImageElement)
     })
     await waitFor(() => expect(counterText()).toBe('1 / 3'))
+  })
+})
+
+/**
+ * 编辑器（所见即所得）里的图片也要能点开放大。
+ *
+ * 两处的图片类名不同（预览 `img.mn-image` / 编辑器 `img.mn-md-image`），而 Live Preview 把
+ * 图片换成 widget 时会 `ignoreEvent()` —— 这些都不该让"点图片放大"只在阅读视图里成立：
+ * 用户写作时看到的就是编辑器。
+ */
+describe('编辑器里的图片也能放大', () => {
+  it('点编辑器里的图片打开灯箱，并与同一篇的其它图一起翻页', async () => {
+    render(
+      <>
+        <MarkdownEditor />
+        <ImageLightbox />
+      </>,
+    )
+    await act(async () => {
+      await openNote('笔记/三张图.md')
+    })
+
+    // 光标在文档开头（第一行），因此三张图都不在光标所在行 ⇒ 都渲染成 widget
+    const images = await waitFor(() => {
+      const nodes = Array.from(
+        document.querySelectorAll<HTMLImageElement>('.cm-content img.mn-md-image'),
+      )
+      expect(nodes).toHaveLength(3)
+      return nodes
+    })
+
+    await act(async () => {
+      fireEvent.click(images[1] as HTMLImageElement)
+    })
+    await waitFor(() => {
+      expect(document.querySelector('.mn-lightbox')).not.toBeNull()
+    })
+
+    // 画廊是"编辑器正文里那三张"，序号跟着被点的那一张
+    expect(counterText()).toBe('2 / 3')
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'PageDown' })
+    })
+    await waitFor(() => expect(counterText()).toBe('3 / 3'))
+
+    // 关掉之后编辑器还在原位（放大不改文档、不动光标）
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'Escape' })
+    })
+    await waitFor(() => {
+      expect(document.querySelector('.mn-lightbox')).toBeNull()
+    })
+    expect(document.querySelectorAll('.cm-content img.mn-md-image')).toHaveLength(3)
+  })
+
+  it('编辑器里被 max-height 裁短的图片也打上 data-mn-clipped（"点击查看原图"常驻）', async () => {
+    render(
+      <>
+        <MarkdownEditor />
+        <ImageLightbox />
+      </>,
+    )
+    await act(async () => {
+      await openNote('笔记/三张图.md')
+    })
+    const image = await waitFor(() => {
+      const node = document.querySelector<HTMLImageElement>('.cm-content img.mn-md-image')
+      expect(node).not.toBeNull()
+      return node as HTMLImageElement
+    })
+    const wrap = image.closest('.mn-md-image-wrap')
+    expect(wrap).not.toBeNull()
+
+    // jsdom 不做布局：手工给出"解码 900px、实际只显示 420px"（即被 max-height 压过）
+    Object.defineProperty(image, 'naturalHeight', { value: 900, configurable: true })
+    Object.defineProperty(image, 'clientHeight', { value: 420, configurable: true })
+    await act(async () => {
+      fireEvent.load(image)
+    })
+    expect(wrap?.getAttribute('data-mn-clipped')).toBe('1')
+
+    // 尺寸够放时把标记撤掉（没被裁短就不该显示提示）
+    Object.defineProperty(image, 'clientHeight', { value: 900, configurable: true })
+    await act(async () => {
+      fireEvent.load(image)
+    })
+    expect(wrap?.hasAttribute('data-mn-clipped')).toBe(false)
   })
 })

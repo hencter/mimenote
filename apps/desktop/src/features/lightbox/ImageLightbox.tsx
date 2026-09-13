@@ -57,37 +57,58 @@ function clampScale(value: number): number {
 }
 
 /**
+ * 可放大的图片选择器。
+ *
+ * 两套类名不是重复：**预览**里的图片由 `domain/markdown.ts` 渲染成 `img.mn-image`，
+ * 而**编辑器**（所见即所得）里的图片是 Live Preview 的 widget（`img.mn-md-image`）。
+ * 两处都必须能点开 —— "看到图、点一下放大"是同一个能力，不该只在一个视图里成立。
+ */
+const OPENABLE_IMAGE_SELECTOR = 'img.mn-image, img.mn-md-image'
+
+/** 图片所在的正文容器：预览正文 或 编辑器正文（只有同一个容器里的图片才互相翻页）。 */
+const GALLERY_CONTAINER_SELECTOR = '.mn-preview__body, .cm-content'
+
+/**
  * 这张图现在能不能放大：返回要显示的地址，不能则返回 `null`。
  *
  * `currentSrc` 优先：将来若引入 `srcset`，用户看到的那张与放大后看到的必须是同一张。
+ * 只认我们渲染出来的图片（占位元素、灯箱自己的大图都不在其中）。
  */
 function openableSrc(image: HTMLImageElement): string | null {
+  if (!image.matches(OPENABLE_IMAGE_SELECTOR)) return null
   const src = image.currentSrc !== '' ? image.currentSrc : image.src
   if (src === '') return null
   if (image.complete && image.naturalWidth === 0) return null
   return src
 }
 
-/** 图注：优先用渲染层已经写好的图注元素，退到 `alt`，最后退到原始地址（至少说明缺的是哪张图）。 */
+/**
+ * 图注：优先用渲染层已经写好的图注元素，退到 `alt`，再退到 `title`
+ * （编辑器 widget 把解析后的相对路径写在 `title` 上），最后退到原始地址。
+ */
 function captionOf(image: HTMLImageElement): string {
   const rendered = image.closest('.mn-figure')?.querySelector('.mn-image__caption')?.textContent
   if (rendered !== undefined && rendered !== null && rendered.trim() !== '') return rendered.trim()
   const alt = (image.getAttribute('alt') ?? '').trim()
   if (alt !== '') return alt
+  const title = (image.getAttribute('title') ?? '').trim()
+  if (title !== '') return title
   return image.getAttribute('data-mn-src') ?? ''
 }
 
 /**
  * 收集**同一篇正文里**的全部可放大图片（阅读顺序），并定位被点击的那一张。
  *
- * 只看同一个 `.mn-preview__body`：跨笔记翻页不是这个组件的职责（那要先打开另一篇笔记，
- * 属于"切笔记"而不是"看下一张图"）。
+ * 只看同一个正文容器（预览 `.mn-preview__body` 或编辑器 `.cm-content`）：
+ * 跨笔记翻页不是这个组件的职责（那要先打开另一篇笔记，属于"切笔记"而不是"看下一张图"）。
  */
 function collectGallery(image: HTMLImageElement): Gallery {
-  const body = image.closest('.mn-preview__body')
+  const body = image.closest(GALLERY_CONTAINER_SELECTOR)
   const items: LightboxTarget[] = []
   let index = -1
-  for (const node of Array.from(body?.querySelectorAll<HTMLImageElement>('img.mn-image') ?? [])) {
+  for (const node of Array.from(
+    body?.querySelectorAll<HTMLImageElement>(OPENABLE_IMAGE_SELECTOR) ?? [],
+  )) {
     const src = openableSrc(node)
     if (src === null) continue
     if (node === image) index = items.length
@@ -168,7 +189,7 @@ export function ImageLightbox() {
       if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
       const node = event.target
       if (!(node instanceof Element)) return
-      const image = node.closest('img.mn-image')
+      const image = node.closest(OPENABLE_IMAGE_SELECTOR)
       if (!(image instanceof HTMLImageElement)) return
       const src = openableSrc(image)
       if (src === null) return
@@ -193,6 +214,10 @@ export function ImageLightbox() {
    * 给"被超大图封顶裁短"的图片打标记（`data-mn-clipped`），让"点击查看原图"常驻显示，
    * 而不是只有悬停才看得见 —— 那正是最需要这个提示的情况。
    *
+   * 两个容器都要标记：预览是 `.mn-figure`（图注 + 提示元素都在里面），编辑器里的图片
+   * 是 Live Preview 的 `.mn-md-image-wrap`（`max-height: 420px` 同样会裁短，而编辑器是默认
+   * 视图 —— 用户在那儿看不到提示就等于没有提示）。
+   *
    * 为什么放在这里：判断"是不是被裁短了"必须等浏览器解码完（`naturalHeight` 对
    * `clientHeight`），而预览组件不该为了一个角标多出一个监听；标记只是**呈现**层的附加信息，
    * 丢了也只是退回"悬停才提示"，所以不需要 React 参与（预览重渲染会换成新节点，下一次
@@ -200,24 +225,26 @@ export function ImageLightbox() {
    */
   useEffect(() => {
     const mark = (image: HTMLImageElement): void => {
-      const figure = image.closest('.mn-figure')
-      if (figure === null) return
+      const holder = image.closest('.mn-figure, .mn-md-image-wrap')
+      if (holder === null) return
       const decoded = image.naturalHeight
       const shown = image.clientHeight
       // 显示高度明显小于解码高度 = 被 `max-height` 压过（允许 1px 的舍入）
       if (decoded > 0 && shown > 0 && decoded - shown > 1) {
-        figure.setAttribute('data-mn-clipped', '1')
+        holder.setAttribute('data-mn-clipped', '1')
       } else {
-        figure.removeAttribute('data-mn-clipped')
+        holder.removeAttribute('data-mn-clipped')
       }
     }
     const onLoad = (event: Event): void => {
       const node = event.target
-      if (node instanceof HTMLImageElement && node.classList.contains('mn-image')) mark(node)
+      if (node instanceof HTMLImageElement && node.matches(OPENABLE_IMAGE_SELECTOR)) mark(node)
     }
     document.addEventListener('load', onLoad, true)
     // 组件挂载可能晚于图片加载（缓存命中）：补扫一次已经加载完的
-    for (const image of Array.from(document.querySelectorAll<HTMLImageElement>('img.mn-image'))) {
+    for (const image of Array.from(
+      document.querySelectorAll<HTMLImageElement>(OPENABLE_IMAGE_SELECTOR),
+    )) {
       if (image.complete && image.naturalWidth > 0) mark(image)
     }
     return () => {
