@@ -6,7 +6,7 @@
  * 滚动因此稳定在 60fps。行组件只订阅自己的布尔状态，选中某一项不会重渲染整棵树。
  */
 
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { createNoteHere, deleteSelected, openNote } from '@/app/actions'
 import { REVEAL_ROW_EVENT } from '@/app/dom-events'
@@ -20,6 +20,14 @@ import { useVaultStore } from '@/state/vault-store'
 
 const ROW_HEIGHT = 26
 const OVERSCAN = 10
+/**
+ * 尚未测量出视口高度时的兜底值。
+ *
+ * 为什么需要它：首帧渲染时容器高度可能还是 0（尚未布局/被隐藏/测试环境无布局引擎）。
+ * 若直接用 0 去算窗口，就只会渲染 overscan 那几行，看起来像"文件树空的"。
+ * 兜底值只会影响**首次**渲染，ResizeObserver 一触发就被真实高度替代。
+ */
+const FALLBACK_VIEWPORT_HEIGHT = 640
 
 function revealRow(relPath: string): void {
   window.dispatchEvent(new CustomEvent<string>(REVEAL_ROW_EVENT, { detail: relPath }))
@@ -46,8 +54,9 @@ export function FileTree() {
   const pendingScrollTop = useRef(0)
   const frameHandle = useRef<number | null>(null)
 
-  // 视口高度：ResizeObserver 优先，退化到 window resize
-  useEffect(() => {
+  // 视口高度：用 useLayoutEffect 在首次绘制前测一次，避免首帧渲染空白；
+  // 之后交给 ResizeObserver（窗口缩放、侧栏拖拽、视图切换都会触发）。
+  useLayoutEffect(() => {
     const element = scrollRef.current
     if (element === null) return
     const measure = (): void => {
@@ -117,7 +126,8 @@ export function FileTree() {
 
   const range = computeWindow({
     scrollTop: viewport.scrollTop,
-    viewportHeight: viewport.height,
+    // 未测量到高度时用兜底值，保证首次渲染就有行（而不是空白）
+    viewportHeight: viewport.height > 0 ? viewport.height : FALLBACK_VIEWPORT_HEIGHT,
     rowHeight: ROW_HEIGHT,
     itemCount: rows.length,
     overscan: OVERSCAN,

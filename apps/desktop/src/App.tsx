@@ -3,11 +3,16 @@
  *
  * 布局（可在状态栏切换）：
  * ```
- * ┌──────────── titlebar ────────────┐
- * ├─ 冲突横幅（按需） ─────────────────┤
- * │ sidebar │ editor │ preview       │
- * ├──────────── statusbar ───────────┤
+ * ┌──────────── titlebar ────────────┐   flex: 0 0 auto
+ * ├─ 冲突横幅（可选，无冲突时不渲染） ─┤   flex: 0 0 auto
+ * │ sidebar │ editor │ preview       │   .mn-body → flex: 1 1 auto
+ * ├──────────── statusbar ───────────┤   flex: 0 0 auto
  * ```
+ *
+ * ⚠️ 布局不变式：外壳必须是**列方向 flex**，不能让任何区域依赖"自己是第几个子节点"。
+ * 冲突横幅是可选的，用位置化的 `grid-template-rows` 会让主体错位
+ * （曾经的真实 bug：主体落到 auto 行、状态栏占掉 1fr 行，窗口下方一片空白，
+ * 直到打开笔记把内容撑高才"看起来对齐"）。详见 `styles/app.css` 顶部注释。
  */
 
 import { useEffect, useRef } from 'react'

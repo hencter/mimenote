@@ -78,14 +78,26 @@ kbd {
 
 /* ------------------------------------------------------------------ 布局 */
 
+/*
+ * 外壳用**列方向 flex**，而不是位置化的 grid-template-rows。
+ *
+ * 原因（曾经的真实 bug）：冲突横幅是可选节点，`<ConflictBanner />` 无冲突时返回 null。
+ * 若用 `grid-template-rows: auto auto 1fr auto` 按位置排布，少一个子节点就会让
+ * 「主体」落到 auto 行、「状态栏」占用 1fr 行 —— 结果是主体被压成内容高度、
+ * 窗口下方留空，直到打开一篇笔记把内容撑高才"看起来对齐窗口"。
+ *
+ * flex 不关心有没有中间节点：谁声明 flex-grow 谁吃掉剩余空间。
+ */
 .mn-app {
-  display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 
 .mn-titlebar {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -115,6 +127,8 @@ kbd {
 }
 
 .mn-body {
+  /* 唯一吃掉剩余高度的区域；min-height:0 允许内部滚动而不是撑破窗口 */
+  flex: 1 1 auto;
   display: flex;
   min-height: 0;
   overflow: hidden;
@@ -217,6 +231,9 @@ kbd {
 
 .mn-tree {
   flex: 1 1 auto;
+  /* contain: strict 让元素不参与父级尺寸计算（树有 10 万行时这很重要），
+     代价是自身没有固有高度 —— 因此必须显式允许收缩。 */
+  min-height: 0;
   position: relative;
   overflow: auto;
   padding: 4px 0 12px;
@@ -525,6 +542,7 @@ kbd {
 /* ------------------------------------------------------------ 冲突横幅 */
 
 .mn-conflict {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -556,6 +574,8 @@ kbd {
 /* ------------------------------------------------------------- 状态栏 */
 
 .mn-statusbar {
+  /* 固定高度，不参与剩余空间分配 */
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 14px;
