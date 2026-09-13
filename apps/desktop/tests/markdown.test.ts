@@ -50,6 +50,42 @@ describe('本地图片（asset: 协议，ADR-0007）', () => {
     expect(html).not.toContain('data-mn-asset')
   })
 
+  it('渲染成功时外面套一层 .mn-figure（承载图注与"点击查看原图"），失败回退不含它', () => {
+    const ready = renderMarkdown(source, {
+      resolveImage: () => ({ kind: 'ready', url: 'asset://localhost/x.png' }),
+    })
+    expect(ready).toContain('class="mn-figure')
+    expect(ready).toContain('mn-image__caption')
+    expect(ready).toContain('mn-image__hint')
+
+    // 占位路径刻意**不**包容器：预览层的失败回退是把 <img> 原地换成占位元素，
+    // 两种情况下结构必须一模一样，否则"失败后"和"从没成功过"会长得不一样
+    const placeholder = renderMarkdown(source, { resolveImage: () => null })
+    expect(placeholder).not.toContain('mn-figure')
+  })
+
+  it('图注优先用 alt，没有 alt 时用 title（markdown 的 `"标题"` 写法）', () => {
+    const withAlt = renderMarkdown(source, {
+      resolveImage: () => ({ kind: 'ready', url: 'asset://localhost/x.png' }),
+    })
+    expect(withAlt).toContain('<span class="mn-image__caption">示例图</span>')
+
+    const noAlt = renderMarkdown('![](图.png "磁盘上的图")', {
+      resolveImage: () => ({ kind: 'ready', url: 'asset://localhost/x.png' }),
+    })
+    expect(noAlt).toContain('<span class="mn-image__caption">磁盘上的图</span>')
+  })
+
+  it('独占一段的图片用块级容器（能居中），夹在文字里的仍然是行内', () => {
+    const resolver = {
+      resolveImage: () => ({ kind: 'ready' as const, url: 'asset://localhost/x.png' }),
+    }
+    expect(renderMarkdown('![](图.png)', resolver)).toContain('mn-figure mn-figure--block')
+    expect(renderMarkdown('前面 ![](图.png) 后面', resolver)).toContain(
+      'class="mn-figure"><img',
+    )
+  })
+
   it('`asset:` scheme 能通过净化（否则 macOS/Linux 上图片会被静默剥掉）', () => {
     const html = renderMarkdown(source, {
       resolveImage: () => ({ kind: 'ready', url: 'asset://localhost/%E5%9B%BE.png' }),
@@ -106,11 +142,122 @@ describe('renderMarkdown 基础渲染', () => {
     expect(html).toContain('rel="noopener noreferrer nofollow"')
   })
 
-  it('本地图片渲染为占位元素（M1 限制，见 architecture.md §8.1）', () => {
+  it('没有解析器时（浏览器预览、非 Tauri 运行时）渲染为占位元素而不是必然失败的 img', () => {
     const html = renderMarkdown('![示意图](images/a.png)')
     expect(html).toContain('mn-image-placeholder')
     expect(html).toContain('示意图')
     expect(html).not.toContain('<img')
+  })
+})
+
+describe('`![[…]]` 嵌入（Obsidian 风格）', () => {
+  const ready = {
+    resolveImage: () => ({ kind: 'ready' as const, url: 'asset://localhost/x.png' }),
+  }
+
+  it('图片目标是图片时走与 `![](…)` 同一条路径：目标原样交给解析器，渲染出 img', () => {
+    const seen: string[] = []
+    const html = renderMarkdown('![[附件/图.png]]', {
+      resolveImage: (src: string) => {
+        seen.push(src)
+        return { kind: 'ready', url: `asset://localhost/${encodeURIComponent(src)}` }
+      },
+    })
+
+    // 同一个解析器、同一个 src：与 `![](附件/图.png)` 完全一致（含相对路径的解析口径）
+    expect(seen).toEqual(['附件/图.png'])
+    expect(html).toContain('class="mn-image"')
+    // 没有别名 → alt 用文件名
+    expect(html).toContain('alt="图.png"')
+    expect(decodeURIComponent(html)).toContain('data-mn-src="附件/图.png"')
+  })
+
+  it('图片目标在"等宿主授权"时渲染带 data-mn-asset 的占位（与 `![](…)` 同一约定）', () => {
+    const html = renderMarkdown('![[附件/图.png]]', {
+      resolveImage: () => ({ kind: 'unauthorized', rel: '附件/图.png' }),
+    })
+    expect(html).not.toContain('<img')
+    expect(html).toContain('mn-image-placeholder')
+    expect(html).toContain('data-mn-asset="附件/图.png"')
+  })
+
+  it('没有解析器时渲染普通占位元素（不带授权标记）', () => {
+    const html = renderMarkdown('![[附件/图.png]]')
+    expect(html).toContain('mn-image-placeholder')
+    expect(html).not.toContain('<img')
+    expect(html).not.toContain('data-mn-asset')
+    expect(decodeURIComponent(html)).toContain('附件/图.png')
+  })
+
+  it('别名作为 alt 与图注（`![[图.png|图注]]`）', () => {
+    const html = renderMarkdown('![[附件/图.png|一张图注]]', ready)
+    expect(html).toContain('alt="一张图注"')
+    expect(html).toContain('<span class="mn-image__caption">一张图注</span>')
+    expect(decodeURIComponent(html)).toContain('data-mn-src="附件/图.png"')
+  })
+
+  it('扩展名大小写不敏感，且白名单与宿主一致（png/jpg/jpeg/gif/webp/avif/bmp/svg/ico）', () => {
+    const names = [
+      '图.PNG',
+      '图.jpg',
+      '图.JpEg',
+      '图.GIF',
+      '图.WebP',
+      '图.AVIF',
+      '图.bmp',
+      '图.SVG',
+      '图.Ico',
+    ]
+    for (const name of names) {
+      expect(renderMarkdown(`![[${name}]]`, ready), name).toContain('class="mn-image"')
+    }
+  })
+
+  it('非图片目标渲染成与 wikilink 一致的链接，并带说明性 title', () => {
+    const html = renderMarkdown('![[另一篇笔记]]')
+    expect(html).toContain('class="mn-wikilink"')
+    expect(html).toContain('data-target="另一篇笔记"')
+    expect(html).toContain('data-mn-embed="non-image"')
+    expect(html).toContain('嵌入非图片目标，按链接显示')
+    expect(html).not.toContain('<img')
+  })
+
+  it('非图片目标的别名仍然按链接显示', () => {
+    const html = renderMarkdown('![[另一篇笔记|显示文本]]')
+    expect(html).toContain('data-target="另一篇笔记"')
+    expect(html).toContain('>显示文本</span>')
+    expect(html).not.toContain('<img')
+  })
+
+  it('`![[…]]` 自己也能解析出别名与锚点', () => {
+    const html = renderMarkdown('![[笔记#小节|别名]]')
+    expect(html).toContain('data-target="笔记"')
+    expect(html).toContain('data-anchor="小节"')
+  })
+
+  it('`[[x]]`（不带 `!`）的行为一个字都没变', () => {
+    const html = renderMarkdown('见 [[另一篇#小节|显示]]。')
+    expect(html).toContain(
+      '<a class="mn-wikilink" href="#mn-wikilink" data-target="另一篇" data-anchor="小节">显示</a>',
+    )
+    expect(html).not.toContain('data-mn-embed')
+    expect(html).not.toContain('mn-wikilink__embed')
+  })
+
+  it('未闭合、空目标、代码块与行内代码里的 `![[…]]` 都不渲染', () => {
+    expect(renderMarkdown('![[没有闭合')).toContain('![[没有闭合')
+    expect(renderMarkdown('![[]]')).not.toContain('mn-wikilink')
+    expect(renderMarkdown('```\n![[图.png]]\n```')).not.toContain('mn-image')
+    expect(renderMarkdown('`![[图.png]]`')).not.toContain('mn-image')
+  })
+
+  it('嵌入目标里的 HTML 不会变成元素（净化仍然生效）', () => {
+    const html = renderMarkdown('![[<img src=x onerror=alert(1)>.png]]')
+    const container = document.createElement('div')
+    container.innerHTML = html
+    // 解析器缺席 → 占位元素，路径只作为（转义后的）文本出现
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.querySelector('.mn-image-placeholder')).not.toBeNull()
   })
 })
 

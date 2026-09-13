@@ -2,6 +2,7 @@
 
 import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
+import { useSettingsStore } from '@/state/settings-store'
 import { useTagsStore } from '@/state/tags-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
@@ -84,6 +85,17 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
   },
 
   {
+    id: 'settings.open',
+    title: '打开设置…',
+    category: '通用',
+    // 与另外几条面板命令一致：刻意不设 when —— 没打开 Vault 时也要能改主题/字号
+    keybinding: 'Mod+,',
+    run: () => {
+      useSettingsStore.getState().openSettings()
+    },
+  },
+
+  {
     id: 'vault.open',
     title: '打开 Vault…',
     category: 'Vault',
@@ -156,11 +168,36 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
 
   {
     id: 'view.cycleMode',
-    title: '切换视图（编辑 / 分栏 / 预览）',
+    title: '切换视图（编辑 / 阅读 / 图谱）',
     category: '视图',
     keybinding: 'Mod+E',
     run: () => {
       useUiStore.getState().cycleViewMode()
+    },
+  },
+  {
+    id: 'view.mode.edit',
+    title: '视图：所见即所得编辑',
+    category: '视图',
+    run: () => {
+      useUiStore.getState().setViewMode('edit')
+    },
+  },
+  {
+    id: 'view.mode.read',
+    title: '视图：阅读（渲染后）',
+    category: '视图',
+    run: () => {
+      useUiStore.getState().setViewMode('read')
+    },
+  },
+  {
+    id: 'view.graph',
+    title: '视图：知识图谱',
+    category: '视图',
+    keybinding: 'Mod+G',
+    run: () => {
+      useUiStore.getState().setViewMode('graph')
     },
   },
   {

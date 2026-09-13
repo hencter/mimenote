@@ -18,6 +18,7 @@ use mn_core::path_guard::sanitize_file_stem;
 use mn_core::scanner::{scan, EntryMeta, ScanOptions};
 use mn_core::trash::{move_to_trash, TrashRecord};
 use mn_core::{Error, VaultRoot};
+use mn_index::graph::GraphData;
 use mn_index::rename::{LinkUpdate, RenameReport};
 use mn_index::tags::TagSummary;
 use mn_index::NoteLinks;
@@ -588,6 +589,35 @@ pub async fn note_links(
 }
 
 // ---------------------------------------------------------------------------
+// 知识图谱（节点 + 链接边一次下发，供前端画卡片画布）
+// ---------------------------------------------------------------------------
+
+/// 图谱节点上限（节点数超过它只返回度数最高的一部分，并置 `truncated = true`）。
+///
+/// 上限定在宿主/索引层（而不是前端）是为了让一次 IPC 的**报文体积有硬上限**：
+/// 1 万笔记全量下发是几百 KB 量级的 JSON，而这是"打开图谱面板就会调一次"的路径。
+const MAX_GRAPH_NODES: usize = mn_index::graph::MAX_GRAPH_NODES;
+
+/// 知识图谱数据：**节点 + 链接边一次性交给前端**（前端据此画可平移缩放的卡片画布）。
+///
+/// 契约与口径（`src/ipc/types.ts` 手工镜像，字段名不可偏离）：
+///
+/// * 数据**全部来自索引**，本命令零文件 IO；遍历索引、去重、排序、截断走 `spawn_blocking`（ADR-0003）；
+/// * 边按 `(from, to)` 去重，`count` 是合并后的链接条数；悬空链接 `toRelPath = null`，
+///   此时 `toRawTarget` 是画布上唯一能显示"指向谁"的信息（解析成功时它同样保留用户写法）；
+/// * `nodes` 按 `relPath` 字典序，`edges` 按 `fromRelPath → toRelPath（null 排最后）→ kind`，
+///   前端**不做二次排序**；
+/// * 节点数超过 [`MAX_GRAPH_NODES`] → 只返回度数（in + out）最高的那部分并置 `truncated = true`
+///   （此时节点的度数仍是**全图**度数，可能大于它在 `edges` 里能看到的线数，见 `mn_index::graph`）；
+/// * 索引未就绪/为空 → 空图谱（**不报错**），前端按 `index_status` 显示"索引构建中"；
+/// * Vault 未打开 → `VAULT_NOT_SET`（与其它命令一致）。
+#[tauri::command]
+pub async fn graph_data(state: State<'_, Arc<AppState>>) -> Result<GraphData, IpcError> {
+    let app = Arc::clone(state.inner());
+    run_blocking(move || graph_data_in(&app, MAX_GRAPH_NODES)).await
+}
+
+// ---------------------------------------------------------------------------
 // 标签与 frontmatter 属性
 // ---------------------------------------------------------------------------
 
@@ -955,6 +985,28 @@ fn tag_notes_in(state: &AppState, key: &str) -> mn_core::Result<TagNotes> {
         notes: indexer::notes_with_tag(state, &normalized),
         key: normalized,
     })
+}
+
+/// `graph_data` 的主体（与 Tauri 无关，可单测）。
+///
+/// 只做三件事：确认 Vault 已打开（否则 `VAULT_NOT_SET`）、取索引、记一条 debug 日志。
+///
+/// **索引为空不算错误**：那通常意味着后台索引正在构建，前端应当显示"索引构建中"
+/// 而不是弹错误 —— 与 `note_tags`/`tags_list` 在索引未就绪时返回空是同一个姿态。
+/// 组装规则全在 `mn_index::graph`（宿主不放业务逻辑，见 architecture.md §2 第 3 条）。
+fn graph_data_in(state: &AppState, max_nodes: usize) -> mn_core::Result<GraphData> {
+    if !state.is_open() {
+        return Err(Error::VaultNotSet);
+    }
+    let data = indexer::graph_data(state, max_nodes);
+    log::debug!(
+        "图谱数据：{} 节点 / {} 边（截断 {}），组装 {}ms",
+        data.nodes.len(),
+        data.edges.len(),
+        data.truncated,
+        data.elapsed_ms
+    );
+    Ok(data)
 }
 
 fn list_snippets(root: &VaultRoot) -> mn_core::Result<Vec<SnippetFile>> {
@@ -1668,5 +1720,297 @@ mod tests {
         assert_eq!(ext_of("a/b/c.MD"), Some("md".to_string()));
         assert_eq!(ext_of("a/b/README"), None);
         assert_eq!(ext_of("a/b/.gitignore"), Some("gitignore".to_string()));
+    }
+
+    // -- 知识图谱（graph_data） -------------------------------------------------
+
+    #[test]
+    fn graph_without_vault_is_rejected() {
+        let state = AppState::default();
+        let error = graph_data_in(&state, MAX_GRAPH_NODES).unwrap_err();
+        assert_eq!(error.code(), mn_core::ErrorCode::VaultNotSet);
+        assert_eq!(
+            IpcError::from(error).code,
+            "VAULT_NOT_SET",
+            "跨 IPC 的错误码必须与其它命令一致"
+        );
+    }
+
+    #[test]
+    fn graph_data_returns_the_canvas_contract() {
+        let (_dir, state) = state_with(&[
+            (
+                "项目/设计.md",
+                "---\ntitle: 设计文档\ntags: [项目]\n---\n\n见 [[路线图]] 与 [[还不存在]]\n",
+            ),
+            ("项目/路线图.md", "# 路线图\n"),
+        ]);
+
+        let data = graph_data_in(&state, MAX_GRAPH_NODES).unwrap();
+        assert!(!data.truncated);
+        assert_eq!(
+            data.nodes
+                .iter()
+                .map(|node| node.rel_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["项目/设计.md", "项目/路线图.md"],
+            "节点按 relPath 字典序（前端不二次排序）"
+        );
+
+        let design = &data.nodes[0];
+        assert_eq!(design.title, "设计文档", "frontmatter 的 title 优先");
+        assert_eq!(design.folder, "项目");
+        assert_eq!(design.tags, vec!["项目".to_string()]);
+        assert_eq!(design.out_degree, 2, "→路线图 + 悬空");
+        assert_eq!(design.in_degree, 0);
+
+        let roadmap = &data.nodes[1];
+        assert_eq!(
+            roadmap.title, "路线图",
+            "没有 frontmatter title → 文件名主干"
+        );
+        assert_eq!(roadmap.in_degree, 1);
+        assert_eq!(roadmap.out_degree, 0);
+
+        assert_eq!(data.edges.len(), 2);
+        assert_eq!(data.edges[0].from_rel_path, "项目/设计.md");
+        assert_eq!(data.edges[0].to_rel_path.as_deref(), Some("项目/路线图.md"));
+        assert_eq!(data.edges[0].to_raw_target, "路线图");
+        assert_eq!(data.edges[0].count, 1);
+        assert_eq!(data.edges[1].to_rel_path, None, "悬空边排在最后");
+        assert_eq!(
+            data.edges[1].to_raw_target, "还不存在",
+            "悬空边靠原始写法显示'指向谁'"
+        );
+
+        // JSON 字段名必须与前端类型逐字一致（camelCase，一个 snake_case 都不能有）
+        let json = serde_json::to_string(&data).unwrap();
+        for key in [
+            "\"nodes\"",
+            "\"edges\"",
+            "\"truncated\"",
+            "\"elapsedMs\"",
+            "\"relPath\"",
+            "\"title\"",
+            "\"folder\"",
+            "\"tags\"",
+            "\"outDegree\"",
+            "\"inDegree\"",
+            "\"fromRelPath\"",
+            "\"toRelPath\"",
+            "\"toRawTarget\"",
+            "\"kind\"",
+            "\"count\"",
+        ] {
+            assert!(json.contains(key), "缺少字段 {key}：{json}");
+        }
+        assert!(
+            json.contains("\"toRelPath\":null"),
+            "悬空链接是 null：{json}"
+        );
+        assert!(
+            json.contains("\"toRawTarget\":\"还不存在\""),
+            "悬空边的原始写法：{json}"
+        );
+        assert!(json.contains("\"kind\":\"wiki\""), "实际：{json}");
+        assert!(json.contains("\"outDegree\":2"), "实际：{json}");
+        for snake in [
+            "rel_path",
+            "out_degree",
+            "in_degree",
+            "from_rel_path",
+            "to_rel_path",
+            "to_raw_target",
+            "elapsed_ms",
+        ] {
+            assert!(!json.contains(snake), "不该出现 snake_case {snake}：{json}");
+        }
+    }
+
+    #[test]
+    fn graph_is_empty_not_an_error_while_the_index_is_building() {
+        let (_dir, state) = state_with(&[("甲.md", "[[乙]]\n"), ("乙.md", "# 乙\n")]);
+        // 打开 Vault 后索引在后台重建（indexer::reset 就是 clear + 状态归零）
+        indexer::reset(&state);
+
+        let data = graph_data_in(&state, MAX_GRAPH_NODES).unwrap();
+        assert!(data.nodes.is_empty(), "索引还没收录任何笔记");
+        assert!(data.edges.is_empty());
+        assert!(!data.truncated, "空索引不算'被截断'");
+    }
+
+    #[test]
+    fn graph_follows_save_rename_and_delete() {
+        let (dir, state) = state_with(&[("甲.md", "[[乙]]\n"), ("乙.md", "# 乙\n")]);
+        let before = graph_data_in(&state, MAX_GRAPH_NODES).unwrap();
+        assert_eq!(before.edges[0].to_rel_path.as_deref(), Some("乙.md"));
+
+        // 保存：链接改成还不存在的目标 → 变成悬空边（toRelPath = null）
+        let saved = "[[丙]]\n";
+        std::fs::write(dir.path().join("甲.md"), saved).unwrap();
+        indexer::update_note(&state, "甲.md", saved);
+        let after_save = graph_data_in(&state, MAX_GRAPH_NODES).unwrap();
+        assert_eq!(after_save.edges[0].to_rel_path, None);
+        assert_eq!(
+            after_save.edges[0].to_raw_target, "丙",
+            "悬空边仍然带着用户写的目标名（画布上要显示它）"
+        );
+        assert_eq!(
+            after_save
+                .nodes
+                .iter()
+                .find(|node| node.rel_path == "乙.md")
+                .unwrap()
+                .in_degree,
+            0,
+            "乙 已经没人指向它了"
+        );
+
+        // 改名：节点路径与指向它的链接一起跟上（改写走的是同一份索引）
+        rename_note_in(&state, "乙.md", "戊", true).unwrap();
+        let after_rename = graph_data_in(&state, MAX_GRAPH_NODES).unwrap();
+        assert!(after_rename
+            .nodes
+            .iter()
+            .any(|node| node.rel_path == "戊.md"));
+        assert!(!after_rename
+            .nodes
+            .iter()
+            .any(|node| node.rel_path == "乙.md"));
+
+        // 删除：节点消失；甲 指向不存在目标的悬空边不受影响
+        indexer::remove_note(&state, "戊.md");
+        let after_delete = graph_data_in(&state, MAX_GRAPH_NODES).unwrap();
+        assert_eq!(after_delete.nodes.len(), 1);
+        assert_eq!(after_delete.edges.len(), 1);
+        assert_eq!(after_delete.edges[0].to_rel_path, None);
+    }
+
+    #[test]
+    fn graph_truncates_from_the_host_entry_point() {
+        let (_dir, state) = state_with(&[
+            ("a.md", "[[b]] [[c]]\n"),
+            ("b.md", ""),
+            ("c.md", ""),
+            ("d.md", ""),
+        ]);
+
+        let data = graph_data_in(&state, 3).unwrap();
+        assert!(data.truncated);
+        assert_eq!(
+            data.nodes
+                .iter()
+                .map(|node| node.rel_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.md", "b.md", "c.md"],
+            "度数最高的 a（2）+ 并列的 b/c（各 1，按路径定序）"
+        );
+        assert_eq!(data.edges.len(), 2, "指向被丢弃的 d.md 的边一起过滤");
+        assert_eq!(
+            data.nodes[0].out_degree, 2,
+            "度数仍是全图度数（见 mn_index::graph 模块文档）"
+        );
+    }
+
+    /// 合成一套 1 万笔记 / 100 目录的索引：每篇 frontmatter（title + 2 个标签）+ 2 条出链。
+    ///
+    /// `dangling_every = 0` → 所有链接都能解析；否则每 N 篇多一条指向**不存在笔记**的链接
+    /// （悬空链接在真实 Vault 里很常见：先写下 `[[还没写的笔记]]`）。
+    /// 第二个返回值是待解析的 `(from, target)` 列表 —— 供基准里**单独**测一遍解析成本。
+    fn synthetic_graph_index(
+        dangling_every: usize,
+    ) -> (mn_index::LinkIndex, Vec<(String, String)>) {
+        let mut index = mn_index::LinkIndex::new();
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for d in 0..100usize {
+            for f in 0..100usize {
+                let i = d * 100 + f;
+                let rel = format!("dir{d:03}/note{i:04}.md");
+                let mut text = format!(
+                    "---\ntitle: 笔记 {i}\ntags: [标签{}, 标签{}]\n---\n\n第 {i} 篇的正文。\n\n",
+                    i % 50,
+                    i % 200,
+                );
+                for target in [(i + 1) % 10_000, (i + 7) % 10_000] {
+                    let target = format!("note{target:04}");
+                    text.push_str(&format!("[[{target}]] 与 "));
+                    pairs.push((rel.clone(), target));
+                }
+                if dangling_every > 0 && i % dangling_every == 0 {
+                    let target = format!("不存在{i}");
+                    text.push_str(&format!("[[{target}]]\n"));
+                    pairs.push((rel.clone(), target));
+                }
+                index.upsert(&rel, &text);
+            }
+        }
+        (index, pairs)
+    }
+
+    /// 性能基准：1 万笔记的图谱组装耗时与 **IPC 报文体积**。
+    ///
+    /// 运行：`cargo test -p mimenote --release -- --ignored --nocapture bench_graph_data_10k_notes`
+    ///
+    /// 为什么需要它：`graph_data` 是第一个"把全库一次性交给前端"的命令，报文体积与耗时必须有
+    /// 真实数字（前端画布据此决定虚拟化与降级策略）。索引直接**在内存里 upsert**出来，不碰磁盘 ——
+    /// 测到的就是这条命令本身的成本，不含索引构建与文件 IO。
+    ///
+    /// 两套数据（A 无悬空 / B 5% 悬空）是为了**归因**：悬空目标会走
+    /// `mn_index` 的 `by_path` 后缀兜底扫描（O(全库路径数)），这正是图谱最贵的一类输入。
+    #[test]
+    #[ignore]
+    fn bench_graph_data_10k_notes() {
+        let building = Instant::now();
+        let (resolvable, resolvable_pairs) = synthetic_graph_index(0);
+        let (with_dangling, dangling_pairs) = synthetic_graph_index(20);
+        let build_ms = building.elapsed().as_millis();
+
+        eprintln!("图谱 1 万笔记（两套索引在内存里 upsert 共 {build_ms} ms）：");
+        report_graph_bench("A 全部可解析", &resolvable, &resolvable_pairs);
+        let (truncated, full) =
+            report_graph_bench("B 5% 笔记多一条悬空链接", &with_dangling, &dangling_pairs);
+
+        assert!(truncated.truncated);
+        assert_eq!(truncated.nodes.len(), mn_index::graph::MAX_GRAPH_NODES);
+        assert!(!full.truncated);
+        assert_eq!(full.nodes.len(), 10_000);
+        assert_eq!(full.edges.len(), 20_500, "2 万条可解析 + 500 条悬空合并");
+    }
+
+    /// 打印一套数据的「解析归因 + 组装耗时 + 报文体积」。
+    fn report_graph_bench(
+        label: &str,
+        index: &mn_index::LinkIndex,
+        pairs: &[(String, String)],
+    ) -> (mn_index::GraphData, mn_index::GraphData) {
+        // 归因：单独把这批链接解析一遍（与图谱内部用的是同一个 resolve_target）
+        let started = Instant::now();
+        let mut resolved = 0usize;
+        for (from, target) in pairs {
+            resolved += usize::from(index.resolve(from, target).is_some());
+        }
+        let resolve_ms = started.elapsed().as_millis();
+
+        let started = Instant::now();
+        let truncated = index.graph_data(mn_index::graph::MAX_GRAPH_NODES);
+        let truncated_ms = started.elapsed().as_millis();
+        let truncated_kb = serde_json::to_string(&truncated).unwrap().len() as f64 / 1024.0;
+
+        let started = Instant::now();
+        let full = index.graph_data(usize::MAX);
+        let full_ms = started.elapsed().as_millis();
+        let full_kb = serde_json::to_string(&full).unwrap().len() as f64 / 1024.0;
+
+        eprintln!(
+            "{label}：{} 条链接（解析成功 {resolved}），单独解析 {resolve_ms} ms\n\
+             \x20 截断（上限 3000）：{} 节点 / {} 边，组装 {truncated_ms} ms，JSON {truncated_kb:.0} KB\n\
+             \x20 全量（上限 1 万）：{} 节点 / {} 边，组装 {full_ms} ms，JSON {full_kb:.0} KB",
+            pairs.len(),
+            truncated.nodes.len(),
+            truncated.edges.len(),
+            full.nodes.len(),
+            full.edges.len(),
+        );
+        (truncated, full)
     }
 }

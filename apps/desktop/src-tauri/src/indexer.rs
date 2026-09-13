@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter};
 use mn_core::scanner::EntryMeta;
 use mn_core::tags::TagRef;
 use mn_core::VaultRoot;
+use mn_index::graph::GraphData;
 use mn_index::search::SearchOutcome;
 use mn_index::tags::TagSummary;
 use mn_index::{build_indexes, BuildOptions, IndexStats, NoteLinks, SearchIndex};
@@ -295,6 +296,18 @@ pub fn tag_summary(state: &AppState) -> Vec<TagSummary> {
 /// 某个标签下的笔记（字典序；`key` 传原始写法也能命中）。
 pub fn notes_with_tag(state: &AppState, key: &str) -> Vec<String> {
     state.index_write().notes_with_tag(key)
+}
+
+// -- 知识图谱 -----------------------------------------------------------------
+
+/// 知识图谱数据（只读索引，**零文件 IO**）。
+///
+/// 组装规则（按 `(from, to)` 去重、度数口径、截断、排序）全在 `mn_index::graph`，
+/// 宿主在这里只做两件事：取索引锁、把结果交出去 —— 与 `note_links` / `tags_list` 同一姿态。
+///
+/// `max_nodes` 是节点上限（生产用 `mn_index::graph::MAX_GRAPH_NODES`）。
+pub fn graph_data(state: &AppState, max_nodes: usize) -> GraphData {
+    state.index_write().graph_data(max_nodes)
 }
 
 /// 全文搜索（重活，调用方负责放到后台线程）。

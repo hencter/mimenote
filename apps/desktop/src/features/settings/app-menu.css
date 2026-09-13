@@ -1,0 +1,95 @@
+/*
+ * 标题栏应用菜单（`components/AppMenu.tsx`）。
+ *
+ * 放在 `features/settings/` 下而不是共享的 `styles/app.css`：这是本次新增的外壳层样式，
+ * 只服务一个组件；放进 `app.css` 会让那个"全局布局落点"继续变胖。
+ * 颜色 / 圆角 / 阴影全部走 `--mn-*` 令牌，换主题不需要改这里。
+ */
+
+.mn-appmenu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.mn-appmenu__popup {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30; /* 高于正文，低于提示条(40)与模态遮罩(50) */
+  display: flex;
+  flex-direction: column;
+  min-width: 292px;
+  max-height: min(72vh, 560px);
+  padding: 4px;
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg-elevated);
+  box-shadow: var(--mn-shadow);
+  overflow: auto;
+}
+
+/* 焦点在弹出层容器上（行高亮由 `--active` 表达），容器自己不画焦点环 */
+.mn-appmenu__popup:focus {
+  outline: none;
+}
+
+.mn-appmenu__group-title {
+  padding: 7px 8px 3px;
+  color: var(--mn-fg-subtle);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.mn-appmenu__divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--mn-border);
+}
+
+.mn-appmenu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--mn-fg);
+  font-family: inherit;
+  font-size: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mn-appmenu__item--active {
+  background: var(--mn-active);
+}
+
+.mn-appmenu__item[aria-disabled='true'] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mn-appmenu__item-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mn-appmenu__item-reason {
+  flex: 0 0 auto;
+  color: var(--mn-fg-subtle);
+  font-size: 11px;
+}
+
+.mn-appmenu__item-chord {
+  flex: 0 0 auto;
+  color: var(--mn-fg-subtle);
+  font-family: var(--mn-font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}

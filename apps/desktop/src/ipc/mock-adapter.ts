@@ -14,6 +14,9 @@ import type {
   EntryMeta,
   FrontmatterField,
   FrontmatterValue,
+  GraphData,
+  GraphEdge,
+  GraphNode,
   IndexStatus,
   LinkKind,
   NoteContent,
@@ -1096,6 +1099,69 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
           const query = String(a.query ?? '')
           const limit = a.limit === undefined ? 50 : Number(a.limit)
           return mockSearch(files, query, limit) as T
+        }
+        case 'graph_data': {
+          // 图谱的 Mock 镜像（权威实现在 Rust 的链接索引里）：节点 = Markdown 笔记，
+          // 边 = 抽取出的链接（resolved / 悬空都保留），按 (from, to) 去重后累加 count。
+          const resolver = createMockResolver(files)
+          const byPair = new Map<string, GraphEdge>()
+          for (const [from, note] of files) {
+            if (!isMockMarkdown(from)) continue
+            for (const link of mockExtractLinks(note.text)) {
+              const target = resolver(from, link.rawTarget).path
+              const key = `${from}\u0000${target ?? ''}`
+              const existing = byPair.get(key)
+              if (existing !== undefined) {
+                existing.count += 1
+                continue
+              }
+              byPair.set(key, {
+                fromRelPath: from,
+                toRelPath: target,
+                toRawTarget: link.rawTarget,
+                kind: link.kind,
+                count: 1,
+              })
+            }
+          }
+          const edges = [...byPair.values()].sort(
+            (left, right) =>
+              left.fromRelPath.localeCompare(right.fromRelPath) ||
+              (left.toRelPath ?? '\uffff').localeCompare(right.toRelPath ?? '\uffff') ||
+              left.kind.localeCompare(right.kind),
+          )
+          const outDegrees = new Map<string, number>()
+          const inDegrees = new Map<string, number>()
+          for (const edge of edges) {
+            outDegrees.set(edge.fromRelPath, (outDegrees.get(edge.fromRelPath) ?? 0) + 1)
+            if (edge.toRelPath !== null) {
+              inDegrees.set(edge.toRelPath, (inDegrees.get(edge.toRelPath) ?? 0) + 1)
+            }
+          }
+          const nodes: GraphNode[] = [...files.keys()]
+            .filter(isMockMarkdown)
+            .sort()
+            .map((relPath) => {
+              const note = files.get(relPath)
+              const frontmatter = note === undefined ? null : mockParseFrontmatter(note.text)
+              const titleField = frontmatter?.fields.find((field) => field.key === 'title')
+              const title =
+                titleField !== undefined && titleField.value.kind === 'scalar'
+                  ? titleField.value.value
+                  : (relPath.split('/').pop() ?? relPath).replace(/\.(md|markdown)$/i, '')
+              return {
+                relPath,
+                title,
+                folder: parentOf(relPath),
+                tags: (note === undefined ? [] : mockExtractTags(note.text))
+                  .slice(0, 8)
+                  .map((tag) => tag.tag),
+                outDegree: outDegrees.get(relPath) ?? 0,
+                inDegree: inDegrees.get(relPath) ?? 0,
+              }
+            })
+          const payload: GraphData = { nodes, edges, truncated: false, elapsedMs: 1 }
+          return payload as T
         }
         case 'asset_authorize': {
           // 逐文件授权的 Mock（ADR-0007）：真实宿主用 `path_guard::resolve_existing` 逐级检查

@@ -83,6 +83,7 @@
 | `tag_notes` | `key` | `TagNotes` | 某个标签下的笔记（传原始写法也可以：宿主入口会再归一化一次） |
 | `search_query` | `query, limit?` | `SearchResult` | 全文搜索（SQLite FTS5，倒排索引缓存于 `<Vault>/.mimenote/cache/search.db`）：`-bm25` 排序，返回命中行号与裁剪后的片段；`total` 是命中总数（可大于 `hits.length`） |
 | `asset_authorize` | `relPaths[]` | `AssetGrant[]` | 本地图片的**逐文件**读取授权（ADR-0007）：路径经 `path_guard::resolve_existing` 校验后，只把这一个文件加进 asset 作用域并返回磁盘绝对路径；**未通过校验的条目不会出现在返回值里**（调用方留在占位态） |
+| `graph_data` | — | `GraphData` | 知识图谱的节点与边（ADR-0010）：节点含 `folder`/`tags`/出入度；边按 `(from,to)` 去重并带 `count`，`toRelPath=null` 表示悬空链接且 **`toRawTarget` 是用户写下的原始目标名**（三者都取第一条链接的写法）；只读索引、不做文件 IO；节点超过 3000 时按度数截断并置 `truncated` |
 | `snippets_list` | — | `SnippetFile[]` | 读取 `.mimenote/snippets/*.css` |
 | `version_info` | — | `VersionInfo` | 应用 / mn-core / Tauri 版本 |
 
@@ -133,6 +134,8 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | [ADR-0006](adr/0006-tags-and-frontmatter.md) | 标签/Frontmatter：解析在 `mn-core`、索引在 `mn-index`、`normalize_tag` 判同、改标签走既有写路径 | 已采纳 |
 | [ADR-0007](adr/0007-local-images-asset-protocol.md) | 本地图片走 `asset:` 协议，作用域按 Vault 动态注入（而非 IPC 传 base64 或自定义协议） | 已采纳 |
 | [ADR-0008](adr/0008-full-text-search-fts5.md) | 全文搜索用 SQLite FTS5：中文逐字分词、external content 换行号、构建期放宽持久化 + 坏库自愈 | 已采纳 |
+| [ADR-0009](adr/0009-wysiwyg-editor.md) | 所见即所得编辑（Live Preview），**移除"编辑 + 预览"双栏**；主区域三选一（编辑 / 阅读 / 图谱） | 已采纳 |
+| [ADR-0010](adr/0010-knowledge-graph-card-canvas.md) | 知识图谱是**卡片画布**（非力导向小圆点）：文件夹自动成组、入链虚线/出链实线、卡片可直接预览 | 已采纳 |
 
 ## 5. 安全模型
 

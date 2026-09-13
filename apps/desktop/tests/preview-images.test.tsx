@@ -11,10 +11,11 @@
  * `error`，从而走到"加载失败回退占位"那条分支（那正是另一个用例要单独验证的行为）。
  */
 
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { openNote } from '@/app/actions'
+import { ImageLightbox } from '@/features/lightbox/ImageLightbox'
 import { MarkdownPreview } from '@/features/preview/MarkdownPreview'
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter } from '@/ipc/mock-adapter'
@@ -38,6 +39,11 @@ const NOTES = [
       '![远程](https://example.com/x.png)',
       '',
     ].join('\n'),
+  },
+  {
+    // `![[…]]` 嵌入：图片目标走与 `![](…)` 同一条授权链路，非图片目标退回链接
+    relPath: '笔记/嵌入.md',
+    text: ['# 嵌入', '', '![[../附件/图.png|一张图注]]', '', '![[另一篇笔记]]', ''].join('\n'),
   },
 ]
 
@@ -142,5 +148,167 @@ describe('预览里的本地图片（asset 逐文件授权）', () => {
     expect(container.querySelector('img.mn-image')).toBeNull()
     expect(container.querySelector('[data-mn-asset]')).toBeNull()
     expect(converted).toEqual([])
+  })
+
+  it('`![[图.png]]` 嵌入走同一条链路：授权 → img（图注用别名），非图片目标退回链接', async () => {
+    await openNote('笔记/嵌入.md')
+    const { container } = render(<MarkdownPreview />)
+
+    await waitFor(() => {
+      expect(container.querySelector('img.mn-image')).not.toBeNull()
+    })
+    // 与 `![](…)` 完全一样的路径：请求的就是 Vault 内那一个文件的绝对路径
+    expect(converted).toEqual(['C:\\MockVault\\附件\\图.png'])
+    expect(container.querySelector('.mn-image__caption')?.textContent).toBe('一张图注')
+
+    // `![[另一篇笔记]]` 不是图片 → 与 wikilink 一致的链接元素
+    const link = container.querySelector('a.mn-wikilink')
+    expect(link?.getAttribute('data-target')).toBe('另一篇笔记')
+    expect(link?.getAttribute('data-mn-embed')).toBe('non-image')
+    expect(container.querySelectorAll('.mn-image-placeholder').length).toBe(0)
+  })
+})
+
+/**
+ * 灯箱：**点击**由它自己在 `document` 上以捕获阶段监听（预览组件不需要转发任何东西），
+ * 因此这里用真实的 DOM 事件驱动，而不是调用组件的内部回调 —— 那正是要验证的接线方式。
+ */
+describe('图片灯箱', () => {
+  /** 让 jsdom 里的 `<img>` 看起来"加载成功"：自然尺寸为 0 会被灯箱判成坏图而不打开。 */
+  function markLoaded(image: HTMLImageElement, width = 640, height = 480): void {
+    Object.defineProperty(image, 'complete', { value: true, configurable: true })
+    Object.defineProperty(image, 'naturalWidth', { value: width, configurable: true })
+    Object.defineProperty(image, 'naturalHeight', { value: height, configurable: true })
+  }
+
+  /** 渲染"预览 + 灯箱"（接线方式就是这样：灯箱挂在应用根部，与预览互不引用）。 */
+  async function mount(): Promise<{ image: HTMLImageElement; body: HTMLElement }> {
+    const { container } = render(
+      <>
+        <MarkdownPreview />
+        <ImageLightbox />
+      </>,
+    )
+    await waitFor(() => {
+      expect(container.querySelector('img.mn-image')).not.toBeNull()
+    })
+    const image = container.querySelector('img.mn-image') as HTMLImageElement
+    const body = container.querySelector('.mn-preview__body') as HTMLElement
+    markLoaded(image)
+    return { image, body }
+  }
+
+  const lightbox = (): HTMLElement | null => document.querySelector<HTMLElement>('.mn-lightbox')
+  const bigImage = (): HTMLImageElement | null =>
+    document.querySelector<HTMLImageElement>('.mn-lightbox__image')
+
+  it('点预览里的图片就打开灯箱（文档级捕获监听，无需预览转发）', async () => {
+    const { image } = await mount()
+    fireEvent.click(image)
+
+    const dialog = lightbox()
+    expect(dialog).not.toBeNull()
+    expect(dialog?.querySelector('[role="dialog"]')?.getAttribute('aria-modal')).toBe('true')
+    // 放大的是同一张图，并且把图注也带过来了
+    expect(bigImage()?.getAttribute('src')).toBe(OK_IMAGE)
+    expect(document.querySelector('.mn-lightbox__caption')?.textContent).toBe('图')
+  })
+
+  it('缩放：按钮与 `+` / `-` / `0` 键都生效，且被夹在上下限内', async () => {
+    const { image } = await mount()
+    fireEvent.click(image)
+
+    // 1 倍 = 适应窗口
+    expect(bigImage()?.style.maxWidth).toBe('100%')
+
+    fireEvent.click(screen.getByRole('button', { name: '放大' }))
+    expect(bigImage()?.style.maxWidth).toBe('125%')
+    expect(bigImage()?.style.maxHeight).toBe('125%')
+
+    fireEvent.keyDown(window, { key: '+' })
+    expect(bigImage()?.style.maxWidth).toBe('156.25%')
+
+    fireEvent.keyDown(window, { key: '-' })
+    expect(bigImage()?.style.maxWidth).toBe('125%')
+
+    fireEvent.click(screen.getByRole('button', { name: '缩小' }))
+    expect(bigImage()?.style.maxWidth).toBe('100%')
+
+    // `0` 回到适应窗口
+    fireEvent.keyDown(window, { key: '+' })
+    fireEvent.keyDown(window, { key: '0' })
+    expect(bigImage()?.style.maxWidth).toBe('100%')
+
+    // 上限：一直放大也不会越过 800%
+    for (let i = 0; i < 30; i += 1) fireEvent.keyDown(window, { key: '+' })
+    expect(bigImage()?.style.maxWidth).toBe('800%')
+  })
+
+  it('Esc 关闭，并把焦点还给打开它的元素', async () => {
+    const { image, body } = await mount()
+    body.tabIndex = -1
+    body.focus()
+    expect(document.activeElement).toBe(body)
+
+    fireEvent.click(image)
+    expect(lightbox()).not.toBeNull()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(lightbox()).toBeNull()
+    expect(document.activeElement).toBe(body)
+  })
+
+  it('点遮罩关闭；点图片本身不关', async () => {
+    const { image } = await mount()
+    fireEvent.click(image)
+
+    fireEvent.click(bigImage() as HTMLImageElement)
+    expect(lightbox()).not.toBeNull()
+
+    fireEvent.click(lightbox() as HTMLElement)
+    expect(lightbox()).toBeNull()
+  })
+
+  it('关闭按钮同样关闭', async () => {
+    const { image } = await mount()
+    fireEvent.click(image)
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    expect(lightbox()).toBeNull()
+  })
+
+  it('加载失败的图片不打开灯箱（放大一张裂图只会更让人困惑）', async () => {
+    const { image } = await mount()
+    markLoaded(image, 0, 0) // complete 且 naturalWidth = 0 → 坏图
+    fireEvent.click(image)
+    expect(lightbox()).toBeNull()
+  })
+
+  it('点预览里的其它内容不会打开灯箱', async () => {
+    const { body } = await mount()
+    fireEvent.click(body.querySelector('h1') as HTMLElement)
+    expect(lightbox()).toBeNull()
+  })
+
+  it('灯箱里的大图加载失败时给一句说明，而不是留个裂图', async () => {
+    const { image } = await mount()
+    fireEvent.click(image)
+    fireEvent.error(bigImage() as HTMLImageElement)
+    expect(document.querySelector('.mn-lightbox__error')).not.toBeNull()
+    expect(bigImage()).toBeNull()
+  })
+
+  it('被超大图封顶裁短的图片打上 data-mn-clipped（提示常驻），没裁短的不打', async () => {
+    const { image } = await mount()
+    const figure = image.closest('.mn-figure') as HTMLElement
+
+    // jsdom 不做布局：手工给出"解码 480px、实际只显示 300px"（即被 max-height 压过）
+    Object.defineProperty(image, 'clientHeight', { value: 300, configurable: true })
+    fireEvent.load(image)
+    expect(figure.getAttribute('data-mn-clipped')).toBe('1')
+
+    // 显示高度与解码高度一致时把标记撤掉（换了更宽的窗口就又不算裁短了）
+    Object.defineProperty(image, 'clientHeight', { value: 480, configurable: true })
+    fireEvent.load(image)
+    expect(figure.hasAttribute('data-mn-clipped')).toBe(false)
   })
 })

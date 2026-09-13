@@ -19,14 +19,18 @@ import { useEffect, useRef } from 'react'
 
 import { syncSnippets } from '@/app/actions'
 import { useGlobalKeymap } from '@/app/keymap'
+import { AppMenu } from '@/components/AppMenu'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Icon } from '@/components/Icon'
 import { Splitter } from '@/components/Splitter'
 import { Toasts } from '@/components/Toasts'
 import { MarkdownEditor } from '@/features/editor/MarkdownEditor'
+import { GraphCanvas } from '@/features/graph/GraphCanvas'
 import { LinksPanel } from '@/features/links/LinksPanel'
+import { ImageLightbox } from '@/features/lightbox/ImageLightbox'
 import { PaletteHost } from '@/features/palette/PaletteHost'
 import { MarkdownPreview } from '@/features/preview/MarkdownPreview'
+import { SettingsDialog } from '@/features/settings/SettingsDialog'
 import { ConflictBanner } from '@/features/status/ConflictBanner'
 import { StatusBar } from '@/features/status/StatusBar'
 import { TagsPanel } from '@/features/tags/TagsPanel'
@@ -52,14 +56,12 @@ export function App() {
   const sidebarVisible = useUiStore((state) => state.sidebarVisible)
   const sidebarWidth = useUiStore((state) => state.sidebarWidth)
   const viewMode = useUiStore((state) => state.viewMode)
-  const previewRatio = useUiStore((state) => state.previewRatio)
   const themeId = useUiStore((state) => state.themeId)
   const snippetsEnabled = useUiStore((state) => state.snippetsEnabled)
   const linksPanelVisible = useUiStore((state) => state.linksPanelVisible)
   const linksPanelWidth = useUiStore((state) => state.linksPanelWidth)
   const tagsPanelVisible = useTagsStore((state) => state.open)
   const setSidebarWidth = useUiStore((state) => state.setSidebarWidth)
-  const setPreviewRatio = useUiStore((state) => state.setPreviewRatio)
   const setLinksPanelWidth = useUiStore((state) => state.setLinksPanelWidth)
 
   const mainRef = useRef<HTMLElement | null>(null)
@@ -149,6 +151,10 @@ export function App() {
       <>
         <VaultGate />
         <ConfirmDialog />
+        {/* 门闸页没有标题栏，这里是"未打开 Vault 时也能进设置/改主题"的唯一入口；
+            组件在关闭时自己返回 null，但 effect 仍活着（字号与自动保存延迟靠它维护），
+            所以**不能**写成条件挂载。 */}
+        <SettingsDialog />
         {/* 门闸页也挂面板：Ctrl+K / Ctrl+P 在没有 Vault 时同样要能打开
             （命令面板把依赖 Vault 的命令置灰，快速切换给"还没有打开 Vault"空态） */}
         <PaletteHost />
@@ -157,13 +163,13 @@ export function App() {
     )
   }
 
-  const previewStyle = viewMode === 'split' ? { flexBasis: `${previewRatio * 100}%` } : { flex: '1 1 auto' }
-  const editorStyle =
-    viewMode === 'split' ? { flexBasis: `${(1 - previewRatio) * 100}%` } : { flex: '1 1 auto' }
+  const previewStyle = { flex: '1 1 auto' }
+  const editorStyle = { flex: '1 1 auto' }
 
   return (
     <div className="mn-app">
       <header className="mn-titlebar">
+        <AppMenu />
         <div className="mn-titlebar__brand">
           <Icon name="sparkle" size={15} />
           <span>Mimenote</span>
@@ -194,32 +200,24 @@ export function App() {
           </>
         )}
 
+        {/* 主区域只有三种形态：所见即所得编辑 / 只读预览 / 知识图谱。
+            "分栏（编辑 + 预览并排）"已移除 —— 编辑器本身就是所见即所得的（ADR-0009）。 */}
         <main className="mn-main" ref={mainRef}>
-          {viewMode !== 'preview' && (
+          {viewMode === 'edit' && (
             <section className="mn-pane mn-pane--editor" style={editorStyle}>
               <MarkdownEditor />
             </section>
           )}
 
-          {viewMode === 'split' && (
-            <Splitter
-              ariaLabel="调整预览宽度"
-              onDrag={(event) => {
-                const rect = mainRef.current?.getBoundingClientRect()
-                if (rect === undefined || rect.width === 0) return
-                setPreviewRatio((event.clientX - rect.left) / rect.width)
-              }}
-              onNudge={(delta) => {
-                const width = mainRef.current?.clientWidth ?? 0
-                if (width === 0) return
-                setPreviewRatio(useUiStore.getState().previewRatio + delta / width)
-              }}
-            />
-          )}
-
-          {viewMode !== 'editor' && (
+          {viewMode === 'read' && (
             <section className="mn-pane" style={previewStyle}>
               <MarkdownPreview />
+            </section>
+          )}
+
+          {viewMode === 'graph' && (
+            <section className="mn-pane mn-pane--graph" style={previewStyle}>
+              <GraphCanvas />
             </section>
           )}
         </main>
@@ -247,6 +245,10 @@ export function App() {
       <ConfirmDialog />
       <PaletteHost />
       <Toasts />
+      {/* 图片灯箱：自己监听预览里的图片点击（document 捕获阶段），预览不需要转发事件。
+          挂在 `.mn-app` 的直接子节点：fixed 定位不被祖先的 overflow 裁剪，层级也压得住对话框。 */}
+      <ImageLightbox />
+      <SettingsDialog />
     </div>
   )
 }

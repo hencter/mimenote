@@ -1,0 +1,152 @@
+/*
+ * 预览里图片的呈现细节：图注、等待态骨架、超大图封顶、"点击查看原图"。
+ *
+ * 为什么放在 `features/lightbox/` 而不是 `styles/app.css`：这些规则只服务"图片"这一个特性，
+ * app.css 是所有特性的公共文件（改动会外溢）。类名与 `domain/markdown.ts` 的
+ * `.mn-figure` / `.mn-image__caption` / `.mn-image__hint` **成对维护**：改一处必须改两处。
+ *
+ * 代价（需要在接线时知道）：这些规则随 `<ImageLightbox />` 一起加载。灯箱没挂载时，
+ * 图片会退化成"按原始尺寸铺开"（与改造前的行为完全一致），功能不受影响。
+ */
+
+/* ------------------------------------------------ 外层容器（图片 + 图注 + 提示） */
+
+/*
+ * 两种情况都是 `<span>`，只用 `display` 区分块级/行内：
+ * 在 `<p>` 里塞一个真正的 `<figure>` 是非法嵌套，浏览器会把段落切开、留下空 `<p>`
+ * （图注文案本身由 markdown.ts 决定，这里只管怎么摆）。
+ */
+.mn-figure {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  /* inline-block 默认按基线对齐，图片下方会多出一条基线缝隙 */
+  vertical-align: bottom;
+}
+
+/* 独占一段的图片：整块居中。`fit-content` 让容器的右边界贴着图片，
+   提示角标（绝对定位）才能落在图片角上而不是整列的角上 */
+.mn-figure--block {
+  display: block;
+  width: fit-content;
+  margin: 1em auto;
+  text-align: center;
+}
+
+.mn-figure img.mn-image {
+  display: block;
+  margin: 0 auto;
+  max-width: 100%;
+  /*
+   * 超大图封顶：解码后的真实尺寸只有浏览器知道（渲染层拿不到，`ImageResolution` 里也没有
+   * 字节数字段），所以封顶放在**呈现层**。想看原尺寸就点开灯箱（灯箱默认"适应窗口"，
+   * 放大后可以滚到每一处细节）。
+   *
+   * 用变量是为了可定制：主题/用户 CSS 片段写一行 `--mn-image-max-height: none` 就能关掉封顶
+   * （`docs` 里的"可高度自定义"承诺，不该因为一个写死的数值打折）。
+   */
+  max-height: var(--mn-image-max-height, min(75vh, 620px));
+  width: auto;
+  height: auto;
+  border-radius: var(--mn-radius);
+  cursor: zoom-in;
+}
+
+/* --------------------------------------------------------------------- 图注 */
+
+.mn-image__caption {
+  display: block;
+  margin-top: 4px;
+  color: var(--mn-fg-muted);
+  font-size: 0.86em;
+  line-height: 1.5;
+}
+
+/* ----------------------------------------------- "点击查看原图"（悬停/聚焦才出现） */
+
+.mn-image__hint {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.7;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  /* 只是提示，不能把点击从图片上抢走 */
+  pointer-events: none;
+}
+
+.mn-figure:hover > .mn-image__hint,
+.mn-figure:focus-within > .mn-image__hint {
+  opacity: 1;
+}
+
+/*
+ * 被超大图封顶裁短的图片：提示**常驻**（不用悬停）。
+ * 标记由灯箱在 `load` 时打上（只有它知道解码后的尺寸），丢掉这个标记也只是退回悬停提示。
+ */
+.mn-figure[data-mn-clipped] > .mn-image__hint {
+  opacity: 0.92;
+}
+
+/*
+ * 加载失败时，预览层会把 `<img>` **就地**换成占位元素（外层容器保留）：这时图注与提示
+ * 会变成"占位下面又跟一行同样的话"，所以容器里没有图片时把它们收起来。
+ * `:has()` 需要 Chrome 105+，本项目构建目标是 chrome110（WebView2 / 系统 Edge 都满足）。
+ */
+.mn-figure:not(:has(> img.mn-image)) > .mn-image__caption,
+.mn-figure:not(:has(> img.mn-image)) > .mn-image__hint {
+  display: none;
+}
+
+/* --------------------------------------------------- 等待授权时的骨架（纯 CSS 动画） */
+
+/*
+ * 本地图片真正会停留的等待态是"已解析出地址、还没拿到宿主的逐文件授权"——就是带
+ * `data-mn-asset` 的那段占位；`<img>` 阶段只是本地文件解码（亚帧级），给它加一个
+ * **尺寸未知**的固定骨架框只会造成布局跳动，所以骨架做在占位元素上。
+ *
+ * 只给"等授权"的占位加动画：`imagePlaceholderHtml(src, alt)`（加载失败回退、非 Tauri 运行时）
+ * 不带 `data-mn-asset`，那是终态，不该一直闪。
+ *
+ * ⚠️ 动画**有限次**（约 8 秒后停下）不是偷懒：预览层把"正在授权"与"被宿主拒绝"都渲染成
+ * 同一个带标记的占位（拒绝后只是不再请求），CSS 分不出这两种情况 —— 无限动画会让一张
+ * 永远显示不出来的图**一直闪**，那比不动更糟。想要精确区分，得在预览层给被拒的路径换一个标记
+ * （见交付报告的"接线建议"）。
+ */
+.mn-image-placeholder[data-mn-asset] {
+  background-image: linear-gradient(
+    100deg,
+    transparent 20%,
+    color-mix(in srgb, var(--mn-fg-subtle) 22%, transparent) 50%,
+    transparent 80%
+  );
+  background-repeat: no-repeat;
+  background-size: 220% 100%;
+  animation: mn-image-skeleton 1.4s linear 6;
+}
+
+@keyframes mn-image-skeleton {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mn-image-placeholder[data-mn-asset] {
+    animation: none;
+  }
+}
+
+/* ------------------------------------------- `![[不是图片]]` 仍然是链接（虚线示意） */
+
+.mn-preview__body .mn-wikilink__embed {
+  border-bottom: 1px dashed currentColor;
+}

@@ -1,0 +1,75 @@
+/*
+ * 图片灯箱的样式（只服务 `features/lightbox/ImageLightbox.tsx`）。
+ *
+ * 与 `rename-dialog.css` / `tags-panel.css` 同一约定：组件自己的样式放自己的文件里，
+ * 颜色全部走主题变量（跟随 JSON 主题切换）。
+ *
+ * 层级刻意高于对话框(50)与命令面板(60)：灯箱打开时它应当是屏幕上唯一能点的东西，
+ * 否则"点遮罩关闭"会被别的层抢走。
+ */
+
+.mn-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  /* 不用主题色：全屏看图时遮罩必须是"压暗一切"的中性色，浅色主题下也该是暗的 */
+  background: rgba(0, 0, 0, 0.82);
+  backdrop-filter: blur(2px);
+}
+
+.mn-lightbox__dialog {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  /* 容器只用来收焦点，不要焦点框 */
+  outline: none;
+}
+
+.mn-lightbox__toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+}
+
+.mn-lightbox__zoom {
+  margin-right: auto;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mn-lightbox__stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  overflow: auto;
+  padding: 8px 16px 16px;
+}
+
+.mn-lightbox__image {
+  /* auto 边距而不是 justify/align-content: center：内容比容器大时，居中的 flex 会把
+     溢出部分顶到滚动不到的地方，auto 边距则能正常滚到四个边 */
+  margin: auto;
+  flex: 0 0 auto;
+  border-radius: var(--mn-radius);
+  box-shadow: var(--mn-shadow);
+}
+
+.mn-lightbox__caption {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0 16px 14px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+}
+
+.mn-lightbox__error {
+  margin: auto;
+  color: rgba(255, 255, 255, 0.8);
+}

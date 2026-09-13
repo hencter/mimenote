@@ -12,10 +12,10 @@ import { useUiStore, type ViewMode } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 import { THEMES } from '@/theme/apply'
 
-const VIEW_MODES: ReadonlyArray<{ mode: ViewMode; label: string; icon: 'pencil' | 'columns' | 'eye' }> = [
-  { mode: 'editor', label: '仅编辑', icon: 'pencil' },
-  { mode: 'split', label: '分栏', icon: 'columns' },
-  { mode: 'preview', label: '仅预览', icon: 'eye' },
+const VIEW_MODES: ReadonlyArray<{ mode: ViewMode; label: string; icon: 'pencil' | 'eye' | 'links' }> = [
+  { mode: 'edit', label: '编辑（所见即所得）', icon: 'pencil' },
+  { mode: 'read', label: '阅读（渲染后）', icon: 'eye' },
+  { mode: 'graph', label: '知识图谱', icon: 'links' },
 ]
 
 export function StatusBar() {

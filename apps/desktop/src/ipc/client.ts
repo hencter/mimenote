@@ -12,6 +12,7 @@ import type {
   AssetGrant,
   DocumentStats,
   EntryMeta,
+  GraphData,
   IndexStatus,
   NoteContent,
   NoteLinks,
@@ -135,6 +136,14 @@ export const ipc = {
    * - `hits` 已按 `score` 降序排好，上限 `limit` 条；`total` 是命中总数，可能大于 `hits.length`。
    */
   searchQuery: (query: string, limit = 50) => call<SearchResult>('search_query', { query, limit }),
+
+  /**
+   * 知识图谱的节点与边（一次拿全库，供卡片画布使用）。
+   *
+   * 数据来自链接索引，不做文件 IO；索引未就绪时返回空集（面板会显示"索引构建中"）。
+   * 节点数超过宿主上限时只返回度数最高的一部分，并把 `truncated` 置为 true。
+   */
+  graphData: () => call<GraphData>('graph_data'),
 
   snippetsList: () => call<SnippetFile[]>('snippets_list'),
   versionInfo: () => call<VersionInfo>('version_info'),

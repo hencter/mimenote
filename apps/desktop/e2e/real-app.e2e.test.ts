@@ -68,15 +68,39 @@ async function ensureTreeRow(page: Page, relPath: string): Promise<void> {
   await row.waitFor({ state: 'visible', timeout: 10_000 })
 }
 
-/** 打开某篇笔记（自足：不依赖上一条用例留下的树/面板状态）。 */
+/** 打开某篇笔记（自足：不依赖上一条用例留下的树/面板/视图状态）。 */
 async function openNoteInTree(page: Page, relPath: string): Promise<void> {
+  // 上一个用例可能把视图留在"阅读"里（主区域一次只渲染一个 pane），先回到编辑视图
+  await resetToEditView(page)
   await ensureTreeRow(page, relPath)
   await treeRow(page, relPath).click()
   await waitUntil(
-    async () => ((await page.locator('.mn-editor__path').textContent()) ?? '').includes(relPath),
+    async () => {
+      // 编辑视图有编辑器工具栏；阅读/图谱视图没有 → 用"树里这一行被选中"作为共同信号
+      if ((await page.locator('.mn-editor__path').count()) > 0) {
+        return ((await page.locator('.mn-editor__path').textContent()) ?? '').includes(relPath)
+      }
+      const rowClass = (await treeRow(page, relPath).getAttribute('class')) ?? ''
+      return rowClass.includes('mn-tree-row--selected')
+    },
     15_000,
     `打开 ${relPath}`,
   )
+}
+
+/** 切到"阅读"（渲染后）视图：默认是所见即所得编辑，分栏已移除（ADR-0009）。 */
+async function showReadView(page: Page): Promise<void> {
+  await page.locator('button[aria-label="阅读（渲染后）"]').click()
+  await page.waitForSelector('.mn-preview__body', { state: 'visible', timeout: 10_000 })
+}
+
+/**
+ * 每个用例都从"编辑"视图开始（阅读视图的断言会把视图切走，
+ * 而主区域一次只渲染一个 pane —— 不重置后面的用例就找不到编辑器）。
+ */
+async function resetToEditView(page: Page): Promise<void> {
+  const editButton = page.locator('button[aria-label="编辑（所见即所得）"]')
+  if ((await editButton.count()) > 0) await editButton.click()
 }
 
 /** 确保链接面板已打开。 */
@@ -460,6 +484,7 @@ describe.skipIf(!supported)('真实应用：本地图片（asset 协议逐文件
 
   it('Vault 内的图片被真实渲染（而不是占位元素）', async () => {
     await openNoteInTree(app.page, '笔记/图片.md')
+    await showReadView(app.page)
 
     const width = await waitForLoadedImage()
     expect(width).toBeGreaterThan(0)
@@ -508,6 +533,7 @@ describe.skipIf(!supported)('真实应用：标签与属性面板（真实 IPC�
 
   it('面板显示 frontmatter 与行内标签、属性表，预览不再渲染 frontmatter', async () => {
     await openNoteInTree(app.page, '项目/设计.md')
+    await showReadView(app.page)
 
     // 预览只渲染正文：frontmatter 的键值不应该出现在预览里
     await waitUntil(
@@ -537,6 +563,8 @@ describe.skipIf(!supported)('真实应用：标签与属性面板（真实 IPC�
   })
 
   it('全文搜索（真实 FTS5）：搜到命中 → 回车打开那一篇', async () => {
+    // 上一条用例把视图留在"阅读"里：先回到编辑视图（回车打开后要断言编辑器路径）
+    await resetToEditView(app.page)
     // 索引在 vault_open 之后后台构建，小 Vault 很快就好；这里等结果出现即可
     await app.page.keyboard.press('Control+Shift+F')
     await app.page.waitForSelector('.mn-palette', { state: 'visible', timeout: 10_000 })
@@ -570,6 +598,7 @@ describe.skipIf(!supported)('真实应用：标签与属性面板（真实 IPC�
   })
 
   it('点标签 → 列出含它的笔记 → 点笔记打开它；再按快捷键收起面板', async () => {
+    await resetToEditView(app.page)
     await app.page.locator('.mn-tags [data-tag="项目"]').click()
     await waitUntil(
       async () => (await app.page.locator('.mn-tags [data-tag-note]').count()) === 2,
@@ -690,7 +719,8 @@ describe.skipIf(!supported)('真实应用：重命名与全库链接改写（真
 
   it('索引同步：改写后的链接立刻能解析（不必重扫 Vault）', async () => {
     await openNoteInTree(app.page, 'notes/alpha.md')
-    // 预览里的 wikilink 应解析到新文件（没有未解析标记）
+    await showReadView(app.page)
+    // 阅读视图里的 wikilink 应解析到新文件（没有未解析标记）
     await waitUntil(
       async () =>
         (await app.page.locator('.mn-preview__body a.mn-wikilink').count()) >= 1,

@@ -42,6 +42,7 @@ pub fn run() {
             commands::note_stats,
             commands::index_status,
             commands::note_links,
+            commands::graph_data,
             commands::note_tags,
             commands::tags_list,
             commands::tag_notes,

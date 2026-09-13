@@ -49,7 +49,7 @@ beforeEach(() => {
   registerBuiltinCommands()
   window.localStorage.clear()
   useNoteStore.getState().close()
-  useUiStore.setState({ paletteMode: null, linksPanelVisible: false, viewMode: 'split' })
+  useUiStore.setState({ paletteMode: null, linksPanelVisible: false, viewMode: 'edit' })
   useVaultStore.setState({
     status: 'idle',
     info: null,

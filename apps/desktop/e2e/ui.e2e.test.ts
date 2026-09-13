@@ -14,7 +14,7 @@
 import { join } from 'node:path'
 
 import { chromium, type Browser, type Page } from 'playwright-core'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { delay, findFreePort, packageRoot } from './support/harness'
 import { startStaticServer, type StaticServer } from './support/static-server'
@@ -79,16 +79,40 @@ async function ensureTreeRow(page: Page, relPath: string): Promise<void> {
   await row.waitFor({ state: 'visible', timeout: 10_000 })
 }
 
-/** 在文件树里打开某篇笔记，并等到编辑器确实载入它。 */
+/** 在文件树里打开某篇笔记（编辑/阅读/图谱三种视图都能用）。 */
 async function openNoteInTree(page: Page, relPath: string): Promise<void> {
   await ensureTreeRow(page, relPath)
   await treeRow(page, relPath).click()
   await waitUntil(
-    async () =>
-      ((await page.locator('.mn-editor__path').textContent()) ?? '').includes(relPath),
+    async () => {
+      // 编辑视图有编辑器工具栏（显示当前路径）；阅读/图谱视图没有，
+      // 就用"树里这一行变成选中态"作为已切换的共同信号。
+      if ((await page.locator('.mn-editor__path').count()) > 0) {
+        return ((await page.locator('.mn-editor__path').textContent()) ?? '').includes(relPath)
+      }
+      const rowClass = (await treeRow(page, relPath).getAttribute('class')) ?? ''
+      return rowClass.includes('mn-tree-row--selected')
+    },
     10_000,
     `打开 ${relPath}`,
   )
+}
+
+/** 切到"编辑（所见即所得）"视图。 */
+async function showEditView(page: Page): Promise<void> {
+  await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+  await page.waitForSelector('.cm-content', { state: 'visible' })
+}
+
+/**
+ * 切到"阅读"视图（渲染后的正文）。
+ *
+ * 默认视图是**所见即所得编辑**（分栏已移除，见 ADR-0009），所以断言 `.mn-preview__body`
+ * 之前必须先切到阅读视图；这一步就是点状态栏那个按钮。
+ */
+async function showReadView(page: Page): Promise<void> {
+  await page.locator('button[aria-label="阅读（渲染后）"]').click()
+  await page.waitForSelector('.mn-preview__body', { state: 'visible' })
 }
 
 describe('UI 层（Edge + dist + Mock Vault）', () => {
@@ -113,6 +137,17 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     if (server !== undefined) await server.close()
   })
 
+  /**
+   * 每个用例都从"编辑（所见即所得）"视图开始。
+   *
+   * 为什么需要：断言 `.mn-preview__body` 的用例会把视图切到"阅读"，而主区域一次只渲染
+   * 一个 pane（分栏已移除，ADR-0009）—— 不重置的话，后面的用例会在阅读视图里找编辑器。
+   */
+  beforeEach(async () => {
+    const editButton = page.locator('button[aria-label="编辑（所见即所得）"]')
+    if ((await editButton.count()) > 0) await editButton.click()
+  })
+
   it('门闸页 → 打开示例 Vault → 文件树出现', async () => {
     await page.getByText('打开文件夹作为 Vault').click()
     await page.waitForSelector('.mn-tree-row', { state: 'visible' })
@@ -135,26 +170,28 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(await page.locator('.cm-content').count()).toBe(0)
   })
 
-  it('打开笔记后布局不变（编辑/预览是"填充"，不是"撑开"）', async () => {
+  it('打开笔记后布局不变（编辑/阅读是"填充"，不是"撑开"）', async () => {
     const before = await readLayout(page)
 
     await page.locator('.mn-tree [data-rel-path="项目/设计.md"]').click()
     await page.waitForSelector('.cm-content', { state: 'visible' })
     await waitUntil(
       async () =>
-        ((await page.locator('.mn-preview__body').textContent()) ?? '').includes('文件层'),
+        ((await page.locator('.cm-content').textContent()) ?? '').includes('文件层'),
       10_000,
-      '预览渲染出笔记内容',
+      '编辑器载入笔记内容',
     )
 
     const after = await readLayout(page)
     expect(Math.abs(after.body.height - before.body.height)).toBeLessThanOrEqual(1)
     expect(Math.abs(after.statusbar.bottom - after.innerHeight)).toBeLessThanOrEqual(1)
-    // 编辑器与预览并排，且各自有宽度
+    // 主区域只有一个 pane（编辑 / 阅读 / 图谱三选一），且占满宽度
     expect(after.main.width).toBeGreaterThan(600)
+    expect(await page.locator('.mn-pane').count()).toBe(1)
   })
 
-  it('预览把 Markdown 渲染成结构化 HTML（表格 / 代码块 / 标题）', async () => {
+  it('阅读视图把 Markdown 渲染成结构化 HTML（表格 / 代码块 / 标题）', async () => {
+    await showReadView(page)
     const html = (await page.locator('.mn-preview__body').innerHTML()) ?? ''
     expect(html).toContain('<table>')
     expect(html).toContain('<th>')
@@ -327,9 +364,10 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(await page.locator('.mn-links').count()).toBe(0)
   })
 
-  it('预览里的 wikilink 可点击跳转，且布局仍然铺满', async () => {
+  it('阅读视图里的 wikilink 可点击跳转，且布局仍然铺满', async () => {
     // 自足：先打开带 wikilink 的笔记（不依赖上一条用例留下的状态）
     await openNoteInTree(page, '项目/路线图.md')
+    await showReadView(page)
     await page.waitForSelector('a.mn-wikilink', { state: 'visible' })
     await waitUntil(
       async () => (await page.locator('a.mn-wikilink').first().getAttribute('data-rel-path')) !== null,
@@ -338,9 +376,10 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     )
 
     await page.locator('a.mn-wikilink').first().click()
+    // 跳转后仍停在阅读视图：用预览体里的标题确认换了一篇（编辑器在编辑视图才有）
     await waitUntil(
       async () =>
-        ((await page.locator('.mn-editor__path').textContent()) ?? '').includes('项目/设计.md'),
+        ((await page.locator('.mn-preview__body').textContent()) ?? '').includes('设计'),
       10_000,
       '点击 wikilink 后打开目标笔记',
     )
@@ -353,13 +392,15 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
   it('悬空 wikilink 标记为未解析', async () => {
     await openNoteInTree(page, '项目/子项目/细节.md')
+    await showReadView(page)
     await page.waitForSelector('a.mn-wikilink--unresolved', { state: 'visible', timeout: 10_000 })
     const text = (await page.locator('a.mn-wikilink--unresolved').textContent()) ?? ''
     expect(text).toContain('还不存在的笔记')
   })
 
   it('重命名笔记：F2 → 改名 → 指向它的链接跟着改（并验证可逆）', async () => {
-    // 自足：先打开目标笔记，让树与编辑器状态确定
+    // 自足：先打开目标笔记，让树与编辑器状态确定（重命名对话框在编辑视图里用）
+    await showEditView(page)
     await openNoteInTree(page, '项目/设计.md')
 
     // F2 打开重命名对话框：文件名预填、扩展名单独显示（不进输入框）
@@ -382,8 +423,9 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       '编辑器切到新路径',
     )
 
-    // 指向它的链接被改写：打开来源笔记，预览里不再是悬空链接
+    // 指向它的链接被改写：切到阅读视图看来源笔记，预览里不再是悬空链接
     await openNoteInTree(page, '项目/路线图.md')
+    await showReadView(page)
     await waitUntil(
       async () =>
         ((await page.locator('.mn-preview__body').textContent()) ?? '').includes('架构设计'),
@@ -413,6 +455,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
   it('标签面板：Ctrl+Shift+T 显示标签与属性，点标签列出笔记并可打开', async () => {
     // 设计.md 末尾有一行 `#项目`（行内标签），与「标签示例.md」的 frontmatter 标签同名 ——
     // 正好用来验证"跨笔记的标签索引"与"点标签列出笔记"
+    await showEditView(page)
     await openNoteInTree(page, '项目/设计.md')
 
     await page.keyboard.press('Control+Shift+t')
@@ -453,7 +496,8 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(panelText).toContain('title')
     expect(panelText).toContain('标签示例')
 
-    // 预览只渲染正文：frontmatter 不当正文渲染
+    // 阅读视图只渲染正文：frontmatter 不当正文渲染
+    await showReadView(page)
     await waitUntil(
       async () => ((await page.locator('.mn-preview__body').textContent()) ?? '').includes('演示'),
       10_000,
@@ -493,6 +537,63 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       '回车打开命中的笔记',
     )
     expect(await page.locator('.mn-palette').count()).toBe(0)
+  })
+
+  it('知识图谱：卡片画布、文件夹成组、点卡片预览、入链虚线/出链实线', async () => {
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    expect(await page.locator('.mn-pane--graph').count()).toBe(1)
+
+    // 卡片 = 笔记（Mock Vault 里每篇 Markdown 一张），文件夹自动成组
+    await waitUntil(
+      async () => (await page.locator('.mn-graph-card').count()) > 5,
+      10_000,
+      '画布上出现笔记卡片',
+    )
+    await page.waitForSelector('.mn-graph-card[data-rel-path="项目/设计.md"]', { state: 'visible' })
+    await page.waitForSelector('.mn-graph-folder[data-folder="项目"]', { state: 'visible' })
+
+    // 单击卡片 → 就地预览正文（不需要按 Ctrl、不需要悬停）
+    await page.locator('.mn-graph-card[data-rel-path="项目/设计.md"]').click()
+    await page.waitForSelector('.mn-graph-preview', { state: 'visible' })
+    await waitUntil(
+      async () =>
+        ((await page.locator('.mn-graph-preview').textContent()) ?? '').includes('文件层'),
+      10_000,
+      '预览里出现笔记正文',
+    )
+
+    // 入链虚线 / 出链实线：设计.md 既有入链（路线图 → 设计）也有出链（设计 → 路线图/细节）
+    // 注意 SVG 元素的 `className` 是 `SVGAnimatedString` 对象，必须读属性
+    const highlighted = await page
+      .locator('.mn-graph-edge--highlight')
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('class') ?? ''))
+    expect(highlighted.some((name) => name.includes('mn-graph-edge--dashed'))).toBe(true)
+    expect(highlighted.some((name) => !name.includes('mn-graph-edge--dashed'))).toBe(true)
+
+    // Esc 关掉预览
+    await page.locator('.mn-graph').press('Escape')
+    await waitUntil(async () => (await page.locator('.mn-graph-preview').count()) === 0, 5_000, '预览关闭')
+
+    // 文件夹可以收起（收起后它变成紧凑的文件夹卡片），再点展开
+    const folder = page.locator('.mn-graph-folder[data-folder="项目"]')
+    const before = await page.locator('.mn-graph-card').count()
+    await folder.locator('button').first().click()
+    await waitUntil(
+      async () => (await page.locator('.mn-graph-card').count()) < before,
+      5_000,
+      '收起文件夹后内部卡片消失',
+    )
+    await folder.locator('button').first().click()
+    await waitUntil(
+      async () => (await page.locator('.mn-graph-card').count()) === before,
+      5_000,
+      '再点一次展开回来',
+    )
+
+    // 回到编辑视图（后续用例与"默认视图"保持一致）
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
   })
 
   it('命令面板：编辑器聚焦时 Ctrl+K 也能打开，过滤后回车执行命令', async () => {
@@ -564,22 +665,35 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(((await page.locator('.mn-editor__path').textContent()) ?? '')).toContain('项目/路线图.md')
   })
 
-  it('视图模式切换：仅编辑 / 分栏 / 仅预览', async () => {
+  it('视图模式切换：编辑 / 阅读 / 图谱（主区域只有一个 pane）', async () => {
     // 状态栏三个视图按钮
-    await page.locator('button[aria-label="仅预览"]').click()
+    await page.locator('button[aria-label="阅读（渲染后）"]').click()
     await waitUntil(
       async () => (await page.locator('.cm-content').count()) === 0,
       5_000,
-      '进入仅预览模式',
+      '进入阅读视图',
     )
     expect(await page.locator('.mn-preview__body').count()).toBe(1)
+    expect(await page.locator('.mn-pane').count()).toBe(1)
 
-    await page.locator('button[aria-label="仅编辑"]').click()
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
     await page.waitForSelector('.cm-content', { state: 'visible' })
     expect(await page.locator('.mn-preview').count()).toBe(0)
+    expect(await page.locator('.mn-pane').count()).toBe(1)
 
-    await page.locator('button[aria-label="分栏"]').click()
-    await page.waitForSelector('.mn-preview', { state: 'visible' })
-    expect(await page.locator('.cm-content').count()).toBe(1)
+    // 图谱视图：主区域换成画布（不再有编辑/预览并排 —— 分栏已移除）
+    await page.locator('button[aria-label="知识图谱"]').click()
+    await page.waitForSelector('.mn-pane--graph', { state: 'visible' })
+    expect(await page.locator('.cm-content').count()).toBe(0)
+    expect(await page.locator('.mn-preview').count()).toBe(0)
+
+    // 布局不变式仍然成立
+    const layout = await readLayout(page)
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
+    expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
+
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
   })
 })

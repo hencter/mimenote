@@ -239,6 +239,47 @@ export interface SearchResult {
   elapsedMs: number
 }
 
+/** 图谱里的一个笔记节点（`mn_index::graph::GraphNode`）。 */
+export interface GraphNode {
+  relPath: string
+  /** 展示标题：frontmatter 的 `title` 优先，否则文件名主干。 */
+  title: string
+  /** 所在目录（POSIX，Vault 根为 `''`）——画布按它把卡片分组到文件夹容器里。 */
+  folder: string
+  /** 该笔记的标签（原始写法，可能被截断到前若干个）。 */
+  tags: string[]
+  /** 出链条数（按去重后的边计数）。 */
+  outDegree: number
+  /** 入链条数（悬空边不计入任何节点）。 */
+  inDegree: number
+}
+
+/** 图谱里的一条边（`mn_index::graph::GraphEdge`，按 `(from, to)` 去重后带 `count`）。 */
+export interface GraphEdge {
+  fromRelPath: string
+  /** 目标笔记；`null` = 悬空链接（目标还不存在）。 */
+  toRelPath: string | null
+  /**
+   * 链接的**原始目标写法**（已剥离锚点）：`[[还不存在的笔记]]` → `还不存在的笔记`。
+   *
+   * 悬空边只能靠它显示"指向谁"；解析成功时它同样有意义（用户写的可能和解析结果不同）。
+   * 一对 `(from, to)` 去重合并时取**第一条**链接的写法。
+   */
+  toRawTarget: string
+  kind: LinkKind
+  /** 同一对笔记之间的链接条数。 */
+  count: number
+}
+
+/** 一次图谱查询的结果（`mimenote_lib::commands::GraphData`）。 */
+export interface GraphData {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+  /** 节点数超过上限时只返回度数最高的一部分（前端据此给出提示）。 */
+  truncated: boolean
+  elapsedMs: number
+}
+
 /** 重命名时被改写了链接的某个文件（`mimenote_lib::commands::RenameLinkUpdate`）。 */
 export interface RenameLinkUpdate {
   relPath: string

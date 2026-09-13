@@ -1,0 +1,289 @@
+/*
+ * 设置页样式。
+ *
+ * 为什么单独成文件：它只服务 `features/settings/*`，放独立文件后改动不会外溢到
+ * 共享的 `styles/app.css`（那个文件是全局布局的落点，改它会影响所有界面）。
+ * 颜色 / 圆角 / 阴影全部走 `--mn-*` 令牌，因此换主题**不需要**改这里。
+ */
+
+/* 占满窗口的模态：左侧分区导航 + 右侧内容。
+   遮罩沿用 `.mn-overlay`（居中 + 半透明），这里让它铺满窗口、只留一圈可点的边框 ——
+   "占满窗口"同时"点遮罩仍能关闭"这两条要求只有这样才能同时成立。 */
+.mn-overlay--settings {
+  padding: 20px;
+}
+
+.mn-settings {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--mn-border);
+  border-radius: calc(var(--mn-radius) + 2px);
+  background: var(--mn-bg-elevated);
+  box-shadow: var(--mn-shadow);
+  overflow: hidden;
+}
+
+/* 焦点由"当前分区/当前行的高亮"表达：容器本身是程序化聚焦的，不该再画一圈焦点环 */
+.mn-settings:focus {
+  outline: none;
+}
+
+.mn-settings__header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--mn-border);
+  color: var(--mn-accent);
+}
+
+.mn-settings__header h2 {
+  margin: 0;
+  font-size: 15px;
+  color: var(--mn-fg);
+}
+
+.mn-settings__header-spacer {
+  flex: 1 1 auto;
+}
+
+.mn-settings__body {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------ 分区导航 */
+
+.mn-settings__nav {
+  flex: 0 0 auto;
+  width: 190px;
+  padding: 8px;
+  border-right: 1px solid var(--mn-border);
+  background: var(--mn-bg-sidebar);
+  overflow: auto;
+}
+
+.mn-settings__nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mn-settings__nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  border-radius: var(--mn-radius);
+  background: transparent;
+  color: var(--mn-fg-muted);
+  font-family: inherit;
+  font-size: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mn-settings__nav-item:hover {
+  background: var(--mn-hover);
+  color: var(--mn-fg);
+}
+
+.mn-settings__nav-item--active {
+  background: var(--mn-active);
+  color: var(--mn-accent);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------ 分区内容 */
+
+.mn-settings__panel {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 16px 20px 24px;
+  overflow: auto;
+}
+
+.mn-settings__panel:focus {
+  outline: none;
+}
+
+.mn-settings__section-title {
+  margin: 0 0 2px;
+  font-size: 15px;
+  color: var(--mn-fg);
+}
+
+.mn-settings__section-hint {
+  margin: 0 0 16px;
+  color: var(--mn-fg-muted);
+  font-size: 12px;
+}
+
+.mn-settings__group {
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--mn-border);
+}
+
+.mn-settings__group:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.mn-settings__group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mn-heading);
+}
+
+/* 一项设置：左标题 + 右控件 */
+.mn-settings__row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.mn-settings__row:last-child {
+  margin-bottom: 0;
+}
+
+.mn-settings__row--stacked {
+  display: block;
+}
+
+.mn-settings__row-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mn-settings__row-title {
+  display: block;
+  color: var(--mn-fg);
+}
+
+.mn-settings__row-hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--mn-fg-subtle);
+  font-size: 12px;
+}
+
+.mn-settings__row-control {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ------------------------------------------------------------- 控件 */
+
+.mn-settings__select {
+  min-width: 150px;
+  padding: 4px 6px;
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg);
+  color: var(--mn-fg);
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.mn-settings__range {
+  width: 190px;
+  accent-color: var(--mn-accent);
+}
+
+.mn-settings__value {
+  min-width: 54px;
+  color: var(--mn-fg-muted);
+  font-family: var(--mn-font-mono);
+  font-size: 12px;
+  text-align: right;
+}
+
+.mn-settings__checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--mn-fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.mn-settings__checkbox input {
+  accent-color: var(--mn-accent);
+}
+
+.mn-settings__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* --------------------------------------------------------- 信息展示 */
+
+.mn-settings__facts {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 6px 12px;
+  margin: 0;
+  color: var(--mn-fg);
+}
+
+.mn-settings__facts dt {
+  color: var(--mn-fg-subtle);
+}
+
+.mn-settings__facts dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.mn-settings__mono {
+  font-family: var(--mn-font-mono);
+  font-size: 12px;
+}
+
+.mn-settings__path {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--mn-code-bg);
+  font-family: var(--mn-font-mono);
+  font-size: 12px;
+}
+
+.mn-settings__note {
+  margin: 8px 0 0;
+  color: var(--mn-fg-muted);
+  font-size: 12px;
+}
+
+.mn-settings__note--warn {
+  color: var(--mn-warning);
+}
+
+.mn-settings__note--error {
+  color: var(--mn-danger);
+}
+
+.mn-settings__progress {
+  width: 100%;
+  height: 6px;
+  accent-color: var(--mn-accent);
+}

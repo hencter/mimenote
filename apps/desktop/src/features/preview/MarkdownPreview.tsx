@@ -15,7 +15,7 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } f
 
 import { createNoteFromLink, openNote } from '@/app/actions'
 import { Icon } from '@/components/Icon'
-import { resolveVaultAssetRel } from '@/domain/assets'
+import { createAssetResolver, isImageAssetTarget } from '@/domain/assets'
 import { frontmatterBody } from '@/domain/frontmatter'
 import { isInternalNoteHref, normalizeLinkTarget } from '@/domain/links'
 import { imagePlaceholderHtml, renderMarkdown, type ImageResolution } from '@/domain/markdown'
@@ -34,6 +34,8 @@ export function MarkdownPreview() {
   const text = useNoteStore((state) => state.doc?.text ?? '')
   const links = useLinksStore((state) => state.links)
   const rootPath = useVaultStore((state) => state.info?.rootPath ?? null)
+  /** Vault 条目表：给"裸文件名图片"做全库兜底解析用（已在 store 里，不额外请求）。 */
+  const entries = useVaultStore((state) => state.entries)
   const bodyRef = useRef<HTMLElement | null>(null)
 
   /**
@@ -61,21 +63,34 @@ export function MarkdownPreview() {
   /**
    * 图片地址解析（ADR-0007）：只有真实宿主 + 已知 Vault 根时才产出 asset URL。
    *
+   * 解析用**带全库索引**的解析器（`createAssetResolver`）：`![[图.png]]` 这种裸文件名
+   * 会先按"相对当前笔记"找，找不到再按文件名在整库图片里唯一匹配 —— 从 Obsidian 过来的
+   * 用户默认就是这个语义，只按相对路径解析会让他们的图全变成占位元素。
+   *
    * 浏览器预览（`pnpm dev`）没有 asset 协议，解析器缺席 → 直接渲染占位元素，
    * 而不是产出一堆必然加载失败的 URL。
    */
+  const resolveAsset = useMemo(
+    () => createAssetResolver(entries),
+    [entries],
+  )
+
   const imageEnv = useMemo(() => {
     if (!isTauriRuntime() || rootPath === null || relPath === null) return {}
     return {
       resolveImage: (src: string): ImageResolution | null => {
-        const rel = resolveVaultAssetRel(relPath, src)
-        if (rel === null) return null
+        const rel = resolveAsset(relPath, src)
+        // `![[…]]` 里不是图片的目标（例如 `![[另一篇笔记]]`）不该按图片占位
+        if (rel === null || !isImageAssetTarget(rel)) return null
         const key = `${rootPath}\u0000${rel}`
+        // 已被宿主拒过（越界、符号链接逃逸、不存在、非图片）：直接给"终态占位"，
+        // 不要再渲染成"等授权"的样子 —— 否则它会一直挂着授权标记与骨架动画。
+        if (deniedAssetsRef.current.has(key)) return null
         const url = assetUrls.get(key)
         return url === undefined ? { kind: 'unauthorized', rel } : { kind: 'ready', url }
       },
     }
-  }, [rootPath, relPath, assetUrls])
+  }, [rootPath, relPath, assetUrls, resolveAsset])
 
   // 预览只渲染正文：frontmatter 是"元数据"，它已经由标签面板的属性表展示，
   // 渲染出来只会变成一条横线加几行 `key: value`（见 domain/frontmatter.ts 的判定口径）

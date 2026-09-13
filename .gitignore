@@ -37,3 +37,5 @@ tmp/
 # 索引缓存是派生数据（可删除重建，见 ADR-0002）：示例 Vault 里的是运行时产生的
 examples/demo-vault/.mimenote/cache/
 examples/demo-vault/.mimenote/trash/
+# 误把仓库根当 Vault 打开时也会产生（开发/调试期间出现过），一律忽略
+.mimenote/

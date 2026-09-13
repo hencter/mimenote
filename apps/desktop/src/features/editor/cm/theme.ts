@@ -12,9 +12,16 @@ export const mnEditorTheme = EditorView.theme({
     color: 'var(--mn-editor-fg)',
     backgroundColor: 'var(--mn-editor-bg)',
   },
+  /*
+   * 正文用**界面字体**（与预览面板 `.mn-preview__body` 同一套排版）。
+   *
+   * Live Preview 的目标是"写的时候看到的就是最终排版"，等宽字体只留给代码
+   * （行内代码与围栏代码块由 live-preview/theme.ts 单独指定 `--mn-font-mono`）——
+   * 否则"隐藏语法标记"只是在源码上贴样式，读起来仍是代码而不是文章。
+   */
   '.cm-scroller': {
-    fontFamily: 'var(--mn-font-mono)',
-    lineHeight: '1.72',
+    fontFamily: 'var(--mn-font-ui)',
+    lineHeight: '1.78',
     overflow: 'auto',
   },
   '.cm-content': {
@@ -78,20 +85,29 @@ export const mnEditorTheme = EditorView.theme({
   '.cm-placeholder': { color: 'var(--mn-fg-subtle)' },
 })
 
-/** Markdown 语法高亮。 */
+/**
+ * Markdown 语法高亮。
+ *
+ * ⚠️ 这里**不设字号**：高亮的 tag 落在标题文本的**内层** span 上，而 Live Preview 的标题
+ * 字号挂在 `.cm-line` 的行装饰上，两层 `em` 会相乘（1.62em × 1.45em ≈ 2.3em）。
+ * 标题字号统一归 `live-preview/theme.ts` 管理，这里只负责颜色与字重。
+ *
+ * 同理，行内代码/代码块的颜色交给 Live Preview：预览面板里的代码是正文色 + 底色，
+ * 如果这里继续染成 `--mn-success`，代码块会变成正文里的一块绿斑。
+ */
 export const mnHighlightStyle = HighlightStyle.define([
-  { tag: tags.heading1, color: 'var(--mn-heading)', fontWeight: '700', fontSize: '1.45em' },
-  { tag: tags.heading2, color: 'var(--mn-heading)', fontWeight: '700', fontSize: '1.28em' },
-  { tag: tags.heading3, color: 'var(--mn-heading)', fontWeight: '700', fontSize: '1.16em' },
+  { tag: tags.heading1, color: 'var(--mn-heading)', fontWeight: '700' },
+  { tag: tags.heading2, color: 'var(--mn-heading)', fontWeight: '700' },
+  { tag: tags.heading3, color: 'var(--mn-heading)', fontWeight: '700' },
   { tag: [tags.heading4, tags.heading5, tags.heading6], color: 'var(--mn-heading)', fontWeight: '700' },
   { tag: tags.strong, fontWeight: '700', color: 'var(--mn-editor-fg)' },
   { tag: tags.emphasis, fontStyle: 'italic' },
   { tag: tags.strikethrough, textDecoration: 'line-through', color: 'var(--mn-fg-subtle)' },
   { tag: tags.link, color: 'var(--mn-link)', textDecoration: 'underline' },
   { tag: tags.url, color: 'var(--mn-link)' },
-  { tag: tags.monospace, color: 'var(--mn-success)', fontFamily: 'var(--mn-font-mono)' },
-  { tag: tags.quote, color: 'var(--mn-fg-muted)', fontStyle: 'italic' },
-  { tag: tags.list, color: 'var(--mn-accent)' },
+  { tag: tags.monospace, color: 'var(--mn-editor-fg)', fontFamily: 'var(--mn-font-mono)' },
+  { tag: tags.quote, color: 'var(--mn-fg-muted)' },
+  { tag: tags.list, color: 'var(--mn-fg-subtle)' },
   { tag: tags.contentSeparator, color: 'var(--mn-fg-subtle)' },
   { tag: tags.meta, color: 'var(--mn-fg-subtle)' },
   { tag: tags.processingInstruction, color: 'var(--mn-fg-subtle)' },

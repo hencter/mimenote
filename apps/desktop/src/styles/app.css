@@ -163,6 +163,17 @@ kbd {
   background: var(--mn-editor-bg);
 }
 
+/*
+ * 图谱画布：主区域里唯一"不该有内边距、不该滚动"的面 —— 画布自己管平移与缩放。
+ * `overflow: hidden` 是必须的：卡片超出视口时不能让外层出现滚动条（那会和画布的平移打架）。
+ */
+.mn-pane--graph {
+  flex: 1 1 auto;
+  overflow: hidden;
+  background: var(--mn-bg);
+  position: relative;
+}
+
 /* --------------------------------------------------------------- 分隔条 */
 
 .mn-splitter {

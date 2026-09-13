@@ -10,7 +10,22 @@ import { create } from 'zustand'
 import { DEFAULT_THEME_ID, getTheme, nextThemeId } from '@/theme/apply'
 import { loadJson, saveJson } from './persist'
 
-export type ViewMode = 'editor' | 'split' | 'preview'
+/**
+ * 主区域的视图模式。
+ *
+ * 只有三种：**所见即所得编辑**、**只读预览**、**知识图谱画布**。
+ * 原来的"分栏（编辑 + 预览并排）"已经移除 —— 编辑器本身就是所见即所得的，
+ * 并排显示同一份内容只会挤掉写作宽度（见 ADR-0009）。
+ */
+export type ViewMode = 'edit' | 'read' | 'graph'
+
+/** 旧版本持久化过的值 → 新模型（`split` 折到编辑，`preview` 折到阅读）。 */
+function migrateViewMode(value: unknown): ViewMode | null {
+  if (value === 'edit' || value === 'read' || value === 'graph') return value
+  if (value === 'editor' || value === 'split') return 'edit'
+  if (value === 'preview') return 'read'
+  return null
+}
 
 /**
  * 面板的模式（`null` = 未打开）。
@@ -27,7 +42,6 @@ export interface UiPreferences {
   viewMode: ViewMode
   sidebarVisible: boolean
   sidebarWidth: number
-  previewRatio: number
   themeId: string
   snippetsEnabled: boolean
   /** 右侧链接面板（反向链接 / 出链）。 */
@@ -39,16 +53,13 @@ const STORAGE_KEY = 'mimenote.ui.v1'
 
 export const SIDEBAR_MIN = 180
 export const SIDEBAR_MAX = 560
-export const PREVIEW_MIN_RATIO = 0.15
-export const PREVIEW_MAX_RATIO = 0.85
 export const LINKS_PANEL_MIN = 200
 export const LINKS_PANEL_MAX = 520
 
 const DEFAULTS: UiPreferences = {
-  viewMode: 'split',
+  viewMode: 'edit',
   sidebarVisible: true,
   sidebarWidth: 288,
-  previewRatio: 0.5,
   themeId: DEFAULT_THEME_ID,
   snippetsEnabled: true,
   linksPanelVisible: false,
@@ -67,17 +78,9 @@ function clamp(value: number, min: number, max: number): number {
 const restored = loadJson<Partial<UiPreferences>>(STORAGE_KEY, {}, isPreferences)
 
 const initial: UiPreferences = {
-  viewMode:
-    restored.viewMode === 'editor' || restored.viewMode === 'split' || restored.viewMode === 'preview'
-      ? restored.viewMode
-      : DEFAULTS.viewMode,
+  viewMode: migrateViewMode(restored.viewMode) ?? DEFAULTS.viewMode,
   sidebarVisible: restored.sidebarVisible ?? DEFAULTS.sidebarVisible,
   sidebarWidth: clamp(restored.sidebarWidth ?? DEFAULTS.sidebarWidth, SIDEBAR_MIN, SIDEBAR_MAX),
-  previewRatio: clamp(
-    restored.previewRatio ?? DEFAULTS.previewRatio,
-    PREVIEW_MIN_RATIO,
-    PREVIEW_MAX_RATIO,
-  ),
   themeId: typeof restored.themeId === 'string' ? restored.themeId : DEFAULTS.themeId,
   snippetsEnabled: restored.snippetsEnabled ?? DEFAULTS.snippetsEnabled,
   linksPanelVisible: restored.linksPanelVisible ?? DEFAULTS.linksPanelVisible,
@@ -105,10 +108,10 @@ interface UiState extends UiPreferences {
   closePalette: () => void
 
   setViewMode: (mode: ViewMode) => void
+  /** 在 编辑 → 阅读 → 图谱 之间循环（状态栏与快捷键用它）。 */
   cycleViewMode: () => void
   toggleSidebar: () => void
   setSidebarWidth: (width: number) => void
-  setPreviewRatio: (ratio: number) => void
   setThemeId: (id: string) => void
   cycleTheme: () => void
   setSnippetsEnabled: (enabled: boolean) => void
@@ -122,7 +125,6 @@ function persist(state: UiState): void {
     viewMode: state.viewMode,
     sidebarVisible: state.sidebarVisible,
     sidebarWidth: state.sidebarWidth,
-    previewRatio: state.previewRatio,
     themeId: state.themeId,
     snippetsEnabled: state.snippetsEnabled,
     linksPanelVisible: state.linksPanelVisible,
@@ -150,9 +152,9 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
 
   cycleViewMode: () => {
-    const order: ViewMode[] = ['editor', 'split', 'preview']
+    const order: ViewMode[] = ['edit', 'read', 'graph']
     const current = get().viewMode
-    const next = order[(order.indexOf(current) + 1) % order.length] ?? 'split'
+    const next = order[(order.indexOf(current) + 1) % order.length] ?? 'edit'
     set({ viewMode: next })
     persist(get())
   },
@@ -164,11 +166,6 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   setSidebarWidth: (width) => {
     set({ sidebarWidth: clamp(width, SIDEBAR_MIN, SIDEBAR_MAX) })
-    persist(get())
-  },
-
-  setPreviewRatio: (ratio) => {
-    set({ previewRatio: clamp(ratio, PREVIEW_MIN_RATIO, PREVIEW_MAX_RATIO) })
     persist(get())
   },
 

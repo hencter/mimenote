@@ -23,6 +23,7 @@ import { registerBuiltinCommands } from '@/app/builtin-commands'
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter } from '@/ipc/mock-adapter'
 import { useNoteStore } from '@/state/note-store'
+import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 
 /**
@@ -94,10 +95,11 @@ describe('外壳渲染', () => {
       expect(document.querySelector('.mn-statusbar')).not.toBeNull()
     })
 
-    // 分栏模式：编辑区 + 预览两个 pane
+    // 主区域一次只渲染一个 pane（编辑 / 阅读 / 图谱三选一，见 ADR-0009 与 ADR-0010）
     await waitFor(() => {
-      expect(document.querySelectorAll('.mn-pane').length).toBe(2)
+      expect(document.querySelectorAll('.mn-pane').length).toBe(1)
     })
+    expect(document.querySelector('.mn-pane--editor')).not.toBeNull()
 
     // 文件树必须有真实行（jsdom 里 clientHeight 恒为 0，靠兜底高度渲染）
     await waitFor(() => {
@@ -186,6 +188,8 @@ describe('链接面板（M2）', () => {
   })
 
   it('点击预览里的 wikilink 会打开目标笔记', async () => {
+    // 预览现在只在"阅读"视图里渲染（编辑视图是所见即所得的，见 ADR-0009）
+    useUiStore.getState().setViewMode('read')
     render(<App />)
     await useVaultStore.getState().openVault('C:\\MockVault')
     await openNote('项目/路线图.md')
@@ -203,11 +207,12 @@ describe('链接面板（M2）', () => {
     await act(async () => {
       document.querySelector<HTMLAnchorElement>('a.mn-wikilink')?.click()
     })
+    // 阅读视图里没有编辑器（`.mn-editor__path` 在编辑工具栏上），所以断言 store：
+    // 点击 wikilink 走的是 `app/actions.openNote`，它必须真的把目标笔记打开。
     await waitFor(() => {
-      expect(document.querySelector('.mn-editor__path')?.textContent ?? '').toContain(
-        '项目/设计.md',
-      )
+      expect(useNoteStore.getState().doc?.relPath).toBe('项目/设计.md')
     })
+    expect(useVaultStore.getState().selected).toBe('项目/设计.md')
   })
 })
 

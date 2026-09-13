@@ -14,8 +14,11 @@
 //! * 标签（`#标签` / frontmatter `tags`，见 [`tags::TagIndex`]）与链接共用同一次
 //!   `upsert`/`remove`：同一份文本顺手算出来，不做第二次 IO，也不会出现两者不同步；
 //! * 全文搜索（SQLite FTS5，见 [`search::SearchIndex`]）也在**同一遍**里建：链接索引读到的
-//!   文本直接喂给搜索索引，1 万笔记场景不会为搜索再读一遍文件。
+//!   文本直接喂给搜索索引，1 万笔记场景不会为搜索再读一遍文件；
+//! * 知识图谱（见 [`graph`]）**不新增数据**：它是这份链接索引 + 标签索引的一个只读投影，
+//!   顺手记下的 frontmatter `title` 让"节点标题"也不必再读文件。
 
+pub mod graph;
 pub mod rename;
 pub mod search;
 pub mod tags;
@@ -32,6 +35,7 @@ use mn_core::links::{extract_links, join_relative, normalize_target, LinkKind, L
 use mn_core::scanner::EntryMeta;
 use mn_core::tags::TagRef;
 
+pub use graph::{GraphData, GraphEdge, GraphNode};
 pub use search::SearchIndex;
 use tags::{TagIndex, TagSummary};
 
@@ -114,6 +118,12 @@ pub struct LinkIndex {
     dirty: bool,
     /// 标签数据：与链接同源同生命周期，只在 [`Self::upsert`] / [`Self::remove`] 里更新。
     tags: TagIndex,
+    /// 相对路径 → frontmatter 的 `title`（**没有 frontmatter 或没有该字段就不留条目**）。
+    ///
+    /// 为什么存它：知识图谱（[`graph`]）要"frontmatter title 优先、否则文件名主干"，而**不能在
+    /// 每次请求时重读全库文件**。正文在 `upsert` 时本来就在手上（标签也是同一时刻解析的），
+    /// 顺手多解析一次 frontmatter 区块的成本可以忽略（只扫开头的区块，不碰正文）。
+    titles: HashMap<String, String>,
 }
 
 impl LinkIndex {
@@ -131,6 +141,7 @@ impl LinkIndex {
         self.by_stem.clear();
         self.backlinks.clear();
         self.tags.clear();
+        self.titles.clear();
         self.dirty = false;
     }
 
@@ -142,6 +153,10 @@ impl LinkIndex {
         let links = extract_links(text);
         // 标签与链接同一份文本、同一个时机算出来：不额外读文件，也不可能不同步
         self.tags.upsert(&rel, text);
+        // 展示标题同理：frontmatter 区块本来就要为标签扫一遍，这里顺手取 `title`
+        if let Some(title) = frontmatter_title(text) {
+            self.titles.insert(rel.clone(), title);
+        }
 
         self.by_path.insert(normalize_target(&rel), rel.clone());
         if let Some(stem) = stem_of(&rel) {
@@ -157,8 +172,9 @@ impl LinkIndex {
     /// 移除一篇笔记（删除/重扫时调用）：链接与标签一起清掉。
     pub fn remove(&mut self, rel_path: &str) {
         let rel = rel_path.replace('\\', "/");
-        // 标签数据独立于链接数据，必须无条件清理 —— 否则删掉笔记后标签面板里还留着它
+        // 标签与标题都独立于链接数据，必须无条件清理 —— 否则删掉笔记后标签面板/图谱里还留着它
         self.tags.remove(&rel);
+        self.titles.remove(&rel);
         if self.files.remove(&rel).is_none() {
             return;
         }
@@ -323,6 +339,18 @@ impl LinkIndex {
     /// 不同标签的个数。
     pub fn tag_count(&self) -> usize {
         self.tags.key_count()
+    }
+
+    // -- 展示标题（图谱用） ------------------------------------------------------
+
+    /// 某篇笔记在 frontmatter 里声明的 `title`（没有 frontmatter / 没有该字段 → `None`）。
+    ///
+    /// 图谱的"展示标题"优先用它（见 [`graph`]），拿不到再退回文件名主干。
+    /// 它随 `upsert`/`remove`/`clear` 与链接、标签同生命周期，因此**不需要任何文件 IO**。
+    pub fn title_of(&self, rel_path: &str) -> Option<&str> {
+        self.titles
+            .get(&rel_path.replace('\\', "/"))
+            .map(String::as_str)
     }
 
     /// 把一条原始链接解析成具体笔记。
@@ -499,6 +527,16 @@ fn stem_of(rel_path: &str) -> Option<String> {
         Some(0) | None => Some(name.to_string()),
         Some(index) => Some(name[..index].to_string()),
     }
+}
+
+/// 取 frontmatter 的 `title`（供图谱做展示标题）。
+///
+/// 只有**非空标量**才算数：`title: [a, b]` 这类非标量、`title:` 空值、`title: '  '` 空白
+/// 都当作"没有标题"，让调用方退回文件名主干 —— 总比在卡片上显示 `null` 或空串好。
+fn frontmatter_title(text: &str) -> Option<String> {
+    let frontmatter = mn_core::frontmatter::parse(text)?;
+    let title = frontmatter.get("title")?.as_str()?.trim();
+    (!title.is_empty()).then(|| title.to_string())
 }
 
 /// 索引构建选项。

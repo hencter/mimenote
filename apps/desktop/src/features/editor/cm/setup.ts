@@ -27,6 +27,7 @@ import {
 } from '@codemirror/view'
 
 import { mnEditorTheme, mnHighlightStyle } from './theme'
+import { livePreviewExtensions } from './live-preview/plugin'
 
 /** 允许运行时替换的扩展槽（明暗模式）。 */
 export const appearanceCompartment = new Compartment()
@@ -38,7 +39,13 @@ export interface EditorCallbacks {
   onFocusChanged?: (focused: boolean) => void
 }
 
-/** 组装编辑器扩展。 */
+/**
+ * 组装编辑器扩展。
+ *
+ * 顺序有讲究：Live Preview 放在**最后** ——
+ * 1. 它的样式规则要能盖住基础主题的同权规则（同权重时后注册的胜出）；
+ * 2. 它的装饰插件依赖语法高亮/语言扩展已经装好（`syntaxTree` 才有东西可读）。
+ */
 export function createEditorExtensions(callbacks: EditorCallbacks, isDark: boolean): Extension[] {
   return [
     lineNumbers(),
@@ -61,6 +68,8 @@ export function createEditorExtensions(callbacks: EditorCallbacks, isDark: boole
     mnEditorTheme,
     appearanceCompartment.of(EditorView.darkTheme.of(isDark)),
     EditorView.lineWrapping,
+    // 所见即所得（Live Preview）：装饰层，不改文档、不换编辑器
+    ...livePreviewExtensions(),
     EditorView.updateListener.of((update) => {
       if (update.docChanged) {
         callbacks.onDocChanged?.(update.state.doc.toString())
