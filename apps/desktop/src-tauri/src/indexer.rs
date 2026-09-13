@@ -67,6 +67,11 @@ pub struct IndexStatus {
     pub duration_ms: u64,
     /// 已建立的链接条目数（就绪后有意义）。
     pub links: usize,
+    /// 这一轮**没有读文件**、直接复用缓存库里落盘索引的笔记数（ADR-0014）。
+    ///
+    /// 与 `indexed` 的关系：`reusedNotes == indexed` 就是"Vault 没变，一次文件读都没发生"。
+    /// 前端忽略未知字段，所以它是纯增量的信息；日志与排障靠它区分"真的复用了"与"只是看起来快"。
+    pub reused_notes: usize,
 }
 
 impl Default for IndexStatus {
@@ -77,6 +82,7 @@ impl Default for IndexStatus {
             total: 0,
             duration_ms: 0,
             links: 0,
+            reused_notes: 0,
         }
     }
 }
@@ -89,6 +95,7 @@ impl IndexStatus {
             total,
             duration_ms: 0,
             links: 0,
+            reused_notes: 0,
         }
     }
 }
@@ -103,18 +110,23 @@ pub fn reset(state: &AppState) {
     state.cancel_index_build();
     state.clear_index_cancel();
     state.index_write().clear();
-    // 搜索索引的连接属于上一个 Vault（甚至已经被删）：整轮重扫时先放下
+    // 搜索索引的连接属于上一个 Vault，整轮重扫时先放下。
+    // **缓存库文件本身留着**：下一轮构建按 (path, mtime, size) 与它增量对账（ADR-0008 后续修订）。
     state.clear_search();
     state.set_index_status(IndexStatus::default());
 }
 
-/// 打开（并整库重建）全文搜索索引；失败时记 warn + 把原因存进状态，返回 `None`。
+/// 打开（优先复用）全文搜索索引；失败时记 warn + 把原因存进状态，返回 `None`。
 ///
 /// **绝不让搜索索引影响主流程**：Vault 只读、磁盘满、缓存库被别的程序占着 —— 这些
 /// 都只让搜索功能降级（`search_query` 返回 `IO` 错误并带上原因），
 /// 打开 Vault、链接索引、标签全都照常。
+///
+/// 用 [`SearchIndex::open`] 而不是 `open_for_rebuild`：整库重写会把几十秒的重建成本
+/// 平摊到每一次打开 Vault 上，而库里的 `(path, mtime, size)` 元数据本来就能算出"哪几篇真的变了"。
+/// 只有**真正损坏**的库才会在 `open` 里被删掉重建（锁冲突/磁盘满一律原样报错降级）。
 fn prepare_search(state: &AppState, root: &VaultRoot) -> Option<SearchIndex> {
-    match SearchIndex::open_for_rebuild(&search_db_path(root)) {
+    match SearchIndex::open(&search_db_path(root)) {
         Ok(index) => Some(index),
         Err(error) => {
             log::warn!("全文搜索索引不可用（本轮跳过，功能降级）：{error}");
@@ -126,7 +138,7 @@ fn prepare_search(state: &AppState, root: &VaultRoot) -> Option<SearchIndex> {
 
 /// 启动后台构建（不阻塞调用方）。
 pub fn spawn_build(state: Arc<AppState>, app: AppHandle, root: VaultRoot, entries: Vec<EntryMeta>) {
-    // 先取消上一轮（切换 Vault 时可能出现）
+    // 先取消上一轮（切换 Vault 时可能出现）；下一轮真正开工前还会在构建锁上等它退出
     cancel(&state);
 
     let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -141,8 +153,12 @@ pub fn spawn_build(state: Arc<AppState>, app: AppHandle, root: VaultRoot, entrie
     emit(&app, &state.index_status_snapshot());
 
     tauri::async_runtime::spawn_blocking(move || {
+        // 同一时刻只允许一轮构建：并发构建会同时写同一个搜索缓存库
+        // （一方拿到 SQLITE_BUSY 就得降级）。上一轮已被取消，等它退出就够了。
+        let _build_guard = state.build_guard();
+
         let last_emitted = std::sync::atomic::AtomicUsize::new(0);
-        // 全文搜索：整轮重建（缓存库，删掉即可重建）。拿不到就降级，不阻塞其它索引
+        // 全文搜索：复用缓存库 + 按文件元数据增量写入。拿不到就降级，不阻塞其它索引
         let search = prepare_search(&state, &root);
         let (index, outcome) = build_indexes(
             root.path(),
@@ -161,6 +177,7 @@ pub fn spawn_build(state: Arc<AppState>, app: AppHandle, root: VaultRoot, entrie
                         total: all,
                         duration_ms: 0,
                         links: 0,
+                        reused_notes: 0,
                     });
                     emit(&app, &state.index_status_snapshot());
                 }
@@ -211,11 +228,12 @@ pub fn spawn_build(state: Arc<AppState>, app: AppHandle, root: VaultRoot, entrie
             total: outcome.total,
             duration_ms: outcome.duration_ms,
             links: stats.links,
+            reused_notes: outcome.reused_notes,
         });
         emit(&app, &state.index_status_snapshot());
 
         log::info!(
-            "链接索引{}：{} 篇 / {} 条链接（解析 {}，悬空 {}，歧义 {}）/ {} 个标签，耗时 {}ms，跳过 {}",
+            "链接索引{}：{} 篇 / {} 条链接（解析 {}，悬空 {}，歧义 {}）/ {} 个标签，耗时 {}ms（复用 {} 篇，对账 {}ms），跳过 {}",
             if outcome.cancelled {
                 "被取消"
             } else {
@@ -228,6 +246,8 @@ pub fn spawn_build(state: Arc<AppState>, app: AppHandle, root: VaultRoot, entrie
             stats.ambiguous,
             stats.tags,
             outcome.duration_ms,
+            outcome.reused_notes,
+            outcome.reuse_ms,
             outcome.skipped
         );
 
@@ -236,8 +256,9 @@ pub fn spawn_build(state: Arc<AppState>, app: AppHandle, root: VaultRoot, entrie
                 log::warn!("全文搜索索引本轮未提交（{}ms）", search_outcome.duration_ms);
             } else {
                 log::info!(
-                    "全文搜索索引就绪：{} 行，耗时 {}ms",
+                    "全文搜索索引就绪：本轮写入 {} 行（复用 {} 篇，耗时 {}ms）",
                     search_outcome.lines,
+                    search_outcome.reused_notes,
                     search_outcome.duration_ms
                 );
             }
@@ -335,4 +356,193 @@ fn is_note_extension(entry: &EntryMeta) -> bool {
         .ext
         .as_deref()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use mn_core::scanner::{scan, ScanOptions};
+
+    use crate::state::VaultCtx;
+
+    /// 打开 Vault 用的条目（真实元数据：增量复用判的就是它）。
+    fn entry_of(root: &VaultRoot, rel: &str) -> EntryMeta {
+        let path = root.path().join(rel);
+        let meta = std::fs::metadata(&path).unwrap();
+        EntryMeta {
+            rel_path: rel.to_string(),
+            name: rel.to_string(),
+            is_dir: false,
+            size_bytes: meta.len(),
+            mtime_ms: mn_core::atomic::mtime_ms(&meta),
+            ext: Some("md".to_string()),
+        }
+    }
+
+    #[test]
+    fn opening_a_vault_keeps_the_search_cache_instead_of_rebuilding_it() {
+        // 这条钉的是"打开 Vault 不再删缓存库"：曾经 `prepare_search` 用 `open_for_rebuild`，
+        // 每次打开都先把上一轮的缓存删掉，于是几十秒的重建被平摊到每一次打开上。
+        let dir = tempfile::tempdir().unwrap();
+        let root = VaultRoot::open(dir.path()).unwrap();
+        std::fs::create_dir_all(dir.path().join("笔记")).unwrap();
+        std::fs::write(dir.path().join("笔记/甲.md"), "关键词 在甲里\n").unwrap();
+        let entries = vec![entry_of(&root, "笔记/甲.md")];
+
+        let state = AppState::default();
+        let db = search_db_path(&root);
+
+        // 第一轮：建库
+        {
+            let search = prepare_search(&state, &root).expect("第一次打开应当能建库");
+            let (_, outcome) = mn_index::build_indexes(
+                root.path(),
+                &entries,
+                &mn_index::BuildOptions::default(),
+                None,
+                Some(&search),
+                |_, _| {},
+            );
+            let search_outcome = outcome.search.expect("这轮建了搜索索引");
+            assert!(!search_outcome.aborted, "{search_outcome:?}");
+            assert_eq!(search_outcome.reused_notes, 0);
+            state.install_search(search);
+        }
+
+        // 第二轮：缓存必须留着，而且内容一条不少（这就是"跨会话复用"的前提）
+        let reopened = prepare_search(&state, &root).expect("第二次打开应当直接复用缓存");
+        assert!(db.exists(), "缓存库不能被删掉重建");
+        assert_eq!(reopened.counts().unwrap().lines, 1);
+        assert_eq!(
+            reopened.search("关键词", 10).unwrap().total,
+            1,
+            "复用回来的缓存必须已经能搜到内容"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 写入口（保存 / 删除）之后，**落盘**的链接索引必须与内存一致
+    // -----------------------------------------------------------------------
+
+    /// 与 `spawn_build` 同一条路径（同步版）：开库 → 构建 → 两个索引一起安装进状态。
+    fn install(state: &AppState, root: &VaultRoot, entries: &[EntryMeta]) {
+        let search = prepare_search(state, root).expect("缓存库应当可用");
+        let (index, outcome) = build_indexes(
+            root.path(),
+            entries,
+            &BuildOptions::default(),
+            None,
+            Some(&search),
+            |_, _| {},
+        );
+        let search_outcome = outcome.search.expect("这轮建了搜索索引");
+        assert!(!search_outcome.aborted, "{search_outcome:?}");
+        assert!(
+            index.has_store(),
+            "构建完成之后索引必须挂着落盘句柄，否则后面每一次保存都不会写进缓存库"
+        );
+        state.install_search(search);
+        *state.index_write() = index;
+    }
+
+    fn entries_of(root: &VaultRoot, rels: &[&str]) -> Vec<EntryMeta> {
+        rels.iter().map(|rel| entry_of(root, rel)).collect()
+    }
+
+    /// 索引里对外可见的数据摊平成可比较的文本。
+    fn fingerprint(index: &mut mn_index::LinkIndex, rels: &[&str]) -> Vec<String> {
+        let mut out = Vec::new();
+        for rel in rels {
+            let links = index.note_links(rel);
+            out.push(format!(
+                "{rel} 出链={:?} 反链={:?} 悬空={}",
+                links.outbound, links.backlinks, links.unresolved_count
+            ));
+            out.push(format!(
+                "{rel} 标签={:?} 标题={:?}",
+                index.tags_of(rel),
+                index.title_of(rel)
+            ));
+        }
+        out.push(format!("概况={:?}", index.stats()));
+        out.push(format!(
+            "图谱节点={:?}",
+            index.graph_data(mn_index::graph::MAX_GRAPH_NODES).nodes
+        ));
+        out.push(format!("标签概览={:?}", index.tag_summary()));
+        out
+    }
+
+    /// 重开一次缓存库（"下次启动应用"），返回库里的那一份索引。
+    fn reload(root: &VaultRoot, entries: &[EntryMeta]) -> mn_index::LinkIndex {
+        let search = SearchIndex::open(&search_db_path(root)).unwrap();
+        let (index, outcome) = build_indexes(
+            root.path(),
+            entries,
+            &BuildOptions::default(),
+            None,
+            Some(&search),
+            |_, _| {},
+        );
+        assert!(!outcome.cancelled && outcome.skipped == 0, "{outcome:?}");
+        index
+    }
+
+    #[test]
+    fn saving_and_deleting_through_the_host_keep_the_persisted_index_in_step() {
+        // 这一条走的是**宿主真实的写入口**（`indexer::update_note` / `remove_note`），
+        // 覆盖 state 层的接线：索引必须挂着落盘句柄，保存/删除之后库里的那一份才跟得上。
+        let dir = tempfile::tempdir().unwrap();
+        let root = VaultRoot::open(dir.path()).unwrap();
+        std::fs::write(dir.path().join("甲.md"), "见 [[乙]] 与 #甲标签\n").unwrap();
+        std::fs::write(dir.path().join("乙.md"), "正文 #共享\n\n[[甲]]\n").unwrap();
+        let report = scan(root.path(), &ScanOptions::default()).unwrap();
+
+        let state = AppState::default();
+        state.set_vault(VaultCtx::new(root.clone(), ScanOptions::default(), report));
+        let entries = entries_of(&root, &["甲.md", "乙.md"]);
+        install(&state, &root, &entries);
+
+        // -- 保存：宿主入口 ------------------------------------------------------
+        let saved = "---\ntitle: 甲的新标题\n---\n\n见 [[乙]] 与 #换过\n";
+        std::fs::write(dir.path().join("甲.md"), saved).unwrap();
+        update_note(&state, "甲.md", saved);
+
+        // 落盘句柄确实写了：库里已经有这一篇的凭证与标签
+        let stored = SearchIndex::open(&search_db_path(&root))
+            .unwrap()
+            .load_index_data()
+            .unwrap();
+        let jia = stored
+            .iter()
+            .find(|data| data.rel_path == "甲.md")
+            .expect("保存必须把这一篇的链接/标签数据写进缓存库");
+        assert_eq!(jia.title.as_deref(), Some("甲的新标题"));
+        assert_eq!(
+            jia.tags
+                .iter()
+                .map(|tag| tag.tag.as_str())
+                .collect::<Vec<_>>(),
+            vec!["换过"],
+            "旧标签必须随保存一起从库里消失"
+        );
+
+        // -- 删除：宿主入口 ------------------------------------------------------
+        std::fs::remove_file(dir.path().join("乙.md")).unwrap();
+        remove_note(&state, "乙.md");
+
+        // -- 重启：落盘的那一份必须与内存逐条相同 --------------------------------
+        let entries = entries_of(&root, &["甲.md"]);
+        let mut reloaded = reload(&root, &entries);
+        let mut memory = state.index_write();
+        assert_eq!(
+            fingerprint(&mut reloaded, &["甲.md", "乙.md"]),
+            fingerprint(&mut memory, &["甲.md", "乙.md"]),
+            "重启之后从库里装回来的索引必须与内存一致"
+        );
+        assert_eq!(memory.title_of("甲.md"), Some("甲的新标题"));
+        assert!(!memory.contains("乙.md"));
+        assert!(memory.notes_with_tag("换过").len() == 1);
+    }
 }

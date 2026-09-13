@@ -171,6 +171,8 @@ pub struct AppState {
     index_status: RwLock<IndexStatus>,
     /// 正在进行的构建任务的取消句柄。
     index_cancel: Mutex<Option<Arc<AtomicBool>>>,
+    /// 构建互斥量：同一时刻只允许一轮索引构建在跑（理由见 [`AppState::build_guard`]）。
+    build_lock: Mutex<()>,
 }
 
 impl AppState {
@@ -267,6 +269,21 @@ impl AppState {
     /// 取写锁：保证"校验 mtime → 原子写"是临界区，避免并发写互相覆盖。
     pub fn write_guard(&self) -> MutexGuard<'_, ()> {
         self.write_lock.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    // -- 索引构建 ---------------------------------------------------------------
+
+    /// 取"构建互斥量"：**整个后台构建期间持有**，保证同一时刻只有一轮构建在跑。
+    ///
+    /// 为什么需要它：`vault_open` 可能被并发调用（dev 下 React StrictMode 会把打开跑两遍，
+    /// 用户快速切换 Vault 也一样）。两轮构建同时写同一个搜索缓存库，轻则一方 `SQLITE_BUSY`
+    /// 让搜索降级成"不可用"，重则互相删库/建库。
+    ///
+    /// 这里选择的做法是**后到的构建等前一轮退出**（而不是排队并发）：`spawn_build` 开头已经
+    /// 给上一轮置了取消标记，而取消是每个文件检查一次的协作式取消，所以等待时间最多一个文件的
+    /// 解析耗时。等待发生在 `spawn_blocking` 线程上，不占主线程、也不阻塞 IPC。
+    pub fn build_guard(&self) -> MutexGuard<'_, ()> {
+        self.build_lock.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     // -- 全文搜索索引 -----------------------------------------------------------
@@ -419,6 +436,40 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(max_seen.load(Ordering::SeqCst), 1, "写临界区不可并发进入");
+    }
+
+    #[test]
+    fn build_guard_serializes_whole_builds() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let state = Arc::new(AppState::default());
+        let inside = Arc::new(AtomicUsize::new(0));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let state = Arc::clone(&state);
+            let inside = Arc::clone(&inside);
+            let max_seen = Arc::clone(&max_seen);
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..20 {
+                    let _guard = state.build_guard();
+                    let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_seen.fetch_max(now, Ordering::SeqCst);
+                    std::thread::yield_now();
+                    inside.fetch_sub(1, Ordering::SeqCst);
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert_eq!(
+            max_seen.load(Ordering::SeqCst),
+            1,
+            "两轮构建不能同时在跑（会同时写同一个搜索缓存库）"
+        );
     }
 
     #[test]

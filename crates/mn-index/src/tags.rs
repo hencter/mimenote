@@ -54,10 +54,20 @@ impl TagIndex {
 
     /// 重算一篇笔记的标签（由 [`crate::LinkIndex::upsert`] 调用）。
     pub fn upsert(&mut self, rel_path: &str, text: &str) {
+        self.replace(rel_path, extract_tags(text));
+    }
+
+    /// 用**已经抽取好的标签**重算一篇笔记的标签。
+    ///
+    /// 为什么需要它（ADR-0014）：跨会话复用把每篇的标签落进了缓存库，装回内存时手上只有
+    /// `TagRef` 而没有正文。归一化键、空键过滤、反向索引的记账规则必须与 [`Self::upsert`]
+    /// **完全一致**，否则"复用回来的标签"与"重读文件算出来的标签"会分家 ——
+    /// 所以两者共用这同一段代码，而不是在别处照着再写一遍。
+    pub fn replace(&mut self, rel_path: &str, tags: Vec<TagRef>) {
         self.remove(rel_path);
 
         let rel = rel_path.replace('\\', "/");
-        let tags: Vec<IndexedTag> = extract_tags(text)
+        let tags: Vec<IndexedTag> = tags
             .into_iter()
             .filter_map(|tag| {
                 let key = normalize_tag(&tag.tag);

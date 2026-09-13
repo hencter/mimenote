@@ -23,7 +23,7 @@ pub mod rename;
 pub mod search;
 pub mod tags;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -36,7 +36,7 @@ use mn_core::scanner::EntryMeta;
 use mn_core::tags::TagRef;
 
 pub use graph::{GraphData, GraphEdge, GraphNode};
-pub use search::SearchIndex;
+pub use search::{IndexStore, NoteIndexData, SearchIndex};
 use tags::{TagIndex, TagSummary};
 
 /// 单篇笔记参与索引的大小上限（超过则跳过，避免大文件拖慢构建）。
@@ -103,6 +103,16 @@ pub struct IndexStats {
 }
 
 /// 链接索引。
+///
+/// ## 跨会话复用（ADR-0014）
+///
+/// 索引本身仍然活在内存里（查询要它，图谱、反链面板都读它），但**每一篇的解析结果都同时
+/// 落进缓存库**（[`LinkIndex::attach_store`]）。于是"打开 Vault"不再必须读全库文件：
+/// 判定键（`path` + `mtime` + `byte` 数，与全文搜索**共用同一张 `notes_meta`**）对得上的笔记
+/// 直接从库里装回内存，只有真的变了的才重读。
+///
+/// 落盘句柄是**加速器，不是正确性的前提**：没有它（缓存库不可用、构建被取消）时这个索引
+/// 照常工作，只是回到"每次打开重建"的老路。
 #[derive(Debug, Default)]
 pub struct LinkIndex {
     /// 真实相对路径（含扩展名）→ 该文件的出链（原始抽取结果）。
@@ -124,6 +134,19 @@ pub struct LinkIndex {
     /// 每次请求时重读全库文件**。正文在 `upsert` 时本来就在手上（标签也是同一时刻解析的），
     /// 顺手多解析一次 frontmatter 区块的成本可以忽略（只扫开头的区块，不碰正文）。
     titles: HashMap<String, String>,
+    /// 落盘句柄（见结构体文档）。`None` = 这次的索引不跨会话复用。
+    store: Option<IndexStore>,
+}
+
+/// 一篇笔记的**解析结果**（链接 + 标签 + frontmatter 标题）。
+///
+/// 与 [`LinkIndex`] 的"记账"分开是有意的：`upsert`（读文件算出来）与跨会话复用
+/// （从库里读回来）**必须是同一条记账路径**，否则两条路会各自演化，
+/// 而它们之间任何一点差别都表现为"复用之后链接面板变了"。
+struct ParsedNote {
+    links: Vec<LinkRef>,
+    tags: Vec<TagRef>,
+    title: Option<String>,
 }
 
 impl LinkIndex {
@@ -135,6 +158,10 @@ impl LinkIndex {
     }
 
     /// 清空（切换 Vault 时调用）。
+    ///
+    /// 顺手**解绑落盘句柄**：清空之后这个索引不再属于任何 Vault，继续用它写盘等于把上一个
+    /// Vault 的解析结果写进当前缓存库（切换 Vault 的顺序是 `reset → clear → spawn_build`，
+    /// 新的一轮构建会挂上属于新 Vault 的句柄）。
     pub fn clear(&mut self) {
         self.files.clear();
         self.by_path.clear();
@@ -143,18 +170,66 @@ impl LinkIndex {
         self.tags.clear();
         self.titles.clear();
         self.dirty = false;
+        self.store = None;
+    }
+
+    /// 挂上落盘句柄（宿主在开库之后调用；也可以由 [`build_indexes`] 从搜索索引上取）。
+    pub fn attach_store(&mut self, store: IndexStore) {
+        self.store = Some(store);
+    }
+
+    /// 解绑落盘句柄：内存索引与库里的内容不再保证是同一份快照（取消/回滚之后）。
+    pub fn detach_store(&mut self) {
+        self.store = None;
+    }
+
+    /// 是否挂着落盘句柄（日志与测试用）。
+    pub fn has_store(&self) -> bool {
+        self.store.is_some()
+    }
+
+    /// 落盘句柄（`build_indexes` 装载可复用的数据时用）。
+    fn store(&self) -> Option<&IndexStore> {
+        self.store.as_ref()
     }
 
     /// 新增/更新一篇笔记的出链与标签。
+    ///
+    /// 挂了落盘句柄时，**同一份解析结果**会顺手写进缓存库：内存与库里因此不可能不一致
+    /// （不是"两次解析碰巧一致"，是同一个 `ParsedNote`）。
     pub fn upsert(&mut self, rel_path: &str, text: &str) {
-        self.remove(rel_path);
-
         let rel = rel_path.replace('\\', "/");
-        let links = extract_links(text);
-        // 标签与链接同一份文本、同一个时机算出来：不额外读文件，也不可能不同步
-        self.tags.upsert(&rel, text);
-        // 展示标题同理：frontmatter 区块本来就要为标签扫一遍，这里顺手取 `title`
-        if let Some(title) = frontmatter_title(text) {
+        let parsed = Self::parse_note(text);
+        self.persist(&rel, &parsed);
+        self.forget(&rel);
+        self.insert_parsed(rel, parsed);
+    }
+
+    /// 移除一篇笔记（删除/重扫时调用）：链接与标签一起清掉。
+    pub fn remove(&mut self, rel_path: &str) {
+        let rel = rel_path.replace('\\', "/");
+        self.forget(&rel);
+        self.drop_persisted(&rel);
+    }
+
+    /// 解析一篇正文（**只解析，不记账**）。
+    fn parse_note(text: &str) -> ParsedNote {
+        ParsedNote {
+            links: extract_links(text),
+            // 标签与链接同一份文本、同一个时机算出来：不额外读文件，也不可能不同步
+            tags: mn_core::extract_tags(text),
+            // 展示标题同理：frontmatter 区块本来就要为标签扫一遍，这里顺手取 `title`
+            title: frontmatter_title(text),
+        }
+    }
+
+    /// 把解析结果记进索引。**这是唯一的记账入口**：`upsert` 与复用装载都走它，
+    /// 因此"复用回来的索引"与"从零重建的索引"逐条相同是结构上保证的。
+    ///
+    /// 调用方负责先 [`Self::forget`]（同一篇重复写入时得先清掉旧账，否则 `by_stem` 会留下幽灵条目）。
+    fn insert_parsed(&mut self, rel: String, parsed: ParsedNote) {
+        self.tags.replace(&rel, parsed.tags);
+        if let Some(title) = parsed.title {
             self.titles.insert(rel.clone(), title);
         }
 
@@ -165,30 +240,74 @@ impl LinkIndex {
                 .or_default()
                 .push(rel.clone());
         }
-        self.files.insert(rel, links);
+        self.files.insert(rel, parsed.links);
         self.dirty = true;
     }
 
-    /// 移除一篇笔记（删除/重扫时调用）：链接与标签一起清掉。
-    pub fn remove(&mut self, rel_path: &str) {
-        let rel = rel_path.replace('\\', "/");
+    /// 只清内存（不动落盘数据）：`upsert` 与 `remove` 共用。
+    fn forget(&mut self, rel: &str) {
         // 标签与标题都独立于链接数据，必须无条件清理 —— 否则删掉笔记后标签面板/图谱里还留着它
-        self.tags.remove(&rel);
-        self.titles.remove(&rel);
-        if self.files.remove(&rel).is_none() {
+        self.tags.remove(rel);
+        self.titles.remove(rel);
+        if self.files.remove(rel).is_none() {
             return;
         }
-        self.by_path.remove(&normalize_target(&rel));
-        if let Some(stem) = stem_of(&rel) {
+        self.by_path.remove(&normalize_target(rel));
+        if let Some(stem) = stem_of(rel) {
             let key = stem.to_lowercase();
             if let Some(list) = self.by_stem.get_mut(&key) {
-                list.retain(|candidate| candidate != &rel);
+                list.retain(|candidate| candidate != rel);
                 if list.is_empty() {
                     self.by_stem.remove(&key);
                 }
             }
         }
         self.dirty = true;
+    }
+
+    /// 把一篇笔记的解析结果写进缓存库（挂了句柄时）。
+    ///
+    /// 失败只记 warn：库里没写成功，判定键也一并被作废，下次打开会重读这一篇 ——
+    /// 结果仍然正确，只是少了这一篇的复用。
+    fn persist(&self, rel: &str, parsed: &ParsedNote) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let data = NoteIndexData {
+            rel_path: rel.to_string(),
+            links: parsed.links.clone(),
+            title: parsed.title.clone(),
+            tags: parsed.tags.clone(),
+        };
+        if let Err(error) = store.replace_note(rel, &data) {
+            log::warn!("链接/标签索引写盘失败（{rel}，下次打开会重读这一篇）：{error}");
+        }
+    }
+
+    /// 把一篇笔记的落盘数据删掉（挂了句柄时）。
+    fn drop_persisted(&self, rel: &str) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        if let Err(error) = store.drop_note(rel) {
+            log::warn!("链接/标签索引删除落盘数据失败（{rel}）：{error}");
+        }
+    }
+
+    /// 把**库里读回来的**一篇笔记装进索引（跨会话复用路径）。
+    ///
+    /// 刻意**不写盘**：数据本来就是从库里读出来的，写回去只会把刚对上的判定键又作废一次。
+    pub(crate) fn apply_persisted(&mut self, data: NoteIndexData) {
+        let rel = data.rel_path.replace('\\', "/");
+        self.forget(&rel);
+        self.insert_parsed(
+            rel,
+            ParsedNote {
+                links: data.links,
+                tags: data.tags,
+                title: data.title,
+            },
+        );
     }
 
     /// 是否已索引某篇笔记。
@@ -575,26 +694,59 @@ pub struct BuildOutcome {
     pub cancelled: bool,
     /// 全文搜索索引的构建结果（这一轮没建搜索索引时为 `None`）。
     pub search: Option<SearchBuildOutcome>,
+    /// 这一轮**没有读文件**、直接从缓存库里复用落盘索引的笔记数（ADR-0014）。
+    ///
+    /// 它存在的意义不只是统计：`reused_notes == total` 就是"Vault 没变，一次文件读都没发生"
+    /// 的可断言证据（见 `tests/persisted_index.rs`）。
+    pub reused_notes: usize,
+    /// 这一轮**花在复用上**的时间（毫秒）：增量对账 + 从库里装载链接/标签数据。
+    ///
+    /// 与 `duration_ms` 分开报，才能说清"打开 Vault 剩下的时间花在哪"：
+    /// 复用省掉的是文件 IO，不是这几毫秒的对账。
+    pub reuse_ms: u64,
 }
 
 /// 全文搜索索引的构建结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchBuildOutcome {
-    /// 写入的行数。
+    /// 本轮写入的行数（全库命中、什么都没变时是 0）。
     pub lines: usize,
-    /// 耗时（毫秒）。
+    /// 本轮**花在搜索索引上**的时间（毫秒）：对账 + 写入 + 收尾，不含链接/标签那一遍。
+    ///
+    /// 刻意不用"从构建开始到收尾"的墙钟时间：增量复用之后，搜索索引可能只花几十毫秒，
+    /// 而整轮构建要读全库文件几秒钟 —— 那样报出来的数字会让人以为搜索仍然很慢。
     pub duration_ms: u64,
     /// 失败/取消导致这轮**没有提交**（库仍是上一轮的内容）。
     pub aborted: bool,
     /// 失败原因（有值时这轮搜索索引不可用，但链接索引不受影响）。
     pub error: Option<String>,
+    /// 按文件元数据**原样留用**（一行都没重写）的笔记数。
+    pub reused_notes: usize,
 }
 
-/// 从磁盘构建索引（链接 + 标签，可选全文搜索）。
+/// 这一轮全文搜索索引的写模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchMode {
+    /// 全库命中、也没有要删的：**不动索引表**（连事务都不开）。
+    Noop,
+    /// 整库重建：清空后逐篇写内容表，最后一次性 `rebuild` FTS 索引。
+    Full,
+    /// 增量：只重写变化的那几篇（FTS 按行维护）。
+    Incremental,
+}
+
+/// 从磁盘构建索引（链接 + 标签 + 可选全文搜索）。
 ///
 /// `cancel` 用于在切换 Vault / 关闭应用时中断（每处理一个文件检查一次）。
 /// `progress` 每 `options.progress_every` 个文件回调一次 `(已处理, 总数)`。
-/// `search` 给了就**在这一遍里顺带建全文搜索索引**（同一份文本，不重读文件）。
+/// `search` 给了就**在这一遍里顺带建全文搜索索引**（同一份文本，不重读文件）：
+/// 先按 `(path, mtime, size)` 与缓存库对账，能留用的笔记**一行都不重写**
+/// （见 `search::SearchIndex::plan_incremental`；ADR-0008「后续修订」）。
+///
+/// 链接 / 标签索引与它复用**同一次对账、同一张判定键、同一个连接**（ADR-0014）：
+/// 判定键对上的笔记连文件都不读，直接把上次落盘的解析结果装回内存；
+/// 只有新增/改动/mtime 不可得的那些才重读文件并重新落盘。
+/// Vault 一个字节都没变时，这一整轮的成本就是"对账 + 反序列化"。
 ///
 /// 返回 `(索引, 结果)`。
 pub fn build_indexes(
@@ -616,23 +768,109 @@ pub fn build_indexes(
     let mut indexed = 0usize;
     let mut skipped = 0usize;
     let mut cancelled = false;
+    let mut reused_notes = 0usize;
 
-    // 全文搜索：整轮写在一个事务里（外部内容表最后一次性 `rebuild`）。
+    // 全文搜索：先与库里的文件元数据对账，再决定写什么。
     // 任何一步失败都只让"搜索这一路"降级，链接索引照常建完。
-    let search_started = Instant::now();
+    let mut search_nanos: u128 = 0;
     let mut search_lines = 0usize;
+    let mut search_reused = 0usize;
     let mut search_error: Option<String> = None;
-    let mut search_sink = match search {
-        Some(target) => match target.begin_rebuild() {
-            Ok(()) => Some(target),
-            Err(error) => {
-                log::warn!("全文搜索索引重建无法开始（本轮跳过）：{error}");
-                search_error = Some(error.to_string());
-                None
+    let mut search_mode: Option<SearchMode> = None;
+    let mut search_sink: Option<&SearchIndex> = None;
+    let mut search_changed: HashSet<String> = HashSet::new();
+    // 对账、开事务、逐篇写入任一环失败：这一轮搜索索引不算数（回滚，库里仍是上一轮的内容）
+    let mut search_failed = false;
+
+    // 复用：`None` = 这一轮所有笔记都要重读（没给搜索索引 / 对账失败）；
+    // `Some(空集)` = 全库命中（一篇都不用读）；`Some(集合)` = 只有集合里的要重读。
+    let mut reload: Option<HashSet<String>> = None;
+    let mut reuse_nanos: u128 = 0;
+
+    if let Some(target) = search {
+        let planning = Instant::now();
+        match target.plan_incremental(&notes) {
+            Ok(plan) if plan.is_noop() => {
+                // 全库命中、也没有要删的：这就是"Vault 没变时打开几乎是常数开销"的由来
+                search_reused = plan.reused;
+                search_mode = Some(SearchMode::Noop);
+                reload = Some(HashSet::new());
+                // 库里已提交的内容与内存即将装成的内容是同一份快照 —— 这时挂上写穿透才是对的。
+                // 注意**只在会写入的那几种模式下挂**：对账失败/开事务失败时库里是"上一轮的快照"，
+                // 这一轮的内存索引与它并不是同一份，继续写盘只会把半截数据混进去。
+                index.attach_store(target.index_store());
             }
-        },
-        None => None,
-    };
+            Ok(plan) => {
+                search_reused = plan.reused;
+                reload = Some(plan.changed.iter().cloned().collect());
+                let begun = if plan.needs_full_rebuild() {
+                    target.begin_rebuild().map(|()| SearchMode::Full)
+                } else {
+                    target
+                        .begin_incremental(&plan)
+                        .map(|()| SearchMode::Incremental)
+                };
+                match begun {
+                    Ok(mode) => {
+                        search_changed = plan.changed.into_iter().collect();
+                        search_mode = Some(mode);
+                        search_sink = Some(target);
+                        // 写穿透与搜索那一半共用连接：这一轮的文件读取结果会与行、判定键
+                        // 落在**同一个事务**里（见 search.rs 的模块文档：三条不变量）
+                        index.attach_store(target.index_store());
+                    }
+                    Err(error) => {
+                        log::warn!("全文搜索索引无法开始写入（本轮跳过）：{error}");
+                        search_error = Some(error.to_string());
+                        search_failed = true;
+                    }
+                }
+            }
+            Err(error) => {
+                log::warn!("全文搜索索引增量对账失败（本轮跳过）：{error}");
+                search_error = Some(error.to_string());
+                search_failed = true;
+            }
+        }
+        reuse_nanos += planning.elapsed().as_nanos();
+    }
+
+    // 装载可复用的那一半：这一批笔记**一个文件都不读**，索引直接来自上次落盘的结果。
+    // 只有在 `link_notes` 里留下过凭证的路径才算数（零链接零标签的笔记也在其中），
+    // 缺凭证的那些会让循环退回"读文件"，因此库里少一份数据只会慢一点，不会错。
+    let mut persisted: HashMap<String, NoteIndexData> = HashMap::new();
+    if let Some(changed) = reload.as_ref() {
+        if let Some(store) = index.store() {
+            let loading = Instant::now();
+            // 扫描到的路径一次性建成集合：库里的行是 O(笔记数)，逐行去 `notes` 里线性查一遍
+            // 就是 1 万笔记下的亿级字符串比较（实测把复用一轮从 0.2s 拖到 0.6s）
+            let scanned: HashSet<&str> = notes.iter().map(|note| note.rel_path.as_str()).collect();
+            match store.load_all() {
+                Ok(all) => {
+                    for data in all {
+                        // 判定键没对上 → 这一轮要重读；扫描里已经没有它 → 不该出现在索引里
+                        if changed.contains(&data.rel_path) {
+                            continue;
+                        }
+                        if !scanned.contains(data.rel_path.as_str()) {
+                            continue;
+                        }
+                        persisted.insert(data.rel_path.clone(), data);
+                    }
+                }
+                Err(error) => {
+                    // 库里的落盘数据读不出来：整轮退回"读文件重建"。索引内容不受影响，
+                    // 只是这一次没能省下文件 IO（判定键没被信任，所以不会用到看不懂的数据）。
+                    log::warn!("链接/标签索引无法从缓存库装载（本轮整库重读）：{error}");
+                    persisted.clear();
+                }
+            }
+            reuse_nanos += loading.elapsed().as_nanos();
+        }
+    }
+
+    // 走整库重建时所有笔记都要写；走增量时只写对账说"变了"的那些
+    let whole_library = search_mode == Some(SearchMode::Full);
 
     for (position, entry) in notes.iter().enumerate() {
         if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
@@ -640,29 +878,55 @@ pub fn build_indexes(
             break;
         }
 
-        let path = root.join(entry.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
-        match read_text(&path, options.max_bytes) {
-            Ok(text) => {
-                index.upsert(&entry.rel_path, &text);
-                indexed += 1;
-                // 同一份文本顺手喂给全文搜索（**不重读文件**）
-                if let Some(target) = search_sink {
-                    match target.add_note(&entry.rel_path, &text) {
-                        Ok(lines) => search_lines += lines,
-                        Err(error) => {
-                            log::warn!(
-                                "全文搜索索引写入失败，本轮搜索索引放弃（链接索引不受影响）：{error}"
+        // 复用：库里已经有这一篇的完整解析结果，连文件都不用碰。
+        // `remove` 是幂等的取用（同一篇不会既复用又被读），拿不到就走下面的读文件分支。
+        if let Some(data) = persisted.remove(&entry.rel_path) {
+            index.apply_persisted(data);
+            indexed += 1;
+            reused_notes += 1;
+        } else {
+            #[cfg(test)]
+            count_note_read();
+            let path = root.join(entry.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let needs_search_write = whole_library || search_changed.contains(&entry.rel_path);
+            match read_text(&path, options.max_bytes) {
+                Ok(text) => {
+                    // 链接/标签先写：它在同一个事务里作废这篇的判定键，紧接着的行写入
+                    // 会用真实的 mtime/size 重新写一次 —— 顺序反了只会让这篇多读一次文件
+                    index.upsert(&entry.rel_path, &text);
+                    indexed += 1;
+                    // 同一份文本顺手喂给全文搜索（**不重读文件**）；能留用的笔记直接跳过
+                    if let Some(target) = search_sink {
+                        if needs_search_write {
+                            let writing = Instant::now();
+                            let written = target.add_note_with_meta(
+                                &entry.rel_path,
+                                &text,
+                                entry.mtime_ms,
+                                entry.size_bytes,
                             );
-                            search_error = Some(error.to_string());
-                            search_sink = None;
+                            search_nanos += writing.elapsed().as_nanos();
+                            match written {
+                                Ok(lines) => search_lines += lines,
+                                Err(error) => {
+                                    log::warn!(
+                                        "全文搜索索引写入失败，本轮搜索索引放弃（链接索引不受影响）：{error}"
+                                    );
+                                    search_error = Some(error.to_string());
+                                    search_sink = None;
+                                    search_failed = true;
+                                }
+                            }
                         }
                     }
                 }
-            }
-            Err(error) => {
-                // 单个文件读失败（被删、权限、非 UTF-8、过大）不应中断整轮索引
-                log::debug!("索引跳过 {}：{error}", entry.rel_path);
-                skipped += 1;
+                Err(error) => {
+                    // 单个文件读失败（被删、权限、非 UTF-8、过大）不应中断整轮索引。
+                    // 对搜索索引来说这就等于"这篇现在没有可索引的行"：它的旧行已经在对账
+                    // （或整库清空）时删掉了，所以结果与整库重建一致 —— 不会留下过期内容。
+                    log::debug!("索引跳过 {}：{error}", entry.rel_path);
+                    skipped += 1;
+                }
             }
         }
 
@@ -671,39 +935,67 @@ pub fn build_indexes(
         }
     }
 
+    // 取消/失败时库里已经回滚（或压根没写），内存索引与它不再是同一份快照 ——
+    // 立刻解绑：后面那一次保存若继续写盘，就会把"半截索引"当成这一轮的结果混进库里。
+    if cancelled || search_failed {
+        index.detach_store();
+    }
+
     progress(indexed, total);
 
-    // 收尾：取消或出错都回滚（库仍是上一轮提交的内容），否则重建 FTS 索引并提交
-    let search = match (search, search_sink) {
-        (Some(target), Some(_)) if !cancelled => match target.finish_rebuild() {
-            Ok(()) => Some(SearchBuildOutcome {
-                lines: search_lines,
-                duration_ms: search_started.elapsed().as_millis() as u64,
-                aborted: false,
-                error: None,
-            }),
-            Err(error) => {
-                log::warn!("全文搜索索引提交失败（已回滚）：{error}");
+    // 收尾：取消/出错都回滚（库仍是上一轮提交的内容）；
+    // 全库命中时什么都没动，直接报告成功（否则调用方不会安装连接，搜索会一直停在"构建中"）
+    let search = match search {
+        None => None,
+        Some(target) => {
+            if cancelled || search_failed {
                 target.abort_rebuild();
-                search_error = Some(error.to_string());
                 Some(SearchBuildOutcome {
                     lines: 0,
-                    duration_ms: search_started.elapsed().as_millis() as u64,
+                    duration_ms: millis(search_nanos),
                     aborted: true,
                     error: search_error,
+                    reused_notes: 0,
                 })
+            } else if search_mode == Some(SearchMode::Noop) {
+                // 全库命中：这一轮一个字节都没写（连事务都没开过）
+                Some(SearchBuildOutcome {
+                    lines: 0,
+                    duration_ms: millis(search_nanos),
+                    aborted: false,
+                    error: None,
+                    reused_notes: search_reused,
+                })
+            } else {
+                let finishing = Instant::now();
+                let finished = if search_mode == Some(SearchMode::Full) {
+                    target.finish_rebuild()
+                } else {
+                    target.finish_incremental()
+                };
+                search_nanos += finishing.elapsed().as_nanos();
+                match finished {
+                    Ok(()) => Some(SearchBuildOutcome {
+                        lines: search_lines,
+                        duration_ms: millis(search_nanos),
+                        aborted: false,
+                        error: None,
+                        reused_notes: search_reused,
+                    }),
+                    Err(error) => {
+                        log::warn!("全文搜索索引提交失败（已回滚）：{error}");
+                        target.abort_rebuild();
+                        Some(SearchBuildOutcome {
+                            lines: 0,
+                            duration_ms: millis(search_nanos),
+                            aborted: true,
+                            error: Some(error.to_string()),
+                            reused_notes: 0,
+                        })
+                    }
+                }
             }
-        },
-        (Some(target), _) => {
-            target.abort_rebuild();
-            Some(SearchBuildOutcome {
-                lines: 0,
-                duration_ms: search_started.elapsed().as_millis() as u64,
-                aborted: true,
-                error: search_error,
-            })
         }
-        (None, _) => None,
     };
 
     (
@@ -715,8 +1007,42 @@ pub fn build_indexes(
             duration_ms: started.elapsed().as_millis() as u64,
             cancelled,
             search,
+            reused_notes,
+            reuse_ms: millis(reuse_nanos),
         },
     )
+}
+
+/// 纳秒 → 毫秒（搜索索引的耗时用纳秒累加：增量一轮可能不到 1ms，四舍五入成 0 是诚实的）。
+fn millis(nanos: u128) -> u64 {
+    (nanos / 1_000_000) as u64
+}
+
+// 测试用探针：本线程上"真的读了几个笔记文件"。
+//
+// 为什么需要它（而不是只看耗时）："Vault 没变时一个文件都不读"是这一轮的核心承诺，
+// 而耗时只是间接证据。计数器是直接证据（`#[cfg(test)]`：生产二进制里根本不存在它）。
+// 线程局部而不是全局：`cargo test` 并行跑用例，全局计数会被别的用例污染。
+#[cfg(test)]
+thread_local! {
+    static NOTE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn count_note_read() {
+    NOTE_READS.with(|counter| counter.set(counter.get() + 1));
+}
+
+/// 本线程累计读过的笔记文件数（`#[cfg(test)]`）。
+#[cfg(test)]
+fn note_reads() -> usize {
+    NOTE_READS.with(std::cell::Cell::get)
+}
+
+/// 把本线程的读计数清零（`#[cfg(test)]`）。
+#[cfg(test)]
+fn reset_note_reads() {
+    NOTE_READS.with(|counter| counter.set(0));
 }
 
 fn is_note(entry: &EntryMeta, extensions: &[String]) -> bool {
@@ -1274,5 +1600,157 @@ mod tests {
         );
         assert!(outcome.cancelled);
         assert_eq!(index.len(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // 跨会话复用（ADR-0014）
+    // -----------------------------------------------------------------------
+
+    /// 写一篇笔记并返回按**磁盘真实元数据**造的条目（增量判定看的就是它，假值测不出东西）。
+    fn write_note(root: &Path, rel: &str, text: &str) -> EntryMeta {
+        let path = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, text).unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        EntryMeta {
+            rel_path: rel.to_string(),
+            name: path.file_name().unwrap().to_string_lossy().into_owned(),
+            is_dir: false,
+            size_bytes: meta.len(),
+            mtime_ms: mn_core::atomic::mtime_ms(&meta),
+            ext: Some("md".to_string()),
+        }
+    }
+
+    #[test]
+    fn an_unchanged_vault_reads_no_note_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let entries = vec![
+            write_note(root, "甲.md", "---\ntitle: 甲\n---\n见 [[乙]] 与 #标签甲\n"),
+            write_note(root, "子/乙.md", "正文 #共享\n[去](甲.md)\n"),
+        ];
+
+        // 库在内存里：同一个实例连建两轮，就是"同一个 Vault 打开两次"
+        let search = SearchIndex::open_in_memory().unwrap();
+
+        reset_note_reads();
+        let (first, outcome) = build_indexes(
+            root,
+            &entries,
+            &BuildOptions::default(),
+            None,
+            Some(&search),
+            |_, _| {},
+        );
+        assert_eq!(first.len(), 2);
+        assert_eq!(outcome.reused_notes, 0, "第一次打开只能读文件");
+        assert_eq!(note_reads(), 2, "首轮必须读这两篇");
+
+        // 第二轮：一个文件都不该读，索引内容却要一字不差
+        reset_note_reads();
+        let (second, outcome) = build_indexes(
+            root,
+            &entries,
+            &BuildOptions::default(),
+            None,
+            Some(&search),
+            |_, _| {},
+        );
+        assert_eq!(note_reads(), 0, "Vault 没变时不许读任何笔记文件");
+        assert_eq!(outcome.reused_notes, 2);
+        assert_eq!(outcome.indexed, 2);
+        assert_eq!(outcome.skipped, 0);
+        assert!(
+            second.has_store(),
+            "复用之后要挂上写穿透，不然下一次保存跟不上"
+        );
+
+        let mut first = first;
+        let mut second = second;
+        for (rel, links) in [("甲.md", 1), ("子/乙.md", 1)] {
+            assert_eq!(
+                second.note_links(rel).outbound,
+                first.note_links(rel).outbound
+            );
+            assert_eq!(links, second.note_links(rel).outbound.len());
+        }
+        assert_eq!(second.title_of("甲.md"), Some("甲"));
+        assert_eq!(second.backlinks_of("乙.md"), first.backlinks_of("乙.md"));
+        assert_eq!(second.tag_summary(), first.tag_summary());
+        assert_eq!(second.notes_with_tag("共享").len(), 1);
+        assert_eq!(
+            second.graph_data(graph::MAX_GRAPH_NODES).nodes,
+            first.graph_data(graph::MAX_GRAPH_NODES).nodes
+        );
+        assert_eq!(second.stats(), first.stats());
+    }
+
+    #[test]
+    fn a_missing_payload_falls_back_to_reading_that_note() {
+        // 库里少一份数据（理论上不会发生）时不许"装作没事"：这一篇退回读文件，其余照常复用
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let entries = vec![
+            write_note(root, "甲.md", "见 [[乙]]\n"),
+            write_note(root, "乙.md", "# 乙\n"),
+        ];
+        let db = root.join(".mimenote/cache/search.db");
+        let search = SearchIndex::open(&db).unwrap();
+        let (_, first) = build_indexes(
+            root,
+            &entries,
+            &BuildOptions::default(),
+            None,
+            Some(&search),
+            |_, _| {},
+        );
+        assert_eq!(first.reused_notes, 0);
+
+        // 手动抹掉乙的凭证行（模拟"落盘数据丢了、但判定键还在"：那正是会复用出空索引的状态）
+        let raw = rusqlite::Connection::open(&db).unwrap();
+        raw.execute("DELETE FROM link_notes WHERE path = '乙.md'", [])
+            .unwrap();
+        drop(raw);
+
+        reset_note_reads();
+        let (mut rebuilt, outcome) = build_indexes(
+            root,
+            &entries,
+            &BuildOptions::default(),
+            None,
+            Some(&search),
+            |_, _| {},
+        );
+        assert_eq!(note_reads(), 1, "只有丢了数据的那一篇要重读");
+        assert_eq!(outcome.reused_notes, 1);
+        assert_eq!(rebuilt.len(), 2);
+        assert!(rebuilt.contains("乙.md"));
+        assert_eq!(
+            rebuilt.backlinks_of("乙.md").len(),
+            1,
+            "重读出来的反链是对的"
+        );
+    }
+
+    #[test]
+    fn a_degraded_build_without_a_cache_keeps_working() {
+        // 没给搜索索引（缓存库不可用）时：索引照常建出来，只是没有复用，也没有写穿透
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let entries = vec![
+            write_note(root, "甲.md", "见 [[乙]]\n"),
+            write_note(root, "乙.md", ""),
+        ];
+
+        reset_note_reads();
+        let (mut index, outcome) =
+            build_index(root, &entries, &BuildOptions::default(), None, |_, _| {});
+        assert_eq!(note_reads(), 2);
+        assert_eq!(outcome.reused_notes, 0);
+        assert!(!index.has_store());
+        assert_eq!(index.backlinks_of("乙.md").len(), 1);
     }
 }
