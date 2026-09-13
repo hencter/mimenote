@@ -1,6 +1,9 @@
-/** 设置页 · 编辑器分区：自动保存延迟、Tab 宽度。 */
+/** 设置页 · 编辑器分区：自动保存延迟、Tab 宽度、附件目录。 */
+
+import { useState } from 'react'
 
 import { Icon } from '@/components/Icon'
+import { DEFAULT_ATTACHMENT_DIR, normalizeAttachmentDir } from '@/domain/attachments'
 import {
   AUTOSAVE_DELAY_OPTIONS,
   DEFAULT_SETTINGS,
@@ -13,12 +16,30 @@ export function EditorSection() {
   const setAutosaveDelayMs = useSettingsStore((state) => state.setAutosaveDelayMs)
   const tabWidth = useSettingsStore((state) => state.tabWidth)
   const setTabWidth = useSettingsStore((state) => state.setTabWidth)
+  const attachmentDir = useSettingsStore((state) => state.attachmentDir)
+  const setAttachmentDir = useSettingsStore((state) => state.setAttachmentDir)
+  /**
+   * 输入框的**草稿**值。
+   *
+   * 为什么不用受控输入直接写回 store：附件目录是"边打边生效"最糟的那类设置 ——
+   * 每敲一个字符就归一化一次，用户永远打不出 `附件/粘贴`（中间的 `附件/` 是合法值，
+   * 而清空到空串会被当成"Vault 根"立刻生效）。所以输入过程只改草稿，
+   * 失焦或回车时才落到 store（`commit`）。
+   */
+  const [draftDir, setDraftDir] = useState<string | null>(null)
+  const shownDir = draftDir ?? attachmentDir
+
+  const commit = (): void => {
+    if (draftDir === null) return
+    setAttachmentDir(draftDir)
+    setDraftDir(null)
+  }
 
   return (
     <>
       <h3 className="mn-settings__section-title">编辑器</h3>
       <p className="mn-settings__section-hint">
-        这两项是"写盘节奏"和"制表符宽度"，与具体笔记无关，因此跨 Vault 保存。
+        这几项是"写盘节奏""制表符宽度"与"粘贴的图片放哪儿"，与具体笔记无关，因此跨 Vault 保存。
       </p>
 
       <section className="mn-settings__group" aria-labelledby="mn-settings-autosave-title">
@@ -91,6 +112,47 @@ export function EditorSection() {
           <code className="mn-settings__path">features/editor/cm/setup.ts</code> 里补一行{' '}
           <code className="mn-settings__path">EditorState.tabSize.of(值)</code>
           （属于编辑器装配，不在本次改动范围内）。
+        </p>
+      </section>
+
+      <section className="mn-settings__group" aria-labelledby="mn-settings-attachment-title">
+        <h4 className="mn-settings__group-title" id="mn-settings-attachment-title">
+          <Icon name="file" size={14} />
+          附件
+        </h4>
+        <div className="mn-settings__row">
+          <span className="mn-settings__row-label">
+            <span className="mn-settings__row-title">附件目录</span>
+            <span className="mn-settings__row-hint">
+              粘贴（<code className="mn-settings__path">Ctrl+V</code>）或拖入的图片存到这里，
+              目录不存在时会自动创建；留空表示直接放在 Vault 根目录。笔记里插入的链接始终是
+              <strong>相对当前笔记</strong>的路径，因此移动笔记也不会断
+            </span>
+          </span>
+          <label className="mn-settings__row-control">
+            <span className="mn-visually-hidden">附件目录</span>
+            <input
+              type="text"
+              className="mn-settings__input"
+              aria-label="附件目录"
+              placeholder={DEFAULT_ATTACHMENT_DIR}
+              value={shownDir}
+              onChange={(event) => setDraftDir(event.target.value)}
+              onBlur={commit}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') commit()
+              }}
+            />
+          </label>
+        </div>
+        <p className="mn-settings__note">
+          说明：这里写的是 <strong>Vault 内的相对目录</strong>（如{' '}
+          <code className="mn-settings__path">{DEFAULT_ATTACHMENT_DIR}</code> 或{' '}
+          <code className="mn-settings__path">assets</code>），不是本机绝对路径 ——
+          绝对路径、<code className="mn-settings__path">..</code> 之类的写法会被归一化回默认值。
+          {normalizeAttachmentDir(shownDir) !== shownDir.trim() && (
+            <span className="mn-settings__note--warn">（当前输入不合法，将回退为默认目录）</span>
+          )}
         </p>
       </section>
     </>

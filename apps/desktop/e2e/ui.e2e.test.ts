@@ -105,6 +105,24 @@ async function showEditView(page: Page): Promise<void> {
 }
 
 /**
+ * 关掉所有标签（回到"一篇都没打开"的空态）。
+ *
+ * 为什么需要：标签列表跨用例累积（同一页面 + 同一 Vault 根，还会写进 localStorage），
+ * 需要断言"标签数量"的用例必须先垫一个已知的起点。刻意走 `×` 按钮而不是改 store：
+ * 那才是用户路径，顺带覆盖了"关掉激活标签会自动接上相邻标签"。
+ */
+async function closeAllTabs(page: Page): Promise<void> {
+  const tabs = page.locator('.mn-tabs__tab')
+  for (let guard = 0; guard < 40; guard += 1) {
+    const before = await tabs.count()
+    if (before === 0) return
+    await tabs.first().locator('.mn-tabs__close').click()
+    await waitUntil(async () => (await tabs.count()) < before, 5_000, '关闭一个标签')
+  }
+  throw new Error('标签数量没有收敛到 0')
+}
+
+/**
  * 切到"阅读"视图（渲染后的正文）。
  *
  * 默认视图是**所见即所得编辑**（分栏已移除，见 ADR-0009），所以断言 `.mn-preview__body`
@@ -596,6 +614,78 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.waitForSelector('.cm-content', { state: 'visible' })
   })
 
+  it('全局快捷键赢过编辑器自己的绑定：焦点在编辑器里按 Ctrl+G 也是"打开图谱"', async () => {
+    // 回归：CodeMirror 的 searchKeymap 把 Mod+G 绑成了"查找下一个"并会 preventDefault。
+    // 全局快捷键如果装在冒泡阶段，事件到达它时已经被吃掉 —— 用户按下 Ctrl+G 的结果是
+    // 编辑器跳到了下一个匹配，而图谱纹丝不动（应用层 E2E 抓到的真实缺陷）。
+    await openNoteInTree(page, '项目/设计.md')
+    await page.locator('.cm-content').click()
+    await page.keyboard.press('Control+g')
+
+    await page.waitForSelector('.mn-graph', { state: 'visible', timeout: 10_000 })
+    expect(await page.locator('.mn-pane--graph').count()).toBe(1)
+
+    // 同一件事对 Ctrl+Shift+T（标签面板）、Ctrl+B（侧栏）同样成立：它们都不该被编辑器吞掉
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+    await page.locator('.cm-content').click()
+    const sidebarBefore = await page.locator('.mn-sidebar').count()
+    await page.keyboard.press('Control+b')
+    await waitUntil(
+      async () => (await page.locator('.mn-sidebar').count()) !== sidebarBefore,
+      5_000,
+      'Ctrl+B 切换侧栏',
+    )
+    await page.keyboard.press('Control+b')
+    await waitUntil(
+      async () => (await page.locator('.mn-sidebar').count()) === sidebarBefore,
+      5_000,
+      '再按一次恢复侧栏',
+    )
+  })
+
+  it('多标签页：打开多篇成标签、点击切换、关闭当前，且布局契约不变', async () => {
+    // 标签列表是**跨用例累积**的（同一个页面、同一个 Vault 根，还写进了 localStorage），
+    // 前面的用例已经开过好几篇笔记。所以这里必须先清空，否则"恰好两个标签"永远不会成立。
+    await closeAllTabs(page)
+
+    await openNoteInTree(page, '项目/设计.md')
+    await openNoteInTree(page, '项目/路线图.md')
+    await waitUntil(
+      async () => (await page.locator('.mn-tabs__tab').count()) === 2,
+      10_000,
+      '两篇笔记成为两个标签',
+    )
+    // 激活项跟着当前文档
+    expect(
+      await page.locator('.mn-tabs__tab--active').getAttribute('data-tab-path'),
+    ).toBe('项目/路线图.md')
+
+    // 点第一个标签切回去（编辑器路径随之变化）
+    await page.locator('.mn-tabs__tab[data-tab-path="项目/设计.md"]').click()
+    await waitUntil(
+      async () =>
+        ((await page.locator('.mn-editor__path').textContent()) ?? '').includes('项目/设计.md'),
+      10_000,
+      '点击标签后切到那篇笔记',
+    )
+
+    // 标签栏在主区域内部：主体/侧栏/状态栏的高度契约不受影响
+    const after = await readLayout(page)
+    const expectedBody = after.innerHeight - after.titlebar.height - after.statusbar.height
+    expect(Math.abs(after.body.height - expectedBody)).toBeLessThanOrEqual(2)
+    expect(Math.abs(after.statusbar.bottom - after.innerHeight)).toBeLessThanOrEqual(1)
+    expect(Math.abs(after.sidebar.height - after.body.height)).toBeLessThanOrEqual(1)
+    expect(await page.locator('.mn-main > .mn-tabs').count()).toBe(1)
+
+    // 关闭当前标签 → 剩一个，且不会崩
+    await page.locator('.mn-tabs__tab--active .mn-tabs__close').click()
+    await waitUntil(async () => (await page.locator('.mn-tabs__tab').count()) === 1, 5_000, '标签被关闭')
+
+    // 收尾：把状态还给后面的用例（只留一个标签、停在编辑视图）
+    await openNoteInTree(page, '项目/设计.md')
+  })
+
   it('命令面板：编辑器聚焦时 Ctrl+K 也能打开，过滤后回车执行命令', async () => {
     await openNoteInTree(page, '项目/设计.md')
     // 关键：焦点在编辑器里。CodeMirror 自己把 Ctrl+K 绑成了 deleteToLineEnd，
@@ -696,4 +786,214 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.locator('button[aria-label="编辑（所见即所得）"]').click()
     await page.waitForSelector('.cm-content', { state: 'visible' })
   })
+
+  it('大纲面板：Ctrl+Shift+O 列出标题树，点一条跳到那一行（代码块里的伪标题不算）', async () => {
+    await openNoteInTree(page, '项目/大纲.md')
+
+    await page.locator('.cm-content').click()
+    await page.keyboard.press('Control+Shift+o')
+    await page.waitForSelector('.mn-outline', { state: 'visible' })
+
+    // 标题树：层级正确、代码块里的 `# 伪标题` 不在里面
+    await waitUntil(
+      async () => (await page.locator('.mn-outline__item').count()) === 4,
+      10_000,
+      '渲染出四个标题',
+    )
+    const labels = await page.locator('.mn-outline__item').allTextContents()
+    expect(labels).toEqual(['大纲示例', '第一节', '小节', '第二节'])
+
+    // 点最后一条 → 光标落到那一行（读编辑器当前行的文本，而不是断言内部变量）
+    await page.locator('.mn-outline__item[data-outline-line="15"]').click()
+    await waitUntil(
+      async () => ((await page.locator('.cm-activeLine').textContent()) ?? '').includes('第二节'),
+      5_000,
+      '光标落到第二节那一行',
+    )
+
+    // 阅读视图里点标题是"滚过去并高亮"（预览没有光标）
+    await page.locator('button[aria-label="阅读（渲染后）"]').click()
+    await page.waitForSelector('.mn-preview__body', { state: 'visible' })
+    await page.locator('.mn-outline__item[data-outline-line="5"]').click()
+    await waitUntil(
+      async () => (await page.locator('.mn-preview__body .mn-outline-flash').count()) === 1,
+      5_000,
+      '阅读视图里对应标题被高亮',
+    )
+    expect(await page.locator('.mn-preview__body .mn-outline-flash').textContent()).toBe('第一节')
+
+    // 再按一次收起面板
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+    await page.keyboard.press('Control+Shift+o')
+    await waitUntil(async () => (await page.locator('.mn-outline').count()) === 0, 5_000, '面板收起')
+  })
+
+  it('拖拽整理：把笔记拖到另一个文件夹，树与指向它的链接一起换（并能拖回来）', async () => {
+    // 自足：这条用例**真的会改 Vault**，所以先把起点收拾成"设计.md 就在 项目/ 里"。
+    // 收拾手段就是拖拽本身（拖回 项目 是幂等的：已经在 项目 里时是无效落点，什么都不会发生）。
+    // 单独跑这一条时（`-t`）门闸还在，先把 Vault 打开 —— 整个文件跑时它已经开着，这里是空操作。
+    if ((await page.locator('.mn-gate').count()) > 0) {
+      await page.getByText('打开文件夹作为 Vault').click()
+      await page.waitForSelector('.mn-tree-row', { state: 'visible' })
+    }
+    // 切到编辑视图（与 `beforeEach` 同一条动作）：这里**不等** `.cm-content`，
+    // 单独跑这一条时编辑器里可能一篇笔记都没打开（那种情况下也不该为它先开一篇）
+    const editButton = page.locator('button[aria-label="编辑（所见即所得）"]')
+    if ((await editButton.count()) > 0) await editButton.click()
+    await page.locator('.mn-search-field__input').fill('')
+    if ((await treeRow(page, '日记/设计.md').count()) > 0) {
+      await treeRow(page, '项目').waitFor({ state: 'visible', timeout: 10_000 })
+      await dispatchDrag(page, '日记/设计.md', '项目')
+      await waitUntil(
+        async () => (await treeRow(page, '项目/设计.md').count()) === 1,
+        10_000,
+        '设计.md 回到 项目/',
+      )
+    }
+    await ensureTreeRow(page, '项目/设计.md')
+    expect(await treeRow(page, '项目/设计.md').count()).toBe(1)
+
+    // 1) 悬停反馈：拖到文件夹行上时给出明确的"落点在这里"
+    await dispatchDrag(page, '项目/设计.md', '日记', 'hover')
+    await waitUntil(
+      async () => (await treeRow(page, '日记').getAttribute('data-drop-state')) === 'valid',
+      10_000,
+      '悬停时目标文件夹标成可放置',
+    )
+    expect((await treeRow(page, '日记').getAttribute('class')) ?? '').toContain(
+      'mn-tree-row--drop-valid',
+    )
+
+    // 2) 落下：文件真的换了目录（Mock Vault 的"磁盘"就是唯一事实来源）
+    await dispatchDrag(page, '项目/设计.md', '日记')
+    await ensureTreeRow(page, '日记/设计.md')
+    expect(await treeRow(page, '项目/设计.md').count()).toBe(0)
+
+    // 3) 全库指向它的链接被改写：路线图里的 `[[设计]]` → 相对新位置的 `[[../日记/设计]]`
+    await openNoteInTree(page, '项目/路线图.md')
+    await showReadView(page)
+    await waitUntil(
+      async () =>
+        ((await page.locator('.mn-preview__body').textContent()) ?? '').includes('日记/设计'),
+      10_000,
+      '预览里的链接已改写成新路径',
+    )
+    expect(await page.locator('a.mn-wikilink--unresolved').count()).toBe(0)
+
+    // 4) 拖拽/移动不能破坏布局契约（标签栏仍在主区域里、主区域高度不变）
+    const layout = await readLayout(page)
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
+    expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
+    expect(Math.abs(layout.sidebar.height - layout.body.height)).toBeLessThanOrEqual(1)
+    expect(await page.locator('.mn-main > .mn-tabs').count()).toBe(1)
+
+    // 5) 收尾：拖回 项目/，让 Vault 与用例开始时一致（后面的用例与手工验收都看到干净状态）
+    await ensureTreeRow(page, '日记/设计.md')
+    await dispatchDrag(page, '日记/设计.md', '项目')
+    await ensureTreeRow(page, '项目/设计.md')
+    expect(await treeRow(page, '日记/设计.md').count()).toBe(0)
+    await openNoteInTree(page, '项目/路线图.md')
+    await showReadView(page)
+    await waitUntil(
+      async () =>
+        ((await page.locator('.mn-preview__body').textContent()) ?? '').includes('设计细节见 设计'),
+      10_000,
+      '链接改回原样',
+    )
+  })
+
+  it('粘贴图片：写进附件目录，编辑器里出现图片、文件树里出现新附件', async () => {
+    // 自足：单独跑这一条（`-t`）时门闸还在，先把 Vault 打开
+    if ((await page.locator('.mn-gate').count()) > 0) {
+      await page.getByText('打开文件夹作为 Vault').click()
+      await page.waitForSelector('.mn-tree-row', { state: 'visible' })
+    }
+    await showEditView(page)
+    await openNoteInTree(page, '随手记.md')
+    // 焦点放进编辑器：粘贴事件的目标就是 contentDOM
+    await page.locator('.cm-content').click()
+
+    // 造一个**真实的**剪贴板事件：截图工具/浏览器复制图片给的正是 `DataTransfer.items`
+    // 里的一份 file（`files` 在部分实现下是空的，产品代码两条路都覆盖）
+    await page.evaluate(() => {
+      const content = document.querySelector('.cm-content')
+      if (content === null) throw new Error('编辑器未挂载')
+      const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+      const transfer = new DataTransfer()
+      transfer.items.add(new File([bytes], 'image.png', { type: 'image/png' }))
+      content.dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }),
+      )
+    })
+
+    // 1) 编辑器里出现图片 widget（`![](相对路径)` 被装饰成图片）。
+    //    Mock/浏览器预览模式没有 asset 协议 → 以**占位形态**渲染，`title` 上是被引用的
+    //    Vault 相对路径；真实解码（naturalWidth > 0）由应用层 E2E 覆盖（ADR-0007/0013）。
+    await page.waitForSelector('.cm-content .mn-md-image-placeholder', {
+      state: 'visible',
+      timeout: 10_000,
+    })
+    const widgetRel =
+      (await page.locator('.cm-content .mn-md-image-placeholder').first().getAttribute('title')) ?? ''
+    // 通用名 `image.png` 被换成带时间戳的名字（连续粘贴不会互相覆盖），并且落在附件目录里
+    expect(widgetRel).toMatch(/^附件\/粘贴图片 \d{4}-\d{2}-\d{2} \d{6}\.png$/)
+
+    // 2) 文件树里出现**同一个**附件（条目表是增量更新的，不需要重扫整个 Vault）
+    if ((await page.locator('.mn-tree [data-rel-path^="附件/"]').count()) === 0) {
+      await treeRow(page, '附件').click()
+    }
+    await waitUntil(
+      async () => (await page.locator(`.mn-tree [data-rel-path="${widgetRel}"]`).count()) === 1,
+      10_000,
+      '文件树里出现新附件',
+    )
+
+    // 3) 收尾：把光标移开图片那一行（让 decoration 恢复成图片），保持编辑视图
+    await page.locator('.cm-content').click()
+    await showEditView(page)
+  })
 })
+
+/**
+ * 派发一次真实的 HTML5 拖拽（`dragstart` → `dragover` → `drop` → `dragend`）。
+ *
+ * 为什么不用 `page.dragAndDrop`：Playwright 的鼠标拖动对 HTML5 原生拖放不稳定
+ * （浏览器要自己"发起"拖拽才算数），而这条用例要测的恰恰是**事件链路本身**
+ * （在 `dragover` 上给反馈、在 `drop` 上落地）。`DataTransfer` 是真实构造的，
+ * 与用户按住鼠标拖动时浏览器提供的是同一个接口。
+ *
+ * `phase: 'hover'` 只走到 `dragover`，用来断言"悬停时就有落点反馈"。
+ * `toRel === null` 表示**树的空白区域**（等于 Vault 根目录）。
+ */
+async function dispatchDrag(
+  page: Page,
+  fromRel: string,
+  toRel: string | null,
+  phase: 'hover' | 'drop' = 'drop',
+): Promise<void> {
+  await page.evaluate(
+    ({ fromRel, toRel, phase }) => {
+      const source = document.querySelector<HTMLElement>(`.mn-tree [data-rel-path="${fromRel}"]`)
+      const target =
+        toRel === null
+          ? document.querySelector<HTMLElement>('.mn-tree')
+          : document.querySelector<HTMLElement>(`.mn-tree [data-rel-path="${toRel}"]`)
+      if (source === null || target === null) {
+        throw new Error(`拖拽元素缺失：${fromRel} → ${toRel ?? '（空白区域）'}`)
+      }
+      const dataTransfer = new DataTransfer()
+      const fire = (node: Element, type: string, cancelable: boolean): void => {
+        node.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable, dataTransfer }))
+      }
+      fire(source, 'dragstart', false)
+      fire(target, 'dragover', true)
+      if (phase === 'drop') {
+        fire(target, 'drop', true)
+        fire(source, 'dragend', false)
+      }
+    },
+    { fromRel, toRel, phase },
+  )
+}

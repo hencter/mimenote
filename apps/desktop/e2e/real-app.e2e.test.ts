@@ -68,6 +68,121 @@ async function ensureTreeRow(page: Page, relPath: string): Promise<void> {
   await row.waitFor({ state: 'visible', timeout: 10_000 })
 }
 
+/**
+ * M3 的三块新功能：所见即所得编辑、知识图谱、设置页 —— 真实二进制 + 真实 IPC。
+ *
+ * 这一层能抓到单元测试抓不到的东西：装饰在真实 WebView 里是否真的生效、图谱的
+ * `graph_data` 真实往返是否返回了卡片、设置页是否真的能打开并改到东西。
+ */
+describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设置（M3）', () => {
+  let app: LaunchedApp
+  let vault: TempVault
+
+  beforeAll(async () => {
+    vault = await createTempVault({
+      '甲.md': '# 甲\n\n这是**粗体**与 `代码`，还有 [[乙]]。\n',
+      '乙.md': '# 乙\n\n指向 [[甲]] 与 [[还不存在的丙]]。\n',
+      '子/丙.md': '# 丙\n\n正文。\n',
+    })
+    app = await launchApp({ vaultPath: vault.path })
+    await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
+  }, 120_000)
+
+  afterAll(async () => {
+    if (app !== undefined) await app.close()
+    if (vault !== undefined) await vault.cleanup()
+  })
+
+  it('所见即所得：标题与行内标记在编辑器里被渲染，光标进入该行才露出原文', async () => {
+    await openNoteInTree(app.page, '甲.md')
+    await app.page.waitForSelector('.cm-content', { state: 'visible' })
+
+    // 标题行：live preview 会给行加 `mn-md-h1` 一类的类名（不再是裸 `# 甲`）
+    await waitUntil(
+      async () => (await app.page.locator('.cm-line.mn-md-h1').count()) >= 1,
+      10_000,
+      '标题行被装饰',
+    )
+    // `**粗体**` 的标记被隐藏（视觉上只留"粗体"），但光标不在那一行时原文仍在 doc 里
+    await waitUntil(
+      async () => (await app.page.locator('.mn-md-strong').count()) >= 1,
+      10_000,
+      '粗体被装饰',
+    )
+    // 把光标放进标题行 → 露出 `#`
+    await app.page.locator('.cm-line.mn-md-h1').first().click()
+    await waitUntil(
+      async () =>
+        ((await app.page.locator('.cm-content').textContent()) ?? '').includes('# 甲'),
+      10_000,
+      '光标进入标题行后露出原文',
+    )
+  })
+
+  it('知识图谱：真实 graph_data 渲染卡片、文件夹成组、点卡片就地预览', async () => {
+    await app.page.keyboard.press('Control+g')
+    await app.page.waitForSelector('.mn-graph', { state: 'visible' })
+    await waitUntil(
+      async () => (await app.page.locator('.mn-graph-card').count()) >= 3,
+      15_000,
+      '图谱渲染出卡片',
+    )
+    await app.page.waitForSelector('.mn-graph-card[data-rel-path="甲.md"]', { state: 'visible' })
+    // 子目录自动成组
+    await app.page.waitForSelector('.mn-graph-folder[data-folder="子"]', { state: 'visible' })
+
+    // 悬空链接的目标名字直接标出来（toRawTarget）
+    await waitUntil(
+      async () =>
+        ((await app.page.locator('.mn-graph').textContent()) ?? '').includes('还不存在的丙'),
+      15_000,
+      '悬空链接标出用户写下的目标名',
+    )
+
+    // 单击卡片 → 就地预览正文（不需要按 Ctrl）
+    await app.page.locator('.mn-graph-card[data-rel-path="甲.md"]').click()
+    await app.page.waitForSelector('.mn-graph-preview', { state: 'visible' })
+    await waitUntil(
+      async () =>
+        ((await app.page.locator('.mn-graph-preview').textContent()) ?? '').includes('粗体'),
+      15_000,
+      '预览里出现笔记正文',
+    )
+    // 入链虚线、出链实线（甲 有出链到乙，也有入链来自乙）
+    const classes = await app.page
+      .locator('.mn-graph-edge--highlight')
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('class') ?? ''))
+    expect(classes.some((name) => name.includes('mn-graph-edge--dashed'))).toBe(true)
+    expect(classes.some((name) => !name.includes('mn-graph-edge--dashed'))).toBe(true)
+
+    await app.page.keyboard.press('Escape')
+    await waitUntil(async () => (await app.page.locator('.mn-graph-preview').count()) === 0, 5_000, '预览关闭')
+  })
+
+  it('设置页：Ctrl+, 打开、显示版本与 Vault 统计，Esc 关闭', async () => {
+    await resetToEditView(app.page)
+    await app.page.keyboard.press('Control+,')
+    await app.page.waitForSelector('.mn-settings', { state: 'visible', timeout: 10_000 })
+
+    const text = (await app.page.locator('.mn-settings').textContent()) ?? ''
+    expect(text).toContain('外观')
+    expect(text).toContain('关于')
+
+    await app.page.keyboard.press('Escape')
+    await waitUntil(async () => (await app.page.locator('.mn-settings').count()) === 0, 5_000, '设置页关闭')
+  })
+
+  it('应用菜单：标题栏菜单列出命令并可直接执行', async () => {
+    await app.page.locator('button[aria-label="应用菜单"]').click()
+    await app.page.waitForSelector('[role="menu"]', { state: 'visible', timeout: 5_000 })
+    const items = await app.page.locator('[role="menuitem"]').allTextContents()
+    expect(items.length).toBeGreaterThan(5)
+    // 点"知识图谱"那条命令 → 切到图谱视图
+    await app.page.locator('[role="menuitem"]', { hasText: '视图：知识图谱' }).click()
+    await app.page.waitForSelector('.mn-graph', { state: 'visible', timeout: 5_000 })
+  })
+})
+
 /** 打开某篇笔记（自足：不依赖上一条用例留下的树/面板/视图状态）。 */
 async function openNoteInTree(page: Page, relPath: string): Promise<void> {
   // 上一个用例可能把视图留在"阅读"里（主区域一次只渲染一个 pane），先回到编辑视图
@@ -742,5 +857,98 @@ describe.skipIf(!supported)('真实应用：重命名与全库链接改写（真
       15_000,
       '新笔记的反向链接里出现来源笔记',
     )
+  })
+})
+
+/**
+ * 全文搜索跳转（真实 FTS5 + 真实编辑器 + 真实布局）。
+ *
+ * 为什么必须在这一层验：命中行号由宿主给出、光标与视口由编辑器给出，而"滚动到视口中间"
+ * 是**像素事实** —— jsdom 没有布局（高度恒为 0），Mock 层也测不出"到底滚到哪儿了"。
+ * 所以断言全部落在真实 WebView 里可观察的现象上：`.cm-activeLine` 的内容、
+ * 那一行在滚动容器里的相对位置、滚动条真的动过、焦点真的在编辑器里。
+ */
+describe.skipIf(!supported)('真实应用：搜索命中跳转（真实 FTS5）', () => {
+  let app: LaunchedApp
+  let vault: TempVault
+
+  const NOTE = '长文.md'
+  /** 命中行刻意放在文档深处：不滚动的话它根本不在视口里。 */
+  const HIT_LINE = 90
+  const MARKER = '海市蜃楼标记'
+
+  /** 140 行的普通正文，只有第 {@link HIT_LINE} 行含关键词。 */
+  function longNote(): string {
+    const lines = Array.from(
+      { length: 140 },
+      (_, index) => `第 ${index + 1} 行：撑高文档用的普通段落。`,
+    )
+    lines[HIT_LINE - 1] = `第 ${HIT_LINE} 行：${MARKER}。`
+    return `${lines.join('\n')}\n`
+  }
+
+  beforeAll(async () => {
+    vault = await createTempVault({ [NOTE]: longNote() })
+    app = await launchApp({ vaultPath: vault.path })
+    // 用例从"什么都没有打开"的干净页面开始：编辑器要在跳转时才被挂载
+    await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
+  }, 120_000)
+
+  afterAll(async () => {
+    if (app !== undefined) await app.close()
+    if (vault !== undefined) await vault.cleanup()
+  })
+
+  it('回车打开命中笔记，光标与视口落在命中行（而不是文档开头，也不贴边）', async () => {
+    await resetToEditView(app.page)
+    await app.page.keyboard.press('Control+Shift+F')
+    await app.page.waitForSelector('.mn-palette', { state: 'visible', timeout: 10_000 })
+    await app.page.locator('.mn-palette__input').fill(MARKER)
+
+    const option = app.page.locator(`.mn-palette [role="option"][data-rel-path="${NOTE}"]`)
+    await waitUntil(async () => (await option.count()) === 1, 25_000, '真实 FTS5 返回命中')
+    // 结果行里的行号就是宿主给的那一行
+    expect(await option.getAttribute('data-line')).toBe(String(HIT_LINE))
+    expect((await option.textContent()) ?? '').toContain(MARKER)
+
+    await app.page.locator('.mn-palette__input').press('Enter')
+
+    // 跳转在"新文档进了编辑器"之后才落地（下一帧），所以这里轮询到条件成立为止
+    await waitUntil(
+      async () => {
+        const probe = await app.page.evaluate(() => {
+          const line = document.querySelector('.cm-activeLine')
+          const scroller = document.querySelector('.cm-scroller')
+          if (line === null || scroller === null) return null
+          const lineRect = line.getBoundingClientRect()
+          const scrollerRect = scroller.getBoundingClientRect()
+          return {
+            text: line.textContent ?? '',
+            offsetInViewport: lineRect.top - scrollerRect.top,
+            viewportHeight: scrollerRect.height,
+            scrollTop: scroller.scrollTop,
+            focusedInEditor:
+              document.activeElement !== null && document.activeElement.closest('.cm-editor') !== null,
+          }
+        })
+        if (probe === null) return false
+        return (
+          probe.text.includes(MARKER) &&
+          probe.scrollTop > 0 &&
+          probe.offsetInViewport > probe.viewportHeight * 0.2 &&
+          probe.offsetInViewport < probe.viewportHeight * 0.8 &&
+          probe.focusedInEditor
+        )
+      },
+      15_000,
+      '命中行成为光标所在行、被滚到视口中部、且焦点在编辑器里',
+    )
+
+    // 打开的是命中那一篇
+    expect(((await app.page.locator('.mn-editor__path').textContent()) ?? '').includes(NOTE)).toBe(
+      true,
+    )
+    // 跳转只是"看"：磁盘上一个字节都没变（没有为了定位往正文里插标记）
+    expect(await vault.read(NOTE)).toBe(longNote())
   })
 })

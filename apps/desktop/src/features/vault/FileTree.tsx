@@ -1,23 +1,47 @@
 /**
- * 文件树：虚拟化渲染 + 键盘导航 + 过滤。
+ * 文件树：虚拟化渲染 + 键盘导航 + 过滤 + **拖拽整理**。
  *
  * 性能（architecture.md §6）：固定行高 + 只渲染可视行（overscan 10 行）。
  * 无论 Vault 有 1 千还是 10 万条目，DOM 中的行数恒定在几十行以内，
  * 滚动因此稳定在 60fps。行组件只订阅自己的布尔状态，选中某一项不会重渲染整棵树。
+ *
+ * 拖拽（M3 最后一项）：
+ *
+ * * **只拖 Markdown 笔记**（目录拖动与多选都推迟），所以行上的 `draggable` 是有条件的；
+ * * **落点判定**全部交给 `domain/drag` 的纯函数（文件夹 → 那个文件夹；笔记 → 它的目录；
+ *   空白 → Vault 根目录），组件只负责把结果显示出来；
+ * * 悬停高亮只改**一行**：被拖的那一行与当前落点行（`dropTarget.hostRelPath`），
+ *   其余行按 `memo` 原样跳过 —— 否则每移动一次鼠标都要重渲染几十行；
+ * * HTML5 的 `dragover` 阶段读不到 `dataTransfer.getData()`，所以"当前拖的是谁"留在
+ *   组件状态里，`dataTransfer` 只用于过手（顺带让外部程序能拿到相对路径）。
  */
 
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import { createNoteHere, deleteSelected, openNote, renameSelected } from '@/app/actions'
+import { createNoteHere, deleteSelected, moveNote, openNote, renameSelected } from '@/app/actions'
 import { REVEAL_ROW_EVENT } from '@/app/dom-events'
 import { Icon } from '@/components/Icon'
+import {
+  canDrag,
+  dragPayloadOf,
+  dropTargetFor,
+  readDragPayload,
+  sameDropTarget,
+  writeDragPayload,
+  type DragPayload,
+  type DropTarget,
+} from '@/domain/drag'
 import { formatBytes } from '@/domain/format'
 import { isMarkdown } from '@/domain/paths'
 import { flattenTree, type FlatRow } from '@/domain/tree'
 import { computeWindow, scrollTopToReveal } from '@/domain/virtual-list'
 import { useNoteStore } from '@/state/note-store'
+import { toast } from '@/state/toast-store'
 import { useVaultStore } from '@/state/vault-store'
+import { MoveDialog } from './MoveDialog'
 import { RenameDialog } from './RenameDialog'
+
+import './drag-drop.css'
 
 const ROW_HEIGHT = 26
 const OVERSCAN = 10
@@ -32,6 +56,20 @@ const FALLBACK_VIEWPORT_HEIGHT = 640
 
 function revealRow(relPath: string): void {
   window.dispatchEvent(new CustomEvent<string>(REVEAL_ROW_EVENT, { detail: relPath }))
+}
+
+/**
+ * 落点的最终执行：**唯一**的"把拖拽变成移动"的地方。
+ *
+ * 不可放置的落点（同一目录、拖到自己身上）在这里就被拦下：不触发 IPC，
+ * 只把**原因**告诉用户 —— 静默无反应是拖拽最糟的反馈。
+ */
+async function applyDrop(payload: DragPayload, target: DropTarget): Promise<void> {
+  if (!target.valid || target.parentRel === null) {
+    toast.info(target.label, target.reason ?? '')
+    return
+  }
+  await moveNote(payload.relPath, target.parentRel)
 }
 
 export function FileTree() {
@@ -54,6 +92,102 @@ export function FileTree() {
   const [viewport, setViewport] = useState({ scrollTop: 0, height: 0 })
   const pendingScrollTop = useRef(0)
   const frameHandle = useRef<number | null>(null)
+
+  // -- 拖拽整理 -------------------------------------------------------------
+  //
+  // `dragRef` 是"当前拖的是谁"的**权威副本**：HTML5 在 `dragover` 阶段不允许读取
+  // `dataTransfer.getData()`（只在 `drop` 时可读），没有它就没法在悬停时算出落点。
+  const dragRef = useRef<DragPayload | null>(null)
+  const [dragPayload, setDragPayload] = useState<DragPayload | null>(null)
+  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null)
+
+  const clearDrag = useCallback((): void => {
+    dragRef.current = null
+    setDragPayload(null)
+    setDropTarget(null)
+  }, [])
+
+  /** 悬停时更新落点；同一处不重复 set（避免每次 `dragover` 都重渲染）。 */
+  const showDropTarget = useCallback((next: DropTarget): void => {
+    setDropTarget((current) => (sameDropTarget(current, next) ? current : next))
+  }, [])
+
+  const handleDragStart = useCallback(
+    (row: FlatRow, event: React.DragEvent<HTMLDivElement>): void => {
+      const entry = row.node.entry
+      if (!canDrag(entry)) {
+        // 目录/附件不可拖动（本轮只整理笔记）：直接取消，别让它看起来能拖
+        event.preventDefault()
+        return
+      }
+      const payload = dragPayloadOf(entry)
+      dragRef.current = payload
+      setDragPayload(payload)
+      writeDragPayload(event.dataTransfer, payload)
+      select(entry.relPath)
+    },
+    [select],
+  )
+
+  const handleDragOver = useCallback(
+    (row: FlatRow, event: React.DragEvent<HTMLDivElement>): void => {
+      const payload = dragRef.current ?? readDragPayload(event.dataTransfer)
+      if (payload === null) return
+      const target = dropTargetFor(row.node.entry, payload)
+      // 必须 preventDefault，否则浏览器不认这里是可放置区（也就不会有 drop 事件）
+      event.preventDefault()
+      // 行自己处理落点，不要再冒泡到容器 —— 那里代表"树的空白区域 = Vault 根目录"
+      event.stopPropagation()
+      event.dataTransfer.dropEffect = target.valid ? 'move' : 'none'
+      showDropTarget(target)
+    },
+    [showDropTarget],
+  )
+
+  const handleDrop = useCallback(
+    (row: FlatRow, event: React.DragEvent<HTMLDivElement>): void => {
+      const payload = dragRef.current ?? readDragPayload(event.dataTransfer)
+      if (payload === null) return
+      event.preventDefault()
+      event.stopPropagation()
+      const target = dropTargetFor(row.node.entry, payload)
+      clearDrag()
+      void applyDrop(payload, target)
+    },
+    [clearDrag],
+  )
+
+  /** 容器的空白区域：等于"移到 Vault 根目录"。 */
+  const handleRootDragOver = useCallback(
+    (event: React.DragEvent<HTMLDivElement>): void => {
+      const payload = dragRef.current ?? readDragPayload(event.dataTransfer)
+      if (payload === null) return
+      const target = dropTargetFor(null, payload)
+      event.preventDefault()
+      event.dataTransfer.dropEffect = target.valid ? 'move' : 'none'
+      showDropTarget(target)
+    },
+    [showDropTarget],
+  )
+
+  const handleRootDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>): void => {
+      const payload = dragRef.current ?? readDragPayload(event.dataTransfer)
+      if (payload === null) return
+      event.preventDefault()
+      const target = dropTargetFor(null, payload)
+      clearDrag()
+      void applyDrop(payload, target)
+    },
+    [clearDrag],
+  )
+
+  /** 拖出树的范围时收掉高亮（`dragleave` 在子元素之间移动也会触发，所以要判包含关系）。 */
+  const handleDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>): void => {
+    const next = event.relatedTarget
+    if (next instanceof Node && event.currentTarget.contains(next)) return
+    setDropTarget(null)
+  }, [])
 
   // 视口高度：用 useLayoutEffect 在首次绘制前测一次，避免首帧渲染空白；
   // 之后交给 ResizeObserver（窗口缩放、侧栏拖拽、视图切换都会触发）。
@@ -256,18 +390,42 @@ export function FileTree() {
         tabIndex={0}
         onScroll={handleScroll}
         onKeyDown={handleKeyDown}
+        // 空白区域（含行下方的留白）＝ Vault 根目录：行自己会 stopPropagation，
+        // 所以能走到这里的 dragover/drop 一定是"落在树上但没落在某一行上"
+        onDragOver={handleRootDragOver}
+        onDrop={handleRootDrop}
+        onDragLeave={handleDragLeave}
+        // dragend 会从源行冒泡上来：无论成功与否都收掉高亮，不留一个假的"落点"
+        onDragEnd={clearDrag}
+        data-drop-root={
+          dropTarget !== null && dropTarget.hostRelPath === '' ? dropTarget.dataState : undefined
+        }
       >
         <div className="mn-tree__spacer" style={{ height: range.totalHeight }}>
           <div className="mn-tree__window" style={{ transform: `translateY(${range.offsetY}px)` }}>
             {visibleRows.map((row) => (
-              <FileTreeRow key={row.node.entry.relPath} row={row} onActivate={activateRow} />
+              <FileTreeRow
+                key={row.node.entry.relPath}
+                row={row}
+                onActivate={activateRow}
+                onDragStart={handleDragStart}
+                onDragOver={handleDragOver}
+                onDrop={handleDrop}
+                dragging={dragPayload?.relPath === row.node.entry.relPath}
+                dropState={
+                  dropTarget !== null && dropTarget.hostRelPath === row.node.entry.relPath
+                    ? dropTarget.dataState
+                    : 'none'
+                }
+              />
             ))}
           </div>
         </div>
       </div>
       {/* 对话框挂在这里而不是 App：叠加层是 fixed 定位，位置与挂载点无关，
-          而"谁能请求重命名"的信息（选中行、F2）本来就属于文件树。 */}
+          而"谁能请求重命名/移动"的信息（选中行、F2/F6）本来就属于文件树。 */}
       <RenameDialog />
+      <MoveDialog />
     </>
   )
 }
@@ -276,12 +434,30 @@ function rowId(relPath: string): string {
   return `mn-tree-row-${encodeURIComponent(relPath)}`
 }
 
+/** 一行在当前拖拽里的角色（决定样式与 `data-*` 断言点）。 */
+type RowDropState = 'none' | 'valid' | 'invalid'
+
 interface RowProps {
   row: FlatRow
   onActivate: (row: FlatRow) => void
+  onDragStart: (row: FlatRow, event: React.DragEvent<HTMLDivElement>) => void
+  onDragOver: (row: FlatRow, event: React.DragEvent<HTMLDivElement>) => void
+  onDrop: (row: FlatRow, event: React.DragEvent<HTMLDivElement>) => void
+  /** 这一行是不是被拖动的源。 */
+  dragging: boolean
+  /** 这一行是不是当前落点。 */
+  dropState: RowDropState
 }
 
-const FileTreeRow = memo(function FileTreeRow({ row, onActivate }: RowProps) {
+const FileTreeRow = memo(function FileTreeRow({
+  row,
+  onActivate,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  dragging,
+  dropState,
+}: RowProps) {
   const entry = row.node.entry
   const relPath = entry.relPath
   const isSelected = useVaultStore((state) => state.selected === relPath)
@@ -290,15 +466,20 @@ const FileTreeRow = memo(function FileTreeRow({ row, onActivate }: RowProps) {
   const markdown = isMarkdown(relPath)
 
   const iconName = entry.isDir ? (isExpanded ? 'folderOpen' : 'folder') : markdown ? 'file' : 'dot'
+  const draggable = markdown
 
   return (
     <div
       id={rowId(relPath)}
       data-rel-path={relPath}
+      data-drop-state={dropState === 'none' ? undefined : dropState}
       className={[
         'mn-tree-row',
         isSelected ? 'mn-tree-row--selected' : '',
         isOpen ? 'mn-tree-row--open' : '',
+        dragging ? 'mn-tree-row--dragging' : '',
+        dropState === 'valid' ? 'mn-tree-row--drop-valid' : '',
+        dropState === 'invalid' ? 'mn-tree-row--drop-invalid' : '',
       ]
         .filter((name) => name !== '')
         .join(' ')}
@@ -309,6 +490,12 @@ const FileTreeRow = memo(function FileTreeRow({ row, onActivate }: RowProps) {
       style={{ paddingLeft: `${6 + row.depth * 14}px`, height: ROW_HEIGHT }}
       title={`${relPath}${entry.isDir ? '' : ` · ${formatBytes(entry.sizeBytes)}`}`}
       onClick={() => onActivate(row)}
+      // 只有 Markdown 笔记可拖（目录拖动推迟）；目录行仍然是**合法的落点**
+      draggable={draggable}
+      onDragStart={(event) => onDragStart(row, event)}
+      onDragOver={(event) => onDragOver(row, event)}
+      onDrop={(event) => onDrop(row, event)}
+      aria-dropeffect={entry.isDir ? 'move' : undefined}
     >
       {entry.isDir ? (
         <span className={`mn-tree-row__chevron${isExpanded ? ' mn-tree-row__chevron--open' : ''}`}>

@@ -4,6 +4,9 @@
  * ⚠️ 这些类型必须与 Rust 侧结构逐字段一致（见 `docs/architecture.md` §3.1）：
  * - `mn_core::scanner::EntryMeta`
  * - `mimenote_lib::commands::{VaultInfo, VaultSnapshot, NoteContent, WriteOutcome, SnippetFile, VersionInfo}`
+ * - `mimenote_lib::assets::{AssetGrant, AssetBytes}`
+ * - `mimenote_lib::attachments::{AttachmentInput, AttachmentSaved}`
+ * - `mimenote_lib::export::ExportWriteOutcome`
  * - `mn_core::trash::TrashRecord`
  * - `mimenote_lib::error::IpcError`
  *
@@ -217,6 +220,58 @@ export interface AssetGrant {
   sizeBytes: number
 }
 
+/**
+ * 一张本地图片的内容（`mimenote_lib::assets::AssetBytes`，导出内嵌用）。
+ *
+ * 与 {@link AssetGrant} 是同一个授权面的两个出口：授权返回"能读的绝对路径"（预览用 asset 协议），
+ * 这里直接返回**字节**（导出把图片写成 `data:` URL，见 `features/export/`）。
+ */
+export interface AssetBytes {
+  /** 图片的 Vault 相对路径（与请求里的写法一致，POSIX）。 */
+  relPath: string
+  /** MIME 类型（由扩展名决定，如 `image/png`）。 */
+  mime: string
+  /** **标准 base64**（RFC 4648，含 `=` 填充）的内容。 */
+  dataBase64: string
+  /** 原始字节数（不是 base64 之后的长度）。 */
+  sizeBytes: number
+}
+
+/**
+ * 待写入的一张附件（`mimenote_lib::attachments::AttachmentInput`）。
+ *
+ * 为什么传**字节**而不是磁盘路径：WebView 里拿到的 `File` / `ClipboardEvent` 只有字节，
+ * 没有可用的本地路径；而"让宿主按前端给的路径去复制文件"等于开一条任意文件读取通道
+ * （理由见 ADR-0013）。
+ */
+export interface AttachmentInput {
+  /** 落盘用的文件名（含扩展名；命名规则见 `domain/attachments.ts`）。 */
+  name: string
+  /** **标准 base64**（RFC 4648，含 `=` 填充）的原始字节。 */
+  dataBase64: string
+}
+
+/**
+ * 落盘成功的一张附件（`mimenote_lib::attachments::AttachmentSaved`）。
+ *
+ * `relPath` 是**去重之后**的最终路径（宿主绝不覆盖同名文件），前端据此插入链接。
+ */
+export interface AttachmentSaved {
+  /** Vault 相对路径（POSIX），例如 `附件/粘贴图片 2025-01-01 123456.png`。 */
+  relPath: string
+  /** **原始字节数**（不是 base64 之后的长度）。 */
+  sizeBytes: number
+}
+
+/** 导出落盘结果（`mimenote_lib::export::ExportWriteOutcome`）。 */
+export interface ExportWriteOutcome {
+  /** 实际写入的绝对路径（原样回显用户在保存对话框里选的路径）。 */
+  absolutePath: string
+  sizeBytes: number
+  /** 实际写入耗时（毫秒，含 fsync）。 */
+  writtenInMs: number
+}
+
 /** 一条搜索命中（`mimenote_lib::commands::SearchHit`）。 */
 export interface SearchHit {
   relPath: string
@@ -280,14 +335,19 @@ export interface GraphData {
   elapsedMs: number
 }
 
-/** 重命名时被改写了链接的某个文件（`mimenote_lib::commands::RenameLinkUpdate`）。 */
+/** 重命名/移动时被改写了链接的某个文件（`mimenote_lib::commands::RenameLinkUpdate`）。 */
 export interface RenameLinkUpdate {
   relPath: string
   /** 该文件内被改写的链接条数。 */
   count: number
 }
 
-/** 重命名结果（`mimenote_lib::commands::RenameOutcome`）。 */
+/**
+ * 重命名 / 移动结果（`mimenote_lib::commands::RenameOutcome`）。
+ *
+ * `note_rename` 与 `note_move` **共用**这一种形状：两者在宿主里是同一条链路
+ * （换位置 + 改写全库链接 + 增量同步索引），前端因此只需一套状态收尾。
+ */
 export interface RenameOutcome {
   oldRelPath: string
   newRelPath: string
@@ -330,6 +390,8 @@ export type ErrorCode =
   | 'CONFIRMATION_REQUIRED'
   | 'IO'
   | 'NOT_UTF8'
+  /** 附件类型/载荷不被接受（非图片扩展名、空载荷、非法 base64）—— 宿主 `attachments.rs` 新增。 */
+  | 'UNSUPPORTED_MEDIA'
   /** 宿主内部错误（面板/painc/适配器未初始化等）。 */
   | 'INTERNAL'
   /** 用户取消（例如关闭了文件夹选择框）。 */
@@ -350,6 +412,7 @@ const KNOWN_CODES: ReadonlySet<string> = new Set<ErrorCode>([
   'CONFIRMATION_REQUIRED',
   'IO',
   'NOT_UTF8',
+  'UNSUPPORTED_MEDIA',
   'INTERNAL',
   'CANCELLED',
 ])
@@ -436,9 +499,14 @@ export function describeError(error: MimenoteError, context?: string): string {
     case 'IS_DIRECTORY':
       return `${prefix}目标是目录，不能作为笔记打开`
     case 'TOO_LARGE':
-      return `${prefix}文件过大，已超过安全读取上限`
+      // 带上宿主/适配器给的具体数字：`TOO_LARGE` 现在同时服务"读太大"与"要存的附件太大"，
+      // 一句写死的"安全读取上限"在附件场景里既不准、也丢掉了"到底超了多少"这个唯一有用的信息
+      return `${prefix}超过大小上限：${error.message}`
     case 'NOT_UTF8':
       return `${prefix}文件不是 UTF-8 文本，暂不支持编辑`
+    case 'UNSUPPORTED_MEDIA':
+      // 宿主已经在 message 里点名了是哪个文件、为什么被拒，这里只补一句"该放什么"
+      return `${prefix}只接受图片附件（png / jpg / jpeg / gif / webp / avif / bmp / svg / ico）：${error.message}`
     case 'CANCELLED':
       return `${prefix}已取消`
     case 'IO':

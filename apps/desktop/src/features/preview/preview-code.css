@@ -1,0 +1,58 @@
+/**
+ * 阅读视图代码块上的"复制"按钮与语言标签。
+ *
+ * 两种状态：默认几乎透明，鼠标移到代码块上（或按钮被聚焦时）才实心 ——
+ * 阅读视图里代码块本身是内容，常驻的实心控件会打断阅读；但只用 hover 会让键盘用户
+ * 永远看不到它，所以 `:focus-visible` 必须一并处理。颜色全部走主题令牌。
+ */
+
+.mn-preview__body pre {
+  position: relative;
+}
+
+.mn-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--mn-border);
+  border-radius: 6px;
+  background: var(--mn-bg-elevated);
+  color: var(--mn-fg-muted);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.mn-preview__body pre:hover .mn-code-copy,
+.mn-code-copy:focus-visible,
+.mn-code-copy:active {
+  opacity: 1;
+}
+
+.mn-code-copy:hover {
+  color: var(--mn-fg);
+  border-color: var(--mn-accent);
+}
+
+.mn-code-lang {
+  position: absolute;
+  top: 8px;
+  right: 62px;
+  color: var(--mn-fg-subtle);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  opacity: 0.8;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 触摸设备没有 hover：按钮常驻，否则根本点不到 */
+@media (hover: none) {
+  .mn-code-copy {
+    opacity: 0.75;
+  }
+}

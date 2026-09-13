@@ -25,14 +25,19 @@ import { Icon } from '@/components/Icon'
 import { Splitter } from '@/components/Splitter'
 import { Toasts } from '@/components/Toasts'
 import { MarkdownEditor } from '@/features/editor/MarkdownEditor'
+import { ExportButton } from '@/features/export/ExportButton'
+import { ExportDialog } from '@/features/export/ExportDialog'
 import { GraphCanvas } from '@/features/graph/GraphCanvas'
 import { LinksPanel } from '@/features/links/LinksPanel'
 import { ImageLightbox } from '@/features/lightbox/ImageLightbox'
+import { OutlinePanel } from '@/features/outline/OutlinePanel'
 import { PaletteHost } from '@/features/palette/PaletteHost'
 import { MarkdownPreview } from '@/features/preview/MarkdownPreview'
 import { SettingsDialog } from '@/features/settings/SettingsDialog'
 import { ConflictBanner } from '@/features/status/ConflictBanner'
 import { StatusBar } from '@/features/status/StatusBar'
+import { useWindowTitle } from '@/features/status/window-title'
+import { TabBar } from '@/features/tabs/TabBar'
 import { TagsPanel } from '@/features/tags/TagsPanel'
 import { FileTree } from '@/features/vault/FileTree'
 import { TreeToolbar } from '@/features/vault/TreeToolbar'
@@ -60,6 +65,7 @@ export function App() {
   const snippetsEnabled = useUiStore((state) => state.snippetsEnabled)
   const linksPanelVisible = useUiStore((state) => state.linksPanelVisible)
   const linksPanelWidth = useUiStore((state) => state.linksPanelWidth)
+  const outlinePanelVisible = useUiStore((state) => state.outlinePanelVisible)
   const tagsPanelVisible = useTagsStore((state) => state.open)
   const setSidebarWidth = useUiStore((state) => state.setSidebarWidth)
   const setLinksPanelWidth = useUiStore((state) => state.setLinksPanelWidth)
@@ -67,6 +73,9 @@ export function App() {
   const mainRef = useRef<HTMLElement | null>(null)
 
   useGlobalKeymap()
+
+  // 窗口标题跟着当前笔记与未保存状态（任务栏 / Alt+Tab / 截图里唯一的身份信息）
+  useWindowTitle({ relPath, dirty, rootPath })
 
   // 启动：尝试恢复上次打开的 Vault（失败则停留在门闸页）
   useEffect(() => {
@@ -155,6 +164,9 @@ export function App() {
             组件在关闭时自己返回 null，但 effect 仍活着（字号与自动保存延迟靠它维护），
             所以**不能**写成条件挂载。 */}
         <SettingsDialog />
+        {/* 导出的目标路径只能由用户在系统保存对话框里选，门闸页也要能打开（会说明"还没有打开 Vault"）；
+            必须常驻挂载：它同时是导出命令的进度面板与打印样式的挂载点 */}
+        <ExportDialog />
         {/* 门闸页也挂面板：Ctrl+K / Ctrl+P 在没有 Vault 时同样要能打开
             （命令面板把依赖 Vault 的命令置灰，快速切换给"还没有打开 Vault"空态） */}
         <PaletteHost />
@@ -181,6 +193,7 @@ export function App() {
           {info.noteCount} 篇笔记 · {info.entryCount} 条目 · 扫描 {formatDuration(info.scanMs)}
           {info.truncated && ' · 已截断'}
         </div>
+        <ExportButton />
       </header>
 
       <ConflictBanner />
@@ -203,6 +216,10 @@ export function App() {
         {/* 主区域只有三种形态：所见即所得编辑 / 只读预览 / 知识图谱。
             "分栏（编辑 + 预览并排）"已移除 —— 编辑器本身就是所见即所得的（ADR-0009）。 */}
         <main className="mn-main" ref={mainRef}>
+          {/* 标签栏必须是 `.mn-main` 的**第一个子节点**：`tabs.css` 用
+              `.mn-main:has(> .mn-tabs)` 条件地把主区域改成列方向（没有标签时逐像素不变，
+              所以"主体吃掉剩余高度"的布局契约与 E2E 断言都不受影响）。 */}
+          <TabBar />
           {viewMode === 'edit' && (
             <section className="mn-pane mn-pane--editor" style={editorStyle}>
               <MarkdownEditor />
@@ -239,6 +256,9 @@ export function App() {
 
         {/* 标签面板：宽度由自己的样式固定（内容窄，不需要拖拽分隔条） */}
         {tagsPanelVisible && <TagsPanel />}
+
+        {/* 大纲面板：同上（固定宽度），放在最右侧 —— 它描述的是"主区域里这篇笔记的结构" */}
+        {outlinePanelVisible && <OutlinePanel />}
       </div>
 
       <StatusBar />
@@ -249,6 +269,7 @@ export function App() {
           挂在 `.mn-app` 的直接子节点：fixed 定位不被祖先的 overflow 裁剪，层级也压得住对话框。 */}
       <ImageLightbox />
       <SettingsDialog />
+      <ExportDialog />
     </div>
   )
 }

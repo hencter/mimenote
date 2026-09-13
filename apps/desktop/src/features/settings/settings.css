@@ -203,6 +203,18 @@
   font-size: inherit;
 }
 
+/* 文本输入（附件目录）：与 `.mn-settings__select` 同一套外观，只是宽度按"目录名"给 */
+.mn-settings__input {
+  width: 220px;
+  padding: 4px 6px;
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg);
+  color: var(--mn-fg);
+  font-family: var(--mn-font-mono);
+  font-size: 12px;
+}
+
 .mn-settings__range {
   width: 190px;
   accent-color: var(--mn-accent);

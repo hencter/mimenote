@@ -9,9 +9,13 @@
  */
 
 import type {
+  AssetBytes,
   AssetGrant,
+  AttachmentInput,
+  AttachmentSaved,
   BacklinkRef,
   EntryMeta,
+  ExportWriteOutcome,
   FrontmatterField,
   FrontmatterValue,
   GraphData,
@@ -38,8 +42,16 @@ import type {
 } from './types'
 import { MimenoteError, type ErrorCode } from './types'
 import type { IpcAdapter } from './client'
+import {
+  MAX_ATTACHMENTS,
+  MAX_ATTACHMENT_BATCH_BYTES,
+  MAX_ATTACHMENT_BYTES,
+  estimatedDecodedBytes,
+  uniqueAttachmentName,
+} from '@/domain/attachments'
+import { isImageAssetTarget } from '@/domain/assets'
 import { normalizeLinkTarget, splitWikilink, wikilinkDisplayText } from '@/domain/links'
-import { extensionOf, joinRel, parentOf } from '@/domain/paths'
+import { basename, extensionOf, joinRel, parentOf } from '@/domain/paths'
 
 interface MockNote {
   relPath: string
@@ -67,6 +79,31 @@ const DEFAULT_NOTES: MockNote[] = [
     text: '---\ntitle: 标签示例\ntags: [项目, 进行中]\n---\n\n这一段用来演示 #架构 与 #项目 标签的抽取。\n',
   },
   { relPath: '附件/说明.txt', text: '非 Markdown 附件，M1 不可编辑。\n' },
+  // 专门用来演示「大纲面板」的笔记（多级标题 + 一个代码块里的伪标题）：
+  // 其它用例请勿依赖它的内容。
+  {
+    relPath: '项目/大纲.md',
+    text: [
+      '# 大纲示例',
+      '',
+      '开头一段。',
+      '',
+      '## 第一节',
+      '',
+      '内容一。',
+      '',
+      '### 小节',
+      '',
+      '```md',
+      '# 这是代码块里的伪标题',
+      '```',
+      '',
+      '## 第二节',
+      '',
+      '内容二。',
+      '',
+    ].join('\n'),
+  },
 ]
 
 export interface MockAdapterOptions {
@@ -154,13 +191,34 @@ function pickMockCandidate(matches: string[]): { path: string | null; ambiguous:
   return { path: best ?? null, ambiguous: true }
 }
 
+/**
+ * 把"相对某个目录写的目标"归一化成 Vault 根口径的键（`..`/`.` 走位后拼平）。
+ *
+ * 为什么必须有它：跨目录移动会把链接改写成 `[[../日记/设计]]` 这种**相对路径**，
+ * 而解析器原来的实现把带 `/` 的目标直接当成"从 Vault 根起算"，于是"移动后链接变成悬空"
+ * 这种假象就会出现 —— Mock 与 Rust（`mn_core::links::join_relative`）在这一步必须同口径。
+ */
+function resolveRelativeKey(fromDir: string, key: string): string {
+  const parts = fromDir === '' ? [] : fromDir.split('/')
+  for (const segment of key.split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') {
+      parts.pop()
+      continue
+    }
+    parts.push(segment)
+  }
+  return parts.join('/')
+}
+
 /** 链接解析器：`(来源文件, 原始目标)` → 命中的笔记。 */
 type MockResolver = (from: string, raw: string) => { path: string | null; ambiguous: boolean }
 
 /**
  * 构建解析器（一次遍历建立 stem 索引，避免在批量改写时反复重建）。
  *
- * 规则与 `mn-index` 对齐：裸名走 stem 索引 + 消歧，带路径的走前缀匹配。
+ * 规则与 `mn-index` 对齐：裸名走 stem 索引 + 消歧；带路径的**先按相对来源文件目录解析**，
+ * 再按相对 Vault 根解析，最后退化到路径后缀匹配。
  */
 function createMockResolver(files: Map<string, MockNote>): MockResolver {
   const all = [...files.keys()]
@@ -175,7 +233,10 @@ function createMockResolver(files: Map<string, MockNote>): MockResolver {
     const key = normalizeLinkTarget(raw)
     if (key === '') return { path: from, ambiguous: false }
     if (key.includes('/')) {
-      const direct = all.find((candidate) => normalizeLinkTarget(candidate) === key)
+      const relative = resolveRelativeKey(parentOf(from), key)
+      const direct =
+        all.find((candidate) => normalizeLinkTarget(candidate) === relative) ??
+        all.find((candidate) => normalizeLinkTarget(candidate) === key)
       if (direct !== undefined) return { path: direct, ambiguous: false }
       const suffix = `/${key}`
       return pickMockCandidate(
@@ -368,6 +429,9 @@ function rebuildLink(line: string, link: ScannedLink, target: string): string {
  * 目标写法规则（与 Rust 侧一致，保持最小 diff）：
  * - 原目标不含 `/` → 用新文件名（保持用户原来的裸名写法）；
  * - 含路径 → 用相对当前文件目录的 POSIX 相对路径；
+ * - `alwaysRelative`（**跨目录移动**）→ 一律走相对路径分支：文件换了目录之后，
+ *   裸名链接会被"同目录优先"的消歧规则重新解释，可能落到另一篇同名笔记上；
+ *   同目录换算天然退化成裸文件名，不必写特例；
  * - Markdown 链接沿用"原来带不带扩展名"的写法。
  */
 function mockRewriteLinks(
@@ -376,10 +440,15 @@ function mockRewriteLinks(
   oldRelPath: string,
   newRelPath: string,
   resolver: MockResolver,
+  alwaysRelative = false,
 ): { text: string; count: number } {
   const newName = newRelPath.split('/').pop() ?? newRelPath
   const newStem = newName.replace(/\.(md|markdown)$/i, '')
   const newExt = extensionOf(newRelPath) === '' ? 'md' : extensionOf(newRelPath)
+  // 相对路径按**去扩展名**的目标算，扩展名由"原来带不带"决定 ——
+  // 与 Rust 侧 `relative_posix(from_dir, style.new_rel_no_ext)` + 按需补 `new_ext` 同一口径
+  // （否则 wikilink 会被写成 `[[../目录/名.md]]`，而 Rust 写的是 `[[../目录/名]]`）。
+  const newRelNoExt = newRelPath.replace(/\.(md|markdown)$/i, '')
   const fromDir = parentOf(fromRelPath)
 
   let inFence = false
@@ -402,9 +471,10 @@ function mockRewriteLinks(
       if (key === '' || resolver(fromRelPath, link.raw).path !== oldRelPath) continue
       const keepsExtension = link.form === 'markdown' && /\.(md|markdown)$/i.test(link.raw)
       const suffix = keepsExtension ? `.${newExt}` : ''
-      const target = key.includes('/')
-        ? `${relativeRelPath(fromDir, newRelPath)}${suffix}`
-        : `${newStem}${suffix}`
+      const target =
+        alwaysRelative || key.includes('/')
+          ? `${relativeRelPath(fromDir, newRelNoExt)}${suffix}`
+          : `${newStem}${suffix}`
       out += line.slice(cursor, link.start) + rebuildLink(line, link, target)
       cursor = link.end
       count += 1
@@ -760,6 +830,76 @@ function mockSearch(files: Map<string, MockNote>, query: string, limit: number):
   return { query, hits: capped, total, elapsedMs: Math.max(0, Date.now() - started) }
 }
 
+// ---------------------------------------------------------------------------
+// Mock 的导出支持（`asset_read_base64` / `export_write_html`）
+//
+// 权威实现在 Rust 侧（`src-tauri/src/assets.rs`、`src-tauri/src/export.rs`），这里只是
+// "形状与校验口径的镜像"：浏览器预览（`pnpm dev`）不写真实文件，UI 层测试也只需要
+// 拿到契约形状的数据。**扩展名白名单与大小上限刻意与宿主保持一致** —— 两边漂移的话，
+// 测试会绿得毫无意义。
+// ---------------------------------------------------------------------------
+
+/** Mock 里"扩展名 → MIME"的白名单（与 `ALLOWED_IMAGE_EXTENSIONS` 逐字对齐）。 */
+const MOCK_IMAGE_MIMES: Readonly<Record<string, string>> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml',
+  ico: 'image/x-icon',
+}
+
+/** 导出文件扩展名白名单（与宿主 `ALLOWED_EXPORT_EXTENSIONS` 一致）。 */
+const MOCK_EXPORT_EXTENSIONS: readonly string[] = ['html', 'htm']
+
+/** 导出大小上限（与宿主 `MAX_EXPORT_BYTES` 一致）。 */
+const MOCK_MAX_EXPORT_BYTES = 32 * 1024 * 1024
+
+/** 字节 → 标准 base64（Mock 里用 `btoa` 即可，不追求大文件性能）。 */
+function mockBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
+}
+
+/** 取小写扩展名（不含点）；没有扩展名返回空串。 */
+function mockExtensionOf(relPath: string): string {
+  const name = relPath.split('/').pop() ?? relPath
+  const dot = name.lastIndexOf('.')
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : ''
+}
+
+// ---------------------------------------------------------------------------
+// Mock 的附件写入（`attachment_save`）
+//
+// 权威实现在 Rust 侧（`src-tauri/src/attachments.rs`，见 ADR-0013），这里只镜像**能观察到的
+// 行为**：白名单、三道上限、命名去重、附件目录、返回契约。之所以要镜像而不是"随便返回个成功"：
+// UI 层 E2E 与组件测试都跑在这个适配器上，"Mock 说成功、真实宿主却拒绝"是最难查的一类假绿
+// （与 `asset_read_base64` / `export_write_html` 两个 Mock 分支同一约定）。
+// ---------------------------------------------------------------------------
+
+/** 一次最多接受的张数（与宿主 `MAX_ATTACHMENTS_PER_REQUEST` 一致）。 */
+const MOCK_MAX_ATTACHMENTS = MAX_ATTACHMENTS
+
+/** 标准 base64 → 字节；非法输入返回 `null`（与宿主 `assets::base64_decode` 的严格口径一致）。 */
+function mockDecodeBase64(encoded: string): Uint8Array | null {
+  if (encoded.length % 4 !== 0) return null
+  try {
+    const binary = atob(encoded)
+    const bytes = new Uint8Array(binary.length)
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index)
+    }
+    return bytes
+  } catch {
+    // `atob` 对白名单外字符会抛：在 Mock 里就是"载荷非法"
+    return null
+  }
+}
+
 export interface MockAdapter extends IpcAdapter {
   /** 模拟外部程序修改文件（用于手工验证冲突横幅）。 */
   simulateExternalEdit(relPath: string, text: string): void
@@ -772,6 +912,11 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
   const writeLatencyMs = options.writeLatencyMs ?? 0
   const files = new Map<string, MockNote>()
   const dirs = new Set<string>()
+  /**
+   * 二进制附件（图片）单独存一张表：`files` 里的 `text` 是"笔记正文"，全文搜索、链接抽取、
+   * 标签抽取都按它遍历 —— 把二进制塞进去等于让这些路径也开始处理图片。
+   */
+  const binaries = new Map<string, Uint8Array>()
   const trashed: TrashRecord[] = []
   let clock = Date.now()
 
@@ -783,6 +928,7 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
   const seed = (list: MockNote[]): void => {
     files.clear()
     dirs.clear()
+    binaries.clear()
     for (const note of list) {
       files.set(note.relPath, { relPath: note.relPath, text: note.text })
       const parts = note.relPath.split('/')
@@ -826,6 +972,22 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
         isDir: false,
         sizeBytes: new TextEncoder().encode(note.text).length,
         mtimeMs: mtimeOf(note.relPath),
+        ext: dot > 0 ? name.slice(dot + 1).toLowerCase() : null,
+      })
+    }
+    // 图片附件（粘贴/拖入落下来的）：形状与扫描结果一致（大小按字节、ext 小写），
+    // 这样文件树与过滤逻辑不需要知道"这条是笔记还是附件"
+    for (const [relPath, bytes] of [...binaries.entries()].sort(([left], [right]) =>
+      left.localeCompare(right),
+    )) {
+      const name = relPath.split('/').pop() ?? relPath
+      const dot = name.lastIndexOf('.')
+      out.push({
+        relPath,
+        name,
+        isDir: false,
+        sizeBytes: bytes.length,
+        mtimeMs: mtimeOf(relPath),
         ext: dot > 0 ? name.slice(dot + 1).toLowerCase() : null,
       })
     }
@@ -1052,6 +1214,98 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
           }
           return payload as T
         }
+        case 'note_move': {
+          // 跨目录移动（`note_move` 的 Mock 镜像）：与 `note_rename` 共用同一段"改路径 +
+          // 改写全库链接"的机制，差别只有两点 —— 目标目录由参数给（不存在就建），
+          // 以及链接一律写成相对新位置的路径（见 `mockRewriteLinks` 的 alwaysRelative）。
+          const relPath = String(a.relPath ?? '')
+          const rawTarget = String(a.targetParentRel ?? '')
+          const rawTitle = a.newTitle === null || a.newTitle === undefined ? null : String(a.newTitle).trim()
+          const updateLinks = a.updateLinks !== false
+          validate(relPath)
+
+          if (dirs.has(relPath)) fail('IS_DIRECTORY', `目录移动暂不支持：${relPath}`)
+          const note = files.get(relPath)
+          if (note === undefined) fail('NOT_FOUND', `文件不存在：${relPath}`)
+
+          // 首尾 `/` 与反斜杠都容忍（`''` = Vault 根）；`..` 之类仍由 validate 拦下
+          const parentRel = rawTarget.trim().replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '')
+          if (parentRel !== '') validate(parentRel)
+
+          const name = basename(relPath)
+          let newName = name
+          if (rawTitle !== null) {
+            if (rawTitle === '' || rawTitle === '.' || rawTitle === '..' || /[\\/:*?"<>|]/.test(rawTitle)) {
+              fail('PATH_INVALID', `非法文件名：${rawTitle}`)
+            }
+            const stem = rawTitle.replace(/\.(md|markdown)$/i, '')
+            const ext = extensionOf(relPath)
+            newName = ext === '' ? stem : `${stem}.${ext}`
+          }
+          const newRelPath = parentRel === '' ? newName : `${parentRel}/${newName}`
+          validate(newRelPath)
+
+          if (newRelPath === relPath) {
+            // 移到自己所在目录：无操作（与宿主一致，连 mtime 都不动）
+            const payload: RenameOutcome = {
+              oldRelPath: relPath,
+              newRelPath,
+              newMtimeMs: mtimeOf(relPath),
+              updatedLinks: [],
+              updatedLinkCount: 0,
+              elapsedMs: 0,
+            }
+            return payload as T
+          }
+          if (files.has(newRelPath)) fail('ALREADY_EXISTS', `目标已存在：${newRelPath}`)
+
+          // ⚠️ 解析器必须基于**移动前**的文件表：搬完之后 `[[旧路径]]` 再也解析不到它，
+          // 就无法判断哪些链接原本指向它了（Rust 侧用的是索引里的移动前快照，同一个道理）。
+          const resolver = updateLinks ? createMockResolver(files) : null
+
+          files.delete(relPath)
+          files.set(newRelPath, { relPath: newRelPath, text: note.text })
+          const movedMtime = mtimeOf(relPath)
+          mtimes.delete(relPath)
+          mtimes.set(newRelPath, movedMtime)
+
+          // 目标目录不存在时创建（含缺失的祖先），否则树里会缺一层
+          if (parentRel !== '') {
+            const parts = parentRel.split('/')
+            let acc = ''
+            for (const part of parts) {
+              acc = acc === '' ? part : `${acc}/${part}`
+              dirs.add(acc)
+            }
+          }
+
+          const updatedLinks: RenameLinkUpdate[] = []
+          if (resolver !== null) {
+            for (const from of [...files.keys()].sort()) {
+              const current = files.get(from)
+              if (current === undefined) continue
+              // 被移动的文件**自身**：解析与相对路径换算都要按**移动前**的位置来
+              // （Rust 的改写计划也是在移动前算的；否则自链接会算出"换个写法但等价"的差量）
+              const fromBefore = from === newRelPath ? relPath : from
+              const result = mockRewriteLinks(current.text, fromBefore, relPath, newRelPath, resolver, true)
+              if (result.count === 0) continue
+              files.set(from, { relPath: from, text: result.text })
+              mtimes.set(from, touch())
+              // 被移动文件自身的条目用**旧路径**上报（与 Rust 侧同一口径）
+              updatedLinks.push({ relPath: fromBefore, count: result.count })
+            }
+          }
+
+          const payload: RenameOutcome = {
+            oldRelPath: relPath,
+            newRelPath,
+            newMtimeMs: mtimeOf(newRelPath),
+            updatedLinks,
+            updatedLinkCount: updatedLinks.reduce((sum, item) => sum + item.count, 0),
+            elapsedMs: 1,
+          }
+          return payload as T
+        }
         case 'note_tags': {
           const relPath = String(a.relPath ?? '')
           validate(relPath)
@@ -1176,10 +1430,136 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
             grants.push({
               relPath: rel,
               absolutePath: `${rootPath.replace(/[\\/]+$/, '')}${separator}${rel.replaceAll('/', separator)}`,
-              sizeBytes: new TextEncoder().encode(files.get(rel)?.text ?? '').length,
+              sizeBytes:
+                binaries.get(rel)?.length ??
+                new TextEncoder().encode(files.get(rel)?.text ?? '').length,
             })
           }
           return grants as T
+        }
+        case 'asset_read_base64': {
+          // 导出内嵌（`asset_read_base64` 的 Mock 镜像）：只对白名单扩展名、且在"文件表"里
+          // 存在的条目返回 base64；越界、非图片、不存在的路径一律跳过（与宿主一致：
+          // 宿主也是"只返回成功的那些"，调用方把没返回的渲染成占位文字）。
+          const requested = Array.isArray(a.relPaths) ? a.relPaths : []
+          const items: AssetBytes[] = []
+          for (const raw of requested) {
+            const rel = String(raw)
+            const mime = MOCK_IMAGE_MIMES[mockExtensionOf(rel)]
+            if (mime === undefined) continue
+            // 图片既可能是笔记表里的"假图片"（测试用），也可能是附件写入留下的真字节
+            const bytes =
+              binaries.get(rel) ??
+              (files.get(rel) === undefined
+                ? undefined
+                : new TextEncoder().encode(files.get(rel)?.text ?? ''))
+            if (bytes === undefined) continue
+            items.push({
+              relPath: rel,
+              mime,
+              dataBase64: mockBase64(bytes),
+              sizeBytes: bytes.length,
+            })
+          }
+          return items as T
+        }
+        case 'attachment_save': {
+          // 附件写入的 Mock 镜像（ADR-0013）：**逐条**对齐宿主的行为 ——
+          // 目录口径、白名单、三道上限、命名去重、返回契约，以及"要么全落、要么一张都不落"。
+          const rawDir = String(a.dirRel ?? '')
+          const dir = rawDir.trim().replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '')
+          if (dir !== '') validate(dir)
+
+          const requested = Array.isArray(a.files) ? a.files : []
+          if (requested.length > MOCK_MAX_ATTACHMENTS) {
+            fail('TOO_LARGE', `一次最多接受 ${MOCK_MAX_ATTACHMENTS} 张图片（本次 ${requested.length} 张）`)
+          }
+
+          // 第一阶段：只校验，不落盘
+          const planned: Array<{ relPath: string; bytes: Uint8Array }> = []
+          const reserved = new Set<string>()
+          let totalBytes = 0
+          for (const raw of requested) {
+            const entry = (raw ?? {}) as Partial<AttachmentInput>
+            const name = String(entry.name ?? '').trim()
+            const encoded = String(entry.dataBase64 ?? '')
+            if (name.includes('/') || name.includes('\\')) {
+              fail('PATH_INVALID', `附件文件名不能含路径分隔符：${name}`)
+            }
+            if (!isImageAssetTarget(name) || mockExtensionOf(name) === '') {
+              fail(
+                'UNSUPPORTED_MEDIA',
+                `只接受图片附件（png / jpg / jpeg / gif / webp / avif / bmp / svg / ico），已拒绝：${
+                  name === '' ? '（文件名为空）' : name
+                }`,
+              )
+            }
+            // 先按 base64 长度估上界（与宿主同一口径），再解码
+            const estimate = estimatedDecodedBytes(encoded.length)
+            if (estimate > MAX_ATTACHMENT_BYTES) {
+              fail('TOO_LARGE', `${name}：${estimate}+ 字节 > 单张上限 ${MAX_ATTACHMENT_BYTES} 字节`)
+            }
+            const bytes = mockDecodeBase64(encoded)
+            if (bytes === null) {
+              fail('UNSUPPORTED_MEDIA', `附件载荷不是合法的 base64：${name}`)
+            }
+            if (bytes.length === 0) {
+              fail('UNSUPPORTED_MEDIA', `附件内容为空，已拒绝：${name}`)
+            }
+            totalBytes += bytes.length
+            if (totalBytes > MAX_ATTACHMENT_BATCH_BYTES) {
+              fail(
+                'TOO_LARGE',
+                `本批附件合计超过上限 ${MAX_ATTACHMENT_BATCH_BYTES} 字节（写到 ${name} 时已达 ${totalBytes} 字节）`,
+              )
+            }
+
+            const rel = uniqueAttachmentName(name, (candidate) => {
+              const path = dir === '' ? candidate : `${dir}/${candidate}`
+              return reserved.has(path) || files.has(path) || binaries.has(path)
+            })
+            if (rel === null) fail('ALREADY_EXISTS', `${name} 的重名尝试次数过多`)
+            const relPath = dir === '' ? rel : `${dir}/${rel}`
+            reserved.add(relPath)
+            planned.push({ relPath, bytes })
+          }
+
+          // 第二阶段：落盘（内存表）+ 造出附件目录（含缺失的祖先，与宿主建目录一致）
+          if (dir !== '') {
+            let accumulated = ''
+            for (const segment of dir.split('/')) {
+              accumulated = accumulated === '' ? segment : `${accumulated}/${segment}`
+              dirs.add(accumulated)
+            }
+          }
+          const payload: AttachmentSaved[] = planned.map((item) => {
+            binaries.set(item.relPath, item.bytes)
+            mtimes.set(item.relPath, touch())
+            return { relPath: item.relPath, sizeBytes: item.bytes.length }
+          })
+          return payload as T
+        }
+        case 'export_write_html': {
+          // 导出落盘（`export_write_html` 的 Mock 镜像）：**不写真实文件**，只回显契约形状；
+          // 扩展名与大小上限与宿主保持一致，免得测试绿得毫无意义。
+          const path = String(a.path ?? '')
+          const html = String(a.html ?? '')
+          const sizeBytes = new TextEncoder().encode(html).length
+          if (
+            path === '' ||
+            !MOCK_EXPORT_EXTENSIONS.includes(mockExtensionOf(path.replaceAll('\\', '/')))
+          ) {
+            fail('PATH_INVALID', `导出只允许写 .html/.htm：${path}`)
+          }
+          if (sizeBytes > MOCK_MAX_EXPORT_BYTES) {
+            fail('TOO_LARGE', `导出内容过大：${sizeBytes} 字节`)
+          }
+          const payload: ExportWriteOutcome = {
+            absolutePath: path,
+            sizeBytes,
+            writtenInMs: 1,
+          }
+          return payload as T
         }
         case 'snippets_list': {
           const snippets = [

@@ -31,7 +31,7 @@ import {
   buildLivePreviewDecorations,
 } from '@/features/editor/cm/live-preview/build'
 import { toggleTaskChange } from '@/features/editor/cm/live-preview/task'
-import { MD } from '@/features/editor/cm/live-preview/theme'
+import { MD, livePreviewThemeSpec } from '@/features/editor/cm/live-preview/theme'
 import type { LivePreviewContext } from '@/features/editor/cm/live-preview/types'
 import { ImageWidget } from '@/features/editor/cm/live-preview/widgets'
 import { createEditorExtensions } from '@/features/editor/cm/setup'
@@ -837,6 +837,62 @@ describe('图片（asset 逐文件授权的展示层）', () => {
     } finally {
       delete (window as unknown as Record<string, unknown>)['__TAURI_INTERNALS__']
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 图片：块级呈现（在两行之间独占一行，但仍是"光标感知"的内联装饰）
+// ---------------------------------------------------------------------------
+
+describe('图片：块级呈现', () => {
+  const placeholder = { resolveImage: () => ({ kind: 'placeholder' as const }) }
+
+  it('整行只有一张图：挂"图片行"类名（用来收掉行盒多余的行距）', () => {
+    const source = '![示例图](附件/图.png)\n\n正文'
+    const items = decosOf(stateOf(source, at(source, '正文')), contextOf(placeholder))
+
+    expect(widgets(items)).toHaveLength(1)
+    expect(classOf(lineAt(items, 0) as Deco)).toContain(MD.imageLine)
+  })
+
+  it('图片夹在文字中间：仍然换成 widget，但不挂"图片行"（这一行还有文字要占正常行高）', () => {
+    const source = '前文 ![示例图](附件/图.png) 后文\n\n尾巴'
+    const items = decosOf(stateOf(source, at(source, '尾巴')), contextOf(placeholder))
+
+    expect(widgets(items)).toHaveLength(1)
+    expect(lines(items)).toEqual([])
+  })
+
+  it('光标进入该行：widget 与"图片行"类名一起撤掉，露出 Markdown 原文（ADR-0009 的铁律）', () => {
+    const source = '![示例图](附件/图.png)\n\n正文'
+    const items = decosOf(stateOf(source, at(source, '示例图')), contextOf(placeholder))
+
+    expect(widgets(items)).toEqual([])
+    expect(lines(items)).toEqual([])
+  })
+
+  it('视口外的图片不产出任何装饰（块级是"视觉"上的，计算仍然只在视口内）', () => {
+    const source = ['![示例图](附件/图.png)', '', '正文', '', '尾巴'].join('\n')
+    const state = stateOf(source, at(source, '尾巴'))
+    const lastLine = state.doc.line(5)
+    const items = decosOf(state, contextOf(placeholder), [
+      { from: lastLine.from, to: lastLine.to },
+    ])
+
+    expect(widgets(items)).toEqual([])
+    expect(lines(items)).toEqual([])
+  })
+})
+
+describe('样式契约（装饰类名 ↔ CSS 规则）', () => {
+  it('图片是块级呈现；"图片行"收掉行距；占位文本自带行高不会被压扁', () => {
+    expect(livePreviewThemeSpec['.mn-md-image-wrap']?.display).toBe('block')
+    expect(livePreviewThemeSpec['.mn-md-image-wrap']?.width).toBe('fit-content')
+    expect(livePreviewThemeSpec['.mn-md-image']?.display).toBe('block')
+    expect(livePreviewThemeSpec['.mn-md-image-placeholder']?.display).toBe('block')
+    // 图片行是 `line-height: 0`：占位文本必须自己带行高，否则会被压成 0 高
+    expect(livePreviewThemeSpec['.cm-line.mn-md-image-line']?.lineHeight).toBe('0')
+    expect(livePreviewThemeSpec['.mn-md-image-placeholder']?.lineHeight).toBe('1.5')
   })
 })
 

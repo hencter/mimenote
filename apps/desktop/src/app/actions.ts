@@ -7,6 +7,7 @@
 
 import { formatBytes } from '@/domain/format'
 import { basename, isMarkdown, parentOf } from '@/domain/paths'
+import { jumpToLineWhenReady } from '@/features/editor/line-jump'
 import { currentAdapterKind, ipc } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
 import type { RenameOutcome } from '@/ipc/types'
@@ -18,7 +19,7 @@ import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 import { applyVaultSnippets, unloadSnippets } from '@/theme/snippets'
 import { pickDirectory } from './dialogs'
-import { requestRename } from './dom-events'
+import { requestMove, requestRename } from './dom-events'
 
 // ---------------------------------------------------------------------------
 // Vault
@@ -70,6 +71,29 @@ export async function openNote(relPath: string): Promise<boolean> {
   const ok = await useNoteStore.getState().open(relPath)
   if (ok) vault.select(relPath)
   return ok
+}
+
+/**
+ * 打开笔记并把光标落到第 `line` 行（搜索结果与反向链接的落点）。
+ *
+ * 为什么放在动作层而不是 `features/editor/line-jump.ts`：**打开笔记只有这一条路径**
+ * （切走前落盘 → 展开路径 → 同步文件树选中项），跳转只是它的后续动作。放在这里，
+ * 调用方（搜索面板、反链面板）就只依赖 `app/actions`，不必知道编辑器内部还有
+ * `jumpToLineWhenReady` 这一半 —— 也就避免了 `actions ↔ line-jump` 的循环 import。
+ *
+ * 为什么先切回编辑视图：阅读视图与图谱视图里没有光标，"落到第 N 行"在那里没有可表达的
+ * 结果（图谱视图连正文都不在屏幕上）。统一切到编辑视图，同一个操作才只有一个行为；
+ * 切视图幂等，而且刻意放在 `await` 之前 —— 界面切换与读盘并行开始，大笔记不必先白等一次 IO。
+ *
+ * 定位本身不碰 `note-store`：不改文档、不置 dirty，未保存内容的自动保存流水线
+ * 既不被打断也不被触发。
+ */
+export async function openNoteAt(relPath: string, line: number): Promise<boolean> {
+  useUiStore.getState().setViewMode('edit')
+  const ok = await openNote(relPath)
+  if (!ok) return false
+  jumpToLineWhenReady(relPath, line)
+  return true
 }
 
 /** 新建笔记时的目标目录：选中目录 → 该目录；选中文件 → 其父目录；未选中 → 根目录。 */
@@ -274,6 +298,112 @@ export function renameSelected(relPath?: string): void {
     return
   }
   requestRename(target)
+}
+
+// ---------------------------------------------------------------------------
+// 移动（拖拽整理）
+// ---------------------------------------------------------------------------
+
+/**
+ * 跨目录移动一篇笔记。
+ *
+ * 与 {@link renameNote} 是同一条链路的两种入口（宿主里就是同一条：换位置 + 改写全库链接 +
+ * 增量同步索引），因此这里的顺序约束与状态收尾**刻意与重命名逐条对齐**：
+ *
+ * 1. **先落盘**：移动会就地重写其他文件里的链接；若当前还有未保存内容，磁盘改写会让
+ *    编辑器里的版本令牌失效（下次保存必报冲突）；
+ * 2. 宿主负责搬文件（原子 rename，跨卷退回复制 + 删除）、改写链接、更新索引；
+ * 3. 前端状态收尾：条目表换路径（标签页的剪枝跟着跑）、正在编辑的这篇笔记换路径
+ *    （内容没变，保留光标与撤销历史）；若它自身也被改写（自链接）就重新读取；
+ *    其他被改写的文件正在编辑 → 重新读取。
+ *
+ * `newTitle` 为 `null` 时沿用原文件名（拖拽就是这种情况）。
+ */
+export async function moveNote(
+  relPath: string,
+  targetParentRel: string,
+  options: { newTitle?: string | null; updateLinks?: boolean } = {},
+): Promise<RenameOutcome | null> {
+  const updateLinks = options.updateLinks ?? true
+  const newTitle = options.newTitle ?? null
+  const openRelPath = useNoteStore.getState().doc?.relPath ?? null
+
+  try {
+    if (hasUnsavedChanges()) {
+      const saved = await useNoteStore.getState().saveNow()
+      if (!saved && hasUnsavedChanges()) {
+        toast.error('已取消移动', '当前笔记有未保存的修改，请先解决保存冲突')
+        return null
+      }
+    }
+
+    const outcome = await ipc.noteMove(relPath, targetParentRel, newTitle, updateLinks)
+    const vault = useVaultStore.getState()
+    vault.registerRenamedNote(outcome)
+    vault.revealPath(outcome.newRelPath)
+
+    const rewritten = new Set(outcome.updatedLinks.map((item) => item.relPath))
+    if (openRelPath === outcome.oldRelPath) {
+      if (rewritten.has(outcome.oldRelPath) || rewritten.has(outcome.newRelPath)) {
+        useNoteStore.getState().close()
+        await openNote(outcome.newRelPath)
+      } else {
+        useNoteStore.getState().retarget(outcome.newRelPath, outcome.newMtimeMs)
+      }
+    } else if (openRelPath !== null && rewritten.has(openRelPath)) {
+      await useNoteStore.getState().reload()
+    }
+
+    void useLinksStore.getState().refresh(useNoteStore.getState().doc?.relPath ?? null)
+
+    const summary =
+      outcome.updatedLinkCount === 0
+        ? updateLinks
+          ? '没有其他文件需要更新链接'
+          : '按要求未改动任何链接'
+        : `更新了 ${outcome.updatedLinkCount} 条链接（涉及 ${outcome.updatedLinks.length} 个文件）`
+    const moved = outcome.oldRelPath === outcome.newRelPath
+    toast.success(
+      moved ? '无需移动' : '已移动',
+      moved
+        ? `${outcome.newRelPath} 已经在这个目录里`
+        : `${outcome.oldRelPath} → ${outcome.newRelPath}\n${summary}，耗时 ${Math.round(outcome.elapsedMs)}ms`,
+    )
+    return outcome
+  } catch (cause) {
+    const error = MimenoteError.from(cause)
+    // 目标重名是拖拽最常见的失败：给一句"怎么办"，而不是只报"目标已存在"
+    if (error.code === 'ALREADY_EXISTS') {
+      toast.error(
+        '目标目录已有同名文件',
+        `${targetParentRel === '' ? 'Vault 根目录' : targetParentRel} 里已存在同名文件，已取消移动（不会覆盖）`,
+      )
+      return null
+    }
+    toast.error(describeError(error, '移动失败'))
+    return null
+  }
+}
+
+/**
+ * 请求移动文件树选中项（命令面板的「移动到…」/ 文件树的 `Ctrl+X` 式入口）。
+ *
+ * 目录移动仍未做（与目录重命名一起推迟）：明确拒绝并说明，而不是让对话框
+ * 打开后才发现"这个目标选不了"。
+ */
+export function moveSelected(relPath?: string): void {
+  const target = relPath ?? useVaultStore.getState().selected
+  if (target === null || target === undefined) return
+  const entry = useVaultStore.getState().entries.find((candidate) => candidate.relPath === target)
+  if (entry?.isDir === true) {
+    toast.warn('目录移动暂未支持', '当前只能移动单篇笔记；目录移动与目录重命名一起推迟')
+    return
+  }
+  if (!isMarkdown(target)) {
+    toast.warn('只能移动 Markdown 笔记', target)
+    return
+  }
+  requestMove(target)
 }
 
 // ---------------------------------------------------------------------------

@@ -35,6 +35,8 @@ export const MD = {
   link: 'mn-md-link',
   linkAnchor: 'mn-md-link-anchor',
   hrLine: 'mn-md-hr-line',
+  /** 整行只有一张图片（或图片占位）时挂在行上：去掉行盒多余的行距。 */
+  imageLine: 'mn-md-image-line',
   wikilink: 'mn-wikilink',
   wikilinkUnresolved: 'mn-wikilink--unresolved',
   wikilinkAmbiguous: 'mn-wikilink--ambiguous',
@@ -61,8 +63,12 @@ export const WIKILINK_RESOLVED_ATTR = 'data-mn-resolved'
  * 排版口径**对齐预览面板**（app.css 的 `.mn-preview__body`）：正文用界面字体、标题按级别放大、
  * 行内代码与代码块用等宽字体 + 底色、引用是左侧竖线 + 淡色。这样"编辑器就是唯一的写作面"
  * 时，看到的排版与最终渲染不会两套。
+ *
+ * 单独导出原始定义（而不只是 `EditorView.theme(...)` 的结果）：样式表是"装饰层写类名、
+ * 样式层给规则"的一半契约，类名拼错在运行时只会表现为"没样式"，所以给测试留一个可以
+ * 直接断言的入口（例如"图片是块级、`-` 是块级行内的那个 class"）。
  */
-export const livePreviewTheme = EditorView.theme({
+export const livePreviewThemeSpec: { [selector: string]: { [property: string]: string } } = {
   /* ── 标题：字号由**行装饰**统一负责 ──
      为什么不在语法高亮里给字号：高亮的 tag 会落在标题文本的**内层** span 上，
      行与文本两层 `em` 会相乘（1.6em × 1.45em = 2.3em），级别越高越离谱。
@@ -179,19 +185,54 @@ export const livePreviewTheme = EditorView.theme({
     borderTop: '1px solid var(--mn-border)',
     verticalAlign: 'middle',
   },
-  '.mn-md-image-wrap': { display: 'inline-block', maxWidth: '100%' },
+
+  /* ── 图片：块级呈现，在两行之间"独占一行" ──
+     为什么不用 `Decoration.replace({ block: true })`（那是 CodeMirror 里最"正统"的块级做法）：
+     1. **插件里不准用**：ViewPlugin 产出块级装饰会被直接拒绝（"Block decorations may not be
+        specified via plugins"），只能挪进 StateField；
+     2. **StateField 代价不可接受**：StateField 拿不到 `view.visibleRanges`，而块级装饰必须覆盖
+        **整个文档**才能保证块顺序正确 —— 于是每次按键都要 O(全文) 重扫，直接撞上 ADR-0009
+        的"装饰只按视口算、输入路径零全量开销"契约；
+     3. **块级 replace 还要求 from/to 落在行边界**：`前文 ![图](x) 后文` 这种行内图片只能整行替换，
+        会把同一行的文字一起藏掉，反而破坏"光标进入即露原文"这条铁律。
+     所以走"行内 widget + 块级外观"：`display: block` 让它在视觉上独占一行
+     （`.cm-line` 会因为块级子元素把这一行拆开，前后文字各占一行），
+     而 widget 依然是视口内计算、光标感知的内联装饰 —— 光标进入该行时装饰整体撤掉，原文照常露出。 */
+  '.mn-md-image-wrap': {
+    display: 'block',
+    // 收缩到图片自身宽度：右边的空白仍然属于"这一行"，点一下就能把光标放进该行、露出 Markdown 原文
+    width: 'fit-content',
+    maxWidth: '100%',
+    // 用 padding 而不是 margin：`.cm-line` 上下都没有 padding/border，
+    // 块级子元素的垂直 margin 会穿过父元素折叠出去，既看不出间距，又会让 CodeMirror
+    // 量到的行高偏小（滚动条与"滚到光标"会因此逐步失准）
+    padding: '6px 0',
+  },
   '.mn-md-image': {
+    display: 'block',
     maxWidth: '100%',
     maxHeight: '420px',
     borderRadius: 'var(--mn-radius)',
-    verticalAlign: 'middle',
   },
   '.mn-md-image-placeholder': {
+    display: 'block',
+    width: 'fit-content',
+    maxWidth: '100%',
+    // 6px 是行间留白，0.4em 是色块内边距
+    padding: '6px 0.4em',
+    // 父行在"整行只有一张图"时是 `line-height: 0`，占位文本必须自带行高，否则会被压成 0 高
+    lineHeight: '1.5',
     fontFamily: 'var(--mn-font-mono)',
     fontSize: '0.88em',
     color: 'var(--mn-fg-subtle)',
     background: 'var(--mn-code-bg)',
     borderRadius: '4px',
-    padding: '0.1em 0.4em',
   },
-})
+  /* "图片行"：整行除图片外只有空白时挂上它，去掉行盒自己的行距。
+     只有在光标**不在**这一行时才会挂（装饰层与图片 widget 同时产出、同时撤掉），
+     所以 `line-height: 0` 永远不会作用到"正在编辑的那一行"的正文上。 */
+  '.cm-line.mn-md-image-line': { lineHeight: '0' },
+}
+
+/** Live Preview 的 `EditorView.theme` 扩展（装饰层真正装的样式）。 */
+export const livePreviewTheme = EditorView.theme(livePreviewThemeSpec)

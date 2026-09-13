@@ -2,7 +2,7 @@
 
 import { Icon } from '@/components/Icon'
 import { basename } from '@/domain/paths'
-import { createNoteFromLink, openNote } from '@/app/actions'
+import { createNoteFromLink, openNote, openNoteAt } from '@/app/actions'
 import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
 import { useUiStore } from '@/state/ui-store'
@@ -66,7 +66,9 @@ export function LinksPanel() {
                     className="mn-links__item"
                     data-backlink-from={backlink.fromRelPath}
                     title={`${backlink.fromRelPath}（第 ${backlink.line} 行）`}
-                    onClick={() => void openNote(backlink.fromRelPath)}
+                    // 反向链接的行号是**来源笔记里**那一行的行号（`mn-index` 建 backlink
+                    // 时用的就是引用所在行），所以可以直接跳过去 —— 与搜索结果同一个入口。
+                    onClick={() => void openNoteAt(backlink.fromRelPath, backlink.line)}
                   >
                     <span className="mn-links__item-name">{basename(backlink.fromRelPath)}</span>
                     <span className="mn-links__item-meta">
@@ -101,6 +103,11 @@ export function LinksPanel() {
                       }
                       onClick={() => {
                         if (resolved === null) void createNoteFromLink(link.rawTarget, relPath)
+                        // ⚠️ 出链**不定位**：`link.line` 是这一行在**当前笔记**里的行号
+                        // （引用写在哪儿），不是目标笔记里的行号；而 `#小节` 是锚点名，
+                        // 宿主没有"锚点 → 行号"的接口（`ResolvedLink` 只带 `anchor` 字符串）。
+                        // 为它新增一条宿主命令不在本次范围内 —— 所以这里只打开、不跳转，
+                        // 目标位置由用户自己看。
                         else void openNote(resolved)
                       }}
                     >

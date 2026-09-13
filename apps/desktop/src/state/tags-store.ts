@@ -15,6 +15,18 @@ import { create } from 'zustand'
 import { ipc } from '@/ipc/client'
 import { MimenoteError } from '@/ipc/types'
 import type { NoteTags, TagSummary } from '@/ipc/types'
+import { loadJson, saveJson } from './persist'
+
+/** 面板开关是"工作区布局"的一部分，重启后应当恢复（M3：布局持久化）。 */
+const OPEN_KEY = 'mimenote.tags.open.v1'
+
+function loadOpen(): boolean {
+  return loadJson<boolean>(OPEN_KEY, false, (value): value is boolean => typeof value === 'boolean')
+}
+
+function persistOpen(open: boolean): void {
+  saveJson(OPEN_KEY, open)
+}
 
 interface TagsState {
   /** 面板是否可见。 */
@@ -47,7 +59,7 @@ interface TagsState {
 let requestSeq = 0
 
 export const useTagsStore = create<TagsState>((set, get) => ({
-  open: false,
+  open: loadOpen(),
   relPath: null,
   noteTags: null,
   summary: [],
@@ -59,6 +71,7 @@ export const useTagsStore = create<TagsState>((set, get) => ({
 
   setOpen: (open) => {
     set({ open })
+    persistOpen(open)
     if (!open) {
       // 关闭即收起展开的标签：下次打开时从干净状态开始（不保留"上次点开的标签"）
       set({ activeKey: null, activeRaw: null, activeNotes: [] })

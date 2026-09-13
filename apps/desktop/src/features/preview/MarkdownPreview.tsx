@@ -9,6 +9,9 @@
  * - 点击 wikilink → 打开目标笔记；悬空 → 直接创建（Obsidian 的核心手感）；
  * - 点击 `[x](别的笔记.md)` → 同样走内部跳转；
  * - 外部链接不在应用内打开（M2 尚未接入系统浏览器），给出提示而不是让 WebView 跳走。
+ *
+ * 代码块（M3）：每个 `<pre>` 挂一个"复制"按钮与语言标签，点击由同一处委托处理
+ * （见 `code-copy.ts`，其中写了"为什么渲染完再挂按钮"）。
  */
 
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
@@ -25,6 +28,9 @@ import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
 import { toast } from '@/state/toast-store'
 import { useVaultStore } from '@/state/vault-store'
+
+import { attachCodeCopyButtons, handleCodeCopyClick } from './code-copy'
+import './preview-code.css'
 
 /** 单次授权请求的图片数上限（宿主也有自己的上限；超出部分留到下一轮渲染再请求）。 */
 const ASSET_REQUEST_BATCH = 200
@@ -198,10 +204,17 @@ export function MarkdownPreview() {
     }
   }, [html, links])
 
+  // 代码块的"复制"按钮与语言标签（HTML 每次重建 → 这里重挂；卸载即摘掉）
+  useEffect(() => attachCodeCopyButtons(bodyRef.current), [html])
+
   const handleClick = useCallback(
     (event: React.MouseEvent<HTMLElement>) => {
       const target = event.target
       if (!(target instanceof Element)) return
+
+      // 代码块的复制按钮（是个 <button>，与下面的链接分支互不干扰）
+      if (handleCodeCopyClick(target)) return
+
       const anchor = target.closest('a')
       if (anchor === null) return
 

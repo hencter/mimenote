@@ -130,26 +130,32 @@ describe('命令面板', () => {
     fireEvent.change(input, { target: { value: '隐藏' } })
     const options = await waitFor(() => {
       const list = within(dialog).getAllByRole('option')
-      expect(list).toHaveLength(3)
+      expect(list).toHaveLength(4)
       return list
     })
-    // 三条「显示 / 隐藏…」命令的排序由分数决定（更短的标题靠前）。
-    // 先断言顺序：万一将来排序变了（或又加了同类命令），这里会先失败，
-    // 而不是悄悄测了另一条命令。
-    expect(options[0]?.textContent).toContain('侧栏')
-    expect(options[1]?.textContent).toContain('链接面板')
-    expect(options[2]?.textContent).toContain('标签面板')
+    // 四条「显示 / 隐藏…」命令（侧栏 / 链接面板 / 标签面板 / 大纲面板）。
+    // 顺序由匹配分数决定，因此这里**只断言集合对得上**，再按标题定位"链接面板"那一条：
+    // 将来再加同类命令时，本用例不会再因为它把名次挤走而假失败（断言的是行为，不是名次）。
+    const labels = options.map((node) => node.textContent ?? '')
+    for (const expected of ['侧栏', '链接面板', '标签面板', '大纲面板']) {
+      expect(labels.some((text) => text.includes(expected))).toBe(true)
+    }
+    const linksIndex = labels.findIndex((text) => text.includes('链接面板'))
+    expect(linksIndex).toBeGreaterThanOrEqual(0)
     expect(options[0]?.getAttribute('aria-selected')).toBe('true')
     expect(input.getAttribute('aria-activedescendant')).toBe('mn-palette-option-0')
 
-    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    // 一路 ↓ 走到"链接面板"那一条
+    for (let step = 0; step < linksIndex; step += 1) {
+      fireEvent.keyDown(input, { key: 'ArrowDown' })
+    }
     await waitFor(() => {
-      expect(document.getElementById('mn-palette-option-1')?.getAttribute('aria-selected')).toBe(
-        'true',
-      )
+      expect(
+        document.getElementById(`mn-palette-option-${linksIndex}`)?.getAttribute('aria-selected'),
+      ).toBe('true')
     })
     // 焦点不离开输入框：高亮通过 aria-activedescendant 表达
-    expect(input.getAttribute('aria-activedescendant')).toBe('mn-palette-option-1')
+    expect(input.getAttribute('aria-activedescendant')).toBe(`mn-palette-option-${linksIndex}`)
 
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() => {

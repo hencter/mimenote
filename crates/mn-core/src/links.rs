@@ -196,6 +196,48 @@ pub fn join_relative(base_dir: &str, target: &str) -> Option<String> {
     Some(segments.join("/"))
 }
 
+/// 链接目标是否是"相对这篇笔记所在目录的路径"—— 也就是**它的含义随这篇笔记的位置变化**。
+///
+/// 与 [`is_external`] 的关系（问的不是同一个问题，口径也就不同）：
+///
+/// * `is_external` 回答"索引要不要把这条链接算进链接图"：认得的 scheme 少一点只是少收几条，
+///   不会毁数据，所以那张表可以保守；
+/// * 这个函数回答"改写时能不能按路径去动它"：认不出的 scheme（`asset:`、`vscode:` …）、
+///   协议相对（`//example.com/x`）、Vault 根绝对（`/附件/图.png`）都**不能**碰 ——
+///   它们不随笔记位置变化，按路径改就是纯破坏。
+///
+/// 判定为 `false` 的形态：空目标（`[x](#锚点)` 的 target 为空）、纯锚点/块引用（`#小节`、`^块`）、
+/// 以 `/` 开头（同时覆盖 `//host/x`）、以及任何带 scheme 的写法（大小写不敏感）。
+pub fn is_position_relative_target(raw: &str) -> bool {
+    let target = raw.trim();
+    if target.is_empty() || target.starts_with('/') {
+        return false;
+    }
+    if target.starts_with('#') || target.starts_with('^') {
+        return false;
+    }
+    !has_scheme(target)
+}
+
+/// 目标是否带 URI scheme（`scheme:` 形式，大小写不敏感）。
+///
+/// 只在**第一个 `/` 之前**找冒号：否则 `子目录/时间:08:30.md` 这种名字里的冒号会被误判成 scheme。
+fn has_scheme(target: &str) -> bool {
+    let head = match target.find('/') {
+        Some(index) => &target[..index],
+        None => target,
+    };
+    let Some((scheme, _)) = head.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|current| current.is_ascii_alphanumeric() || matches!(current, '+' | '-' | '.'))
+}
+
 /// 目标是否像 Markdown 笔记（用于索引层过滤附件）。
 pub fn is_markdown_target(raw: &str) -> bool {
     let lowered = raw.trim().to_ascii_lowercase();
@@ -631,5 +673,59 @@ mod tests {
         assert!(is_markdown_target("某篇.MARKDOWN"));
         assert!(!is_markdown_target("图.png"));
         assert!(!is_markdown_target("附件.pdf"));
+    }
+
+    #[test]
+    fn position_relative_target_detection() {
+        // 随笔记位置变化的相对路径（含图片/PDF 这类索引不收录的目标，以及裸文件名）
+        for relative in [
+            "../附件/图.png",
+            "./子/篇.md",
+            "乙.md",
+            "子/篇",
+            "附件.pdf",
+            "子目录/时间:08:30.md",
+            "图.png?raw=1",
+        ] {
+            assert!(
+                is_position_relative_target(relative),
+                "应判为相对路径：{relative}"
+            );
+        }
+
+        // 不随位置变化的形态一个都不能碰
+        for fixed in [
+            "",
+            "   ",
+            "#小节",
+            "^块标识",
+            "/附件/图.png",
+            "//example.com/x",
+            "https://example.com/a.md",
+            "HTTP://EXAMPLE.COM",
+            "Mailto:a@b.c",
+            "data:image/png;base64,AAAA",
+            "asset://localhost/附件/图.png",
+            "vscode://file/C:/x.md",
+            "C:/Windows/直通.md",
+        ] {
+            assert!(
+                !is_position_relative_target(fixed),
+                "应放行（不改写）：{fixed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scheme_detection_requires_a_valid_prefix_before_a_slash() {
+        assert!(has_scheme("asset://x/y.png"));
+        assert!(has_scheme("obsidian:+标签"));
+        assert!(
+            !has_scheme("子目录/时间:08:30.md"),
+            "冒号在第一个 `/` 之后：那是文件名，不是 scheme"
+        );
+        assert!(!has_scheme("笔记:说明.md"), "中文不能作 scheme 首字符");
+        assert!(!has_scheme(":开头是冒号"));
+        assert!(!has_scheme("1abc:x"), "scheme 首字符必须是字母");
     }
 }

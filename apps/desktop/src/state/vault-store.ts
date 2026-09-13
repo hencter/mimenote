@@ -8,7 +8,7 @@
 import { create } from 'zustand'
 
 import { buildTree, collectDirectoryPaths, ancestorsOf, type TreeNode } from '@/domain/tree'
-import { parentOf } from '@/domain/paths'
+import { extensionOf, parentOf } from '@/domain/paths'
 import { ipc } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
 import type { EntryMeta, NoteContent, RenameOutcome, TrashRecord, VaultInfo, VaultSnapshot } from '@/ipc/types'
@@ -50,6 +50,14 @@ interface VaultState {
   registerDeletedEntry: (record: TrashRecord) => void
   /** 重命名成功后就地替换条目（不重扫；改名不改变条目数量）。 */
   registerRenamedNote: (outcome: RenameOutcome) => void
+  /**
+   * 附件落盘后就地插入条目（粘贴/拖入图片，见 ADR-0013）。
+   *
+   * 为什么不做一次 `rescan`：条目表是"打开 Vault 时扫一次"的快照，重扫在 1 万笔记下是
+   * 800ms 级别的开销，而"刚写了一个文件"这条信息**已经在返回值里**了（见 architecture.md §3.2）。
+   * 附件目录不存在时磁盘上刚被创建，因此祖先目录条目要一并补上（否则树会把它当根节点）。
+   */
+  registerAttachment: (file: { relPath: string; sizeBytes: number }) => void
 }
 
 /** 从快照派生概要信息。 */
@@ -276,7 +284,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   },
 
   registerRenamedNote: (outcome) => {
-    const entries = get().entries.map((entry) =>
+    const renamed = get().entries.map((entry) =>
       entry.relPath === outcome.oldRelPath
         ? {
             ...entry,
@@ -286,16 +294,58 @@ export const useVaultStore = create<VaultState>((set, get) => ({
           }
         : entry,
     )
+    // 移动可能落到一个**刚创建**的目录里（宿主会创建它，但条目表是"打开 Vault 时扫一次"
+    // 的快照）。缺了父目录条目，`domain/tree` 会把这篇笔记当成"父目录缺失"而提升成根节点 ——
+    // 表现是"笔记跑到了最外层、新建的目录看不见"。这个信息就在路径里，不必再问宿主。
+    const { entries, added } = withAncestorDirs(renamed, outcome.newRelPath)
+    const info = get().info
+    const nextInfo =
+      info === null || added === 0 ? info : { ...info, entryCount: entries.length, folderCount: info.folderCount + added }
+
     const selected = get().selected
     const selectedAfter = selected === outcome.oldRelPath ? outcome.newRelPath : selected
     if (selectedAfter !== null && selectedAfter !== selected) {
       const expanded = new Set(get().expanded)
       for (const ancestor of ancestorsOf(selectedAfter)) expanded.add(ancestor)
-      persistExpanded(get().info?.rootPath ?? '', expanded)
-      set({ entries, tree: buildTree(entries), selected: selectedAfter, expanded })
+      persistExpanded(info?.rootPath ?? '', expanded)
+      set({ entries, tree: buildTree(entries), selected: selectedAfter, expanded, info: nextInfo })
       return
     }
-    set({ entries, tree: buildTree(entries), selected: selectedAfter })
+    set({ entries, tree: buildTree(entries), selected: selectedAfter, info: nextInfo })
+  },
+
+  registerAttachment: (file) => {
+    const parent = parentOf(file.relPath)
+    const ext = extensionOf(file.relPath)
+    const entry: EntryMeta = {
+      relPath: file.relPath,
+      name: file.relPath.split('/').pop() ?? file.relPath,
+      isDir: false,
+      sizeBytes: file.sizeBytes,
+      // 附件不参与冲突检测（它不是笔记），但条目形状要与扫描结果一致：
+      // 拿不到 mtime 时用 `null`（契约允许），不要塞 0 冒充"1970 年改过"
+      mtimeMs: null,
+      ext: ext === '' ? null : ext,
+    }
+    // 附件目录可能是**刚被宿主创建**的：缺了父目录条目，`domain/tree` 会把附件提升成根节点
+    const { entries, added } = withAncestorDirs(upsertEntry(get().entries, entry), file.relPath)
+    const expanded = new Set(get().expanded)
+    if (parent !== '') expanded.add(parent)
+    const info = get().info
+    set({
+      entries,
+      tree: buildTree(entries),
+      expanded,
+      info:
+        info === null
+          ? null
+          : {
+              ...info,
+              entryCount: entries.length,
+              folderCount: info.folderCount + added,
+            },
+    })
+    persistExpanded(info?.rootPath ?? '', expanded)
   },
 
   registerDeletedEntry: (record) => {
@@ -341,6 +391,35 @@ function upsertEntry(entries: readonly EntryMeta[], entry: EntryMeta): EntryMeta
   const next = entries.slice()
   next[index] = entry
   return next
+}
+
+/**
+ * 补上 `relPath` 缺失的祖先目录，返回新表与新增条数。
+ *
+ * 目录条目的形状与扫描口径一致：`sizeBytes = 0`、`mtimeMs = null`、`ext = null`
+ * （见 `mn_core::scanner`，别在增量路径上发明第二套形状）。
+ */
+function withAncestorDirs(
+  entries: readonly EntryMeta[],
+  relPath: string,
+): { entries: EntryMeta[]; added: number } {
+  const existing = new Set(entries.map((entry) => entry.relPath))
+  const missing: EntryMeta[] = []
+  // `ancestorsOf` 由近到远（先父目录）；反向压入让父目录排在子目录之前，读起来更顺
+  for (const dir of ancestorsOf(relPath).reverse()) {
+    if (existing.has(dir)) continue
+    existing.add(dir)
+    missing.push({
+      relPath: dir,
+      name: dir.split('/').pop() ?? dir,
+      isDir: true,
+      sizeBytes: 0,
+      mtimeMs: null,
+      ext: null,
+    })
+  }
+  if (missing.length === 0) return { entries: [...entries], added: 0 }
+  return { entries: [...entries, ...missing], added: missing.length }
 }
 
 function nowMs(): number {

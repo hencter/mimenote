@@ -1,0 +1,66 @@
+/*
+ * 「移动到…」对话框：复用 `.mn-dialog` 的基础样式，这里只补输入行、预览行与选项行。
+ *
+ * 为什么单独成文件：与 `rename-dialog.css` 同一个理由 —— 样式只服务一个组件，
+ * 改动不会外溢到全局 `styles/app.css`（颜色、圆角、字号仍全部走主题变量）。
+ */
+
+.mn-dialog--move .mn-dialog__header {
+  color: var(--mn-fg);
+}
+
+.mn-move__hint {
+  color: var(--mn-accent);
+}
+
+.mn-move__field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.mn-move__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 9px;
+  font-family: var(--mn-font-ui);
+  font-size: var(--mn-font-size-ui);
+  color: var(--mn-fg);
+  background: var(--mn-bg);
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+}
+
+.mn-move__input:focus {
+  outline: none;
+  border-color: var(--mn-accent);
+}
+
+.mn-move__input:disabled {
+  opacity: 0.6;
+}
+
+/* 目标路径预览：等宽字体，长路径一眼能对上是哪一层 */
+.mn-dialog--move [data-move-preview] {
+  font-family: var(--mn-font-mono);
+  font-size: 12px;
+  color: var(--mn-fg-subtle);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.mn-move__option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 16px;
+  color: var(--mn-fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* 「根目录」是"带回根"的快捷动作，与右侧的取消/移动分开摆 */
+.mn-move__root {
+  margin-right: auto;
+}

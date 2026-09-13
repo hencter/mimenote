@@ -339,6 +339,15 @@
   color: var(--mn-warning);
 }
 
+/*
+ * "刷新中…"：保留视角的刷新期间画布继续画旧数据，这里只是让人知道"正在取新的"。
+ * 刻意做得比 warn 更轻（虚线边框 + muted 色）—— 它不是错误，也不该抢走画布的注意力。
+ */
+.mn-graph__badge--busy {
+  border-style: dashed;
+  color: var(--mn-fg-muted);
+}
+
 .mn-graph__legend {
   display: flex;
   flex-direction: column;

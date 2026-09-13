@@ -3,7 +3,8 @@
  *
  * 三条性能纪律：
  * 1. 编辑器实例只在**承载节点挂载时**创建一次，绝不因为文档内容变化而重建；
- * 2. 组件只订阅 `relPath` 与 `revision`（都是原始值），**不订阅 `text`**，
+ * 2. 组件只订阅 `relPath` 与 `revision` 这类**原始值**（外加设置页的 `tabWidth`，
+ *    它只触发一次 Compartment 重配置，不重建编辑器），**不订阅 `text`**，
  *    因此每次按键不会触发 React 重渲染（文本直接进 store / CM 自己的文档模型）；
  * 3. 整篇替换只发生在"切换文件 / 从磁盘重新加载"时（revision 变化）。
  */
@@ -14,22 +15,29 @@ import { useCallback, useEffect, useRef } from 'react'
 
 import { Icon } from '@/components/Icon'
 import { useNoteStore } from '@/state/note-store'
+import { useSettingsStore } from '@/state/settings-store'
 import { useUiStore } from '@/state/ui-store'
 import { getTheme } from '@/theme/apply'
 import {
   createEditorExtensions,
   replaceEditorText,
   setEditorAppearance,
+  setEditorTabSize,
 } from './cm/setup'
 
 export function MarkdownEditor() {
   const viewRef = useRef<EditorView | null>(null)
   const isDarkRef = useRef(true)
+  // 创建编辑器那一瞬间要用"当下"的 Tab 宽度：值放 ref 里，回调 ref 才能读到最新值
+  // （回调 ref 的依赖是空的，不能把 tabWidth 当闭包变量捕获进去 —— 那会把它冻在首次渲染）
+  const tabWidthRef = useRef(useSettingsStore.getState().tabWidth)
 
   const relPath = useNoteStore((state) => state.doc?.relPath ?? null)
   const revision = useNoteStore((state) => state.doc?.revision ?? 0)
   const status = useNoteStore((state) => state.status)
   const themeId = useUiStore((state) => state.themeId)
+  // 只读订阅"Tab 宽度"：编辑器不改它，设置页改它，这里跟着重配置 Compartment
+  const tabWidth = useSettingsStore((state) => state.tabWidth)
   const isDark = getTheme(themeId).appearance === 'dark'
 
   // 创建编辑器：用**回调 ref**，节点挂载即创建、卸载即销毁。
@@ -55,6 +63,7 @@ export function MarkdownEditor() {
         },
       },
       isDarkRef.current,
+      tabWidthRef.current,
     )
 
     viewRef.current = new EditorView({
@@ -94,6 +103,14 @@ export function MarkdownEditor() {
     const view = viewRef.current
     if (view !== null) setEditorAppearance(view, isDark)
   }, [isDark])
+
+  // Tab 宽度变化（设置页）：同样只重配置 Compartment —— 光标、选区、撤销历史全部保留。
+  // 这样 `EditorState.tabSize`（光标列计算）与我们自己的缩进命令用的是同一个值。
+  useEffect(() => {
+    tabWidthRef.current = tabWidth
+    const view = viewRef.current
+    if (view !== null) setEditorTabSize(view, tabWidth)
+  }, [tabWidth])
 
   return (
     <div className="mn-editor">

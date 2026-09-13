@@ -541,6 +541,65 @@ pub async fn note_rename(
     Ok(outcome)
 }
 
+/// 跨目录移动笔记（拖拽整理 / 命令面板的「移动到…」）。
+///
+/// 出参**复用 [`RenameOutcome`]**：宿主不为"换个位置"发明第二套契约形状，前端于是能复用
+/// 同一套状态收尾（条目表换路径、正在编辑的文档换路径、标签页对账、链接面板刷新）。
+///
+/// 入参口径：
+///
+/// * `rel_path` —— 要移动的笔记（相对 Vault 根的 POSIX 路径）；
+/// * `target_parent_rel` —— **目标父目录**（空串 = Vault 根；反斜杠与首尾 `/` 都容忍）。
+///   目录还不存在时会创建 —— "移动到新目录"是键盘路径下的正常需求；
+/// * `new_title` —— `None` 时沿用原文件名（拖拽就是这种情况：只换目录）；
+///   给了就顺带改名（扩展名沿用原文件）；
+/// * `update_links` —— 缺省 `true`：改写全库指向它的链接。跨目录时链接一律写成
+///   **相对新位置的路径**（见 `mn_index::rename` 的模块文档：裸名链接会被"同目录优先"
+///   的消歧规则重新解释，换目录后可能指向另一篇同名笔记）。
+///
+/// 错误码：
+///
+/// * 目标目录已有同名文件 → `ALREADY_EXISTS`（**绝不覆盖**，也不改一个字节）；
+/// * 移到自己所在目录（新旧路径相同）→ 成功返回、无任何副作用；
+/// * 源不存在 → `NOT_FOUND`；源是目录 → `IS_DIRECTORY`（目录移动仍推迟）；
+/// * 越界/非法目录名 → `PATH_INVALID` / `PATH_ESCAPE`。
+///
+/// 与 `note_rename` 共用同一把写锁与同一份索引：移动与链接改写必须在"没有并发写"的
+/// 临界区里完成（ADR-0004），否则移动瞬间可能撞上一次自动保存。
+#[tauri::command]
+pub async fn note_move(
+    state: State<'_, Arc<AppState>>,
+    rel_path: String,
+    target_parent_rel: String,
+    new_title: Option<String>,
+    update_links: Option<bool>,
+) -> Result<RenameOutcome, IpcError> {
+    let started = Instant::now();
+    let app = Arc::clone(state.inner());
+    let rel = rel_path;
+    let target = target_parent_rel;
+    let update = update_links.unwrap_or(true);
+
+    let report =
+        run_blocking(move || move_note_in(&app, &rel, &target, new_title.as_deref(), update))
+            .await?;
+
+    // 条目缓存增量更新：换掉旧路径（笔记数不变），并把**这次新建的目录**补进条目表
+    apply_renamed_entry(&state, &report);
+    register_moved_dirs(&state, &report.new_rel_path);
+
+    let outcome = rename_outcome_from(report, started.elapsed().as_millis() as u64);
+    log::info!(
+        "移动：{} → {}（改写 {} 个文件 / {} 条链接，耗时 {}ms）",
+        outcome.old_rel_path,
+        outcome.new_rel_path,
+        outcome.updated_links.len(),
+        outcome.updated_link_count,
+        outcome.elapsed_ms
+    );
+    Ok(outcome)
+}
+
 /// 删除笔记/目录（移入回收站）。必须 `confirm = true`。
 #[tauri::command]
 pub async fn note_delete(
@@ -871,6 +930,44 @@ fn rename_note_in(
     }
 }
 
+/// 移动命令的主体（与 Tauri 无关，可单测）。
+///
+/// 与 `rename_note_in` 是同一条链路的两个入口：写锁、索引同步、全文搜索降级都一致 ——
+/// "换个位置"和"换个名字"在这三层上没有任何区别（见 `mn_index::rename` 的模块文档）。
+fn move_note_in(
+    state: &AppState,
+    rel_path: &str,
+    target_parent_rel: &str,
+    new_title: Option<&str>,
+    update_links: bool,
+) -> mn_core::Result<RenameReport> {
+    let root = state.vault_root()?;
+    let _write_guard = state.write_guard();
+    let mut index = state.index_write();
+    match state.try_search(|search| {
+        mn_index::rename::move_note(
+            &root,
+            &mut index,
+            rel_path,
+            target_parent_rel,
+            new_title,
+            update_links,
+            Some(search),
+        )
+    }) {
+        Some(result) => result,
+        None => mn_index::rename::move_note(
+            &root,
+            &mut index,
+            rel_path,
+            target_parent_rel,
+            new_title,
+            update_links,
+            None,
+        ),
+    }
+}
+
 /// 改名成功后增量更新条目缓存（纯内存，不重扫目录）。
 fn apply_renamed_entry(state: &AppState, report: &RenameReport) {
     let old_rel = report.old_rel_path.clone();
@@ -888,6 +985,48 @@ fn apply_renamed_entry(state: &AppState, report: &RenameReport) {
             mtime_ms: Some(mtime_ms),
             ext: ext_of(&new_rel),
         });
+    });
+}
+
+/// 把 `new_rel` 的父目录（含缺失的祖先）补进条目缓存。
+///
+/// 为什么必须做：移动到**新建目录**时磁盘上多了几层目录，而条目缓存是"打开 Vault 时扫一次"
+/// 的快照。缺了父目录条目，前端 `domain/tree` 会把这篇笔记当成"父目录缺失"而**提升成根节点**
+/// —— 文件树里的表现是"笔记跑到了最外层，新建的目录看不见"，比报错更难查。
+/// 自顶向下入表，父目录一定先于子目录存在（`VaultCtx::upsert` 只加不排序，顺序由前端树重建决定）。
+///
+/// `pub(crate)`：附件写入（`attachments.rs`）也要把新建的附件目录补进同一条缓存 ——
+/// 目录条目的形状只允许有一处定义，不能再写第二遍。
+pub(crate) fn register_moved_dirs(state: &AppState, new_rel: &str) {
+    let Some(index) = new_rel.rfind('/') else {
+        return;
+    };
+    let dir = &new_rel[..index];
+    if dir.is_empty() {
+        return;
+    }
+    state.update_vault(|ctx| {
+        let mut accumulated = String::new();
+        for segment in dir.split('/') {
+            if accumulated.is_empty() {
+                accumulated.push_str(segment);
+            } else {
+                accumulated.push('/');
+                accumulated.push_str(segment);
+            }
+            if ctx.entries.contains_key(&accumulated) {
+                continue;
+            }
+            ctx.upsert(EntryMeta {
+                rel_path: accumulated.clone(),
+                name: segment.to_string(),
+                is_dir: true,
+                size_bytes: 0,
+                // 目录的 mtime 在扫描口径里本来就是 `None`（见 mn-core::scanner）
+                mtime_ms: None,
+                ext: None,
+            });
+        }
     });
 }
 
@@ -1043,11 +1182,15 @@ fn list_snippets(root: &VaultRoot) -> mn_core::Result<Vec<SnippetFile>> {
     Ok(out)
 }
 
-fn file_name_of(rel: &str) -> String {
+/// 条目缓存里"文件名"的口径（`rel` 的最后一段）。
+///
+/// `pub(crate)`：附件写入复用同一处实现 —— 增量更新条目时的形状必须与扫描结果一致。
+pub(crate) fn file_name_of(rel: &str) -> String {
     rel.rsplit('/').next().unwrap_or(rel).to_string()
 }
 
-fn ext_of(rel: &str) -> Option<String> {
+/// 条目缓存里"小写扩展名"的口径（无扩展名 → `None`；`pub(crate)` 的理由同上）。
+pub(crate) fn ext_of(rel: &str) -> Option<String> {
     let name = rel.rsplit('/').next().unwrap_or(rel);
     name.rsplit_once('.')
         .map(|(_, ext)| ext.to_ascii_lowercase())
@@ -1287,6 +1430,199 @@ mod tests {
         // 索引也必须切到新路径，而不是留下旧路径的幽灵条目
         assert!(!state.index_write().contains("乙.md"));
         assert!(state.index_write().contains("丙.md"));
+    }
+
+    // -- 跨目录移动（note_move） ------------------------------------------------
+
+    #[test]
+    fn move_relocates_the_file_and_updates_every_cache() {
+        let (dir, state) = state_with(&[
+            ("笔记/甲.md", "见 [[乙]] 与 [x](乙.md)\n"),
+            ("别的/乙.md", "# 乙\n"),
+        ]);
+
+        let report = move_note_in(&state, "别的/乙.md", "归档", None, true).unwrap();
+        assert_eq!(report.old_rel_path, "别的/乙.md");
+        assert_eq!(report.new_rel_path, "归档/乙.md");
+        assert_eq!(report.updated_link_count, 2);
+        assert!(dir.path().join("归档").join("乙.md").exists());
+        assert!(!dir.path().join("别的").join("乙.md").exists());
+
+        // 链接改写成"相对新位置的路径"（裸名会被同目录优先的消歧规则重新解释）
+        assert_eq!(
+            read_file(dir.path(), "笔记/甲.md"),
+            "见 [[../归档/乙]] 与 [x](../归档/乙.md)\n"
+        );
+
+        // 条目缓存：换路径 + 新建目录入表（否则前端树会把笔记提升成根节点）
+        apply_renamed_entry(&state, &report);
+        register_moved_dirs(&state, &report.new_rel_path);
+        state
+            .with_vault(|ctx| {
+                assert!(!ctx.entries.contains_key("别的/乙.md"));
+                assert_eq!(ctx.entries["归档/乙.md"].name, "乙.md");
+                assert_eq!(ctx.entries["归档/乙.md"].ext.as_deref(), Some("md"));
+                assert!(ctx.entries["归档"].is_dir, "新建的目标目录必须在条目表里");
+                assert_eq!(ctx.folder_count, 3, "笔记 + 别的 + 新建的归档");
+                assert_eq!(ctx.note_count, 2);
+                assert!(ctx.order.contains(&"归档".to_string()));
+                Ok(())
+            })
+            .unwrap();
+
+        // 索引：旧路径消失、新路径可查、反链跟着走
+        let mut index = state.index_write();
+        assert!(!index.contains("别的/乙.md"));
+        assert!(index.contains("归档/乙.md"));
+        assert_eq!(index.backlinks_of("归档/乙.md").len(), 2);
+    }
+
+    #[test]
+    fn move_to_a_brand_new_directory_creates_it_and_registers_the_entry() {
+        let (dir, state) = state_with(&[("笔记/甲.md", "# 甲\n")]);
+        let report = move_note_in(&state, "笔记/甲.md", "归档/2026", None, true).unwrap();
+
+        apply_renamed_entry(&state, &report);
+        register_moved_dirs(&state, &report.new_rel_path);
+
+        assert!(dir.path().join("归档").join("2026").join("甲.md").exists());
+        state
+            .with_vault(|ctx| {
+                assert!(ctx.entries["归档"].is_dir);
+                assert!(ctx.entries["归档/2026"].is_dir, "缺失的祖先目录要一起补上");
+                assert_eq!(ctx.folder_count, 3, "笔记 + 归档 + 归档/2026");
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn move_never_overwrites_an_existing_file() {
+        let (dir, state) = state_with(&[
+            ("笔记/甲.md", "[[乙]]\n"),
+            ("笔记/乙.md", "# 笔记里的乙\n"),
+            ("归档/乙.md", "# 归档里的乙\n"),
+        ]);
+
+        let error = move_note_in(&state, "笔记/乙.md", "归档", None, true).unwrap_err();
+        assert_eq!(error.code(), mn_core::ErrorCode::AlreadyExists);
+        // 跨 IPC 的错误码必须与前端 `ErrorCode` 逐字一致（UI 只按 code 分支）
+        assert_eq!(IpcError::from(error).code, "ALREADY_EXISTS");
+        assert_eq!(read_file(dir.path(), "归档/乙.md"), "# 归档里的乙\n");
+        assert!(dir.path().join("笔记").join("乙.md").exists());
+        assert_eq!(read_file(dir.path(), "笔记/甲.md"), "[[乙]]\n");
+    }
+
+    #[test]
+    fn move_to_the_same_directory_is_a_no_op() {
+        let (dir, state) = state_with(&[("笔记/甲.md", "[[乙]]\n"), ("笔记/乙.md", "")]);
+        let before = std::fs::metadata(dir.path().join("笔记/乙.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
+
+        let report = move_note_in(&state, "笔记/乙.md", "笔记", None, true).unwrap();
+
+        assert_eq!(report.new_rel_path, "笔记/乙.md");
+        assert_eq!(report.updated_link_count, 0);
+        assert_eq!(read_file(dir.path(), "笔记/甲.md"), "[[乙]]\n");
+        assert_eq!(
+            std::fs::metadata(dir.path().join("笔记/乙.md"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            before,
+            "无操作时不该写盘"
+        );
+    }
+
+    #[test]
+    fn move_reports_missing_source_directory_target_and_unopened_vault() {
+        let (dir, state) = state_with(&[("笔记/甲.md", ""), ("目录/里面的.md", "")]);
+        std::fs::write(dir.path().join("占位.md"), "x").unwrap();
+
+        assert_eq!(
+            move_note_in(&state, "不存在.md", "归档", None, true)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::NotFound
+        );
+        assert_eq!(
+            move_note_in(&state, "目录", "归档", None, true)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::IsDirectory,
+            "目录移动仍推迟"
+        );
+        assert_eq!(
+            move_note_in(&state, "笔记/甲.md", "占位.md", None, true)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::NotADirectory
+        );
+        assert_eq!(
+            move_note_in(&state, "笔记/甲.md", "../外面", None, true)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::PathInvalid
+        );
+
+        let closed = AppState::default();
+        assert_eq!(
+            move_note_in(&closed, "笔记/甲.md", "归档", None, true)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::VaultNotSet
+        );
+    }
+
+    #[test]
+    fn move_with_a_new_title_and_search_index_stays_in_step() {
+        let (_dir, state) = state_with(&[
+            ("笔记/甲.md", "[[乙|别名]]\n"),
+            ("笔记/乙.md", "第一行 关键词\n"),
+        ]);
+
+        let report = move_note_in(&state, "笔记/乙.md", "归档", Some("丙"), true).unwrap();
+        assert_eq!(report.new_rel_path, "归档/丙.md");
+
+        // 全文搜索：路径搬过去了，被改写的来源笔记也换了新文本
+        let hits = search_query_in(&state, "关键词", None).unwrap().hits;
+        assert_eq!(hits[0].rel_path, "归档/丙.md");
+        assert_eq!(
+            search_query_in(&state, "归档/丙", None).unwrap().total,
+            1,
+            "来源笔记里的链接文本也必须是改写后的"
+        );
+    }
+
+    #[test]
+    fn move_outcome_reuses_the_rename_contract() {
+        let (_dir, state) = state_with(&[("笔记/甲.md", "[[乙]]\n"), ("笔记/乙.md", "")]);
+        let report = move_note_in(&state, "笔记/乙.md", "归档", None, true).unwrap();
+        let outcome = rename_outcome_from(report, 3);
+
+        assert_eq!(outcome.old_rel_path, "笔记/乙.md");
+        assert_eq!(outcome.new_rel_path, "归档/乙.md");
+        assert_eq!(outcome.updated_links.len(), 1);
+        assert_eq!(outcome.updated_links[0].rel_path, "笔记/甲.md");
+        assert_eq!(outcome.updated_links[0].count, 1);
+        assert_eq!(outcome.elapsed_ms, 3);
+
+        let json = serde_json::to_string(&outcome).unwrap();
+        for key in [
+            "oldRelPath",
+            "newRelPath",
+            "newMtimeMs",
+            "updatedLinks",
+            "updatedLinkCount",
+            "elapsedMs",
+        ] {
+            assert!(
+                json.contains(&format!("\"{key}\"")),
+                "note_move 复用 RenameOutcome，字段名必须一致：缺少 {key}：{json}"
+            );
+        }
     }
 
     // -- 标签与 frontmatter（note_tags / tags_list / tag_notes） -----------------

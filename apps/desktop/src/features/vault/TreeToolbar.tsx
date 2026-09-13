@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react'
 
 import { FOCUS_FILTER_EVENT } from '@/app/dom-events'
-import { createNoteHere, openVaultInteractive, renameSelected, rescanVault } from '@/app/actions'
+import { createNoteHere, moveSelected, openVaultInteractive, renameSelected, rescanVault } from '@/app/actions'
 import { Icon } from '@/components/Icon'
 import { useVaultStore } from '@/state/vault-store'
 
@@ -72,6 +72,17 @@ export function TreeToolbar() {
           onClick={() => renameSelected()}
         >
           <Icon name="pencil" />
+        </button>
+        <button
+          type="button"
+          className="mn-icon-button"
+          // 拖拽的键盘等价物（F6 同一条命令）：纯拖拽对键盘用户不可用，
+          // 而工具栏按钮是最容易被发现的那个入口
+          title="移动到文件夹…（F6，也可以直接拖拽文件树里的笔记）"
+          aria-label="移动到文件夹"
+          onClick={() => moveSelected()}
+        >
+          <Icon name="move" />
         </button>
         <button
           type="button"

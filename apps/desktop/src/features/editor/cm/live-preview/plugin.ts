@@ -162,6 +162,15 @@ const livePreviewPlugin = ViewPlugin.fromClass(
         view.contentDOM.removeEventListener('error', this.onImageError, true),
       )
 
+      // 图片加载完成 → 让编辑器重新测量。
+      // 图片是**块级**的（`display: block`），它的高度就是这一行的高度；而 `<img>` 的高度
+      // 只有加载完才知道。不主动 requestMeasure，CodeMirror 会继续用"加载前"的行高，
+      // 之后每张图都会让滚动条与"滚到光标"偏差一点。同样是捕获阶段（`load` 也不冒泡）。
+      view.contentDOM.addEventListener('load', this.onImageLoad, true)
+      this.disposers.push(() =>
+        view.contentDOM.removeEventListener('load', this.onImageLoad, true),
+      )
+
       // 宿主索引回来后，wikilink 的"已解析/悬空"要跟着变
       this.disposers.push(
         useLinksStore.subscribe((state, previous) => {
@@ -199,6 +208,13 @@ const livePreviewPlugin = ViewPlugin.fromClass(
       const target = event.target
       if (target instanceof HTMLImageElement && target.classList.contains('mn-md-image')) {
         markAssetFailed(target.src)
+      }
+    }
+
+    private readonly onImageLoad = (event: Event): void => {
+      const target = event.target
+      if (target instanceof HTMLImageElement && target.classList.contains('mn-md-image')) {
+        this.view.requestMeasure()
       }
     }
 

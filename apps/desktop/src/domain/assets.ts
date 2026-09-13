@@ -49,8 +49,8 @@ export function isImageAssetTarget(target: string): boolean {
   return IMAGE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase())
 }
 
-/** Windows 保留设备名（与 `mn_core::path_guard` 的口径一致）。 */
-function isReservedName(segment: string): boolean {
+/** Windows 保留设备名（与 `mn_core::path_guard` 的口径一致；导出理由见 `hasIllegalChars`）。 */
+export function isReservedName(segment: string): boolean {
   const stem = (segment.split('.')[0] ?? '').toUpperCase()
   return /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(stem)
 }
@@ -116,8 +116,13 @@ export function createAssetResolver(entries: readonly AssetEntry[]): AssetResolv
   }
 }
 
-/** 段里是否有 Windows 非法字符或控制字符。 */
-function hasIllegalChars(segment: string): boolean {
+/**
+ * 段里是否有 Windows 非法字符或控制字符。
+ *
+ * 与 `isReservedName` 一起对外导出：附件命名（`domain/attachments.ts`）要用**同一套**
+ * 口径判断"这个文件名/目录名能不能落盘"。这两条规则的第二份实现迟早会与宿主漂移。
+ */
+export function hasIllegalChars(segment: string): boolean {
   return /[<>:"|?*\u0000-\u001f]/.test(segment)
 }
 

@@ -20,6 +20,9 @@ function labelFor(rel: string, alt: string): string {
  * 为什么 `url === null` 时要退成**文本**而不是空 `<img>`：没有授权、路径越界、
  * 文件被删、浏览器预览模式都会走到这里，留一个裂图比"没有图片"更糟
  * （与预览面板 `imagePlaceholderHtml` 的取舍一致）。
+ *
+ * 呈现上是**块级**的（见 `theme.ts` 里 `.mn-md-image-wrap` 的说明）：它在两行之间独占一行。
+ * 这里只给类名，块级/尺寸全部归样式层 —— widget 是纯 DOM、不做布局决策。
  */
 export class ImageWidget extends WidgetType {
   constructor(
@@ -65,7 +68,8 @@ export class ImageWidget extends WidgetType {
   /**
    * 图片 widget 内部的点击**交给编辑器忽略**：点图片不该把光标塞进这一行源码里
    * （那会让图片立刻变回 `![说明](路径)`，看起来像"点一下就坏了"）。
-   * 想编辑这一行，点它旁边的空白或文字即可。
+   * 想编辑这一行，点它旁边的空白或文字即可 —— 块级盒子只占图片自身的宽度
+   * （`.mn-md-image-wrap` 的 `width: fit-content`），右边的空白仍然是可点的一行。
    */
   override ignoreEvent(): boolean {
     return true

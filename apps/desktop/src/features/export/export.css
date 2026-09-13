@@ -1,0 +1,123 @@
+/*
+ * 导出特性自己的样式：对话框的两个选项、进度行，以及**打印时的应用外壳隐藏**。
+ *
+ * 为什么单独成文件：`styles/app.css` 不在本次改动的可改范围，而且这些规则只服务导出这一个
+ * 特性（对话框基础布局仍复用 `.mn-overlay` / `.mn-dialog` / `.mn-button`，颜色全部走主题变量）。
+ *
+ * ⚠️ 打印规则必须与 `export-html.ts` 的打印样式**分工明确**：
+ *   - 这里管"应用外壳不要被打出来"（侧栏/标题栏/状态栏/滚动条）；
+ *   - `export-html.ts` 管"正文怎么排"（白底黑字、代码块不截断、分页不断行）。
+ */
+
+.mn-export-launch {
+  /* 标题栏里靠右：把剩下的空间都吃掉，按钮自然贴边（不改 app.css 的标题栏布局） */
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  font-size: 12px;
+}
+
+.mn-dialog--export {
+  width: min(480px, calc(100vw - 48px));
+}
+
+.mn-export__choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+
+.mn-export__choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg-elevated);
+  color: var(--mn-fg);
+  font-family: inherit;
+  font-size: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.mn-export__choice:hover:not(:disabled),
+.mn-export__choice:focus-visible {
+  background: var(--mn-hover);
+  border-color: var(--mn-accent);
+}
+
+.mn-export__choice:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mn-export__choice-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.mn-export__choice-hint {
+  color: var(--mn-fg-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.mn-export__notice {
+  margin: 0 0 8px;
+  color: var(--mn-fg-muted);
+  font-size: 12px;
+}
+
+.mn-export__busy {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg);
+  color: var(--mn-fg-muted);
+  font-size: 12px;
+}
+
+/* ------------------------------------------------ 打印用的正文容器（只在打印时可见） */
+
+/*
+ * `printNote()` 把正文挂到这里（`export-note.ts`），样式与排版由 `export-html.ts` 的
+ * `buildPrintCss()` 在打印瞬间注入。屏幕上它始终不显示 —— 它是"打印用的替身"，
+ * 不是界面的一部分。
+ */
+#mn-print-root {
+  display: none;
+}
+
+@media print {
+  /* 只留打印容器：标题栏、侧栏、文件树、编辑器、面板、状态栏、toast、对话框全部不打印 */
+  body > *:not(#mn-print-root) {
+    display: none !important;
+  }
+
+  #mn-print-root {
+    display: block !important;
+  }
+
+  /* 滚动条在纸上没有意义，而且会在版面右侧留下一条竖线 */
+  html,
+  body {
+    overflow: visible !important;
+    height: auto !important;
+    background: #ffffff !important;
+  }
+
+  ::-webkit-scrollbar {
+    display: none;
+  }
+}

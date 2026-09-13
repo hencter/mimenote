@@ -47,7 +47,7 @@
 **边界规则**（可据此判断新代码放哪）：
 
 1. `mn-core` 是**纯 Rust 库**，不依赖 `tauri`，可 `cargo test -p mn-core` 独立验证。凡是"与 UI 框架无关、且必须在 Rust 侧做"的逻辑（路径安全、原子写、大目录扫描、回收站、链接抽取）都放这里。
-2. `mn-index` 同样不依赖 `tauri`，只依赖 `mn-core`：**索引是缓存，可从文件重建**；链接索引、标签索引与 FTS5 全文搜索都落在这里，IPC 契约不变。三者共用同一遍扫描与同一份文本（`LinkIndex::upsert` 里顺手算链接与标签，FTS5 的行表由后台构建写入 `<Vault>/.mimenote/cache/search.db`）。
+2. `mn-index` 同样不依赖 `tauri`，只依赖 `mn-core`：**索引是缓存，可从文件重建**；链接索引、标签索引与 FTS5 全文搜索都落在这里，IPC 契约不变。三者共用同一遍扫描、同一份文本（`LinkIndex::upsert` 里顺手算链接与标签）**与同一份跨会话判定键**（缓存库 `<Vault>/.mimenote/cache/search.db` 的 `notes_meta(path, mtime_ms, size)`，ADR-0008/0014）：对账之后"没变的那部分"连文件都不读。
 3. `src-tauri` 只做三件事：持有会话状态、把 mn-core/mn-index 能力暴露成 IPC 命令、把错误映射成稳定错误码。**不放业务逻辑**。
 4. `domain/` 是纯函数 + 纯数据结构，禁止 import React/Zustand/Tauri。
 5. 组件不直接调用 IPC，必须经 store；store 不直接 `invoke`，必须经 `ipc/client`。
@@ -75,8 +75,9 @@
 | `note_create` | `parentRel, title` | `NoteContent` | 唯一命名，返回新笔记 |
 | `note_delete` | `relPath, confirm` | `TrashRecord` | `confirm=false` 时返回 `CONFIRMATION_REQUIRED` |
 | `note_rename` | `relPath, newTitle, updateLinks?` | `RenameOutcome` | 同目录改名 + **全库链接精确改写**（默认 `updateLinks=true`）：按字符 span 改写，保留别名/锚点、跳过代码块、BOM/换行保真；返回被改写的文件与条数 |
+| `note_move` | `relPath, targetParentRel, newTitle?, updateLinks?` | `RenameOutcome` | 跨目录移动（拖拽整理 / 命令面板「移动到文件夹…」）：与 `note_rename` **同一条链路**（换位置 + 改写全库链接 + 索引增量同步），因此**复用同一个 DTO**。`targetParentRel` 是目标父目录（`''` = Vault 根；目录不存在时创建）；`newTitle = null` 表示沿用原文件名（拖拽就是这种情况）；跨目录时链接一律改写成**相对新位置的路径** —— 裸名链接会被"同目录优先"消歧规则重新解释到别的同名笔记上。文件搬迁优先原子 `rename`，跨卷退回复制 + 删源；目标同名 → `ALREADY_EXISTS`（**绝不覆盖**）；移到自己所在目录 → 无操作 |
 | `note_stats` | `relPath` | `DocumentStats` | 磁盘上文档的真实统计（`mn_core::text_stats`），与编辑器内即时统计互为校验 |
-| `index_status` | — | `IndexStatus` | 链接索引进度/概况（`idle`/`building`/`ready`/`cancelled`/`failed`） |
+| `index_status` | — | `IndexStatus` | 链接索引进度/概况（`idle`/`building`/`ready`/`cancelled`/`failed`）；`reusedNotes` 是"这一轮没有读文件、直接复用落盘索引"的笔记数（等于 `indexed` 即 Vault 没变） |
 | `note_links` | `relPath` | `NoteLinks` | 该笔记的出链与反向链接（含悬空与歧义标记） |
 | `note_tags` | `relPath` | `NoteTags` | 该笔记的标签（frontmatter + 正文行内，带来源与行号）与 frontmatter 属性表（保序） |
 | `tags_list` | — | `TagSummary[]` | 全库标签概览（按笔记数降序；`key` 是归一化键，`tag` 是首次出现的写法） |
@@ -84,6 +85,9 @@
 | `search_query` | `query, limit?` | `SearchResult` | 全文搜索（SQLite FTS5，倒排索引缓存于 `<Vault>/.mimenote/cache/search.db`）：`-bm25` 排序，返回命中行号与裁剪后的片段；`total` 是命中总数（可大于 `hits.length`） |
 | `asset_authorize` | `relPaths[]` | `AssetGrant[]` | 本地图片的**逐文件**读取授权（ADR-0007）：路径经 `path_guard::resolve_existing` 校验后，只把这一个文件加进 asset 作用域并返回磁盘绝对路径；**未通过校验的条目不会出现在返回值里**（调用方留在占位态） |
 | `graph_data` | — | `GraphData` | 知识图谱的节点与边（ADR-0010）：节点含 `folder`/`tags`/出入度；边按 `(from,to)` 去重并带 `count`，`toRelPath=null` 表示悬空链接且 **`toRawTarget` 是用户写下的原始目标名**（三者都取第一条链接的写法）；只读索引、不做文件 IO；节点超过 3000 时按度数截断并置 `truncated` |
+| `asset_read_base64` | `relPaths[]` | `AssetBytes[]` | 图片字节（`data:` URL 的原料，**导出**用）：与 `asset_authorize` 共用扩展名白名单与 `path_guard::resolve_existing`；单张 ≤ 8 MiB、单批 ≤ 32 MiB / 256 张，**超限或越界的条目静默跳过**（与 `asset_authorize` 的"拿不到就不返回"语义一致） |
+| `export_write_html` | `path, html` | `ExportOutcome` | 把自包含 HTML 写到系统保存对话框选定的路径（ADR-0011）。这是**唯一允许写 Vault 之外**的写命令：目标路径不做越界限制（导出到桌面是正常需求），靠**扩展名白名单 `.html`/`.htm` + 内容 ≤ 32 MiB** 把能力收窄成"写一个 HTML 文件"；写入走 `mn_core::atomic::write_atomic` |
+| `attachment_save` | `dirRel, files[]` | `AttachmentSaved[]` | 把粘贴/拖入的图片写进附件目录（ADR-0013）：`files` 是 `{ name, dataBase64 }[]`，出参是**去重之后**的相对路径与字节数。**要么整批落盘、要么一张都不落**；同名绝不覆盖（追加 ` 1`/` 2`）；扩展名白名单与 `asset_authorize` **同源**（`assets.rs` 的同一份常量）；单张 ≤ 8 MiB、一批 ≤ 32 MiB、一次 ≤ 32 张；文件名必须单段并过 `path_guard`（越界/保留名/符号链接一律拒），非法输入返回 `UNSUPPORTED_MEDIA`/`TOO_LARGE`/`PATH_INVALID`/`PATH_ESCAPE` |
 | `snippets_list` | — | `SnippetFile[]` | 读取 `.mimenote/snippets/*.css` |
 | `version_info` | — | `VersionInfo` | 应用 / mn-core / Tauri 版本 |
 
@@ -136,6 +140,10 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | [ADR-0008](adr/0008-full-text-search-fts5.md) | 全文搜索用 SQLite FTS5：中文逐字分词、external content 换行号、构建期放宽持久化 + 坏库自愈 | 已采纳 |
 | [ADR-0009](adr/0009-wysiwyg-editor.md) | 所见即所得编辑（Live Preview），**移除"编辑 + 预览"双栏**；主区域三选一（编辑 / 阅读 / 图谱） | 已采纳 |
 | [ADR-0010](adr/0010-knowledge-graph-card-canvas.md) | 知识图谱是**卡片画布**（非力导向小圆点）：文件夹自动成组、入链虚线/出链实线、卡片可直接预览 | 已采纳 |
+| [ADR-0011](adr/0011-export-html-and-print-pdf.md) | 导出自包含 HTML（图片内嵌 `data:` URL）；PDF 交给系统打印对话框；`export_write_html` 是唯一允许写 Vault 外路径的命令，靠扩展名白名单收窄 | 已采纳 |
+| [ADR-0012](adr/0012-move-rewrites-relative-links.md) | 跨目录移动**同时改写被移动笔记自身正文里的相对路径链接**（纯路径算术，不做存在性检查；只动随位置变化的目标） | 已采纳 |
+| [ADR-0013](adr/0013-image-attachments.md) | 粘贴 / 拖入的图片写进 Vault 附件目录（`attachment_save`）：字节走 IPC、MIME 定扩展名、同名去重、整批原子 | 已采纳 |
+| [ADR-0014](adr/0014-persisted-link-tag-index.md) | 链接/标签索引与 FTS 落进同一个缓存库、共用同一份 `(path, mtime, size)` 判定键，写穿透挂在 `LinkIndex::upsert/remove` 内部 | 已采纳 |
 
 ## 5. 安全模型
 
@@ -145,6 +153,7 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | 符号链接逃逸 | 逐级 `symlink_metadata` 检查，符号链接目标必须仍在 Vault 内；扫描默认不跟随链接 | `mn-core/path_guard.rs`、`scanner.rs` |
 | 预览读取 Vault 外的文件（本地图片） | asset 协议**逐文件授权**：`path_guard::resolve_existing` 逐级检查符号链接 + 越界拒绝，只把通过校验的那一个文件加进作用域。**不用目录级作用域** —— Tauri 的 asset 协议按路径字符串匹配后直接 `File::open`（不 canonicalize），目录级放行会被 Vault 内的符号链接绕过（ADR-0007） | `src-tauri/src/assets.rs`、`mn-core/path_guard.rs` |
 | Windows 保留名/ADS（`con.md`、`a:b`） | 段级黑名单校验 | `mn-core/path_guard.rs` |
+| 写到 Vault 之外（导出） | 只有 `export_write_html` 一条命令能写 Vault 外路径，且**只接受 `.html`/`.htm`**（大小写不敏感）—— 白名单同时挡掉 ADS 尾巴（`a.html:ads`）；路径来自系统保存对话框；内容 ≤ 32 MiB。没有这条白名单，"带 path 参数且不校验越界"就等于一个任意文件写入后门（ADR-0011） | `src-tauri/src/export.rs`、`docs/adr/0011-export-html-and-print-pdf.md` |
 | 半写文件（断电/崩溃） | 临时文件 + fsync + rename 覆盖 | `mn-core/atomic.rs` |
 | 误删数据 | 删除必须 `confirm=true`，文件移入 `.mimenote/trash` 并记 jsonl 台账（可恢复） | `mn-core/trash.rs` |
 | XSS（笔记内嵌 HTML） | `markdown-it` 关闭 raw HTML + DOMPurify 二次净化 + 严格 CSP（`script-src 'self'`） | `domain/markdown.ts`、`tauri.conf.json` |
@@ -153,18 +162,20 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 
 ## 6. 性能预算（默认基线，1 万笔记）
 
-| 指标 | 目标 | M1 实测 / 验证方式 |
+| 指标 | 目标 | 状态（M3） |
 | --- | --- | --- |
 | 冷启动到可交互 | ≤ 1500 ms | 未建立自动基准（M5）；当前无运行时网络请求、无同步阻塞 IO |
 | Vault 扫描（1 万文件 + 100 目录） | ≤ 800 ms | **143 ms**（`cargo run -p mn-core --release --example scan_bench`，本机 SSD） |
 | 打开 1MB Markdown | ≤ 100 ms | 状态栏显示每次读取耗时（`加载读取`），可直接观察 |
-| 输入延迟 | ≤ 16 ms | 结构性保证：输入路径零 IO、编辑器不因文本变化重渲染、预览走 `useDeferredValue` |
+| 输入延迟 | ≤ 16 ms | 结构性保证：输入路径零 IO、编辑器不因文本变化重渲染、预览/大纲走 `useDeferredValue` |
 | 主线程单任务 | ≤ 8 ms | Rust 侧所有文件 IO 走 `spawn_blocking`；前端只做 O(可视行) 的窗口计算 |
-| 保存（本地） | ≤ 50 ms | 状态栏显示每次写入耗时（含 fsync） |
+| 保存（本地） | ≤ 50 ms | 状态栏显示每次写入耗时（含 fsync）；另有一次索引写穿透 **+0.68 ms/篇**（ADR-0014） |
 | 文件树滚动 | 稳定 60fps | 固定行高 + 窗口化渲染：DOM 行数 = 可视行 + 2×overscan（与条目总数无关） |
 | 全文搜索查询 | 交互可接受 | 1 万笔记 / 29.1 万行合成基准：命中 1000 行 **49–75 ms**；命中 29 万行（每行都含查询词）**0.8–1.1 s**；全量计数只占 12 ms。慢的那档是 `bm25()` 给全部命中打分的固有成本（已实测 CROSS JOIN / CTE+LIMIT / 去 ORDER BY / 页缓存 / mmap 等变体都在同一量级） |
-| 索引构建（1 万笔记） | 不阻塞 UI | 链接+标签 ≈ 5.9 s、含 FTS5 ≈ 12 s，随打开 Vault 在后台跑且可取消；**每次打开都重建**（跨会话复用与 mtime 增量更新属 M5「增量索引」） |
-| 内存（1 万笔记） | ≤ 500 MB | M5 接入（FTS5 库文件 29.1 万行约 114 MB，是磁盘缓存不是常驻内存） |
+| 打开 Vault（1 万笔记） | ≤ 800 ms（Vault 未变时） | **整库重建 9.8–10.5 s → 复用 0.25–0.34 s（约 30×）**：链接/标签/FTS 三者共用 `notes_meta(path, mtime_ms, size)` 判定键，Vault 没变时**一份笔记文件都不读**（对账 0.17–0.23 s + 装载 0.04–0.05 s，ADR-0008/0014）；改 1 篇只重读重写那 1 篇（0.26–0.31 s）。均后台可取消 |
+| 知识图谱打开 / 平移缩放 | 交互可接受 | 10k 节点（合成）布局 **46 ms**、视口裁剪 **0.09 ms/帧**（只遍历与可视区相交的卡片）；`graph_data` 在真实量级下约 **55–85 ms**、JSON ≈ 1.0 MB（节点上限 3000，超出按度数截断）；拖动卡片只改一处坐标 + 防抖落盘 |
+| 阅读视图代码块复制 / 大纲跳转 | 瞬时 | 都是"渲染后挂按钮"与"滚一行"级别的 DOM 操作，无 IPC、无文件 IO |
+| 内存（1 万笔记） | ≤ 500 MB | M5 接入（FTS5 库文件 29.1 万行约 114 MB、链接/标签表约 3.7 万行，都是磁盘缓存不是常驻内存） |
 
 ### 扫描性能的关键实现约束（踩过的坑）
 
@@ -190,28 +201,37 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 
 ## 7. 里程碑
 
-见 [milestones.md](milestones.md)。当前进度：**M1 / M1.5 / M2 已交付；M3 进行中**
-（M3 已交付：所见即所得编辑与三视图外壳、知识图谱卡片画布、设置页与应用菜单、图片嵌入与灯箱；
-剩余：工作区布局持久化、导出 HTML/PDF、多标签页、拖拽整理文件）。
+见 [milestones.md](milestones.md)。当前进度：**M1 / M1.5 / M2 / M3 已交付**（M3：所见即所得编辑与三视图外壳、
+知识图谱卡片画布、设置页与应用菜单、图片嵌入与灯箱、多标签页、导出自包含 HTML / 打印为 PDF、
+拖拽整理文件（跨目录移动 + 全库链接改写 + 移动时改写自身相对链接））。M3 之后又提前交付了若干
+原属 M5 的项（**索引跨会话复用**：ADR-0008「后续修订」+ ADR-0014），以及超出原范围的体验项
+（搜索命中行跳转、图片粘贴/拖入附件、大纲面板、阅读视图代码块复制、窗口标题跟随当前笔记）。
+仍推迟：**目录重命名 / 目录移动**（要改写整棵子树的链接，是独立的一块）、标签编辑、M4 插件系统。
 
 ## 8. 已知限制
 
-1. **本地图片已可渲染**（ADR-0007 逐文件授权），并支持 `![[图.png]]` 嵌入、裸文件名全库兜底解析与点击放大灯箱。仍未做的：图片的**附件规则**（粘贴/拖入自动落到 `附件/`、命名规则）与块级独占行渲染（现在是行内 inline-block）。
-2. **重命名已交付（M2）**：同目录改名 + 全库链接精确改写（字符 span 定位，`[[甲]]` 不会误伤 `[[甲虫]]`）+ 索引增量更新；**目录重命名与跨目录移动**仍未做，推迟到 M3 与拖拽整理一起。
+1. **本地图片已可渲染**（ADR-0007 逐文件授权），并支持 `![[图.png]]` 嵌入、裸文件名全库兜底解析、点击放大灯箱；**粘贴/拖入的图片会自动落到附件目录并插入链接**（ADR-0013：MIME 定扩展名、通用名换成带时间戳的名字、同名追加 ` 1`，附件目录可在设置页改）。仍未做的：多图拖入时的**批量进度**（当前是一次 IPC 整批落盘，落盘中只显示一次"正在保存"）与**块级独占行渲染**（图片现在仍是行内 inline-block）。
+2. **重命名（M2）与跨目录移动（M3，`note_move`）都已交付**：同目录改名保持"最小 diff"（裸名链接仍是裸名），**跨目录移动**则把链接一律改成**相对新位置的路径**（`[[乙]]` → `[[子/乙]]`）—— 因为裸名靠"同目录优先"消歧，换了目录之后同一条链接可能落到另一篇同名笔记上；两者都复用同一套字符 span 改写（`[[甲]]` 不会误伤 `[[甲虫]]`、保留别名/锚点、跳过代码块、BOM/换行保真）与索引增量同步。移动**还会改写被移动笔记自身正文里的相对链接**（ADR-0012：`![](../附件/图.png)` 随新位置重算，纯路径算术、不查文件是否存在）。仍未做：**目录重命名与目录移动**（要连同整棵子树改写链接）；**引用式定义行**（`[id]: ../附件/图.png`）里的相对目标不改写（既有链接抽取器不认这种形态，为它单写一套上下文判定等于再养一个 Markdown 解析器）；带反斜杠的目标与**越出 Vault 根**的目标也跳过；另外被移动笔记里的**裸名 wikilink**（`[[乙]]`）不动 —— 它按文件名主干解析，移动后若全库有同名笔记可能改指另一篇（要修得模拟"搬过去之后会解析到谁"，属另一块）。
 3. `[[双链]]` **已可解析、渲染、跳转与反向链接**（M2 已交付）；**标签与 Frontmatter 已可抽取、展示与跳转**（M2 已交付），但面板是**只读**的 —— 改标签要手动编辑 frontmatter 或正文（`mn_core::frontmatter::set_tags` 已经就绪，接线时走 `note_read → set_tags → note_write`，复用 ADR-0004 的冲突令牌，不开新写路径）。标签重命名/合并、按标签过滤文件树也未做。
-4. **快速切换与命令面板已交付**（`Mod+K` / `Mod+P`）；**全文搜索已交付**（`Mod+Shift+F`，SQLite FTS5 + `bm25`，第三个面板模式 + 带竞态丢弃的异步查询）。仍未做：**回车不跳到命中行**（编辑器还没有"定位到某行"的入口 —— 要接的话应由 editor 侧提供 `openAt(relPath, line)`，而不是在搜索面板里自己滚列表）。
+4. **快速切换与命令面板已交付**（`Mod+K` / `Mod+P`）；**全文搜索已交付**（`Mod+Shift+F`，SQLite FTS5 + `bm25`，第三个面板模式 + 带竞态丢弃的异步查询），**命中行跳转也已交付**：入口是 `features/editor/line-jump.ts` 的 `openNoteAt(relPath, line)` —— 它先切回编辑视图、走既有的 `openNote` 打开，再**等这篇文档真的进了编辑器**（`note-store.revision` 那次整篇替换跑完，按帧重试并有超时上限）才用 `doc.line(n).from` 算行首，因此绝不会在旧文档上算偏移；定位本身是一次"只改选区 + 装饰"的事务（`Transaction.addToHistory.of(false)`：不进撤销历史、不置 dirty、不往正文插任何标记），滚动交给 `EditorView.scrollIntoView(..., { y: 'center' })`，并给该行一层几百毫秒后自动消失的高亮（`features/editor/cm/flash-line.ts`）。反向链接面板走**同一个入口**（`BacklinkRef.line` 是来源笔记里的行号，可直接定位）；出链刻意不定位 —— `ResolvedLink.line` 是引用写在当前笔记的哪一行，而 `#锚点` 是锚点名，宿主没有"锚点 → 行号"的接口（要做得新增一条宿主命令，不在本次范围）。
 5. **frontmatter 会计入正文统计**（`text_stats` 拿的是磁盘原文，前端即时统计同样如此）：字数/行数/阅读时长里包含 `---` 分隔行与键值。要改必须**两侧同时改**（`mn_core::frontmatter::body` + TS 侧对应实现），否则"编辑器统计"与"磁盘统计"会互相打架。
 6. 删除走 Vault 内 `.mimenote/trash`（可见、可入 Git 忽略），未对接系统回收站；`restore` 尚未提供 UI。
 7. 外部变更检测依赖 mtime（毫秒）。同一毫秒内的外部改动理论上有漏检窗口（概率极低；M5 引入内容哈希作为二级令牌）。
 8. 大文档（>5MB）预览仍在主线程渲染（已用 `useDeferredValue` 降级）；M5 迁移到 Web Worker。
 9. 重命名时，若新文件名含 `#` 或 `^`，指向它的链接**不会被改写**（wikilink/Markdown 语法无法表达这种目标）：宿主跳过该条并记 warn 日志，而不是写出必然悬空的链接。
 10. 索引后台构建期间（`indexStatus.phase === 'building'`）重命名，新路径可能被"构建完成时整轮替换索引"覆盖掉（要等一次重扫）；这是 `indexer::spawn_build` 的既有行为，未在本轮修。
-11. E2E 覆盖"打开/编辑/保存/冲突/布局/主题/三视图/链接/重命名/删除到回收站/键盘导航/分隔条拖拽/命令面板/快速切换/标签面板/全文搜索/本地图片/知识图谱"等主干路径，但**未覆盖**：多窗口、插件（M4）、超大 Vault 下的表现。
-12. **索引每次打开 Vault 都会重建**（链接、标签、FTS5 一起；1 万笔记约 6–12 s，后台可取消）。跨会话复用缓存、按 mtime 增量更新属于 M5「增量索引」；在此之前打开大 Vault 会有一次后台 CPU 高峰（UI 不阻塞，搜索在索引就绪前返回空/降级）。
+11. E2E 覆盖"打开/编辑/保存/冲突/布局/主题/三视图/链接/重命名/拖拽整理/删除到回收站/键盘导航/分隔条拖拽/命令面板/快速切换/标签面板/全文搜索/本地图片/图片粘贴附件/知识图谱/搜索命中行跳转"等主干路径，但**未覆盖**：多窗口、插件（M4）、超大 Vault 下的表现。
+12. **索引整体跨会话复用**（ADR-0008「后续修订」+ ADR-0014）：链接、标签、FTS5 落进同一个缓存库、共用同一份 `(path, mtime_ms, size)` 判定键。Vault 没变时**文件一份都不读**（1 万笔记：整轮 9.8–10.5 s → 0.25–0.34 s），改 1 篇只重读重写那 1 篇（0.26–0.31 s），后台可取消。仍存在的边界：判定键只有毫秒 mtime 与字节数，**同一毫秒内且字节数相同**的改动会漏检（与 ADR-0004 同一取舍，内容哈希属 M5）；`schema` 版本升级（含索引口径变化）后第一次打开仍是整库重建；复用一轮的主要成本是**对账**（0.17–0.23 s，要扫 `notes_meta ∪ lines` 的路径集合）；库里数据"看不懂"时会整轮退回读文件（方向安全，但不会顺手清库）。
 13. **高频词的全文搜索会慢**（查询词若命中几十万行，`bm25()` 需要给全部命中打分 → 秒级）。这是 FTS5 排序的固有成本，已实测多个查询计划变体无显著差异；缓解手段是更具体的关键词（面板也有 150ms 防抖 + 竞态丢弃，不会堆积查询）。
 14. **所见即所得只覆盖高频语法**（ADR-0009）：表格、缩进代码块、脚注、引用式链接、HTML、数学公式**不做装饰**（原样显示）；frontmatter 只做淡色、不隐藏。装饰按 `view.visibleRanges` 计算，但**光标移动也会重算**（"进入即露原文"的必要代价），极端大文档下若手感有问题，需要再做"仅选区跨越装饰时重算"的优化。
-15. **知识图谱不随编辑自动刷新**（切 Vault / 点"重新读取图谱" / 索引就绪时才重拉），因为 `graph-store.load()` 会重置视口与选中；要做"存盘后刷新"需要保留视角的变体。手工拖动会覆盖自动布局（「重新自动排布」复位），折叠状态刻意不持久化（每次默认全展开）。宿主上限 3000 节点，超出按度数截断（此时**度数仍是全图度数**，可能大于画布上可见的线数）。
+15. **知识图谱会随编辑自动刷新（保留视角）**：保存成功（`note-store.saveCount` 变化）与索引就绪（`links-store` 的 `phase` 变成 `ready`）两条信号都会触发一次 `keepView` 刷新，前提是画布**正显示着**（监听由画布挂载/卸载，卸载后不多发一次 IPC）；切 Vault 或点「重新读取图谱」则是完整重载。仍然存在的边界：刷新会带上"正在重建索引"的提示徽标而不是等索引；手工拖动会覆盖自动布局（「重新自动排布」复位）；折叠状态刻意不持久化（每次默认全展开）；宿主上限 3000 节点，超出按度数截断（此时**度数仍是全图度数**，可能大于画布上可见的线数）。
 16. **图谱/反链的悬空链接解析有性能尾巴**：`mn_index::resolve_target` 在"按文件名找不到"时会退化为全库后缀扫描（每条约 0.2–0.5 ms），大量"还没写的计划"链接会让 `graph_data` 到几百毫秒。缓解方案已记录在 `mn-index` 注释里（缓存"不可解析"判定），未在本轮做。
+17. **导出只支持"当前打开的笔记"**（ADR-0011）：整库导出 / 多篇合并 / 目录导出都需要"批量选择 + 一次写多文件（或 zip）+ 取消与进度"，属独立一块。PDF 走系统打印对话框，因此没有程序化的页眉页脚/页码/纸张控制，各打印驱动表现有差异。图片单张 > 8 MiB 不内嵌（退化成占位文字，不做转码降采样）；导出件里的 `[[双链]]` 渲染成不可跳转的虚线文本（要做可跳转静态站得为每篇生成一个 HTML 并重写链接）。
+18. **标签页不恢复"每篇文档自己的未保存状态"**：`note-store` 只持有一份当前文档（自动保存流水线、冲突令牌、编辑器整篇替换的时机都绑在它上面），标签只保存路径列表。因此切标签天然是"先落盘再切"，未保存标记（●）只会出现在激活标签上。标签按 Vault 根持久化在 localStorage（`mimenote.tabs.v1`），换 Vault 会整体对账（剪掉已不存在的路径）。
+19. **图片粘贴/拖入只支持图片**（ADR-0013）：非图片整批拒绝并点名文件（不做部分成功），因为"三张进了 Vault、第四张没有"的中间态更难解释；网络图片仍不支持（离线姿态不做出站请求）；SVG 在白名单里（走 `<img>`，不执行脚本），但**不做压缩/转码** —— 4K 截图按原样落盘；多光标时只在主光标处插入一次；落盘期间用户切走笔记则只落盘、不插链接（给 warn 提示）。
+20. **大纲面板是"标题树"，不是可编辑的目录**：只认 ATX 标题（`# 标题`），Setext（下划线式）不算 —— 后者要判断"下一行是不是 `---`/`===`"，而 `---` 同时还是 frontmatter 与分隔线，判错会把行号带偏（跳错位置比没有条目更糟）。点击的落点随视图变化：编辑视图把光标放到那一行、阅读视图滚到第 N 个标题并高亮、图谱视图先切回编辑视图（同一个操作只给一种结果）。**没有"当前章节高亮"** —— 那需要编辑器把光标行发布出来，属下一轮。
+21. **阅读视图的代码块复制按钮是"渲染后挂 DOM"**（`features/preview/code-copy.ts`）：预览的 HTML 由 `dangerouslySetInnerHTML` 拥有，按钮不能进渲染管线（会被 DOMPurify 净化掉，也会让纯函数的渲染层认识 UI）。因此每次正文重渲染都会重建按钮，代价是 O(代码块数) 的 DOM 操作（几百个以内无感）；复制走 `navigator.clipboard` + `execCommand` 兜底，两条都失败时按钮显示"复制失败"而不是假装成功。
+22. **窗口标题跟随当前笔记**（`features/status/window-title.ts`）：需要 `core:window:allow-set-title` 能力；拿不到能力时只记一次日志、界面不受影响。标题里不含 Vault 路径以外的信息（`笔记名 • — Mimenote`）。**没有"最近打开"或"多窗口标题区分"** —— 多窗口仍是 M4 之后的题目。
 
 ## 8.1 测试策略（分层）
 

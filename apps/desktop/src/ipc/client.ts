@@ -9,9 +9,13 @@
 
 import { MimenoteError } from './types'
 import type {
+  AssetBytes,
   AssetGrant,
+  AttachmentInput,
+  AttachmentSaved,
   DocumentStats,
   EntryMeta,
+  ExportWriteOutcome,
   GraphData,
   IndexStatus,
   NoteContent,
@@ -102,6 +106,25 @@ export const ipc = {
   noteRename: (relPath: string, newTitle: string, updateLinks = true) =>
     call<RenameOutcome>('note_rename', { relPath, newTitle, updateLinks }),
 
+  /**
+   * 跨目录移动笔记（拖拽整理 / 命令面板的「移动到…」）。
+   *
+   * - `targetParentRel` 是**目标父目录**（`''` = Vault 根）；目录不存在时由宿主创建；
+   * - `newTitle` 为 `null` 时沿用原文件名（拖拽就是这种情况）；
+   * - `updateLinks=false` 时只搬文件、不动任何链接（默认改写全库指向它的链接，
+   *   跨目录时写成"相对新位置的路径"）。
+   *
+   * 出参复用 {@link RenameOutcome}：宿主不为"换个位置"发明第二套形状，
+   * 前端因此能复用同一套状态收尾。目标目录已有同名文件 → `ALREADY_EXISTS`（不覆盖）。
+   */
+  noteMove: (
+    relPath: string,
+    targetParentRel: string,
+    newTitle: string | null = null,
+    updateLinks = true,
+  ) =>
+    call<RenameOutcome>('note_move', { relPath, targetParentRel, newTitle, updateLinks }),
+
   /** 命令行指定的 Vault（`mimenote.exe <目录>`）；无则返回 null。 */
   startupVault: () => call<string | null>('startup_vault'),
 
@@ -126,6 +149,39 @@ export const ipc = {
    */
   assetAuthorize: (relPaths: readonly string[]) =>
     call<AssetGrant[]>('asset_authorize', { relPaths: [...relPaths] }),
+
+  /**
+   * 把本地图片读成 base64（导出时内嵌成 `data:` URL）。
+   *
+   * 与 `assetAuthorize` 共用同一套路径校验与扩展名白名单，区别只是"给绝对路径"还是"给字节"。
+   * 返回里只含**成功读到**的条目：越界、符号链接逃逸、非图片、不存在、超过单张/单批上限的
+   * 都会被宿主跳过 —— 调用方把没返回的图片渲染成占位文字即可。
+   */
+  assetReadBase64: (relPaths: readonly string[]) =>
+    call<AssetBytes[]>('asset_read_base64', { relPaths: [...relPaths] }),
+
+  /**
+   * 把一批图片写进 Vault 的附件目录（粘贴 / 拖入的落点，见 ADR-0013）。
+   *
+   * - `dirRel` 是**附件目录**（`''` = Vault 根；不存在时由宿主创建）；
+   * - `files` 是"文件名 + base64 字节"；命名与扩展名推断在前端完成
+   *   （`domain/attachments.ts`，因为它要知道 MIME 与用户可见的文件名）；
+   * - 返回值是**去重之后**的最终路径（宿主绝不覆盖同名文件），按请求顺序对应；
+   * - 宿主的硬性限制：只接受图片扩展名、单张 ≤ 8 MiB、一批 ≤ 32 MiB、一次 ≤ 32 张，
+   *   目标路径一律过 `path_guard`。失败时**整批都不落盘**（错误码见 `UNSUPPORTED_MEDIA`
+   *   / `TOO_LARGE` / `PATH_INVALID`）。
+   */
+  attachmentSave: (dirRel: string, files: readonly AttachmentInput[]) =>
+    call<AttachmentSaved[]>('attachment_save', { dirRel, files: [...files] }),
+
+  /**
+   * 把导出好的 HTML 写到**用户在系统保存对话框里选定的绝对路径**。
+   *
+   * 这是宿主里唯一允许写 Vault 之外路径的写命令，因此它只接受 `.html` / `.htm`
+   * （避免变成"任意文件写入"的后门），大小上限 32 MiB。
+   */
+  exportWriteHtml: (path: string, html: string) =>
+    call<ExportWriteOutcome>('export_write_html', { path, html }),
 
   /**
    * 全文搜索（宿主侧 SQLite FTS5 索引）。

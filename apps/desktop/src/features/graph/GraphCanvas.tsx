@@ -19,15 +19,26 @@
  * 只渲染与视口相交的卡片与容器（含 overscan）。卡片/容器走均匀网格索引（`buildRectIndex`），
  * 每次平移查询的是 O(可见数 + 覆盖格子数)；边用端点包围盒做 O(E) 线性筛（见 layout.ts 的注释）。
  * 这是"3000 个节点也必须能拖动"的结构性保证，而不是靠"祈祷 DOM 撑得住"。
+ *
+ * ## 数据刷新与视角
+ *
+ * 画布只在图谱视图里挂载，所以"切到图谱"＝"组件挂载"，挂载时拉一次数据即可
+ * （**保留视角**：切走会卸载组件，切回来不能把用户刚摆好的镜头重置掉）。
+ * 保存成功、索引就绪这两类"数据变新了"的信号由 `startGraphAutoRefresh()` 订阅补齐，
+ * 刷新过程复用同一份旧数据渲染（HUD 上只有一个小小的"刷新中"），不闪白。
+ * 完整重载（换 Vault、点"重新读取"）才会重置视角 —— 两条路的区别见 `state/graph-store.ts`。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 
 import { openNote } from '@/app/actions'
+import { GRAPH_COMMAND_IDS } from '@/app/builtin-commands'
+import { commands } from '@/app/commands'
+import { isTextEntryTarget } from '@/app/keymap'
 import { Icon } from '@/components/Icon'
 import { describeError } from '@/ipc/types'
-import { useGraphStore } from '@/state/graph-store'
+import { startGraphAutoRefresh, useGraphStore } from '@/state/graph-store'
 import { useLinksStore } from '@/state/links-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
@@ -40,32 +51,14 @@ import {
   buildEdgeVisuals,
   buildLayout,
   buildRectIndex,
-  fitView,
   queryIndex,
   queryViewport,
   worldViewport,
   type GraphCardBox,
   type GraphFolderBox,
-  type Size,
 } from './layout'
 
 import './graph.css'
-
-/**
- * 首帧（或 jsdom 这类没有布局的环境）用的视口尺寸。
- *
- * 为什么要有兜底：`clientWidth` 为 0 时任何"适应窗口"都会算出 zoom = 0 或无穷，
- * 于是整块画布被裁成空。用一个合理的默认值可以让**没有真实布局的环境**（单元测试）
- * 依然渲染出正确的结构；真实环境里第一帧之后 ResizeObserver 会立刻给出真实尺寸，
- * 那时会再自动适应一次（见下面的 fit 逻辑）。
- */
-const FALLBACK_VIEWPORT: Size = { width: 1280, height: 800 }
-
-/** 适应窗口时四周留白。 */
-const FIT_PADDING = 64
-
-/** 按一次 `+`/`-` 按钮或键的缩放倍率。 */
-const ZOOM_STEP = 1.25
 
 /** 滚轮缩放的灵敏度（`factor = exp(-deltaY * k)`）。 */
 const WHEEL_ZOOM_K = 0.0016
@@ -83,13 +76,12 @@ export function GraphCanvas() {
   const collapsed = useGraphStore((state) => state.collapsed)
   const manual = useGraphStore((state) => state.manual)
   const staleIndex = useGraphStore((state) => state.staleIndex)
+  const refreshing = useGraphStore((state) => state.refreshing)
+  const refreshNotice = useGraphStore((state) => state.refreshNotice)
+  const viewport = useGraphStore((state) => state.viewport)
   const indexPhase = useLinksStore((state) => state.status.phase)
 
   const hostRef = useRef<HTMLDivElement | null>(null)
-  const [size, setSize] = useState<{ width: number; height: number; known: boolean }>({
-    ...FALLBACK_VIEWPORT,
-    known: false,
-  })
   const [panning, setPanning] = useState(false)
   const panRef = useRef<{
     pointerId: number | undefined
@@ -100,7 +92,9 @@ export function GraphCanvas() {
   } | null>(null)
 
   // -------------------------------------------------------------------------
-  // 数据加载（Vault 变化 → 拉一次图谱；索引未就绪 → 就绪后自动补一次）
+  // 数据加载
+  //   · 进入图谱视图（= 本组件挂载）→ 拉一次，**保留视角**
+  //   · 保存成功 / 索引就绪 → 由 store 的自动刷新订阅补齐（见 startGraphAutoRefresh）
   // -------------------------------------------------------------------------
 
   useEffect(() => {
@@ -108,16 +102,20 @@ export function GraphCanvas() {
       useGraphStore.getState().clear()
       return
     }
-    const building = useLinksStore.getState().status.phase === 'building'
-    void useGraphStore.getState().load(rootPath, { indexBuilding: building })
+    const state = useGraphStore.getState()
+    void state.load(rootPath, {
+      indexBuilding: useLinksStore.getState().status.phase === 'building',
+      // 「切到图谱视图」就是"本组件挂载"（`App` 只在 `viewMode === 'graph'` 时渲染画布），
+      // 所以"切过来时刷新一次"就是这一次加载。
+      // 保留视角：切走会卸载画布，切回来若走完整重载，用户刚摆好的缩放/偏移/选中会被重置；
+      // 换 Vault 时 store 会强制退化成完整重载（见 load 的说明），这里不必自己判断。
+      keepView: state.rootPath === rootPath && state.data !== null,
+    })
   }, [rootPath])
 
-  useEffect(() => {
-    if (rootPath === null || indexPhase !== 'ready') return
-    if (!useGraphStore.getState().staleIndex) return
-    // 数据是在索引构建期间拿的（可能不完整）：索引一就绪就自动补一次，不需要用户手动刷新
-    void useGraphStore.getState().load(rootPath, { indexBuilding: false })
-  }, [indexPhase, rootPath])
+  // 保存成功 / 索引就绪后的自动刷新。装在这里、卸载即取消：
+  // 模块级监听会永不清理，而"画布是否可见"这个上下文只有组件知道。
+  useEffect(() => startGraphAutoRefresh(), [])
 
   // -------------------------------------------------------------------------
   // 布局（纯函数 + useMemo：平移/缩放**不会**让这里重算）
@@ -141,7 +139,7 @@ export function GraphCanvas() {
   }, [layout])
 
   const rectIndex = useMemo(() => (layout === null ? null : buildRectIndex(layout.cards)), [layout])
-  const visibleWorld = useMemo(() => worldViewport(view, size, OVERSCAN), [view, size])
+  const visibleWorld = useMemo(() => worldViewport(view, viewport, OVERSCAN), [view, viewport])
 
   const visibleCards = useMemo(
     () => (rectIndex === null ? [] : queryIndex(rectIndex, visibleWorld)),
@@ -162,7 +160,7 @@ export function GraphCanvas() {
   )
 
   // -------------------------------------------------------------------------
-  // 视口尺寸 + 首次自动"适应窗口"
+  // 视口尺寸上报 + 首次自动"适应窗口"
   // -------------------------------------------------------------------------
 
   useEffect(() => {
@@ -171,7 +169,8 @@ export function GraphCanvas() {
     const sync = (): void => {
       const width = host.clientWidth
       const height = host.clientHeight
-      if (width > 0 && height > 0) setSize({ width, height, known: true })
+      // 尺寸为 0（首帧 / 无布局环境）时不上报：store 里的兜底尺寸比 0 有用得多
+      if (width > 0 && height > 0) useGraphStore.getState().setViewport({ width, height })
     }
     sync()
     if (typeof ResizeObserver === 'undefined') {
@@ -183,21 +182,47 @@ export function GraphCanvas() {
     return () => observer.disconnect()
   }, [])
 
-  const fitRef = useRef<{ key: string; fallback: boolean }>({ key: '', fallback: true })
   useEffect(() => {
-    if (layout === null || layout.totalCards === 0) return
-    const key = `${rootPath ?? ''}\u0000${layout.bounds.width}x${layout.bounds.height}\u0000${layout.totalCards}`
-    const previous = fitRef.current
-    const fallback = !size.known
-    // 同一份布局只适应一次；唯一例外是"第一次用的是兜底尺寸"（真实尺寸到手后再适应一次）
-    if (previous.key === key && (previous.fallback === false || fallback)) return
-    fitRef.current = { key, fallback }
-    useGraphStore.getState().setView(fitView(layout.bounds, size, FIT_PADDING))
-  }, [layout, rootPath, size])
+    // 自动"适应窗口"（同一个 Vault 只做一次，跨挂载记账）。
+    // 数据变化、折叠变化、拖动卡片都会让 layout 换一个对象，这里再跑一次也只是空转 ——
+    // 镜头属于用户，只有换 Vault / 真实尺寸到手 / 用户自己按"适应窗口"时才该动。
+    useGraphStore.getState().autoFit()
+  }, [layout, rootPath, viewport])
 
   // -------------------------------------------------------------------------
-  // 交互：滚轮（平移 + Ctrl 缩放）、拖动平移、键盘
+  // 交互：滚轮（平移 + Ctrl 缩放）、拖动平移
+  //
+  // 键盘（`+ - 0 Esc`）已经是命令表里的 `graph.*`（`app/builtin-commands.ts`），
+  // 由全局快捷键统一分发 —— 只在画布里有焦点才生效既难发现、也会和命令表漂移。
+  // 唯一的例外是**加号键**，见下面的兜底分发。
+  // 卡片自己的 Enter / 空格仍由 `GraphCard` 处理（它需要卡片私有的上下文）。
   // -------------------------------------------------------------------------
+
+  /**
+   * `+` / `=` 的兜底分发。
+   *
+   * 为什么需要它：命令表的快捷键串用 `+` 当分隔符（`'Mod+='.split('+')`），
+   * 所以**加号键本身写不进命令表** —— 真实键盘上 `Ctrl`+`+` 的事件会被算成 `Mod+Shift++`，
+   * 与任何归一化后的串都对不上（`Mod+=` 只覆盖"按 `Ctrl` 和 `=`"这一种按法）。
+   * 这里只做**转交**：按键 → `graph.zoomIn` 命令 → store 动作，不自己算缩放，
+   * 因此缩放逻辑仍然只有一份实现（不会出现"两套逻辑漂移"）。
+   *
+   * 监听装在 window 上、但**生命周期跟着画布**：画布只在图谱视图里挂载，
+   * 所以它天然只在图谱视图生效（编辑器里敲 `+` 不会被打断），卸载即移除。
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || event.isComposing) return
+      if (event.key !== '+' && event.key !== '=') return
+      if (isTextEntryTarget(event.target)) return
+      const command = commands.get(GRAPH_COMMAND_IDS.zoomIn)
+      if (command === undefined || !(command.when?.() ?? true)) return
+      event.preventDefault()
+      void commands.execute(command.id)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   const applyWheel = useCallback((event: WheelEvent): void => {
     const host = hostRef.current
@@ -233,43 +258,18 @@ export function GraphCanvas() {
   }, [applyWheel])
 
   const fitNow = useCallback(() => {
-    if (layout === null) return
-    useGraphStore.getState().setView(fitView(layout.bounds, size, FIT_PADDING))
-  }, [layout, size])
+    useGraphStore.getState().fitToWindow()
+  }, [])
 
-  const zoomByStep = useCallback((factor: number) => {
-    // 按钮/键缩放以视口中心为锚点：内容不会因为连续缩放而漂出屏幕
-    useGraphStore.getState().zoomAt(factor, { x: size.width / 2, y: size.height / 2 })
-  }, [size.height, size.width])
+  // 按钮与命令（`graph.zoomIn` / `graph.zoomOut`）走**同一个** store 动作：
+  // 缩放以视口中心为锚点，内容不会因为连续缩放而漂出屏幕
+  const zoomIn = useCallback(() => {
+    useGraphStore.getState().zoomIn()
+  }, [])
 
-  const handleKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLDivElement>) => {
-      const state = useGraphStore.getState()
-      switch (event.key) {
-        case '+':
-        case '=':
-          event.preventDefault()
-          zoomByStep(ZOOM_STEP)
-          return
-        case '-':
-        case '_':
-          event.preventDefault()
-          zoomByStep(1 / ZOOM_STEP)
-          return
-        case '0':
-          event.preventDefault()
-          fitNow()
-          return
-        case 'Escape':
-          event.preventDefault()
-          state.select(null) // 关掉预览面板
-          return
-        default:
-          return
-      }
-    },
-    [fitNow, zoomByStep],
-  )
+  const zoomOut = useCallback(() => {
+    useGraphStore.getState().zoomOut()
+  }, [])
 
   const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const target = event.target
@@ -325,7 +325,7 @@ export function GraphCanvas() {
     }
     // 在空白处"点一下"（不是拖动）= 关掉预览面板；拖动则不改变选中
     if (!pan.moved && pan.button === 0 && event.type === 'pointerup') {
-      useGraphStore.getState().select(null)
+      useGraphStore.getState().closePreview()
     }
   }, [])
 
@@ -351,6 +351,7 @@ export function GraphCanvas() {
     useGraphStore.getState().toggleFolder(path)
   }, [])
 
+  /** 手动"重新读取图谱"：**完整重载**（清空视角/折叠/选中）。 */
   const handleRefresh = useCallback(() => {
     void useGraphStore.getState().load(rootPath, {
       indexBuilding: useLinksStore.getState().status.phase === 'building',
@@ -370,7 +371,6 @@ export function GraphCanvas() {
       role="group"
       aria-label="知识图谱画布"
       tabIndex={0}
-      onKeyDown={handleKeyDown}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={endPan}
@@ -414,9 +414,15 @@ export function GraphCanvas() {
         <div className="mn-graph__stats">
           <span className="mn-graph__stat">{nodeCount} 节点</span>
           <span className="mn-graph__stat">{edgeCount} 边</span>
-          <span className="mn-graph__stat" title="当前缩放（Ctrl+滚轮 / +- / 0 适应窗口）">
+          <span className="mn-graph__stat" title="当前缩放（Ctrl+滚轮 / Ctrl+= 放大 / Ctrl+- 缩小 / Ctrl+0 适应窗口）">
             {Math.round(view.zoom * 100)}%
           </span>
+          {/* 保留视角的刷新：画布继续画旧数据，只在 HUD 上给一个轻量指示（不闪白） */}
+          {refreshing && (
+            <span className="mn-graph__badge mn-graph__badge--busy" title="正在重新读取图谱数据（保留当前视角）">
+              刷新中…
+            </span>
+          )}
           {data?.truncated === true && (
             <span className="mn-graph__badge mn-graph__badge--warn" title="节点数超过宿主上限，只返回了度数最高的一部分">
               已截断
@@ -445,13 +451,13 @@ export function GraphCanvas() {
         </div>
 
         <div className="mn-graph__tools">
-          <button type="button" className="mn-icon-button" onClick={fitNow} title="适应窗口（0）" aria-label="适应窗口">
+          <button type="button" className="mn-icon-button" onClick={fitNow} title="适应窗口（Ctrl+0）" aria-label="适应窗口">
             <Icon name="eye" size={14} />
           </button>
-          <button type="button" className="mn-icon-button" onClick={() => zoomByStep(1 / ZOOM_STEP)} title="缩小（-）" aria-label="缩小">
+          <button type="button" className="mn-icon-button" onClick={zoomOut} title="缩小（Ctrl+-）" aria-label="缩小">
             <span className="mn-graph__zoom-glyph">−</span>
           </button>
-          <button type="button" className="mn-icon-button" onClick={() => zoomByStep(ZOOM_STEP)} title="放大（+）" aria-label="放大">
+          <button type="button" className="mn-icon-button" onClick={zoomIn} title="放大（Ctrl+=）" aria-label="放大">
             <span className="mn-graph__zoom-glyph">+</span>
           </button>
           <button
@@ -487,12 +493,17 @@ export function GraphCanvas() {
         </div>
       </div>
 
-      {showIndexNotice && (
+      {/*
+        顶部只留**一条**横幅：刷新提示与"索引构建中"说的是同一件事（画布上的数据可能不是最新），
+        刷新的那条更具体（它直接说明"你看到的是上一次的结果"），所以同时成立时优先显示它 ——
+        两条横幅叠在同一个位置只会互相盖住。
+      */}
+      {(refreshNotice !== null || showIndexNotice) && (
         <div className="mn-graph__notice" data-mn-graph-nopan>
           <Icon name="refresh" size={12} />
-          <span>链接索引构建中…（图谱可能还不完整）</span>
+          <span>{refreshNotice ?? '链接索引构建中…（图谱可能还不完整）'}</span>
           <button type="button" className="mn-graph__notice-action" onClick={handleRefresh}>
-            立即刷新
+            {refreshNotice === null ? '立即刷新' : '重新读取'}
           </button>
         </div>
       )}
@@ -522,7 +533,7 @@ export function GraphCanvas() {
         <GraphPreview
           relPath={selected}
           title={selectedCard?.node.title ?? selected}
-          onClose={() => useGraphStore.getState().select(null)}
+          onClose={() => useGraphStore.getState().closePreview()}
           onOpenInEditor={handleOpenInEditor}
         />
       )}

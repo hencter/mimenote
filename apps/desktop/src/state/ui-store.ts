@@ -47,6 +47,8 @@ export interface UiPreferences {
   /** 右侧链接面板（反向链接 / 出链）。 */
   linksPanelVisible: boolean
   linksPanelWidth: number
+  /** 右侧大纲面板（当前笔记的标题树）。 */
+  outlinePanelVisible: boolean
 }
 
 const STORAGE_KEY = 'mimenote.ui.v1'
@@ -64,6 +66,7 @@ const DEFAULTS: UiPreferences = {
   snippetsEnabled: true,
   linksPanelVisible: false,
   linksPanelWidth: 300,
+  outlinePanelVisible: false,
 }
 
 function isPreferences(value: unknown): value is Partial<UiPreferences> {
@@ -89,6 +92,7 @@ const initial: UiPreferences = {
     LINKS_PANEL_MIN,
     LINKS_PANEL_MAX,
   ),
+  outlinePanelVisible: restored.outlinePanelVisible ?? DEFAULTS.outlinePanelVisible,
 }
 
 interface UiState extends UiPreferences {
@@ -117,6 +121,8 @@ interface UiState extends UiPreferences {
   setSnippetsEnabled: (enabled: boolean) => void
   toggleLinksPanel: () => void
   setLinksPanelWidth: (width: number) => void
+  /** 大纲面板（与标签面板一样是固定宽度，不需要拖拽分隔条）。 */
+  toggleOutlinePanel: () => void
 }
 
 function persist(state: UiState): void {
@@ -129,6 +135,7 @@ function persist(state: UiState): void {
     snippetsEnabled: state.snippetsEnabled,
     linksPanelVisible: state.linksPanelVisible,
     linksPanelWidth: state.linksPanelWidth,
+    outlinePanelVisible: state.outlinePanelVisible,
   } satisfies UiPreferences)
 }
 
@@ -192,6 +199,11 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   setLinksPanelWidth: (width) => {
     set({ linksPanelWidth: clamp(width, LINKS_PANEL_MIN, LINKS_PANEL_MAX) })
+    persist(get())
+  },
+
+  toggleOutlinePanel: () => {
+    set((state) => ({ outlinePanelVisible: !state.outlinePanelVisible }))
     persist(get())
   },
 }))

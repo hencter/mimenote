@@ -1,0 +1,37 @@
+/*
+ * 拖拽整理的悬停反馈。
+ *
+ * 为什么单独成文件：`app.css` 里的 `.mn-tree-row--*` 是**行的常态样式**（选中/打开），
+ * 而这里是"拖拽进行时"的瞬时状态。分开以后，改拖拽反馈不会碰到树的常规外观，
+ * 也不会影响既有 E2E 里对行样式的断言。
+ *
+ * 只用主题变量：颜色不许写死（见 `theme/tokens.ts`），拖拽反馈也不例外。
+ */
+
+/* 被拖动的那一行：变淡，让"它现在在手上"一眼可见 */
+.mn-tree-row--dragging {
+  opacity: 0.45;
+}
+
+/* 合法的落点：整行描边 + 底色，比"只有鼠标形状变化"清楚得多 */
+.mn-tree-row--drop-valid {
+  background: var(--mn-active);
+  box-shadow: inset 0 0 0 1px var(--mn-accent);
+  border-radius: var(--mn-radius);
+}
+
+/* 不可放置（已经在该目录里、拖到自己身上）：明确画一条警示描边，不给出"能放"的错觉 */
+.mn-tree-row--drop-invalid {
+  box-shadow: inset 0 0 0 1px var(--mn-warning);
+  border-radius: var(--mn-radius);
+  cursor: not-allowed;
+}
+
+/* 空白区域充当"Vault 根目录"落点时的整块反馈 */
+.mn-tree[data-drop-root='valid'] {
+  box-shadow: inset 0 0 0 1px var(--mn-accent);
+}
+
+.mn-tree[data-drop-root='invalid'] {
+  box-shadow: inset 0 0 0 1px var(--mn-warning);
+}

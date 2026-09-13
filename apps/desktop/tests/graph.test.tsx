@@ -18,6 +18,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { App } from '@/App'
+import { registerBuiltinCommands, GRAPH_COMMAND_IDS } from '@/app/builtin-commands'
+import { commands } from '@/app/commands'
+import { useGlobalKeymap } from '@/app/keymap'
 import { compareEntries } from '@/domain/tree'
 import { GraphCanvas } from '@/features/graph/GraphCanvas'
 import {
@@ -46,12 +49,19 @@ import {
   worldViewport,
   zoomAround,
   type GraphCardBox,
+  type Point,
   type Rect,
 } from '@/features/graph/layout'
 import { makeEntry, setIpcAdapter, type IpcAdapter } from '@/ipc/client'
 import { createMockAdapter } from '@/ipc/mock-adapter'
 import type { GraphData, GraphEdge, GraphNode } from '@/ipc/types'
-import { DEFAULT_VIEW, POSITIONS_KEY, flushPositionPersist, useGraphStore } from '@/state/graph-store'
+import {
+  DEFAULT_VIEW,
+  FALLBACK_VIEWPORT,
+  POSITIONS_KEY,
+  flushPositionPersist,
+  useGraphStore,
+} from '@/state/graph-store'
 import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
 import { useUiStore } from '@/state/ui-store'
@@ -155,7 +165,31 @@ function resetStores(): void {
     manual: new Map(),
     staleIndex: false,
     loadedAtMs: 0,
+    viewport: { ...FALLBACK_VIEWPORT, known: false },
+    refreshing: false,
+    refreshNotice: null,
+    fitKey: null,
   })
+}
+
+/**
+ * 渲染画布并装上**全局快捷键**。
+ *
+ * 为什么需要它：缩放 / 适应窗口 / 关闭预览已经是命令表里的 `graph.*`，触发入口是
+ * `app/keymap.ts` 的全局 keydown（`App` 里由 `useGlobalKeymap` 安装）。
+ * 只渲染 `<GraphCanvas />` 时没有任何分发者，按键盘什么都不会发生 ——
+ * 那正是"命令表是快捷键唯一事实来源"的代价，测试也必须走同一条路。
+ */
+async function renderCanvasWithKeys(): Promise<void> {
+  render(<KeymapHarness />)
+  await waitFor(() => {
+    expect(document.querySelectorAll('.mn-graph-card').length).toBe(8)
+  })
+}
+
+function KeymapHarness() {
+  useGlobalKeymap()
+  return <GraphCanvas />
 }
 
 /** 渲染画布并等到 Mock Vault 的卡片全部出现。 */
@@ -605,6 +639,259 @@ describe('缩放与适应窗口', () => {
 })
 
 // ===========================================================================
+// 数据刷新：保留视角的刷新 vs 完整重载
+// ===========================================================================
+
+describe('数据刷新：保留视角', () => {
+  beforeEach(async () => {
+    window.localStorage.clear()
+    setIpcAdapter(createMockAdapter())
+    resetStores()
+    await useVaultStore.getState().openVault(VAULT_ROOT)
+  })
+
+  /** 按"完整重载"先加载一次，拿到 Mock Vault 的真实节点/边。 */
+  async function loadFullGraph(): Promise<GraphData> {
+    await useGraphStore.getState().load(VAULT_ROOT)
+    const data = useGraphStore.getState().data
+    if (data === null) throw new Error('没有加载到图谱数据')
+    return data
+  }
+
+  it('只换数据：缩放/偏移/选中/手工位置/折叠集合全部保留，且全程不进 loading（不闪白）', async () => {
+    const data = await loadFullGraph()
+    useGraphStore.setState({
+      view: { x: -123, y: 45, zoom: 1.75 },
+      selected: '项目/设计.md',
+      collapsed: new Set(['日记']),
+      manual: new Map([['README.md', { x: 10, y: 20 }]]),
+    })
+
+    // 盯住刷新过程中的每一次状态变化：既不能进 `loading`，也不能把 data 清空
+    const statuses: string[] = []
+    let dataWentNull = false
+    let sawRefreshing = false
+    const unsubscribe = useGraphStore.subscribe((state) => {
+      statuses.push(state.status)
+      if (state.data === null) dataWentNull = true
+      if (state.refreshing) sawRefreshing = true
+    })
+    await useGraphStore.getState().load(VAULT_ROOT, { keepView: true })
+    unsubscribe()
+
+    const state = useGraphStore.getState()
+    expect(statuses).not.toContain('loading')
+    expect(dataWentNull).toBe(false)
+    // "刷新中"是 HUD 上的轻量指示（不是全屏的加载态）
+    expect(sawRefreshing).toBe(true)
+    expect(state.refreshing).toBe(false)
+
+    expect(state.status).toBe('ready')
+    expect(state.data?.nodes.length).toBe(data.nodes.length)
+    expect(state.view).toEqual({ x: -123, y: 45, zoom: 1.75 })
+    expect(state.selected).toBe('项目/设计.md')
+    expect([...state.collapsed]).toEqual(['日记'])
+    expect(state.manual.get('README.md')).toEqual({ x: 10, y: 20 })
+  })
+
+  it('清理指向已消失笔记的手工位置与选中（并顺手落盘），truncated 时一律不清', async () => {
+    await loadFullGraph()
+    useGraphStore.setState({
+      selected: '已经删掉的笔记.md',
+      manual: new Map([
+        ['README.md', { x: 1, y: 2 }],
+        ['已经删掉的笔记.md', { x: 3, y: 4 }],
+      ]),
+    })
+
+    await useGraphStore.getState().load(VAULT_ROOT, { keepView: true })
+
+    const state = useGraphStore.getState()
+    expect(state.selected).toBeNull()
+    expect([...state.manual.keys()]).toEqual(['README.md'])
+    // 清掉的位置顺手落盘：别让已删除笔记的位置一直躺在 localStorage 里
+    const stored = JSON.parse(window.localStorage.getItem(POSITIONS_KEY) ?? '{}') as Record<
+      string,
+      Record<string, Point>
+    >
+    expect(Object.keys(stored[VAULT_ROOT] ?? {})).toEqual(['README.md'])
+
+    // 截断的图谱只返回度数最高的一部分：**没返回 ≠ 被删了**，位置与选中都不能动
+    const base = createMockAdapter()
+    setIpcAdapter({
+      kind: 'test',
+      async invoke<T>(method: string, args?: Record<string, unknown>): Promise<T> {
+        if (method !== 'graph_data') return base.invoke<T>(method, args)
+        const payload = await base.invoke<GraphData>('graph_data', args)
+        return { ...payload, truncated: true } as unknown as T
+      },
+    })
+    await loadFullGraph()
+    useGraphStore.setState({
+      selected: '项目/设计.md',
+      manual: new Map([['还没被返回的笔记.md', { x: 5, y: 6 }]]),
+    })
+
+    await useGraphStore.getState().load(VAULT_ROOT, { keepView: true })
+
+    expect(useGraphStore.getState().selected).toBe('项目/设计.md')
+    expect(useGraphStore.getState().manual.has('还没被返回的笔记.md')).toBe(true)
+  })
+
+  it('完整重载（不传 keepView）= 从头再来：视角/折叠/选中/适应窗口记账全部复位', async () => {
+    await loadFullGraph()
+    useGraphStore.setState({
+      view: { x: -123, y: 45, zoom: 1.75 },
+      selected: '项目/设计.md',
+      collapsed: new Set(['日记']),
+      manual: new Map([['README.md', { x: 10, y: 20 }]]),
+      fitKey: 'whatever',
+    })
+
+    await useGraphStore.getState().load(VAULT_ROOT)
+
+    const state = useGraphStore.getState()
+    expect(state.view).toEqual(DEFAULT_VIEW)
+    expect(state.selected).toBeNull()
+    expect(state.collapsed.size).toBe(0)
+    // 清空 fitKey ⇒ 画布会重新"适应窗口"（用户点"重新读取"就是要求这个）
+    expect(state.fitKey).toBeNull()
+    // 手工位置从 localStorage 重读：内存里那次还没落盘的拖动会被丢掉（"重新读取"的语义）
+    expect(state.manual.size).toBe(0)
+  })
+
+  it('换 Vault 时即使传了 keepView 也强制完整重载（旧的视角属于上一个 Vault）', async () => {
+    await loadFullGraph()
+    useGraphStore.setState({
+      view: { x: -123, y: 45, zoom: 1.75 },
+      collapsed: new Set(['日记']),
+    })
+
+    await useGraphStore.getState().load('C:\\别的Vault', { keepView: true })
+
+    const state = useGraphStore.getState()
+    expect(state.rootPath).toBe('C:\\别的Vault')
+    expect(state.view).toEqual(DEFAULT_VIEW)
+    expect(state.collapsed.size).toBe(0)
+  })
+
+  it('宿主返回空数据（索引正在重建）时保留旧数据并给出提示，而不是清空画布', async () => {
+    const data = await loadFullGraph()
+    const base = createMockAdapter()
+    setIpcAdapter({
+      kind: 'test',
+      async invoke<T>(method: string, args?: Record<string, unknown>): Promise<T> {
+        if (method !== 'graph_data') return base.invoke<T>(method, args)
+        return { nodes: [], edges: [], truncated: false, elapsedMs: 0 } as unknown as T
+      },
+    })
+
+    await useGraphStore.getState().load(VAULT_ROOT, { keepView: true })
+
+    const state = useGraphStore.getState()
+    expect(state.data?.nodes.length).toBe(data.nodes.length) // 旧数据还在
+    expect(state.refreshNotice).toContain('索引可能正在重建')
+    // 标记"数据可能是旧的"：索引一就绪就会自动再补一次
+    expect(state.staleIndex).toBe(true)
+    expect(state.refreshing).toBe(false)
+
+    // 显式"重新读取"（keepView 为 false）照旧采纳空结果 ——
+    // 那是用户明确要求的"从头再来"，也是真正变空的 Vault 唯一能被画出来的路径
+    await useGraphStore.getState().load(VAULT_ROOT)
+    expect(useGraphStore.getState().data?.nodes.length).toBe(0)
+    expect(useGraphStore.getState().refreshNotice).toBeNull()
+  })
+})
+
+// ===========================================================================
+// 图谱命令：命令表是快捷键的唯一事实来源
+// ===========================================================================
+
+describe('图谱命令', () => {
+  beforeEach(async () => {
+    setIpcAdapter(createMockAdapter())
+    resetStores()
+    registerBuiltinCommands()
+    await useVaultStore.getState().openVault(VAULT_ROOT)
+  })
+
+  const GRAPH_COMMAND_IDS_LIST = [
+    GRAPH_COMMAND_IDS.zoomIn,
+    GRAPH_COMMAND_IDS.zoomOut,
+    GRAPH_COMMAND_IDS.fit,
+    GRAPH_COMMAND_IDS.closePreview,
+  ]
+
+  it('四条命令都在，快捷键不与他人撞车，生效条件是"当前视图是图谱"', async () => {
+    for (const id of GRAPH_COMMAND_IDS_LIST) {
+      const command = commands.get(id)
+      expect(command, `缺少命令 ${id}`).toBeDefined()
+      expect(command?.category).toBe('图谱')
+      expect(command?.unavailableReason).toBe('需要先切换到知识图谱视图')
+    }
+
+    // 每条图谱快捷键都**只**命中图谱命令：既证明它们可用，也证明没有和既有命令撞车
+    // （既有表已占用 Mod+O/N/S/E/B/G/K/P、Mod+Shift+F/T/L/E、Mod+Alt+*、F2、Delete 等）
+    expect(commands.byChord('Mod+=').map((command) => command.id)).toEqual(['graph.zoomIn'])
+    // `+` 这个键**无法**写进命令表：`normalizeChord` 用 `+` 当分隔符（`'Mod+='.split('+')`），
+    // 真实键盘上 `Ctrl`+`+` 的事件是 `Mod+Shift++`，和任何归一化后的串都对不上。
+    // 它由画布按键后转交给同一条命令（见下面"键盘：+ / - / 0"那条用例）。
+    expect(commands.byChord('+')).toEqual([])
+    expect(commands.byChord('Mod+-').map((command) => command.id)).toEqual(['graph.zoomOut'])
+    expect(commands.byChord('-').map((command) => command.id)).toEqual(['graph.zoomOut'])
+    expect(commands.byChord('Mod+0').map((command) => command.id)).toEqual(['graph.fit'])
+    expect(commands.byChord('0').map((command) => command.id)).toEqual(['graph.fit'])
+    expect(commands.byChord('Escape').map((command) => command.id)).toEqual([
+      'graph.closePreview',
+    ])
+
+    expect(commands.byChord('Mod+G').map((command) => command.id)).toEqual(['view.graph'])
+    expect(commands.byChord('Mod+E').map((command) => command.id)).toEqual(['view.cycleMode'])
+
+    // 视图不是图谱 ⇒ when 为 false：快捷键与面板都不会执行它
+    useUiStore.setState({ viewMode: 'edit' })
+    for (const id of GRAPH_COMMAND_IDS_LIST) {
+      expect(commands.get(id)?.when?.(), id).toBe(false)
+    }
+    const before = useGraphStore.getState().view
+    await expect(commands.execute('graph.zoomIn')).resolves.toBe(false)
+    expect(useGraphStore.getState().view).toEqual(before)
+
+    // 回到图谱视图 ⇒ 命令恢复可用
+    useUiStore.setState({ viewMode: 'graph' })
+    expect(commands.get('graph.zoomIn')?.when?.()).toBe(true)
+  })
+
+  it('run 调到的就是 store 动作：放大 / 缩小 / 适应窗口 / 关闭预览', async () => {
+    await useGraphStore.getState().load(VAULT_ROOT)
+    useGraphStore.setState({
+      viewport: { width: 800, height: 600, known: true },
+      view: { x: -40, y: -20, zoom: 1 },
+    })
+
+    await expect(commands.execute('graph.zoomIn')).resolves.toBe(true)
+    expect(useGraphStore.getState().view.zoom).toBeCloseTo(1.25, 6)
+
+    await expect(commands.execute('graph.zoomOut')).resolves.toBe(true)
+    expect(useGraphStore.getState().view.zoom).toBeCloseTo(1, 6)
+
+    useGraphStore.setState({ view: { x: 99999, y: 99999, zoom: MAX_ZOOM } })
+    await commands.execute('graph.fit')
+    const fitted = useGraphStore.getState().view
+    expect(fitted.zoom).toBeLessThan(MAX_ZOOM)
+    expect(fitted.zoom).toBeGreaterThanOrEqual(MIN_ZOOM)
+    // 整块画布落进上报的视口（与画布按钮用的是同一个 store 动作）
+    const bounds = buildLayout(useGraphStore.getState().data?.nodes ?? []).bounds
+    expect(bounds.width * fitted.zoom + fitted.x).toBeLessThanOrEqual(800.5)
+    expect(bounds.height * fitted.zoom + fitted.y).toBeLessThanOrEqual(600.5)
+
+    useGraphStore.setState({ selected: 'README.md' })
+    await commands.execute('graph.closePreview')
+    expect(useGraphStore.getState().selected).toBeNull()
+  })
+})
+
+// ===========================================================================
 // 第二层：组件行为
 // ===========================================================================
 
@@ -613,6 +900,8 @@ describe('知识图谱画布', () => {
     window.localStorage.clear()
     setIpcAdapter(createMockAdapter())
     resetStores()
+    // 缩放 / 适应窗口 / 关闭预览走命令表（幂等注册，重复调用无副作用）
+    registerBuiltinCommands()
     await useVaultStore.getState().openVault(VAULT_ROOT)
   })
 
@@ -672,13 +961,14 @@ describe('知识图谱画布', () => {
     expect(document.querySelector('.mn-graph-card[data-rel-path="项目/路线图.md"]')).not.toBeNull()
   })
 
-  it('Esc 关闭预览；点画布空白处也关闭', async () => {
-    await renderCanvas()
+  it('Esc 关闭预览（命令）；点画布空白处也关闭', async () => {
+    await renderCanvasWithKeys()
     fireEvent.click(cardElement('项目/路线图.md'))
     await waitFor(() => {
       expect(document.querySelector('.mn-graph-preview')).not.toBeNull()
     })
 
+    // Esc 现在是 `graph.closePreview` 命令：**焦点在不在画布上都生效**（全局快捷键分发）
     fireEvent.keyDown(screen.getByLabelText('知识图谱画布'), { key: 'Escape' })
     await waitFor(() => {
       expect(document.querySelector('.mn-graph-preview')).toBeNull()
@@ -769,7 +1059,10 @@ describe('知识图谱画布', () => {
   })
 
   it('键盘：+ / - / 0 缩放与适应窗口，缩放被限制在 0.25×~2.5×', async () => {
-    await renderCanvas()
+    // 缩放已经是 `graph.zoomIn` / `graph.zoomOut` / `graph.fit` 三条命令（命令表是快捷键的
+    // 唯一事实来源），所以这里要装上全局快捷键分发者，并且把按键打在画布元素上 ——
+    // 焦点在画布上时照样生效（事件冒泡到 window 的 keymap）。
+    await renderCanvasWithKeys()
     const canvas = screen.getByLabelText('知识图谱画布')
     const before = useGraphStore.getState().view.zoom
 
@@ -849,6 +1142,155 @@ describe('知识图谱画布', () => {
 
     expect(useGraphStore.getState().selected).toBeNull()
     expect(document.querySelector('.mn-graph-preview')).toBeNull()
+  })
+
+  it('预览面板：打开时焦点进入面板，关闭后还给刚才那张卡片', async () => {
+    await renderCanvas()
+    const card = cardElement('项目/设计.md')
+    // 浏览器里单击带 `tabindex` 的卡片本来就会聚焦它（jsdom 不会，所以这里显式点一下焦点）
+    card.focus()
+    expect(document.activeElement).toBe(card)
+
+    fireEvent.click(card)
+    const panel = await waitFor(() => {
+      const element = document.querySelector<HTMLElement>('.mn-graph-preview')
+      expect(element).not.toBeNull()
+      return element
+    })
+    if (panel === null) throw new Error('预览面板没有出现')
+    // 打开即聚焦：键盘用户不会"面板开了但焦点还留在卡片上"
+    expect(document.activeElement).toBe(panel)
+
+    // 关闭（右上角的 ×，与 Esc 同一条关闭路径）后焦点回到那张卡片，Tab 不用从头走
+    const closeButton = panel.querySelector<HTMLButtonElement>('button[aria-label="关闭预览"]')
+    if (closeButton === null) throw new Error('没有关闭按钮')
+    fireEvent.click(closeButton)
+
+    await waitFor(() => {
+      expect(document.querySelector('.mn-graph-preview')).toBeNull()
+    })
+    expect(document.activeElement).toBe(cardElement('项目/设计.md'))
+  })
+
+  it('预览正文里的 [[wikilink]] 能点开目标笔记（解析口径与阅读视图一致）', async () => {
+    await renderCanvas()
+    fireEvent.click(cardElement('项目/设计.md'))
+
+    // 设计.md 正文里有 [[路线图]]，Mock 索引把它解析到 项目/路线图.md
+    await waitFor(() => {
+      const link = document.querySelector('a.mn-wikilink[data-target="路线图"]')
+      expect(link).not.toBeNull()
+      expect(link?.getAttribute('data-rel-path')).toBe('项目/路线图.md')
+    })
+    const link = document.querySelector<HTMLAnchorElement>('a.mn-wikilink[data-target="路线图"]')
+    if (link === null) throw new Error('没有渲染出 wikilink')
+
+    fireEvent.click(link)
+
+    // 面板跟着滑到那篇卡片（画布上"顺着链接读下去"），同时把它读进编辑器
+    await waitFor(() => {
+      expect(useGraphStore.getState().selected).toBe('项目/路线图.md')
+    })
+    await waitFor(() => {
+      expect(useNoteStore.getState().doc?.relPath).toBe('项目/路线图.md')
+    })
+  })
+
+  it('刷新期间不闪白：旧卡片继续显示，只在 HUD 上给一个"刷新中"的轻量指示', async () => {
+    await renderCanvas()
+
+    // 让这次刷新"挂住"，好在"正在刷新"的那一刻观察界面
+    let release = (): void => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const base = createMockAdapter()
+    let calls = 0
+    setIpcAdapter({
+      kind: 'test',
+      async invoke<T>(method: string, args?: Record<string, unknown>): Promise<T> {
+        if (method === 'graph_data') {
+          calls += 1
+          if (calls > 1) await gate
+        }
+        return base.invoke<T>(method, args)
+      },
+    })
+
+    let refresh: Promise<void> = Promise.resolve()
+    act(() => {
+      refresh = useGraphStore.getState().load(VAULT_ROOT, { keepView: true })
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText('刷新中…')).toBeTruthy()
+    })
+    // 旧数据继续渲染：没有全屏加载层、也没有空白（卡片还在）
+    expect(document.querySelectorAll('.mn-graph-card').length).toBe(8)
+    expect(screen.queryByText('正在读取图谱…')).toBeNull()
+
+    await act(async () => {
+      release()
+      await refresh
+    })
+    await waitFor(() => {
+      expect(screen.queryByText('刷新中…')).toBeNull()
+    })
+  })
+
+  it('刷新返回空数据时不闪白：旧卡片继续显示，只在提示条上说明', async () => {
+    await renderCanvas()
+
+    // 索引重建期间宿主可能返回空结果
+    const base = createMockAdapter()
+    setIpcAdapter({
+      kind: 'test',
+      async invoke<T>(method: string, args?: Record<string, unknown>): Promise<T> {
+        if (method !== 'graph_data') return base.invoke<T>(method, args)
+        return { nodes: [], edges: [], truncated: false, elapsedMs: 0 } as unknown as T
+      },
+    })
+    await act(async () => {
+      await useGraphStore.getState().load(VAULT_ROOT, { keepView: true })
+    })
+
+    // 画布没有被清空（8 张卡片还在），提示条说明看到的是上一次的结果
+    expect(document.querySelectorAll('.mn-graph-card').length).toBe(8)
+    expect(screen.getByText(/索引可能正在重建/)).toBeTruthy()
+  })
+
+  it('保存成功后自动刷新一次（画布可见时），且不会重置视角', async () => {
+    let graphCalls = 0
+    const base = createMockAdapter()
+    setIpcAdapter({
+      kind: 'test',
+      async invoke<T>(method: string, args?: Record<string, unknown>): Promise<T> {
+        if (method === 'graph_data') graphCalls += 1
+        return base.invoke<T>(method, args)
+      },
+    })
+    resetStores()
+    await useVaultStore.getState().openVault(VAULT_ROOT)
+
+    await renderCanvas()
+    expect(graphCalls).toBe(1) // 挂载（= 切到图谱视图）时拉了一次
+    const view = useGraphStore.getState().view
+
+    // 索引是全局的：任何一次保存成功后都应刷新（`saveCount` 变化就是那个信号）
+    act(() => {
+      useNoteStore.setState({ saveCount: useNoteStore.getState().saveCount + 1 })
+    })
+    expect(graphCalls).toBe(2)
+    // 保留视角：刷新不会把镜头甩回"适应窗口"
+    expect(useGraphStore.getState().view).toEqual(view)
+
+    // 画布不可见时不发请求：每次自动保存都白跑一次 IPC 没有意义，
+    // 切回图谱时的挂载刷新本来就会拉到最新数据
+    useUiStore.setState({ viewMode: 'edit' })
+    act(() => {
+      useNoteStore.setState({ saveCount: useNoteStore.getState().saveCount + 1 })
+    })
+    expect(graphCalls).toBe(2)
   })
 
   it('索引构建中给出提示（不是报错），索引就绪后自动补一次数据', async () => {

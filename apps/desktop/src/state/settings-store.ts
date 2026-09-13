@@ -12,13 +12,15 @@
  *    （那个 store 已经有 8 个布局字段），合进去只会让它继续膨胀。
  *
  * 持久化（键名固定，改动需同步升级版本后缀）：
- * - `mimenote.settings.v1`（JSON，`saveJson/loadJson`）：4 个数值偏好；
+ * - `mimenote.settings.v1`（JSON，`saveJson/loadJson`）：4 个数值偏好 + 附件目录；
  * - `mimenote.settings.section`（字符串，`saveString/loadString`）：上次停留的分区。
- * 只写这几个标量：没有任何敏感/大对象（不写路径、不写 Vault 内容）。
+ * 只写这几个标量：没有任何敏感/大对象（附件目录是**Vault 内的相对目录**，
+ * 不是本机绝对路径 —— 换 Vault 后它仍然有意义，这也是它敢被持久化的原因）。
  */
 
 import { create } from 'zustand'
 
+import { DEFAULT_ATTACHMENT_DIR, normalizeAttachmentDir } from '@/domain/attachments'
 import { ipc } from '@/ipc/client'
 import { MimenoteError } from '@/ipc/types'
 import type { VersionInfo } from '@/ipc/types'
@@ -58,7 +60,7 @@ export const AUTOSAVE_DELAY_OPTIONS: readonly number[] = [200, 400, 600, 1000, 2
 /** Tab 宽度的可选档位（字符数）。默认 4，与 CodeMirror 的 `EditorState.tabSize` 默认一致。 */
 export const TAB_WIDTH_OPTIONS: readonly number[] = [2, 4, 8]
 
-/** 可持久化的数值偏好。 */
+/** 可持久化的数值偏好 + 附件目录。 */
 export interface SettingsValues {
   /** 界面字号（px）→ `--mn-font-size-ui`。 */
   uiFontSize: number
@@ -68,6 +70,13 @@ export interface SettingsValues {
   autosaveDelayMs: number
   /** Tab 宽度（字符数）→ `--mn-tab-size`。 */
   tabWidth: number
+  /**
+   * 附件目录（**Vault 内的相对目录**，空串 = Vault 根）→ `attachment_save` 的 `dirRel`。
+   *
+   * 粘贴/拖入的图片落在这里（见 ADR-0013）。它与前面四项一样是**跨 Vault 的用户偏好**：
+   * 值本身是相对的，换一个 Vault 仍然指向"那个 Vault 里的同名目录"。
+   */
+  attachmentDir: string
 }
 
 export const DEFAULT_SETTINGS: SettingsValues = {
@@ -75,6 +84,7 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   editorFontSize: 15,
   autosaveDelayMs: 600,
   tabWidth: 4,
+  attachmentDir: DEFAULT_ATTACHMENT_DIR,
 }
 
 export interface SettingsState extends SettingsValues {
@@ -90,6 +100,8 @@ export interface SettingsState extends SettingsValues {
   setEditorFontSize: (px: number) => void
   setAutosaveDelayMs: (ms: number) => void
   setTabWidth: (width: number) => void
+  /** 附件目录（相对 Vault 根；空串 = Vault 根）。非法值会被归一化回默认值。 */
+  setAttachmentDir: (dir: string) => void
   /** 两个字号一起恢复到主题默认值。 */
   resetFontSizes: () => void
 
@@ -158,6 +170,12 @@ function restoreValues(): SettingsValues {
       DEFAULT_SETTINGS.autosaveDelayMs,
     ),
     tabWidth: snapToOption(saved['tabWidth'], TAB_WIDTH_OPTIONS, DEFAULT_SETTINGS.tabWidth),
+    // 字符串偏好走**归一化**而不是"信它一次"：手工改过 localStorage、或从旧版本升上来时，
+    // 一个非法的目录值会让之后每次粘贴都失败（宿主报 PATH_INVALID），而归一化把它挡在设置层
+    attachmentDir:
+      typeof saved['attachmentDir'] === 'string'
+        ? normalizeAttachmentDir(saved['attachmentDir'])
+        : DEFAULT_SETTINGS.attachmentDir,
   }
 }
 
@@ -166,13 +184,14 @@ function restoreSection(): SettingsSection {
   return isSection(saved) ? saved : 'appearance'
 }
 
-/** 白名单式持久化：只写这 4 个数值（`open` / `versionInfo` 是瞬时状态，不入库）。 */
+/** 白名单式持久化：只写这几个标量（`open` / `versionInfo` 是瞬时状态，不入库）。 */
 function persistValues(state: SettingsValues): void {
   saveJson(SETTINGS_STORAGE_KEY, {
     uiFontSize: state.uiFontSize,
     editorFontSize: state.editorFontSize,
     autosaveDelayMs: state.autosaveDelayMs,
     tabWidth: state.tabWidth,
+    attachmentDir: state.attachmentDir,
   } satisfies SettingsValues)
 }
 
@@ -229,6 +248,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setTabWidth: (width) => {
     set({ tabWidth: snapToOption(width, TAB_WIDTH_OPTIONS, DEFAULT_SETTINGS.tabWidth) })
+    persistValues(get())
+  },
+
+  setAttachmentDir: (dir) => {
+    set({ attachmentDir: normalizeAttachmentDir(dir) })
     persistValues(get())
   },
 

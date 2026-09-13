@@ -100,6 +100,13 @@ export const OVERSCAN = 240
 export const MIN_ZOOM = 0.25
 export const MAX_ZOOM = 2.5
 
+/** 每按一次"放大/缩小"（按钮、命令或快捷键）的倍率。 */
+export const ZOOM_STEP = 1.25
+
+/** "适应窗口"时四周留白。放在这里而不是组件里：画布按钮与 `graph.zoomIn` 这类命令
+ *  都必须用同一个数值，否则两条入口会算出不一样的视角。 */
+export const FIT_PADDING = 64
+
 /** 网格索引的格子边长（略大于一张卡片，一张卡片最多落进 2×2 = 4 个格子）。 */
 export const INDEX_CELL_SIZE = 256
 
@@ -670,7 +677,7 @@ export function panBy(view: GraphView, dx: number, dy: number): GraphView {
 }
 
 /** 让整块画布刚好落进视口（`0` 键）。缩放仍受 MIN/MAX 限制。 */
-export function fitView(bounds: Rect, size: Size, padding = 60): GraphView {
+export function fitView(bounds: Rect, size: Size, padding = FIT_PADDING): GraphView {
   const usableWidth = Math.max(1, size.width - padding * 2)
   const usableHeight = Math.max(1, size.height - padding * 2)
   const zoom = clampZoom(

@@ -676,6 +676,10 @@ function resolveAsset(build: Build, href: string): string | null {
  *
  * `rel` 由调用方解析好传进来（`![[…]]` 要先知道它到底是不是图片才能分流），
  * 但**授权登记**只发生在视口内、且光标不在该行的图片上。
+ *
+ * 呈现上图片是**块级**的（`theme.ts` 里 `display: block`）：它会独占一行，
+ * 而不是像以前那样把所在行的行高撑得忽大忽小。这一点**不改变**"光标进入即露原文"——
+ * 光标一旦落到这一行，整个 widget（连同下面那条行装饰）都会被撤掉，露出 `![说明](路径)`。
  */
 function emitImage(
   build: Build,
@@ -704,6 +708,29 @@ function emitImage(
       ),
     }),
   )
+
+  // 整行只有这一张图（其余只有空白）→ 挂"图片行"类名，收掉行盒自己的行距。
+  // 行内还有文字时不挂：那种行会被块级元素拆成"文字 / 图片 / 文字"，文字行仍需正常行高。
+  if (isWholeLine(build, line, from, to)) {
+    build.collection.add(line.from, line.from, Decoration.line({ class: MD.imageLine }))
+  }
+}
+
+/** `from..to` 之外的部分只有空白（即这一行是"图片行"）。 */
+function isWholeLine(
+  build: Build,
+  line: { from: number; to: number },
+  from: number,
+  to: number,
+): boolean {
+  const doc = build.state.doc
+  return (
+    isBlankSlice(doc.sliceString(line.from, from)) && isBlankSlice(doc.sliceString(to, line.to))
+  )
+}
+
+function isBlankSlice(text: string): boolean {
+  return /^[ \t]*$/u.test(text)
 }
 
 // ---------------------------------------------------------------------------

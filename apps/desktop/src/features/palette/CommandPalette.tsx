@@ -9,7 +9,7 @@
  * - `commands`：命令注册表，**同步**过滤，激活 = 执行命令；
  * - `quickSwitch`：Vault 条目表派生的笔记索引，**同步**过滤，激活 = 打开笔记；
  * - `search`：宿主的全文搜索结果，**异步**（防抖 + 竞态丢弃，见 `use-search.ts`），
- *   激活 = 打开笔记（**暂不跳到命中行**，见 `activateHit` 的注释）。
+ *   激活 = 打开笔记并**跳到命中行**（见 `activateHit`）。
  *
  * 状态划分（为什么一半在 store、一半在组件内）：
  * - **开关与模式**在 `ui-store`：调用方除了 React 组件，还有全局快捷键监听与命令
@@ -31,7 +31,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 
-import { openNote } from '@/app/actions'
+import { openNote, openNoteAt } from '@/app/actions'
 import { commands, formatChord } from '@/app/commands'
 import { Icon, type IconName } from '@/components/Icon'
 import { describeError } from '@/ipc/types'
@@ -82,7 +82,8 @@ const MODE_TEXT: Record<
   search: {
     title: '全文搜索',
     placeholder: '搜索正文内容…',
-    confirm: '打开',
+    // 与另外两种模式不同：这里回车不只是"打开"，还会把光标落到那一行
+    confirm: '打开并定位',
     icon: 'search',
     listLabel: '搜索结果',
   },
@@ -264,13 +265,12 @@ export function CommandPalette({
   const activateHit = useCallback(
     (hit: SearchHit) => {
       close()
-      // 与快速切换走同一个高层动作（app/actions.openNote），组件不直接 invoke IPC。
-      //
-      // ⚠️ **已知限制：不跳到命中行。** 编辑器（CodeMirror 装配）目前没有"定位到某一行"
-      // 的能力，这里刻意不自己造一套滚动 + selection 逻辑：那会绕过编辑器既有的装配
-      // （文档切换、`revision` 整篇替换、只读/冲突态），造出第二条"打开文档"的路径。
-      // 等编辑器侧提供 `openAt(relPath, line)` 之类的入口再接上（命中行号已经拿到了）。
-      void openNote(hit.relPath)
+      // 与快速切换走同一个高层动作（app/actions.openNote 的"打开 + 定位"版本）：
+      // 组件自己绝不 invoke IPC，也不自己造一套"滚动 + 设选区"（那会绕过编辑器既有的
+      // 装配：文档切换、`revision` 整篇替换、只读/冲突态）。
+      // 定位实现在 features/editor/line-jump.ts：它负责"等新文档真的进了编辑器"再算位置，
+      // 并顺带把主区域切回编辑视图、把焦点交给编辑器。
+      void openNoteAt(hit.relPath, hit.line)
     },
     [close],
   )

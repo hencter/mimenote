@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "M1 主窗口的最小能力集：核心 API + 目录选择对话框。不授予文件系统/Shell/HTTP 权限——所有文件访问都经自定义 IPC 命令与路径防护。",
+  "description": "主窗口的最小能力集：核心 API + 对话框（打开目录 / 保存导出文件）+ 设置窗口标题。不授予文件系统/Shell/HTTP 权限——所有文件访问都经自定义 IPC 命令与路径防护。dialog:allow-save 是导出功能的有意扩张：导出必须让用户在系统保存对话框里选目标路径（宿主侧的 export_write_html 只允许写 .html/.htm）。core:window:allow-set-title 让窗口标题跟着当前笔记走：它是纯窗口属性写入，不触碰文件系统。",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-save", "core:window:allow-set-title"]
 }

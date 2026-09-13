@@ -9,8 +9,10 @@
 //! 业务逻辑一律放在 `mn-core`，本层不做判断、不做遍历、不做拼接路径。
 
 pub mod assets;
+pub mod attachments;
 pub mod commands;
 pub mod error;
+pub mod export;
 pub mod indexer;
 pub mod logging;
 pub mod startup;
@@ -38,6 +40,8 @@ pub fn run() {
             commands::note_write,
             commands::note_create,
             commands::note_rename,
+            // 跨目录移动（拖拽整理 / 「移动到…」）：与重命名共用同一条"换位置 + 改写全库链接"链路
+            commands::note_move,
             commands::note_delete,
             commands::note_stats,
             commands::index_status,
@@ -48,6 +52,13 @@ pub fn run() {
             commands::tag_notes,
             commands::search_query,
             assets::asset_authorize,
+            // 导出：图片内嵌（只读，走同一套路径防护）与导出落盘（唯一允许写 Vault 之外的写命令，
+            // 只允许 `.html`/`.htm`，路径来自系统保存对话框）—— 见 `export.rs` 的模块文档
+            assets::asset_read_base64,
+            // 附件写入：把剪贴板/拖入的图片落进 Vault 的附件目录（唯一的"写图片"入口，
+            // 只接受图片扩展名、只写 Vault 之内，见 `attachments.rs` 与 ADR-0013）
+            attachments::attachment_save,
+            export::export_write_html,
             commands::snippets_list,
             commands::startup_vault,
             commands::version_info,
