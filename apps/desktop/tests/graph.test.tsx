@@ -22,6 +22,7 @@ import { registerBuiltinCommands, GRAPH_COMMAND_IDS } from '@/app/builtin-comman
 import { commands } from '@/app/commands'
 import { useGlobalKeymap } from '@/app/keymap'
 import { compareEntries } from '@/domain/tree'
+import { isMarkdown } from '@/domain/paths'
 import { GraphCanvas } from '@/features/graph/GraphCanvas'
 import {
   CARD_GAP,
@@ -68,6 +69,17 @@ import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 
 const VAULT_ROOT = 'C:\\MockVault'
+
+/**
+ * Mock Vault 里"图谱会收录的笔记数"（= 卡片数）。
+ *
+ * 刻意**不写死数字**：给 Mock Vault 加一篇演示笔记（例如大纲面板用的 `项目/大纲.md`）
+ * 就会让一批与图谱无关的断言集体变红 —— 那种红是噪音，不是回归；从 Mock 自己的笔记表
+ * 算出来，加笔记时这些用例不用改。
+ */
+const MOCK_CARD_COUNT = createMockAdapter()
+  .dump()
+  .filter((note) => isMarkdown(note.relPath)).length
 
 // ---------------------------------------------------------------------------
 // 测试数据与工具
@@ -183,7 +195,7 @@ function resetStores(): void {
 async function renderCanvasWithKeys(): Promise<void> {
   render(<KeymapHarness />)
   await waitFor(() => {
-    expect(document.querySelectorAll('.mn-graph-card').length).toBe(8)
+    expect(document.querySelectorAll('.mn-graph-card').length).toBe(MOCK_CARD_COUNT)
   })
 }
 
@@ -196,7 +208,7 @@ function KeymapHarness() {
 async function renderCanvas(): Promise<void> {
   render(<GraphCanvas />)
   await waitFor(() => {
-    expect(document.querySelectorAll('.mn-graph-card').length).toBe(8)
+    expect(document.querySelectorAll('.mn-graph-card').length).toBe(MOCK_CARD_COUNT)
   })
 }
 
@@ -937,8 +949,8 @@ describe('知识图谱画布', () => {
     expect(design.textContent).toContain('项目/设计.md')
     expect(design.textContent).toContain('→2')
     expect(design.textContent).toContain('←1')
-        // 状态角标：节点数 / 边数 / 缩放
-    expect(document.querySelector('.mn-graph__hud')?.textContent).toContain('8 节点')
+    // 状态角标：节点数 / 边数 / 缩放
+    expect(document.querySelector('.mn-graph__hud')?.textContent).toContain(`${MOCK_CARD_COUNT} 节点`)
     expect(document.querySelector('.mn-graph__hud')?.textContent).toContain('4 边')
   })
 
@@ -1003,7 +1015,13 @@ describe('知识图谱画布', () => {
     // 其它文件夹不受影响
     expect(document.querySelector('.mn-graph-card[data-rel-path="日记/2025-01-01.md"]')).not.toBeNull()
     // 收起后是一张紧凑的"文件夹卡片"（显示名字与笔记数）
-    const expandedAgain = screen.getByRole('button', { name: /^展开 项目（4 篇）/ })
+    // 篇数不写死：Mock Vault 里 项目/ 下有几篇由 Mock 自己决定（加一篇演示笔记不该让这条变红）
+    const projectNotes = createMockAdapter()
+      .dump()
+      .filter((note) => isMarkdown(note.relPath) && note.relPath.startsWith('项目/')).length
+    const expandedAgain = screen.getByRole('button', {
+      name: new RegExp(`^展开 项目（${projectNotes} 篇`),
+    })
     expect(expandedAgain).toBeTruthy()
 
     fireEvent.click(expandedAgain)
@@ -1226,7 +1244,7 @@ describe('知识图谱画布', () => {
       expect(screen.getByText('刷新中…')).toBeTruthy()
     })
     // 旧数据继续渲染：没有全屏加载层、也没有空白（卡片还在）
-    expect(document.querySelectorAll('.mn-graph-card').length).toBe(8)
+    expect(document.querySelectorAll('.mn-graph-card').length).toBe(MOCK_CARD_COUNT)
     expect(screen.queryByText('正在读取图谱…')).toBeNull()
 
     await act(async () => {
@@ -1254,8 +1272,8 @@ describe('知识图谱画布', () => {
       await useGraphStore.getState().load(VAULT_ROOT, { keepView: true })
     })
 
-    // 画布没有被清空（8 张卡片还在），提示条说明看到的是上一次的结果
-    expect(document.querySelectorAll('.mn-graph-card').length).toBe(8)
+    // 画布没有被清空（卡片都还在），提示条说明看到的是上一次的结果
+    expect(document.querySelectorAll('.mn-graph-card').length).toBe(MOCK_CARD_COUNT)
     expect(screen.getByText(/索引可能正在重建/)).toBeTruthy()
   })
 
@@ -1346,7 +1364,7 @@ describe('知识图谱画布', () => {
       expect(document.querySelector('.mn-graph')).not.toBeNull()
     })
     await waitFor(() => {
-      expect(document.querySelectorAll('.mn-graph-card').length).toBe(8)
+      expect(document.querySelectorAll('.mn-graph-card').length).toBe(MOCK_CARD_COUNT)
     })
   })
 })

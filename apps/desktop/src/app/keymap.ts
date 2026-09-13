@@ -8,12 +8,16 @@
  * - **模态层（`role="dialog"` / `role="alertdialog"`）里的按键不抢**：设置页打开时
  *   `Esc` 归它自己（它也在捕捉阶段处理），确认框打开时一次 `Esc` 只该取消确认；
  * - **装在捕捉阶段**：命令表是快捷键的唯一事实来源，注册过的组合键必须赢过编辑器
- *   自己的绑定。CodeMirror 的 `searchKeymap` 占着 `Mod+G`（查找下一个）、
- *   `defaultKeymap` 占着 `Mod+K`（删到行尾），而 CM 的监听装在编辑器 DOM 上、
- *   且会 `preventDefault()`；全局快捷键如果装在冒泡阶段，等它收到事件时已经晚了
- *   （旧实现正是靠 `defaultPrevented` 提前返回），于是"在编辑器里按 Ctrl+G 打不开
- *   图谱，反而跳到了下一个匹配"。捕捉阶段抢在 CM 之前处理，CM 就完全看不到这个事件
- *   —— 与 `use-palette-hotkeys.ts`、`SettingsDialog.tsx` 是同一套路。
+ *   自己的按键处理。CodeMirror 侧有多处会吃掉按键并 `preventDefault()`
+ *   （`defaultKeymap` 的 `Ctrl-k` → 删到行尾；`searchKeymap` 的 `Mod-G` → 查找下一个，
+ *   它带 `scope: "editor search-panel"`），而全局快捷键如果装在冒泡阶段，等它收到事件时
+ *   已经被吃掉（旧实现正是靠 `defaultPrevented` 提前返回）。**实测到的症状**：焦点在编辑器里
+ *   按 `Ctrl+G` 打不开图谱（改用捕捉阶段后，UI 层 E2E 与应用层 E2E 的同一动作都通过了）。
+ *   捕捉阶段抢在编辑器之前处理，编辑器就完全看不到这个事件 —— 与 `use-palette-hotkeys.ts`、
+ *   `SettingsDialog.tsx` 是同一套路。
+ *
+ * 注意：`Ctrl+F`（编辑器内搜索）**不是**注册命令，因此这里不拦截它，仍然由 CodeMirror
+ * 自己处理（`Mod-G` 被我们占用后，"查找下一个"在搜索面板里用 `Enter` 或 `F3`）。
  *
  * 与面板监听的分工：`Mod+K`/`Mod+P`/`Mod+Shift+F` 仍由 `use-palette-hotkeys.ts`
  * 独占（它在捕捉阶段还要处理"面板打开时 Esc 只关面板"）。这里**显式跳过**那三条命令，

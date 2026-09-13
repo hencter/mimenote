@@ -37,7 +37,7 @@ import { GRAPH_COMMAND_IDS } from '@/app/builtin-commands'
 import { commands } from '@/app/commands'
 import { isTextEntryTarget } from '@/app/keymap'
 import { Icon } from '@/components/Icon'
-import { describeError } from '@/ipc/types'
+import { describeError, type GraphNode } from '@/ipc/types'
 import { startGraphAutoRefresh, useGraphStore } from '@/state/graph-store'
 import { useLinksStore } from '@/state/links-store'
 import { useUiStore } from '@/state/ui-store'
@@ -45,6 +45,12 @@ import { useVaultStore } from '@/state/vault-store'
 import { GraphCard } from './GraphCard'
 import { GraphEdges } from './GraphEdges'
 import { GraphPreview } from './GraphPreview'
+import {
+  ancestorFolders,
+  buildGraphFindIndex,
+  centerViewOnCard,
+  findGraphMatches,
+} from './find'
 import {
   OVERSCAN,
   applyManualPositions,
@@ -140,6 +146,69 @@ export function GraphCanvas() {
 
   const rectIndex = useMemo(() => (layout === null ? null : buildRectIndex(layout.cards)), [layout])
   const visibleWorld = useMemo(() => worldViewport(view, viewport, OVERSCAN), [view, viewport])
+
+  // -------------------------------------------------------------------------
+  // "定位笔记"：几千张卡片里按名字直达（见 find.ts 的说明）
+  // -------------------------------------------------------------------------
+
+  const [findQuery, setFindQuery] = useState('')
+  /** 待定位的笔记：卡片可能还在折叠的容器里，展开后要等布局重算才能找到它。 */
+  const pendingLocateRef = useRef<string | null>(null)
+
+  const nodesByPath = useMemo(() => {
+    const map = new Map<string, GraphNode>()
+    for (const node of data?.nodes ?? []) map.set(node.relPath, node)
+    return map
+  }, [data])
+
+  const findIndex = useMemo(() => buildGraphFindIndex(data?.nodes ?? []), [data])
+  const findMatches = useMemo(
+    () => (findQuery.trim() === '' ? [] : findGraphMatches(findIndex, findQuery, nodesByPath)),
+    [findIndex, findQuery, nodesByPath],
+  )
+
+  /**
+   * 把某张卡片摆到视口中央并选中它。
+   *
+   * 找不到时先**展开它的祖先文件夹**再重试一次（折叠容器里的卡片不在布局里，
+   * 直接报"找不到"会让用户以为图谱缺了这篇笔记）；展开是异步的（要等 layout 重算），
+   * 因此把目标记进 `pendingLocateRef`，由下面的 effect 在布局更新后补做。
+   */
+  const locateCard = useCallback(
+    (relPath: string): void => {
+      const card = cardsById.get(relPath)
+      if (card === undefined) {
+        const ancestors = ancestorFolders(relPath)
+        const collapsed = useGraphStore.getState().collapsed
+        const next = [...collapsed].filter((path) => !ancestors.includes(path))
+        if (next.length !== collapsed.size) {
+          pendingLocateRef.current = relPath
+          useGraphStore.getState().setCollapsed(next)
+        }
+        return
+      }
+      const state = useGraphStore.getState()
+      state.setView({ ...state.view, ...centerViewOnCard(card, state.viewport, state.view.zoom) })
+      state.select(relPath)
+    },
+    [cardsById],
+  )
+
+  // 展开祖先之后补做那一次定位（只做一次，避免每次布局变化都抢镜头）
+  useEffect(() => {
+    const target = pendingLocateRef.current
+    if (target === null) return
+    if (!cardsById.has(target)) return
+    pendingLocateRef.current = null
+    locateCard(target)
+  }, [cardsById, locateCard])
+
+  const submitFind = (): void => {
+    const first = findMatches[0]
+    if (first === undefined) return
+    locateCard(first.relPath)
+    setFindQuery('')
+  }
 
   const visibleCards = useMemo(
     () => (rectIndex === null ? [] : queryIndex(rectIndex, visibleWorld)),
@@ -451,6 +520,59 @@ export function GraphCanvas() {
         </div>
 
         <div className="mn-graph__tools">
+          {/* 定位笔记：几千张卡片时，"我想看看某一篇周围连了什么"没法靠拖拽完成 */}
+          <div className="mn-graph__find">
+            <input
+              className="mn-graph__find-input"
+              type="search"
+              value={findQuery}
+              placeholder="定位笔记…"
+              aria-label="定位笔记"
+              onChange={(event) => setFindQuery(event.target.value)}
+              onKeyDown={(event) => {
+                // 画布自己也监听键盘（+/-/0 与 Esc），这里把输入框里的事件拦住，
+                // 否则在输入框里敲 "-" 会顺手把画布缩小
+                event.stopPropagation()
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  submitFind()
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setFindQuery('')
+                }
+              }}
+            />
+            {findQuery.trim() !== '' && (
+              <ul className="mn-graph__find-list" role="listbox" aria-label="定位候选">
+                {findMatches.length === 0 ? (
+                  // 空态要说清楚：卡片可能根本没进图谱（节点数超过宿主上限时按度数截断），
+                  // 而不是"这个输入框坏了"
+                  <li className="mn-graph__find-empty">没有匹配的卡片</li>
+                ) : (
+                  findMatches.slice(0, 8).map((match) => (
+                    <li key={match.relPath}>
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={match.relPath === selected}
+                        data-find-path={match.relPath}
+                        onClick={() => {
+                          locateCard(match.relPath)
+                          setFindQuery('')
+                        }}
+                      >
+                        <span className="mn-graph__find-title">{match.title}</span>
+                        {match.folder !== '' && (
+                          <span className="mn-graph__find-folder">{match.folder}</span>
+                        )}
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+            )}
+          </div>
           <button type="button" className="mn-icon-button" onClick={fitNow} title="适应窗口（Ctrl+0）" aria-label="适应窗口">
             <Icon name="eye" size={14} />
           </button>

@@ -43,6 +43,13 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* 多图翻页时的"第 N / 共 M 张"：与缩放读数是同一类信息，样式保持一致 */
+.mn-lightbox__counter {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 .mn-lightbox__stage {
   flex: 1 1 auto;
   min-height: 0;

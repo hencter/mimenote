@@ -952,3 +952,110 @@ describe.skipIf(!supported)('真实应用：搜索命中跳转（真实 FTS5）'
     expect(await vault.read(NOTE)).toBe(longNote())
   })
 })
+
+/**
+ * `[[` 笔记自动补全（真实编辑器 + 真实磁盘）。
+ *
+ * 为什么必须在这一层验：补全的"最后一公里"是**写进文件的那一串字符**。jsdom 里能断言
+ * 弹层与插入的文本，但"按一次确认到底往磁盘上写了几个 `]]`"只有真实二进制 + 真实磁盘能证明；
+ * 另外"焦点离开编辑器后弹层自动关闭"依赖真实 DOM 焦点，jsdom 复现不可靠。
+ */
+describe.skipIf(!supported)('真实应用：[[ 笔记自动补全（真实磁盘）', () => {
+  let app: LaunchedApp
+  let vault: TempVault
+
+  const MAIN = '甲.md'
+  const TARGET = '乙.md'
+
+  beforeAll(async () => {
+    vault = await createTempVault({
+      [MAIN]: '# 甲\n\n正文一段。\n',
+      [TARGET]: '# 乙\n\n目标笔记。\n',
+    })
+    app = await launchApp({ vaultPath: vault.path })
+    await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
+  }, 120_000)
+
+  afterAll(async () => {
+    if (app !== undefined) await app.close()
+    if (vault !== undefined) await vault.cleanup()
+  })
+
+  it('输入 [[ 弹出候选，回车补全并把链接写进磁盘（只写一个 ]]）', async () => {
+    await openNoteInTree(app.page, MAIN)
+    await app.page.locator('.cm-content').click()
+
+    await app.page.keyboard.type('[[')
+    await app.page.waitForSelector('.mn-wiki-complete [role="option"]', {
+      state: 'visible',
+      timeout: 10_000,
+    })
+    // 恰好一个选项是"当前高亮"（ARIA 的硬要求，也保证 Enter 有明确目标）
+    await waitUntil(
+      async () =>
+        (await app.page.locator('.mn-wiki-complete [role="option"][aria-selected="true"]').count()) ===
+        1,
+      10_000,
+      '恰好一个高亮候选',
+    )
+
+    // 继续输入即过滤到目标那一篇
+    await app.page.keyboard.type('乙')
+    await waitUntil(
+      async () => (await app.page.locator('.mn-wiki-complete [role="option"]').count()) === 1,
+      10_000,
+      '过滤到唯一候选',
+    )
+
+    await app.page.keyboard.press('Enter')
+    await waitUntil(
+      async () => ((await app.page.locator('.cm-content').textContent()) ?? '').includes('[[乙]]'),
+      10_000,
+      '编辑器里出现补全后的链接',
+    )
+
+    // 真磁盘：链接只写了一遍，且 `]]` 只有一个（补全最容易出的错就是多写一个 `]]`）
+    await waitForFileContent(vault, MAIN, (text) => text.includes('[[乙]]'))
+    const written = await vault.read(MAIN)
+    expect(written.match(/\[\[乙\]\]/gu)?.length).toBe(1)
+    expect(written.match(/\]\]/gu)?.length).toBe(1)
+  })
+
+  it('Esc 取消不改文档；点文件树让焦点离开编辑器后弹层自动关闭', async () => {
+    const before = await vault.read(MAIN)
+
+    await app.page.locator('.cm-content').click()
+    await app.page.keyboard.press('Control+End')
+    await app.page.keyboard.type('\n[[')
+    await app.page.waitForSelector('.mn-wiki-complete', { state: 'visible', timeout: 10_000 })
+
+    await app.page.keyboard.press('Escape')
+    await waitUntil(
+      async () => (await app.page.locator('.mn-wiki-complete').count()) === 0,
+      5_000,
+      'Esc 关闭弹层',
+    )
+
+    // 关掉弹层后 Enter 回到"普通换行"的既有语义（弹层关着时它一律不接管按键）
+    await app.page.keyboard.press('Enter')
+    await app.page.keyboard.type('普通一行')
+    await waitUntil(
+      async () => ((await vault.read(MAIN)) ?? '').includes('普通一行'),
+      10_000,
+      '弹层关闭后输入照旧落盘',
+    )
+    expect(await vault.read(MAIN)).not.toBe(before)
+
+    // 焦点离开编辑器 → 弹层必须自己收起（否则它会留在屏幕上骗人）
+    await app.page.locator('.cm-content').click()
+    await app.page.keyboard.press('Control+End')
+    await app.page.keyboard.type('\n[[')
+    await app.page.waitForSelector('.mn-wiki-complete', { state: 'visible', timeout: 10_000 })
+    await treeRow(app.page, TARGET).click()
+    await waitUntil(
+      async () => (await app.page.locator('.mn-wiki-complete').count()) === 0,
+      5_000,
+      '焦点离开编辑器后弹层关闭',
+    )
+  })
+})

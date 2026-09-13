@@ -39,6 +39,19 @@ interface LightboxTarget {
   caption: string
 }
 
+/**
+ * 同一篇笔记里的全部可放大图片（按正文顺序）。
+ *
+ * 为什么在**打开的那一刻**收集，而不是每次翻页时重新扫 DOM：预览是 `dangerouslySetInnerHTML`
+ * 渲染的，正文一变节点就全换了。把"这篇笔记现在有哪几张图"固定成打开时的快照，
+ * 翻页就只是数组下标加一 —— 不会出现"翻到一半图没了"的中间态。
+ * （代价：翻页期间正文若被外部改动，列表不更新；关掉重开即可。）
+ */
+interface Gallery {
+  items: LightboxTarget[]
+  index: number
+}
+
 function clampScale(value: number): number {
   return Math.min(MAX_SCALE, Math.max(MIN_SCALE, value))
 }
@@ -64,8 +77,35 @@ function captionOf(image: HTMLImageElement): string {
   return image.getAttribute('data-mn-src') ?? ''
 }
 
+/**
+ * 收集**同一篇正文里**的全部可放大图片（阅读顺序），并定位被点击的那一张。
+ *
+ * 只看同一个 `.mn-preview__body`：跨笔记翻页不是这个组件的职责（那要先打开另一篇笔记，
+ * 属于"切笔记"而不是"看下一张图"）。
+ */
+function collectGallery(image: HTMLImageElement): Gallery {
+  const body = image.closest('.mn-preview__body')
+  const items: LightboxTarget[] = []
+  let index = -1
+  for (const node of Array.from(body?.querySelectorAll<HTMLImageElement>('img.mn-image') ?? [])) {
+    const src = openableSrc(node)
+    if (src === null) continue
+    if (node === image) index = items.length
+    items.push({ src, alt: node.getAttribute('alt') ?? '', caption: captionOf(node) })
+  }
+  // 兜底：拿不到正文容器时至少能放大被点击的这一张
+  if (items.length === 0) {
+    const src = openableSrc(image)
+    if (src !== null) {
+      items.push({ src, alt: image.getAttribute('alt') ?? '', caption: captionOf(image) })
+      index = 0
+    }
+  }
+  return { items, index: Math.max(0, index) }
+}
+
 export function ImageLightbox() {
-  const [target, setTarget] = useState<LightboxTarget | null>(null)
+  const [gallery, setGallery] = useState<Gallery | null>(null)
   /** 相对"适应窗口"的缩放倍数；1 = 正好铺满舞台（不是"1 像素比 1 像素"）。 */
   const [scale, setScale] = useState(1)
   /** 大图加载失败（文件被删/被移走）：就地给一句说明，而不是留个裂图或直接闪退。 */
@@ -75,8 +115,12 @@ export function ImageLightbox() {
   const dialogRef = useRef<HTMLDivElement | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
 
+  const target = gallery?.items[gallery.index] ?? null
+  const hasPrev = gallery !== null && gallery.index > 0
+  const hasNext = gallery !== null && gallery.index < gallery.items.length - 1
+
   const close = useCallback((): void => {
-    setTarget(null)
+    setGallery(null)
     setFailed(false)
     setScale(1)
     const previous = restoreFocusRef.current
@@ -84,12 +128,36 @@ export function ImageLightbox() {
     if (previous !== null && previous.isConnected) previous.focus()
   }, [])
 
-  const open = useCallback((next: LightboxTarget): void => {
+  /**
+   * 翻到同一篇笔记里的上一张 / 下一张。
+   *
+   * 缩放重置成"适应窗口"：两张图尺寸常常差很多，沿用上一张的放大倍数会直接把人甩出画面；
+   * 失败态也要清掉（上一张加载失败不该让下一张显示成错误）。
+   */
+  const step = useCallback((delta: 1 | -1): void => {
+    setGallery((current) => {
+      if (current === null) return current
+      const next = current.index + delta
+      if (next < 0 || next >= current.items.length) return current
+      return { items: current.items, index: next }
+    })
+    setScale(1)
+    setFailed(false)
+  }, [])
+
+  /**
+   * 打开被点击的那张图。
+   *
+   * 只收图片元素、不收"算好的目标"：目标（src/alt/图注）由 {@link collectGallery} 一并算出 ——
+   * 同一份信息有两处来源，迟早会出现"列表里的第 2 项跟正在显示的这张不是同一张"。
+   * 拿不到正文容器时 `collectGallery` 自己会退化成"只有这一张"。
+   */
+  const open = useCallback((image: HTMLImageElement): void => {
     const active = typeof document === 'undefined' ? null : document.activeElement
     restoreFocusRef.current = active instanceof HTMLElement ? active : null
     setFailed(false)
     setScale(1)
-    setTarget(next)
+    setGallery(collectGallery(image))
   }, [])
 
   // 委托监听（捕获阶段，document 级）：理由见文件头
@@ -104,7 +172,7 @@ export function ImageLightbox() {
       if (!(image instanceof HTMLImageElement)) return
       const src = openableSrc(image)
       if (src === null) return
-      open({ src, alt: image.getAttribute('alt') ?? '', caption: captionOf(image) })
+      open(image)
       // 图片可能被包在链接里：拦掉默认跳转，也别让预览的点击处理器再开一篇笔记
       event.preventDefault()
       event.stopPropagation()
@@ -186,6 +254,16 @@ export function ImageLightbox() {
           event.preventDefault()
           setScale(1)
           return
+        // 翻页用 PageUp/PageDown 而不是 ←/→：方向键已经是"平移大图"，
+        // 一图一页与逐像素平移是两件事，不该抢同一组键
+        case 'PageUp':
+          event.preventDefault()
+          step(-1)
+          return
+        case 'PageDown':
+          event.preventDefault()
+          step(1)
+          return
         case 'ArrowUp':
         case 'ArrowDown':
         case 'ArrowLeft':
@@ -233,7 +311,7 @@ export function ImageLightbox() {
     return () => {
       window.removeEventListener('keydown', onKeyDown, true)
     }
-  }, [target, close])
+  }, [target, close, step])
 
   if (target === null) return null
 
@@ -258,6 +336,32 @@ export function ImageLightbox() {
           <span className="mn-lightbox__zoom" title="相对「适应窗口」的缩放" aria-live="polite">
             {Math.round(scale * 100)}%
           </span>
+          {/* 同一篇笔记里的多张图：直接翻页，不用关掉再点下一张（只有一张时不显示这组控件） */}
+          {gallery !== null && gallery.items.length > 1 && (
+            <>
+              <button
+                type="button"
+                className="mn-button"
+                title="上一张（PageUp）"
+                disabled={!hasPrev}
+                onClick={() => step(-1)}
+              >
+                上一张
+              </button>
+              <span className="mn-lightbox__counter" aria-live="polite">
+                {gallery.index + 1} / {gallery.items.length}
+              </span>
+              <button
+                type="button"
+                className="mn-button"
+                title="下一张（PageDown）"
+                disabled={!hasNext}
+                onClick={() => step(1)}
+              >
+                下一张
+              </button>
+            </>
+          )}
           <button
             type="button"
             className="mn-button"
