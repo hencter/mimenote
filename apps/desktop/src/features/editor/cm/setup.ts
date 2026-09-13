@@ -50,6 +50,7 @@ import {
   outdentOnShiftTab,
 } from './list-input'
 import { livePreviewExtensions } from './live-preview/plugin'
+import { wikiCompleteExtensions } from './wiki-complete/plugin'
 
 /** 允许运行时替换的扩展槽（明暗模式）。 */
 export const appearanceCompartment = new Compartment()
@@ -153,6 +154,9 @@ export function createEditorExtensions(
     EditorView.lineWrapping,
     // 所见即所得（Live Preview）：装饰层，不改文档、不换编辑器
     ...livePreviewExtensions(),
+    // `[[` 笔记补全（ADR-0009 之后的写作手感补齐）：弹层是 ViewPlugin，键位是 Prec.highest ——
+    // 但**只在弹层开着时**才吃 Enter/Tab/↑↓/Esc，关闭时一律返回 false（详细分工见该模块文档）
+    ...wikiCompleteExtensions(),
     // 粘贴 / 拖入图片（ADR-0013）：走 `EditorView.domEventHandlers` —— 插件提供的处理器排在
     // CodeMirror 内置粘贴之前，返回 `true` 才吃掉事件，返回 `false` 时文本粘贴原样落到默认实现
     // （完整理由见 `image-input.ts` 的模块文档）
