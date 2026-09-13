@@ -1,0 +1,18 @@
+# 统一换行：源码与文档一律 LF 存进仓库（Windows 上也不会被 core.autocrlf 改成 CRLF），
+# 这样"打开 CRLF 的笔记 → 保存"的换行保真逻辑在协作时不会互相打架。
+* text=auto eol=lf
+
+# 二进制资源不要做换行转换
+*.png binary
+*.ico binary
+*.icns binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+
+# 锁文件：合并冲突时不要自动处理
+Cargo.lock -diff linguist-generated
+pnpm-lock.yaml -diff linguist-generated

@@ -1,0 +1,23 @@
+{
+  "name": "mimenote",
+  "version": "0.1.0",
+  "private": true,
+  "description": "本地优先的 Markdown 知识库桌面应用（M1：可运行骨架）",
+  "license": "MIT",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @mimenote/desktop dev",
+    "tauri:dev": "pnpm --filter @mimenote/desktop tauri:dev",
+    "tauri:build": "pnpm --filter @mimenote/desktop tauri:build",
+    "build": "pnpm --filter @mimenote/desktop build",
+    "typecheck": "pnpm --filter @mimenote/desktop typecheck",
+    "test": "pnpm --filter @mimenote/desktop test",
+    "test:rust": "cargo test --workspace",
+    "lint:rust": "cargo clippy --workspace --all-targets -- -D warnings",
+    "fmt:rust": "cargo fmt --all",
+    "check": "pnpm typecheck && pnpm test && cargo test --workspace"
+  }
+}

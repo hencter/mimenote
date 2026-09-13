@@ -1,0 +1,6 @@
+packages:
+  - "apps/*"
+
+# pnpm 10+ 默认阻止依赖的安装脚本；仅放行确实需要构建步骤的依赖。
+onlyBuiltDependencies:
+  - esbuild

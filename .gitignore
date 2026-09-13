@@ -1,0 +1,35 @@
+# Node
+node_modules/
+.pnpm-store/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 前端构建产物
+dist/
+dist-ssr/
+.vite/
+coverage/
+
+# Rust / Tauri
+target/
+apps/desktop/src-tauri/gen/
+
+# 编辑器 / 系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本地环境
+.env
+.env.local
+*.local
+
+# 测试与临时产物
+playwright-report/
+test-results/
+tmp/
