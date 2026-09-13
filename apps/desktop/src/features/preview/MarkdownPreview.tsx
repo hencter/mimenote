@@ -3,21 +3,105 @@
  *
  * 渲染是**净化后**的 HTML（见 domain/markdown.ts），因此可以安全地走 dangerouslySetInnerHTML。
  * 大文档用 `useDeferredValue` 降低渲染优先级，保证输入不被预览拖慢（M5 会迁移到 Web Worker）。
+ *
+ * 链接交互（M2）：
+ * - `[[wikilink]]` 渲染成 `a.mn-wikilink`，宿主索引返回后由这里补上"已解析/悬空"的类名；
+ * - 点击 wikilink → 打开目标笔记；悬空 → 直接创建（Obsidian 的核心手感）；
+ * - 点击 `[x](别的笔记.md)` → 同样走内部跳转；
+ * - 外部链接不在应用内打开（M2 尚未接入系统浏览器），给出提示而不是让 WebView 跳走。
  */
 
-import { useDeferredValue, useMemo } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef } from 'react'
 
+import { createNoteFromLink, openNote } from '@/app/actions'
 import { Icon } from '@/components/Icon'
+import { isInternalNoteHref, normalizeLinkTarget } from '@/domain/links'
 import { renderMarkdown } from '@/domain/markdown'
+import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
+import { toast } from '@/state/toast-store'
 
 export function MarkdownPreview() {
   const relPath = useNoteStore((state) => state.doc?.relPath ?? null)
   const text = useNoteStore((state) => state.doc?.text ?? '')
-  const deferredText = useDeferredValue(text)
+  const links = useLinksStore((state) => state.links)
+  const bodyRef = useRef<HTMLElement | null>(null)
 
-  const html = useMemo(() => (relPath === null ? '' : renderMarkdown(deferredText)), [relPath, deferredText])
+  const deferredText = useDeferredValue(text)
+  const html = useMemo(
+    () => (relPath === null ? '' : renderMarkdown(deferredText)),
+    [relPath, deferredText],
+  )
   const stale = deferredText !== text
+
+  // 把宿主索引的解析结果"贴"到渲染出来的 wikilink 上（不重新渲染 HTML）
+  useEffect(() => {
+    const root = bodyRef.current
+    if (root === null) return
+
+    const outbound = links?.outbound ?? []
+    for (const element of Array.from(root.querySelectorAll('a.mn-wikilink'))) {
+      const key = normalizeLinkTarget(element.getAttribute('data-target') ?? '')
+      const match = outbound.find((link) => normalizeLinkTarget(link.rawTarget) === key)
+      const resolved = match?.resolvedRelPath ?? null
+
+      element.classList.toggle('mn-wikilink--unresolved', resolved === null)
+      element.classList.toggle('mn-wikilink--ambiguous', match?.ambiguous === true)
+      if (resolved === null) {
+        element.removeAttribute('data-rel-path')
+        element.setAttribute('title', `${element.getAttribute('data-target') ?? ''}（还不存在，点击创建）`)
+      } else {
+        element.setAttribute('data-rel-path', resolved)
+        element.setAttribute('title', resolved)
+      }
+    }
+  }, [html, links])
+
+  const handleClick = useCallback(
+    (event: React.MouseEvent<HTMLElement>) => {
+      const target = event.target
+      if (!(target instanceof Element)) return
+      const anchor = target.closest('a')
+      if (anchor === null) return
+
+      // wikilink：已解析 → 打开；悬空 → 创建
+      if (anchor.classList.contains('mn-wikilink')) {
+        event.preventDefault()
+        const resolved = anchor.getAttribute('data-rel-path')
+        if (resolved !== null) {
+          void openNote(resolved)
+        } else if (relPath !== null) {
+          void createNoteFromLink(anchor.getAttribute('data-target') ?? '', relPath)
+        }
+        return
+      }
+
+      const href = anchor.getAttribute('href') ?? ''
+      if (href === '' || href.startsWith('#')) return
+
+      // Markdown 内部链接：用宿主返回的出链表判断指向哪一篇
+      const key = normalizeLinkTarget(href)
+      const match = (links?.outbound ?? []).find(
+        (link) => normalizeLinkTarget(link.rawTarget) === key,
+      )
+      if (match?.resolvedRelPath != null) {
+        event.preventDefault()
+        void openNote(match.resolvedRelPath)
+        return
+      }
+
+      if (isInternalNoteHref(href)) {
+        event.preventDefault()
+        if (relPath !== null) void createNoteFromLink(href, relPath)
+        return
+      }
+
+      // 外部链接：不让 WebView 直接跳走（会丢掉整个界面）
+      event.preventDefault()
+      toast.info('外部链接未在应用内打开', `${href}（M2 之后接入系统浏览器打开）`)
+    },
+    [links, relPath],
+  )
 
   if (relPath === null) {
     return (
@@ -31,7 +115,12 @@ export function MarkdownPreview() {
     <div className={`mn-preview${stale ? ' mn-preview--stale' : ''}`}>
       <div className="mn-preview__scroller">
         {/* html 已由 DOMPurify 净化（两道防线见 domain/markdown.ts） */}
-        <article className="mn-preview__body" dangerouslySetInnerHTML={{ __html: html }} />
+        <article
+          className="mn-preview__body"
+          ref={bodyRef}
+          onClick={handleClick}
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
       </div>
       {stale && (
         <div className="mn-preview__stale-hint">

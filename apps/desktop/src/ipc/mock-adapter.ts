@@ -8,9 +8,22 @@
  * 行为刻意与 Rust 侧对齐：删除进回收站、mtime 作为版本令牌、路径校验。
  */
 
-import type { EntryMeta, NoteContent, TrashRecord, VaultInfo, VaultSnapshot, WriteOutcome } from './types'
+import type {
+  BacklinkRef,
+  EntryMeta,
+  IndexStatus,
+  LinkKind,
+  NoteContent,
+  NoteLinks,
+  ResolvedLink,
+  TrashRecord,
+  VaultInfo,
+  VaultSnapshot,
+  WriteOutcome,
+} from './types'
 import { MimenoteError, type ErrorCode } from './types'
 import type { IpcAdapter } from './client'
+import { normalizeLinkTarget, splitWikilink, wikilinkDisplayText } from '@/domain/links'
 
 interface MockNote {
   relPath: string
@@ -27,9 +40,9 @@ const DEFAULT_NOTES: MockNote[] = [
     text: '# 一月一日\n\n- [x] 起床\n- [ ] 写笔记\n\n> 引用：本地优先。\n',
   },
   { relPath: '日记/2025-01-02.md', text: '# 一月二日\n\n今天研究了 CodeMirror 6 的扩展机制。\n' },
-  { relPath: '项目/设计.md', text: '# 设计\n\n| 层 | 职责 |\n| --- | --- |\n| 文件层 | 原子写 |\n| 索引层 | FTS5 |\n' },
-  { relPath: '项目/路线图.md', text: '# 路线图\n\n1. M1 闭环\n2. M2 搜索\n3. M3 图谱\n' },
-  { relPath: '项目/子项目/细节.md', text: '# 细节\n\n```ts\nexport const answer = 42\n```\n' },
+  { relPath: '项目/设计.md', text: '# 设计\n\n参考 [[路线图]] 与 [[细节]]。\n\n| 层 | 职责 |\n| --- | --- |\n| 文件层 | 原子写 |\n| 索引层 | FTS5 |\n' },
+  { relPath: '项目/路线图.md', text: '# 路线图\n\n1. M1 闭环\n2. M2 搜索\n3. M3 图谱\n\n设计细节见 [[设计]]。\n' },
+  { relPath: '项目/子项目/细节.md', text: '# 细节\n\n```ts\nexport const answer = 42\n```\n\n还有一个还没写的笔记：[[还不存在的笔记]]。\n' },
   { relPath: '随手记.md', text: '字数统计测试：hello world 与中文混排。\n' },
   { relPath: '附件/说明.txt', text: '非 Markdown 附件，M1 不可编辑。\n' },
 ]
@@ -41,6 +54,155 @@ export interface MockAdapterOptions {
   startupVaultPath?: string
   /** 模拟写入延迟（毫秒），用于验证 UI 的"保存中"状态。 */
   writeLatencyMs?: number
+}
+
+// ---------------------------------------------------------------------------
+// Mock 的链接解析
+//
+// ⚠️ 这里只是为了"浏览器预览 + UI 层测试"能跑通，规则是 Rust 实现
+// （`mn-core::links` + `mn-index`）的**简化镜像**。权威实现永远在 Rust 侧，
+// 真实行为由应用层 E2E 与 Rust 单测覆盖。
+// ---------------------------------------------------------------------------
+
+interface MockRawLink {
+  kind: LinkKind
+  rawTarget: string
+  alias: string | null
+  anchor: string | null
+  line: number
+}
+
+function mockExtractLinks(text: string): MockRawLink[] {
+  const out: MockRawLink[] = []
+  let inFence = false
+
+  text.split('\n').forEach((line, index) => {
+    const trimmed = line.trimStart()
+    if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
+      inFence = !inFence
+      return
+    }
+    if (inFence) return
+
+    // 行内代码与转义的 `[[` 不算链接
+    const cleaned = line.replace(/`[^`]*`/g, ' ').replaceAll('\\[', '  ')
+
+    const wiki = /\[\[([^\]\n]+)\]\]/g
+    let match = wiki.exec(cleaned)
+    while (match !== null) {
+      const parts = splitWikilink(match[1] ?? '')
+      out.push({
+        kind: 'wiki',
+        rawTarget: parts.target,
+        alias: parts.alias,
+        anchor: parts.anchor,
+        line: index + 1,
+      })
+      match = wiki.exec(cleaned)
+    }
+
+    const markdown = /\[([^\]\n]*)\]\(([^)\s]+)[^)]*\)/g
+    match = markdown.exec(cleaned)
+    while (match !== null) {
+      const target = match[2] ?? ''
+      if (!/^[a-z][a-z0-9+.-]*:/i.test(target) && !target.startsWith('#')) {
+        const parts = splitWikilink(target)
+        out.push({
+          kind: 'markdown',
+          rawTarget: parts.target,
+          alias: match[1] || null,
+          anchor: parts.anchor,
+          line: index + 1,
+        })
+      }
+      match = markdown.exec(cleaned)
+    }
+  })
+
+  return out
+}
+
+function pickMockCandidate(matches: string[]): { path: string | null; ambiguous: boolean } {
+  const unique = [...new Set(matches)].sort()
+  if (unique.length === 0) return { path: null, ambiguous: false }
+  if (unique.length === 1) return { path: unique[0] ?? null, ambiguous: false }
+  const best = [...unique].sort(
+    (a, b) => a.length - b.length || a.localeCompare(b),
+  )[0]
+  return { path: best ?? null, ambiguous: true }
+}
+
+function buildMockNoteLinks(files: Map<string, MockNote>, relPath: string): NoteLinks {
+  const all = [...files.keys()]
+  const byStem = new Map<string, string[]>()
+  for (const path of all) {
+    const name = path.split('/').pop() ?? path
+    const stem = name.replace(/\.(md|markdown)$/i, '').toLowerCase()
+    byStem.set(stem, [...(byStem.get(stem) ?? []), path])
+  }
+
+  const resolve = (from: string, raw: string): { path: string | null; ambiguous: boolean } => {
+    const key = normalizeLinkTarget(raw)
+    if (key === '') return { path: from, ambiguous: false }
+    if (key.includes('/')) {
+      const direct = all.find((candidate) => normalizeLinkTarget(candidate) === key)
+      if (direct !== undefined) return { path: direct, ambiguous: false }
+      const suffix = `/${key}`
+      return pickMockCandidate(
+        all.filter((candidate) => normalizeLinkTarget(candidate).endsWith(suffix)),
+      )
+    }
+    return pickMockCandidate(byStem.get(key) ?? [])
+  }
+
+  const note = files.get(relPath)
+  const outbound: ResolvedLink[] = (note === undefined ? [] : mockExtractLinks(note.text)).map(
+    (link) => {
+      const resolved = resolve(relPath, link.rawTarget)
+      return {
+        kind: link.kind,
+        rawTarget: link.rawTarget,
+        display: wikilinkDisplayText({
+          target: link.rawTarget,
+          alias: link.alias,
+          anchor: link.anchor,
+        }),
+        alias: link.alias,
+        anchor: link.anchor,
+        line: link.line,
+        resolvedRelPath: resolved.path,
+        ambiguous: resolved.ambiguous,
+      }
+    },
+  )
+
+  const backlinks: BacklinkRef[] = []
+  for (const [from, other] of files) {
+    if (from === relPath) continue
+    for (const link of mockExtractLinks(other.text)) {
+      const resolved = resolve(from, link.rawTarget)
+      if (resolved.path !== relPath) continue
+      backlinks.push({
+        fromRelPath: from,
+        display: wikilinkDisplayText({
+          target: link.rawTarget,
+          alias: link.alias,
+          anchor: link.anchor,
+        }),
+        anchor: link.anchor,
+        line: link.line,
+        kind: link.kind,
+      })
+    }
+  }
+  backlinks.sort((a, b) => a.fromRelPath.localeCompare(b.fromRelPath) || a.line - b.line)
+
+  return {
+    relPath,
+    outbound,
+    backlinks,
+    unresolvedCount: outbound.filter((link) => link.resolvedRelPath === null).length,
+  }
 }
 
 export interface MockAdapter extends IpcAdapter {
@@ -186,6 +348,24 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
           return undefined as T
         case 'startup_vault':
           return (options.startupVaultPath ?? null) as T
+        case 'index_status': {
+          const status: IndexStatus = {
+            phase: 'ready',
+            indexed: noteCount(),
+            total: noteCount(),
+            durationMs: 2,
+            links: [...files.keys()].reduce(
+              (sum, rel) => sum + buildMockNoteLinks(files, rel).outbound.length,
+              0,
+            ),
+          }
+          return status as T
+        }
+        case 'note_links': {
+          const relPath = String(a.relPath ?? '')
+          validate(relPath)
+          return buildMockNoteLinks(files, relPath) as T
+        }
         case 'note_read': {
           const relPath = String(a.relPath ?? '')
           validate(relPath)

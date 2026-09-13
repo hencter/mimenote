@@ -24,6 +24,7 @@ import { Icon } from '@/components/Icon'
 import { Splitter } from '@/components/Splitter'
 import { Toasts } from '@/components/Toasts'
 import { MarkdownEditor } from '@/features/editor/MarkdownEditor'
+import { LinksPanel } from '@/features/links/LinksPanel'
 import { MarkdownPreview } from '@/features/preview/MarkdownPreview'
 import { ConflictBanner } from '@/features/status/ConflictBanner'
 import { StatusBar } from '@/features/status/StatusBar'
@@ -31,6 +32,7 @@ import { FileTree } from '@/features/vault/FileTree'
 import { TreeToolbar } from '@/features/vault/TreeToolbar'
 import { VaultGate } from '@/features/vault/VaultGate'
 import { formatDuration } from '@/domain/format'
+import { subscribeIndexStatus, useLinksStore } from '@/state/links-store'
 import { flushAutosave, hasUnsavedChanges, useNoteStore } from '@/state/note-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
@@ -50,8 +52,11 @@ export function App() {
   const previewRatio = useUiStore((state) => state.previewRatio)
   const themeId = useUiStore((state) => state.themeId)
   const snippetsEnabled = useUiStore((state) => state.snippetsEnabled)
+  const linksPanelVisible = useUiStore((state) => state.linksPanelVisible)
+  const linksPanelWidth = useUiStore((state) => state.linksPanelWidth)
   const setSidebarWidth = useUiStore((state) => state.setSidebarWidth)
   const setPreviewRatio = useUiStore((state) => state.setPreviewRatio)
+  const setLinksPanelWidth = useUiStore((state) => state.setLinksPanelWidth)
 
   const mainRef = useRef<HTMLElement | null>(null)
 
@@ -81,6 +86,30 @@ export function App() {
     if (saveCount === 0) return
     void useNoteStore.getState().refreshDiskStats()
   }, [saveCount])
+
+  // 链接索引：订阅宿主的进度事件（浏览器预览模式下自动降级）
+  useEffect(() => subscribeIndexStatus(), [])
+
+  // 打开笔记 → 拉取它的出链与反向链接
+  useEffect(() => {
+    void useLinksStore.getState().refresh(relPath)
+  }, [relPath])
+
+  // 打开/关闭 Vault → 同步索引状态
+  useEffect(() => {
+    if (rootPath === null) {
+      useLinksStore.getState().clear()
+      return
+    }
+    void useLinksStore.getState().refreshStatus()
+  }, [rootPath])
+
+  // 保存后若链接面板可见，刷新一次（正文里的链接可能变了）
+  useEffect(() => {
+    if (saveCount === 0 || relPath === null) return
+    if (!useUiStore.getState().linksPanelVisible) return
+    void useLinksStore.getState().refresh(relPath)
+  }, [saveCount, relPath])
 
   // 未保存内容保护：关闭窗口前拦截 + 失焦/隐藏时立即落盘
   useEffect(() => {
@@ -187,6 +216,21 @@ export function App() {
             </section>
           )}
         </main>
+
+        {linksPanelVisible && (
+          <>
+            <Splitter
+              ariaLabel="调整链接面板宽度"
+              onDrag={(event) => setLinksPanelWidth(window.innerWidth - event.clientX)}
+              onNudge={(delta) =>
+                setLinksPanelWidth(useUiStore.getState().linksPanelWidth - delta)
+              }
+            />
+            <div className="mn-links-host" style={{ width: linksPanelWidth }}>
+              <LinksPanel />
+            </div>
+          </>
+        )}
       </div>
 
       <StatusBar />

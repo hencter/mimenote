@@ -10,6 +10,7 @@
 
 pub mod commands;
 pub mod error;
+pub mod indexer;
 pub mod logging;
 pub mod startup;
 pub mod state;
@@ -37,6 +38,8 @@ pub fn run() {
             commands::note_create,
             commands::note_delete,
             commands::note_stats,
+            commands::index_status,
+            commands::note_links,
             commands::snippets_list,
             commands::startup_vault,
             commands::version_info,

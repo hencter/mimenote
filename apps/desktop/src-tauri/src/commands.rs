@@ -11,15 +11,17 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use mn_core::atomic::{read_text, write_atomic};
 use mn_core::path_guard::sanitize_file_stem;
 use mn_core::scanner::{scan, EntryMeta, ScanOptions};
 use mn_core::trash::{move_to_trash, TrashRecord};
 use mn_core::{Error, VaultRoot};
+use mn_index::NoteLinks;
 
 use crate::error::IpcError;
+use crate::indexer::{self, IndexStatus};
 use crate::state::{AppState, VaultCtx};
 
 /// 单个 Markdown 文件的读取上限。
@@ -148,6 +150,7 @@ where
 #[tauri::command]
 pub async fn vault_open(
     state: State<'_, Arc<AppState>>,
+    app: AppHandle,
     path: String,
 ) -> Result<VaultSnapshot, IpcError> {
     let (root, options, report) = run_blocking(move || {
@@ -170,7 +173,18 @@ pub async fn vault_open(
         snapshot.skipped
     );
 
+    // 索引是缓存：先清空，再在后台线程重建（不阻塞打开 Vault 的返回）
+    let entries_for_index = report.entries.clone();
+    let root_for_index = root.clone();
     state.set_vault(VaultCtx::new(root, options, report));
+    indexer::reset(&state);
+    indexer::spawn_build(
+        Arc::clone(state.inner()),
+        app,
+        root_for_index,
+        entries_for_index,
+    );
+
     Ok(snapshot)
 }
 
@@ -197,7 +211,10 @@ pub fn vault_info(state: State<'_, Arc<AppState>>) -> Result<Option<VaultInfo>, 
 
 /// 重新扫描（用户在外部增删了大量文件时使用）。
 #[tauri::command]
-pub async fn vault_snapshot(state: State<'_, Arc<AppState>>) -> Result<VaultSnapshot, IpcError> {
+pub async fn vault_snapshot(
+    state: State<'_, Arc<AppState>>,
+    app: AppHandle,
+) -> Result<VaultSnapshot, IpcError> {
     let root = state.vault_root()?;
     let options = state.with_vault(|ctx| Ok(ctx.options.clone()))?;
     let scan_options = options.clone();
@@ -205,7 +222,17 @@ pub async fn vault_snapshot(state: State<'_, Arc<AppState>>) -> Result<VaultSnap
     let report = run_blocking(move || scan(scan_root.path(), &scan_options)).await?;
 
     let snapshot = snapshot_from(&root, &report);
+    let entries_for_index = report.entries.clone();
+    let root_for_index = root.clone();
     state.set_vault(VaultCtx::new(root, options, report));
+    // 文件可能在外部被大量改动，索引整轮重建（同样在后台）
+    indexer::reset(&state);
+    indexer::spawn_build(
+        Arc::clone(state.inner()),
+        app,
+        root_for_index,
+        entries_for_index,
+    );
     log::info!(
         "重扫完成：{} 条目（{}ms）",
         snapshot.entries.len(),
@@ -217,6 +244,7 @@ pub async fn vault_snapshot(state: State<'_, Arc<AppState>>) -> Result<VaultSnap
 /// 关闭 Vault（保留窗口，回到选择界面）。
 #[tauri::command]
 pub fn vault_close(state: State<'_, Arc<AppState>>) -> Result<(), IpcError> {
+    indexer::reset(&state);
     state.clear_vault();
     log::info!("已关闭 Vault");
     Ok(())
@@ -307,6 +335,9 @@ pub async fn note_write(
         write_atomic(&path, text.as_bytes())?;
         let written = started.elapsed().as_millis() as u64;
 
+        // 链接索引增量更新：与写在同一个后台任务里完成，避免为索引再复制一份正文
+        indexer::update_note(&app, &rel, &text);
+
         let meta = std::fs::metadata(&path).map_err(|e| Error::io(&path, e))?;
         Ok((
             meta.len(),
@@ -326,6 +357,7 @@ pub async fn note_write(
             ext: ext_of(&rel_path),
         })
     });
+    // 链接索引在写入后台任务里已增量更新（见上面的 indexer::update_note）
 
     log::debug!("保存 {rel_path}（{size_bytes} 字节，写入 {written_in_ms}ms）");
     Ok(WriteOutcome {
@@ -346,6 +378,7 @@ pub async fn note_create(
     let root = state.vault_root()?;
     let (entry, note) = run_blocking(move || create_note(&root, &parent_rel, &title)).await?;
     state.update_vault(|ctx| ctx.upsert(entry));
+    indexer::update_note(&state, &note.rel_path, &note.text);
     log::info!("新建笔记：{}", note.rel_path);
     Ok(note)
 }
@@ -364,12 +397,37 @@ pub async fn note_delete(
     let rel = rel_path.clone();
     let record = run_blocking(move || move_to_trash(&root, &rel)).await?;
     state.update_vault(|ctx| ctx.remove(&record.original_rel_path));
+    indexer::remove_note(&state, &record.original_rel_path);
     log::info!(
         "删除到回收站：{} -> {}",
         record.original_rel_path,
         record.stored_rel_path
     );
     Ok(record)
+}
+
+// ---------------------------------------------------------------------------
+// 链接索引
+// ---------------------------------------------------------------------------
+
+/// 索引进度与概况。
+#[tauri::command]
+pub fn index_status(state: State<'_, Arc<AppState>>) -> IndexStatus {
+    indexer::status(&state)
+}
+
+/// 查询某篇笔记的出链与反向链接。
+///
+/// 反向链接缓存是惰性重建的（可能涉及全库解析），因此放到后台线程执行。
+#[tauri::command]
+pub async fn note_links(
+    state: State<'_, Arc<AppState>>,
+    rel_path: String,
+) -> Result<NoteLinks, IpcError> {
+    let app = Arc::clone(state.inner());
+    let rel = rel_path.clone();
+    let links: NoteLinks = run_blocking(move || Ok(indexer::note_links(&app, &rel))).await?;
+    Ok(links)
 }
 
 // ---------------------------------------------------------------------------

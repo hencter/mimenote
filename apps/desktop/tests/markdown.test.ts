@@ -57,6 +57,62 @@ describe('renderMarkdown 基础渲染', () => {
   })
 })
 
+describe('wikilink（M2）', () => {
+  it('渲染成带 data-target 的锚点', () => {
+    const html = renderMarkdown('见 [[另一篇]]。')
+    expect(html).toContain('class="mn-wikilink"')
+    expect(html).toContain('data-target="另一篇"')
+    expect(html).toContain('>另一篇</a>')
+  })
+
+  it('别名与锚点', () => {
+    const html = renderMarkdown('[[某篇#小节|显示文本]]')
+    expect(html).toContain('data-target="某篇"')
+    expect(html).toContain('data-anchor="小节"')
+    expect(html).toContain('>显示文本</a>')
+  })
+
+  it('空目标指向文内锚点', () => {
+    const html = renderMarkdown('[[#小节]]')
+    expect(html).toContain('data-target=""')
+    expect(html).toContain('>#小节</a>')
+  })
+
+  it('wikilink 不加 target=_blank（它是文内跳转，不是外链）', () => {
+    const html = renderMarkdown('[[另一篇]]')
+    expect(html).not.toContain('target="_blank"')
+    expect(html).not.toContain('noopener')
+  })
+
+  it('普通外链仍然带 target 与 rel=noopener', () => {
+    const html = renderMarkdown('[站点](https://example.com)')
+    expect(html).toContain('target="_blank"')
+    expect(html).toContain('rel="noopener noreferrer nofollow"')
+  })
+
+  it('未闭合或空 wikilink 保持原文', () => {
+    expect(renderMarkdown('[[没有闭合')).toContain('[[没有闭合')
+    expect(renderMarkdown('[[]]')).not.toContain('mn-wikilink')
+  })
+
+  it('代码块与行内代码里的 [[ ]] 不渲染', () => {
+    expect(renderMarkdown('```\n[[不是链接]]\n```')).not.toContain('mn-wikilink')
+    expect(renderMarkdown('`[[不是链接]]`')).not.toContain('mn-wikilink')
+  })
+
+  it('wikilink 里的 HTML 不会变成元素（净化仍然生效）', () => {
+    const html = renderMarkdown('[[<img src=x onerror=alert(1)>]]')
+    // 断 DOM 而不是断字符串：属性值里出现 `<img` 字样是无害的（在引号内），
+    // 真正要保证的是它没有变成元素。
+    const container = document.createElement('div')
+    container.innerHTML = html
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.querySelector('a.mn-wikilink')?.getAttribute('data-target')).toBe(
+      '<img src=x onerror=alert(1)>',
+    )
+  })
+})
+
 describe('XSS 防护', () => {
   it('raw HTML 被关闭：script 变成纯文本', () => {
     const html = renderMarkdown('<script>alert(1)</script>')

@@ -12,7 +12,7 @@
  *    真正的像素级验证留给 M5 的 Playwright。
  */
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -135,6 +135,78 @@ describe('外壳渲染', () => {
     })
     await waitFor(() => {
       expect(document.querySelector('.cm-content')?.textContent ?? '').toContain('示例 Vault')
+    })
+  })
+})
+
+describe('链接面板（M2）', () => {
+  it('打开笔记后可以查看反向链接，点击可跳转到来源笔记', async () => {
+    render(<App />)
+    await useVaultStore.getState().openVault('C:\\MockVault')
+
+    // 打开「设计」：它被「路线图」链接
+    await openNote('项目/设计.md')
+    await waitFor(() => {
+      expect(document.querySelector('.cm-content')?.textContent ?? '').toContain('设计')
+    })
+
+    // 打开链接面板（状态栏按钮）
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('button[aria-label="链接面板"]')?.click()
+    })
+    const panel = await waitFor(() => {
+      const element = document.querySelector('.mn-links')
+      expect(element).not.toBeNull()
+      return element as HTMLElement
+    })
+
+    // 反向链接里应出现「路线图」
+    await waitFor(() => {
+      const names = Array.from(panel.querySelectorAll('.mn-links__item-name')).map(
+        (node) => node.textContent,
+      )
+      expect(names).toContain('路线图.md')
+    })
+
+    // 出链里应出现「细节」（已解析）与悬空项（在细节笔记里）
+    const outboundTargets = Array.from(
+      panel.querySelectorAll('[data-outbound-target]'),
+    ).map((node) => node.getAttribute('data-outbound-target'))
+    expect(outboundTargets).toContain('路线图')
+
+    // 点击反向链接 → 打开来源笔记
+    await act(async () => {
+      panel.querySelector<HTMLButtonElement>('[data-backlink-from="项目/路线图.md"]')?.click()
+    })
+    await waitFor(() => {
+      expect(document.querySelector('.mn-editor__path')?.textContent ?? '').toContain(
+        '项目/路线图.md',
+      )
+    })
+  })
+
+  it('点击预览里的 wikilink 会打开目标笔记', async () => {
+    render(<App />)
+    await useVaultStore.getState().openVault('C:\\MockVault')
+    await openNote('项目/路线图.md')
+
+    await waitFor(() => {
+      expect(document.querySelector('a.mn-wikilink')).not.toBeNull()
+    })
+
+    // 等链接被宿主索引标记为"已解析"
+    await waitFor(() => {
+      const link = document.querySelector('a.mn-wikilink')
+      expect(link?.getAttribute('data-rel-path')).toBe('项目/设计.md')
+    })
+
+    await act(async () => {
+      document.querySelector<HTMLAnchorElement>('a.mn-wikilink')?.click()
+    })
+    await waitFor(() => {
+      expect(document.querySelector('.mn-editor__path')?.textContent ?? '').toContain(
+        '项目/设计.md',
+      )
     })
   })
 })

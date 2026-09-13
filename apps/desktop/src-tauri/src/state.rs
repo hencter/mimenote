@@ -9,10 +9,14 @@
 //! * 所有锁都是 `std::sync` 的短临界区锁，**不跨 await 持有**。
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard, RwLock};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 
 use mn_core::scanner::{EntryMeta, ScanOptions, ScanReport};
 use mn_core::{Error, Result, VaultRoot};
+use mn_index::LinkIndex;
+
+use crate::indexer::IndexStatus;
 
 /// 已打开的 Vault 上下文。
 #[derive(Debug)]
@@ -124,6 +128,12 @@ pub struct AppState {
     write_lock: Mutex<()>,
     /// 命令行指定的 Vault（`mimenote.exe <目录>`），供前端启动时自动打开。
     startup_vault: Option<String>,
+    /// 链接索引（M2）。索引是缓存，可从文件重建。
+    index: RwLock<LinkIndex>,
+    /// 索引构建状态（推送给前端显示进度）。
+    index_status: RwLock<IndexStatus>,
+    /// 正在进行的构建任务的取消句柄。
+    index_cancel: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl AppState {
@@ -138,6 +148,41 @@ impl AppState {
     /// 命令行指定的 Vault 路径（面向用户展示的绝对路径）。
     pub fn startup_vault(&self) -> Option<&str> {
         self.startup_vault.as_deref()
+    }
+
+    /// 取索引的写锁（查询反向链接时会惰性重建缓存，因此需要写权限）。
+    pub fn index_write(&self) -> RwLockWriteGuard<'_, LinkIndex> {
+        self.index.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 索引状态快照。
+    pub fn index_status_snapshot(&self) -> IndexStatus {
+        *self.index_status.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 更新索引状态。
+    pub fn set_index_status(&self, status: IndexStatus) {
+        let mut guard = self.index_status.write().unwrap_or_else(|e| e.into_inner());
+        *guard = status;
+    }
+
+    /// 记录当前构建任务的取消句柄。
+    pub fn set_index_cancel(&self, flag: Option<Arc<AtomicBool>>) {
+        let mut guard = self.index_cancel.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = flag;
+    }
+
+    /// 清除取消句柄。
+    pub fn clear_index_cancel(&self) {
+        self.set_index_cancel(None);
+    }
+
+    /// 请求取消正在进行的索引构建（幂等）。
+    pub fn cancel_index_build(&self) {
+        let guard = self.index_cancel.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(flag) = guard.as_ref() {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// 只读访问当前 Vault；未打开时返回 `VAULT_NOT_SET`。

@@ -12,12 +12,14 @@
 
 pub mod atomic;
 pub mod error;
+pub mod links;
 pub mod path_guard;
 pub mod scanner;
 pub mod text_stats;
 pub mod trash;
 
 pub use error::{Error, ErrorCode, Result};
+pub use links::{extract_links, LinkKind, LinkRef};
 pub use path_guard::VaultRoot;
 pub use scanner::{scan, EntryMeta, ScanOptions, ScanReport};
 pub use text_stats::TextStats;

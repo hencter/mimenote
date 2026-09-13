@@ -1,0 +1,15 @@
+[package]
+name = "mn-index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Mimenote 索引层：链接索引（反向链接 / 出链），后续承载 SQLite FTS5 全文搜索"
+
+[dependencies]
+mn-core = { workspace = true }
+serde = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

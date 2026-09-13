@@ -36,20 +36,22 @@
 ├──────────────────────────────────────────────────────────────────────┤
 │  IPC 层                   ipc/client（可替换适配器）→ Tauri invoke      │
 ├──────────────────────────────────────────────────────────────────────┤
-│  应用层 (Rust)            src-tauri：状态、命令、错误码、能力声明         │
+│  应用层 (Rust)            src-tauri：状态、命令、错误码、能力声明、后台索引       │
 ├──────────────────────────────────────────────────────────────────────┤
-│  文件层 (Rust, mn-core)   路径防护 · 原子写 · 扫描 · 回收站 · 文本统计    │
-│  （M2 起新增：索引层 mn-index，SQLite FTS5，独立于文件层）               │
+│  索引层 (Rust, mn-index)  链接索引（出链/反链，M2）· SQLite FTS5（后续）         │
+├──────────────────────────────────────────────────────────────────────┤
+│  文件层 (Rust, mn-core)   路径防护 · 原子写 · 扫描 · 回收站 · 文本统计 · 链接抽取  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
 **边界规则**（可据此判断新代码放哪）：
 
-1. `mn-core` 是**纯 Rust 库**，不依赖 `tauri`，可 `cargo test -p mn-core` 独立验证。凡是"与 UI 框架无关、且必须在 Rust 侧做"的逻辑（路径安全、原子写、大目录扫描、回收站）都放这里。
-2. `src-tauri` 只做三件事：持有会话状态、把 mn-core 能力暴露成 IPC 命令、把错误映射成稳定错误码。**不放业务逻辑**。
-3. `domain/` 是纯函数 + 纯数据结构，禁止 import React/Zustand/Tauri。
-4. 组件不直接调用 IPC，必须经 store；store 不直接 `invoke`，必须经 `ipc/client`。
-5. 每个副作用（监听器、定时器、注入的 `<style>`、CM 扩展）都必须可逆：组件卸载即清理。
+1. `mn-core` 是**纯 Rust 库**，不依赖 `tauri`，可 `cargo test -p mn-core` 独立验证。凡是"与 UI 框架无关、且必须在 Rust 侧做"的逻辑（路径安全、原子写、大目录扫描、回收站、链接抽取）都放这里。
+2. `mn-index` 同样不依赖 `tauri`，只依赖 `mn-core`：**索引是缓存，可从文件重建**；链接索引与后续的 FTS5 全文搜索都落在这里，IPC 契约不变。
+3. `src-tauri` 只做三件事：持有会话状态、把 mn-core/mn-index 能力暴露成 IPC 命令、把错误映射成稳定错误码。**不放业务逻辑**。
+4. `domain/` 是纯函数 + 纯数据结构，禁止 import React/Zustand/Tauri。
+5. 组件不直接调用 IPC，必须经 store；store 不直接 `invoke`，必须经 `ipc/client`。
+6. 每个副作用（监听器、定时器、注入的 `<style>`、CM 扩展、索引后台任务）都必须可逆：组件卸载/切换 Vault 即清理。
 
 ## 3. 接口与数据流
 
@@ -73,8 +75,13 @@
 | `note_create` | `parentRel, title` | `NoteContent` | 唯一命名，返回新笔记 |
 | `note_delete` | `relPath, confirm` | `TrashRecord` | `confirm=false` 时返回 `CONFIRMATION_REQUIRED` |
 | `note_stats` | `relPath` | `DocumentStats` | 磁盘上文档的真实统计（`mn_core::text_stats`），与编辑器内即时统计互为校验 |
+| `index_status` | — | `IndexStatus` | 链接索引进度/概况（`idle`/`building`/`ready`/`cancelled`/`failed`） |
+| `note_links` | `relPath` | `NoteLinks` | 该笔记的出链与反向链接（含悬空与歧义标记） |
 | `snippets_list` | — | `SnippetFile[]` | 读取 `.mimenote/snippets/*.css` |
 | `version_info` | — | `VersionInfo` | 应用 / mn-core / Tauri 版本 |
+
+**事件（宿主 → 前端）**：`mn://index-status` 推送索引进度（`IndexStatus`）。
+用事件而不是轮询：索引构建是秒级的一次性过程，前端只需要"被通知"。
 
 ### 3.2 打开 Vault 的数据流
 
@@ -170,16 +177,16 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 
 见 [milestones.md](milestones.md)。当前进度：**M1（本目录）**。
 
-## 8. 已知限制（M1）
+## 8. 已知限制
 
 1. **预览不渲染本地图片**：`asset:` 协议需要在运行时按 Vault 动态注入作用域，M2 随「附件规则」一起做。当前 `<img>` 显示为占位（alt 文本）。
-2. `[[双链]]` 按普通文本显示（M2 引入 wikilink 解析 + `note/link/tag` 表）。
-3. 无全文搜索 / 快速切换 / 命令面板 UI（M2）。命令注册表与快捷键机制已就绪，调用方是 M2 的 UI。
-4. 删除走 Vault 内 `.mimenote/trash`（可见、可入 Git 忽略），未对接系统回收站；`restore` 命令在 M2 提供 UI。
-5. 外部变更检测依赖 mtime（毫秒）。同一毫秒内的外部改动理论上有漏检窗口（概率极低；M2 引入内容哈希作为二级令牌）。
-6. 未做 E2E（Playwright + tauri-driver）：M5 接入。M1 的手动验证清单见 README。
+2. **重命名尚未实现**：改文件名不会同步更新指向它的 `[[链接]]`（重命名 + 全库链接更新是 M2 的下一步）。
+3. `[[双链]]` **已可解析、渲染、跳转与反向链接**（M2 已交付）；但**标签**（`#标签`）与 Frontmatter 尚未抽取。
+4. 无全文搜索 / 快速切换 / 命令面板 UI（M2 计划中）。命令注册表与快捷键机制已就绪，调用方是 M2 的 UI。
+5. 删除走 Vault 内 `.mimenote/trash`（可见、可入 Git 忽略），未对接系统回收站；`restore` 尚未提供 UI。
+6. 外部变更检测依赖 mtime（毫秒）。同一毫秒内的外部改动理论上有漏检窗口（概率极低；M5 引入内容哈希作为二级令牌）。
 7. 大文档（>5MB）预览仍在主线程渲染（已用 `useDeferredValue` 降级）；M5 迁移到 Web Worker。
-8. E2E 覆盖"打开/编辑/保存/冲突/布局/主题/视图"等主干路径，但**未覆盖**：拖拽分隔条、树键盘导航、删除到回收站的完整链路（这三项目前靠单元/集成测试与手工验证）。
+8. E2E 覆盖"打开/编辑/保存/冲突/布局/主题/视图/链接/删除到回收站/键盘导航/分隔条拖拽"等主干路径，但**未覆盖**：多窗口、插件（M4）、标签与搜索（功能未实现）。
 
 ## 8.1 测试策略（分层）
 

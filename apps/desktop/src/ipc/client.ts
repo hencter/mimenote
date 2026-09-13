@@ -11,7 +11,9 @@ import { MimenoteError } from './types'
 import type {
   DocumentStats,
   EntryMeta,
+  IndexStatus,
   NoteContent,
+  NoteLinks,
   SnippetFile,
   TrashRecord,
   VaultInfo,
@@ -88,6 +90,11 @@ export const ipc = {
 
   /** 命令行指定的 Vault（`mimenote.exe <目录>`）；无则返回 null。 */
   startupVault: () => call<string | null>('startup_vault'),
+
+  /** 链接索引状态。 */
+  indexStatus: () => call<IndexStatus>('index_status'),
+  /** 某篇笔记的出链与反向链接。 */
+  noteLinks: (relPath: string) => call<NoteLinks>('note_links', { relPath }),
 
   snippetsList: () => call<SnippetFile[]>('snippets_list'),
   versionInfo: () => call<VersionInfo>('version_info'),

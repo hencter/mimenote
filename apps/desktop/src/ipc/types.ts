@@ -112,6 +112,55 @@ export interface DocumentStats {
   stats: TextStats
 }
 
+/** 链接类型（`mn_core::links::LinkKind`）。 */
+export type LinkKind = 'wiki' | 'embed' | 'markdown'
+
+/** 一条出链（`mn_index::ResolvedLink`）。 */
+export interface ResolvedLink {
+  kind: LinkKind
+  /** 原始目标（已剥离锚点）。 */
+  rawTarget: string
+  /** 展示文本：别名 > 目标 > `#锚点`。 */
+  display: string
+  alias: string | null
+  anchor: string | null
+  /** 1 起的行号。 */
+  line: number
+  /** 解析到的笔记相对路径；`null` = 悬空链接。 */
+  resolvedRelPath: string | null
+  /** 同名多篇（已按规则挑了一个）。 */
+  ambiguous: boolean
+}
+
+/** 一条反向链接（`mn_index::BacklinkRef`）。 */
+export interface BacklinkRef {
+  fromRelPath: string
+  display: string
+  anchor: string | null
+  line: number
+  kind: LinkKind
+}
+
+/** 某篇笔记的链接情况（`mn_index::NoteLinks`）。 */
+export interface NoteLinks {
+  relPath: string
+  outbound: ResolvedLink[]
+  backlinks: BacklinkRef[]
+  unresolvedCount: number
+}
+
+/** 索引阶段（`mimenote_lib::indexer::IndexPhase`）。 */
+export type IndexPhase = 'idle' | 'building' | 'ready' | 'cancelled' | 'failed'
+
+/** 索引状态（`mimenote_lib::indexer::IndexStatus`）。 */
+export interface IndexStatus {
+  phase: IndexPhase
+  indexed: number
+  total: number
+  durationMs: number
+  links: number
+}
+
 /**
  * 稳定错误码（与 `mn_core::ErrorCode` 一一对应）。
  *

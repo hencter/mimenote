@@ -19,6 +19,9 @@ export interface UiPreferences {
   previewRatio: number
   themeId: string
   snippetsEnabled: boolean
+  /** 右侧链接面板（反向链接 / 出链）。 */
+  linksPanelVisible: boolean
+  linksPanelWidth: number
 }
 
 const STORAGE_KEY = 'mimenote.ui.v1'
@@ -27,6 +30,8 @@ export const SIDEBAR_MIN = 180
 export const SIDEBAR_MAX = 560
 export const PREVIEW_MIN_RATIO = 0.15
 export const PREVIEW_MAX_RATIO = 0.85
+export const LINKS_PANEL_MIN = 200
+export const LINKS_PANEL_MAX = 520
 
 const DEFAULTS: UiPreferences = {
   viewMode: 'split',
@@ -35,6 +40,8 @@ const DEFAULTS: UiPreferences = {
   previewRatio: 0.5,
   themeId: DEFAULT_THEME_ID,
   snippetsEnabled: true,
+  linksPanelVisible: false,
+  linksPanelWidth: 300,
 }
 
 function isPreferences(value: unknown): value is Partial<UiPreferences> {
@@ -62,6 +69,12 @@ const initial: UiPreferences = {
   ),
   themeId: typeof restored.themeId === 'string' ? restored.themeId : DEFAULTS.themeId,
   snippetsEnabled: restored.snippetsEnabled ?? DEFAULTS.snippetsEnabled,
+  linksPanelVisible: restored.linksPanelVisible ?? DEFAULTS.linksPanelVisible,
+  linksPanelWidth: clamp(
+    restored.linksPanelWidth ?? DEFAULTS.linksPanelWidth,
+    LINKS_PANEL_MIN,
+    LINKS_PANEL_MAX,
+  ),
 }
 
 interface UiState extends UiPreferences {
@@ -73,6 +86,8 @@ interface UiState extends UiPreferences {
   setThemeId: (id: string) => void
   cycleTheme: () => void
   setSnippetsEnabled: (enabled: boolean) => void
+  toggleLinksPanel: () => void
+  setLinksPanelWidth: (width: number) => void
 }
 
 function persist(state: UiState): void {
@@ -83,6 +98,8 @@ function persist(state: UiState): void {
     previewRatio: state.previewRatio,
     themeId: state.themeId,
     snippetsEnabled: state.snippetsEnabled,
+    linksPanelVisible: state.linksPanelVisible,
+    linksPanelWidth: state.linksPanelWidth,
   } satisfies UiPreferences)
 }
 
@@ -130,6 +147,16 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   setSnippetsEnabled: (snippetsEnabled) => {
     set({ snippetsEnabled })
+    persist(get())
+  },
+
+  toggleLinksPanel: () => {
+    set((state) => ({ linksPanelVisible: !state.linksPanelVisible }))
+    persist(get())
+  },
+
+  setLinksPanelWidth: (width) => {
+    set({ linksPanelWidth: clamp(width, LINKS_PANEL_MIN, LINKS_PANEL_MAX) })
     persist(get())
   },
 }))

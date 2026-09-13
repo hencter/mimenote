@@ -6,7 +6,7 @@
  */
 
 import { formatBytes } from '@/domain/format'
-import { isMarkdown, parentOf } from '@/domain/paths'
+import { basename, isMarkdown, parentOf } from '@/domain/paths'
 import { currentAdapterKind, ipc } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
 import { useConfirmStore } from '@/state/confirm-store'
@@ -97,6 +97,28 @@ export async function createNoteIn(dirRel: string, title = '未命名笔记'): P
 /** 在当前上下文新建笔记。 */
 export async function createNoteHere(): Promise<string | null> {
   return createNoteIn(targetDirectoryForNewNote())
+}
+
+/**
+ * 悬空链接 → 一键创建目标笔记（wikilink 的核心体验之一）。
+ *
+ * 规则：目标带目录时按 Vault 根创建（`项目/设计` → `项目/设计.md`）；
+ * 只有文件名时"就近创建"在与来源笔记相同的目录下。
+ */
+export async function createNoteFromLink(
+  rawTarget: string,
+  fromRelPath: string,
+): Promise<string | null> {
+  const cleaned = rawTarget.trim().split('#')[0]?.split('^')[0]?.trim() ?? ''
+  if (cleaned === '') return null
+
+  const parentRel = cleaned.includes('/') ? parentOf(cleaned) : parentOf(fromRelPath)
+  const stem = basename(cleaned).replace(/\.(md|markdown)$/i, '')
+  if (stem === '') return null
+
+  const created = await createNoteIn(parentRel, stem)
+  if (created !== null) toast.success('已创建笔记', created)
+  return created
 }
 
 /** 显式保存（Ctrl+S）：带反馈。 */

@@ -41,6 +41,7 @@ export function StatusBar() {
   const themeId = useUiStore((state) => state.themeId)
   const setThemeId = useUiStore((state) => state.setThemeId)
   const snippetsEnabled = useUiStore((state) => state.snippetsEnabled)
+  const linksPanelVisible = useUiStore((state) => state.linksPanelVisible)
 
   const saveLabel =
     status === 'conflict'
@@ -113,6 +114,16 @@ export function StatusBar() {
       </div>
 
       <div className="mn-statusbar__group">
+        <button
+          type="button"
+          className={`mn-icon-button${linksPanelVisible ? ' mn-icon-button--active' : ''}`}
+          title="链接面板：反向链接 / 出链（Ctrl+Shift+L）"
+          aria-label="链接面板"
+          aria-pressed={linksPanelVisible}
+          onClick={() => useUiStore.getState().toggleLinksPanel()}
+        >
+          <Icon name="links" size={14} />
+        </button>
         <button
           type="button"
           className={`mn-icon-button${snippetsEnabled ? ' mn-icon-button--active' : ''}`}

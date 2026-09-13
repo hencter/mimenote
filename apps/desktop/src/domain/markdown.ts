@@ -12,6 +12,8 @@
 import DOMPurify from 'dompurify'
 import MarkdownIt from 'markdown-it'
 
+import { splitWikilink, wikilinkDisplayText } from './links'
+
 const md = new MarkdownIt({
   html: false,
   linkify: true,
@@ -19,7 +21,42 @@ const md = new MarkdownIt({
   typographer: false,
 })
 
+/**
+ * `[[wikilink]]` 行内规则。
+ *
+ * 渲染成带 `data-target` 的 `<a>`：**是否解析得到具体笔记由宿主索引决定**，
+ * 预览层只负责渲染 + 挂载后按索引结果补类名（见 MarkdownPreview）。
+ * `href` 用文内锚点是为了让它可聚焦、可键盘激活（`href="#"` 会被点击处理器拦截）。
+ */
+const WIKILINK_HREF = '#mn-wikilink'
+
+md.inline.ruler.before('link', 'mn_wikilink', (state, silent) => {
+  const start = state.pos
+  const source = state.src
+  if (source.charCodeAt(start) !== 0x5b /* [ */ || source.charCodeAt(start + 1) !== 0x5b) {
+    return false
+  }
+  const end = source.indexOf(']]', start + 2)
+  if (end === -1) return false
+
+  const inner = source.slice(start + 2, end)
+  if (inner.trim() === '' || inner.includes('\n')) return false
+
+  if (!silent) {
+    const parts = splitWikilink(inner)
+    const display = wikilinkDisplayText(parts)
+    const token = state.push('html_inline', '', 0)
+    token.content =
+      `<a class="mn-wikilink" href="${WIKILINK_HREF}"` +
+      ` data-target="${escapeHtml(parts.target)}"` +
+      ` data-anchor="${escapeHtml(parts.anchor ?? '')}">${escapeHtml(display)}</a>`
+  }
+  state.pos = end + 2
+  return true
+})
+
 // 外链一律新窗口 + noopener，避免 window.opener 劫持。
+// wikilink（`href="#mn-wikilink"`）是文内链接，不加 target/rel。
 const defaultLinkOpen =
   md.renderer.rules.link_open ??
   ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options))
@@ -27,8 +64,12 @@ const defaultLinkOpen =
 md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   const token = tokens[idx]
   if (token !== undefined) {
-    token.attrSet('target', '_blank')
-    token.attrSet('rel', 'noopener noreferrer nofollow')
+    const href = token.attrGet('href') ?? ''
+    const isWikilink = href === WIKILINK_HREF || token.attrGet('class') === 'mn-wikilink'
+    if (!isWikilink) {
+      token.attrSet('target', '_blank')
+      token.attrSet('rel', 'noopener noreferrer nofollow')
+    }
   }
   return defaultLinkOpen(tokens, idx, options, env, self)
 }
@@ -59,7 +100,8 @@ const PURIFY_CONFIG = {
   FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'link', 'meta', 'base'],
   FORBID_ATTR: ['srcset', 'formaction', 'ping', 'onerror', 'onload'],
   ALLOW_DATA_ATTR: false,
-  ADD_ATTR: ['target', 'rel'],
+  // wikilink 的 data-* 是我们自己渲染的（ALLOW_DATA_ATTR=false 会一律剥掉，因此显式放行）
+  ADD_ATTR: ['target', 'rel', 'data-target', 'data-anchor'],
 }
 
 /** 净化一段 HTML。 */

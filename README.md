@@ -23,14 +23,15 @@
 | 冲突保护 | `mtime` 版本令牌；文件被外部修改时**拒绝静默覆盖**，弹出横幅让用户选「覆盖 / 重新加载」 |
 | 换行保真 | 识别并保留 CRLF / LF 与 UTF-8 BOM，避免"保存一次 = 全文 diff" |
 | 预览 | `markdown-it`（关闭 raw HTML）+ DOMPurify 二次净化的实时预览；`useDeferredValue` 降优先级 |
+| 双链与反链 | `[[笔记]]` / `[[笔记\|别名]]` / `[[笔记#小节]]` / `![[嵌入]]` 解析与点击跳转；右侧链接面板显示**反向链接与出链**；悬空链接标黄并**点击即创建**；同名多篇按「同目录 → 更短路径 → 字典序」消歧并标记 |
 | 删除保护 | 必须二次确认；文件移入 Vault 内 `.mimenote/trash/` 并写台账（可恢复），不做 `unlink` |
 | 可定制 | 命令注册表 + 快捷键、JSON 主题（CSS 变量）、Vault 内 `.mimenote/snippets/*.css` 用户样式片段（可整体卸载） |
 | 安全 | 路径越界/符号链接逃逸/Windows 保留名拦截、严格 CSP、能力声明最小化（仅 `core:default` + `dialog:allow-open`） |
 
 ## 还没有做（明确推迟）
 
-双链与反向链接、标签/Frontmatter、全文搜索（SQLite FTS5）、快速切换与命令面板、图谱视图、
-第三方插件系统、Git 集成、同步、内嵌图片渲染、E2E 测试。
+重命名（含全库链接更新）、标签与 Frontmatter、全文搜索（SQLite FTS5）、快速切换与命令面板、
+图谱视图、第三方插件系统、Git 集成、同步、内嵌图片渲染。
 详见 [`docs/architecture.md` §8](docs/architecture.md) 与 [`docs/milestones.md`](docs/milestones.md)。
 
 ---
@@ -104,8 +105,8 @@ pnpm --filter @mimenote/desktop exec tauri build --no-bundle   # 应用层需要
 
 覆盖的场景：
 
-- **应用层**（`e2e/real-app.e2e.test.ts`）：命令行参数自动打开 Vault、文件树渲染、**未选中任何笔记时布局即铺满窗口**、打开笔记 → 编辑器载入 → 输入 → **防抖后内容真的落到磁盘**、文件被外部修改 → 冲突横幅 → **磁盘未被覆盖** → 重新加载恢复
-- **UI 层**（`e2e/ui.e2e.test.ts`）：门闸 → 打开 Vault → 树、**缩小窗口后布局跟随**、打开笔记前后布局不变、预览渲染表格/代码块、过滤保留祖先、主题即时切换、三种视图模式
+- **应用层**（`e2e/real-app.e2e.test.ts`）：命令行参数自动打开 Vault、文件树渲染、**未选中任何笔记时布局即铺满窗口**、打开笔记 → 编辑器载入 → 输入 → **防抖后内容真的落到磁盘**、文件被外部修改 → 冲突横幅 → **磁盘未被覆盖** → 重新加载恢复、删除到回收站（二次确认 + 真实 `.mimenote/trash`）、**后台索引完成后反向链接可见 → 点击跳转 → 悬空链接一键创建真实文件**
+- **UI 层**（`e2e/ui.e2e.test.ts`）：门闸 → 打开 Vault → 树、**缩小窗口后布局跟随**、打开笔记前后布局不变、预览渲染表格/代码块、**wikilink 点击跳转与悬空标记**、**链接面板反向链接跳转**、过滤保留祖先、主题即时切换、三种视图模式、文件树键盘导航、分隔条拖拽
 
 #### 为什么是"Playwright + WebView2 CDP"而不是 tauri-driver
 
@@ -182,6 +183,7 @@ mimenote/
 | `Delete` | 删除到回收站（树上有焦点时，会二次确认） |
 | `Ctrl+E` | 循环切换 编辑 / 分栏 / 预览 |
 | `Ctrl+B` | 显示 / 隐藏侧栏 |
+| `Ctrl+Shift+L` | 显示 / 隐藏链接面板（反向链接 / 出链） |
 | `Ctrl+Shift+F` | 聚焦文件过滤框 |
 | `Ctrl+Alt+E` / `Ctrl+Alt+W` | 展开 / 折叠全部目录 |
 | `Ctrl+Alt+R` | 重新扫描 Vault |
@@ -199,15 +201,15 @@ macOS 上 `Ctrl` 自动换成 `Cmd`（`Mod`）。命令表在 `src/app/builtin-c
 
 | 命令 | 结果 |
 | --- | --- |
-| `cargo test -p mn-core` | 33 个单元测试 + 2 个集成测试通过（另有 1 个性能基准默认忽略） |
-| `cargo test -p mimenote` | 21 个宿主单元测试通过（IPC 错误映射、路径解析、建笔记、片段读取、写锁串行化、启动参数） |
-| `pnpm test` | 11 个测试文件 / 130 个测试全部通过 |
-| `pnpm test:e2e:ui` | 8 个用例通过（系统 Edge，约 3 秒） |
-| `pnpm test:e2e:app` | 4 个用例通过（真实 release 二进制 + 真实磁盘，约 7 秒） |
+| `cargo test -p mn-core` | 46 个单元测试 + 2 个集成测试通过（另有 1 个性能基准默认忽略） |
+| `cargo test -p mn-index` | 16 个单元测试通过（链接解析、歧义消解、增量更新、构建取消） |
+| `cargo test -p mimenote` | 21 个宿主单元测试通过（IPC 错误映射、路径解析、建笔记、片段、写锁、启动参数） |
+| `pnpm test` | 13 个测试文件 / 160 个测试通过 |
+| `pnpm test:e2e:ui` | 13 个用例通过（系统 Edge，约 4 秒） |
+| `pnpm test:e2e:app` | 7 个用例通过（真实 release 二进制 + 真实磁盘，约 15 秒） |
 | `pnpm typecheck` | 无错误（TypeScript 严格模式 + `noUncheckedIndexedAccess`） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 无告警 |
 | `cargo fmt --all --check` | 无差异 |
-| `pnpm exec vite build` | 构建成功：`dist` 约 950KB JS（gzip 330KB）+ 12.7KB CSS |
 | `cargo run -p mn-core --release --example scan_bench` | 1 万文件 + 100 目录：**143 ms**（预算 800 ms） |
 
 ### 二进制启动验证（实测）

@@ -1,5 +1,6 @@
 /** 内置命令表（M1 的全部命令；M2 的命令面板直接渲染这张表）。 */
 
+import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
@@ -96,6 +97,26 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     keybinding: 'Mod+B',
     run: () => {
       useUiStore.getState().toggleSidebar()
+    },
+  },
+
+  {
+    id: 'view.toggleLinksPanel',
+    title: '显示 / 隐藏链接面板（反向链接）',
+    category: '视图',
+    keybinding: 'Mod+Shift+L',
+    run: () => {
+      useUiStore.getState().toggleLinksPanel()
+    },
+  },
+  {
+    id: 'note.refreshLinks',
+    title: '刷新当前笔记的链接',
+    category: '笔记',
+    when: hasDocument,
+    run: () => {
+      const relPath = useNoteStore.getState().doc?.relPath ?? null
+      void useLinksStore.getState().refresh(relPath)
     },
   },
 

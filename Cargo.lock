@@ -1901,6 +1901,7 @@ dependencies = [
  "env_logger",
  "log",
  "mn-core",
+ "mn-index",
  "serde",
  "serde_json",
  "tauri",
@@ -1948,6 +1949,16 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "mn-index"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "mn-core",
+ "serde",
+ "tempfile",
 ]
 
 [[package]]
