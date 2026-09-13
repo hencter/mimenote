@@ -191,7 +191,7 @@ export interface NoteTags {
   frontmatter: FrontmatterField[]
 }
 
-/** 全库标签概览中的一项（`mimenote_lib::commands::TagSummary`）。 */
+/** 全库标签概览中的一项（`mimenote_lib::commands::TagSummaryDto`）。 */
 export interface TagSummary {
   /** 归一化后的键（小写、去首尾 `/`）。 */
   key: string

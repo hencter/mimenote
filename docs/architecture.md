@@ -132,6 +132,7 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | [ADR-0005](adr/0005-plugin-model-deferred.md) | 第三方插件推迟到 M4，先做内置扩展点 | 已采纳 |
 | [ADR-0006](adr/0006-tags-and-frontmatter.md) | 标签/Frontmatter：解析在 `mn-core`、索引在 `mn-index`、`normalize_tag` 判同、改标签走既有写路径 | 已采纳 |
 | [ADR-0007](adr/0007-local-images-asset-protocol.md) | 本地图片走 `asset:` 协议，作用域按 Vault 动态注入（而非 IPC 传 base64 或自定义协议） | 已采纳 |
+| [ADR-0008](adr/0008-full-text-search-fts5.md) | 全文搜索用 SQLite FTS5：中文逐字分词、external content 换行号、构建期放宽持久化 + 坏库自愈 | 已采纳 |
 
 ## 5. 安全模型
 

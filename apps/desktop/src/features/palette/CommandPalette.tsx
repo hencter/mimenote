@@ -35,7 +35,8 @@ import { openNote } from '@/app/actions'
 import { commands, formatChord } from '@/app/commands'
 import { Icon, type IconName } from '@/components/Icon'
 import { describeError } from '@/ipc/types'
-import type { SearchHit } from '@/ipc/types'
+import type { IndexPhase, SearchHit } from '@/ipc/types'
+import { useLinksStore } from '@/state/links-store'
 import { useUiStore, type PaletteMode } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 import {
@@ -131,13 +132,21 @@ function searchEmptyMessage(
   state: PaletteSearchState,
   query: string,
   hasVault: boolean,
+  indexPhase: IndexPhase,
 ): string {
   if (!hasVault) {
     return `还没有打开 Vault —— 按 ${formatChord('Mod+O')} 选择一个文件夹后，就能搜索正文内容`
   }
   const trimmed = query.trim()
   if (trimmed === '') return '输入关键词，搜索当前 Vault 的正文内容'
-  if (state.error !== null) return describeError(state.error, '搜索失败')
+  if (state.error !== null) {
+    // 索引还在构建时，宿主返回的是带原因的 `IO` 错误 —— 那不是"搜索坏了"，
+    // 而是"还没准备好"，所以用提示语气（大 Vault 首次打开要几秒）。
+    if (indexPhase === 'building') {
+      return '全文索引正在构建…（大 Vault 首次打开需要几秒，构建完成后即可搜索）'
+    }
+    return describeError(state.error, '搜索失败')
+  }
   if (state.loading || state.settledQuery !== trimmed) return '搜索中…'
   return '没有匹配的正文内容'
 }
@@ -152,6 +161,8 @@ export function CommandPalette({
 }) {
   const close = useUiStore((state) => state.closePalette)
   const hasVault = useVaultStore((state) => state.info !== null)
+  /** 索引进度：用来区分"索引还在建"（提示等一下）与"搜索真的失败"（报错）。 */
+  const indexPhase = useLinksStore((state) => state.status.phase)
 
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
@@ -301,10 +312,11 @@ export function CommandPalette({
   const text = MODE_TEXT[mode]
   const emptyText =
     mode === 'search'
-      ? searchEmptyMessage(search, query, hasVault)
+      ? searchEmptyMessage(search, query, hasVault, indexPhase)
       : emptyMessage(mode, hasVault, noteIndex.length)
-  // 空态里的错误用警示色（"搜失败"不该长得像"没有结果"）
-  const emptyIsError = mode === 'search' && search.error !== null && query.trim() !== ''
+  // 空态里的错误用警示色（"搜失败"不该长得像"没有结果"）；索引构建中不算失败
+  const emptyIsError =
+    mode === 'search' && search.error !== null && query.trim() !== '' && indexPhase !== 'building'
   // 列表里还留着上一次的结果时，"搜索中…"放在页脚而不是换掉整个列表 —— 避免闪一下
   const searchStatus = mode === 'search' && search.loading && shown > 0 ? '搜索中…' : null
 

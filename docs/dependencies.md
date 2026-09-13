@@ -46,6 +46,8 @@
 | `tempfile` | MIT/Apache-2.0 | 原子写的临时文件 | 它保证 `persist` 在 Windows 上是 `MoveFileEx(REPLACE_EXISTING)` 语义，即真正的原子覆盖；自己写这段更容易出错 |
 | `log` / `env_logger` | MIT/Apache-2.0 | 结构化日志 | Rust 侧不被前端能力系统约束，输出到 stderr 便于开发排查 |
 | `rusqlite` 0.37（`bundled`） | MIT（`libsqlite3-sys` 0.35 同为 MIT；SQLite 本体为 public domain） | 全文搜索：FTS5 倒排索引 + `MATCH` + `bm25()` 排序 | 见下方说明 |
+| `libsqlite3-sys` 0.35（rusqlite 传递依赖） | MIT | rusqlite 的 FFI 与 `bundled` 构建脚本（编进 SQLite，FTS5 已启用） | 由 `bundled` 引入，不单独使用 |
+| `hashlink` 0.10 / `fallible-iterator` 0.3 / `fallible-streaming-iterator` 0.1 | MIT OR Apache-2.0 / MIT-Apache-2.0 | rusqlite 的语句缓存与行迭代 | 由 rusqlite 引入的传递依赖，无直接使用 |
 
 ### 为什么引入 SQLite/FTS5，而不是自己在内存里做搜索
 

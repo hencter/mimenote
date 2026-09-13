@@ -23,6 +23,7 @@ import { MAX_PALETTE_RESULTS } from '@/features/palette/match'
 import { ipc, setIpcAdapter, type IpcAdapter } from '@/ipc/client'
 import { createMockAdapter, type MockAdapter } from '@/ipc/mock-adapter'
 import { MimenoteError, type SearchResult } from '@/ipc/types'
+import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
@@ -449,6 +450,49 @@ describe('全文搜索面板', () => {
     // 错误态用警示色，与"没有结果"区分开
     expect(dialog.querySelector('.mn-palette__empty--error')).not.toBeNull()
     expect(within(dialog).queryAllByRole('option')).toHaveLength(0)
+  })
+
+  it('索引正在构建时给提示，而不是把它当"搜索失败"报红', async () => {
+    const { adapter, pending } = deferredSearch(createMockAdapter())
+    setIpcAdapter(adapter)
+    render(<App />)
+    await openVault()
+
+    // 宿主在索引构建期间对 search_query 返回带原因的 IO 错误（"正在构建，请稍候重试"）；
+    // 前端的判据取自链接索引已有的进度事件，两者说的是同一件事。
+    useLinksStore.setState({
+      status: { phase: 'building', indexed: 10, total: 100, durationMs: 0, links: 0 },
+    })
+
+    const { dialog, input } = await openSearchPanel()
+    fireEvent.change(input, { target: { value: '构建中' } })
+    await waitFor(() => {
+      expect(pending).toHaveLength(1)
+    })
+    await act(async () => {
+      pending[0]?.settle(
+        new MimenoteError({
+          code: 'IO',
+          message: '全文搜索索引正在构建，请稍候重试',
+          detail: null,
+          currentMtimeMs: null,
+        }),
+      )
+    })
+
+    await waitFor(() => {
+      expect(within(dialog).getByText(/索引正在构建/)).toBeTruthy()
+    })
+    // 提示态不该用警示色（那会让用户以为搜索坏了）
+    expect(dialog.querySelector('.mn-palette__empty--error')).toBeNull()
+    // 索引就绪后同样的错误才按失败显示
+    useLinksStore.setState({
+      status: { phase: 'ready', indexed: 100, total: 100, durationMs: 5, links: 0 },
+    })
+    await waitFor(() => {
+      expect(within(dialog).getByText(/搜索失败/)).toBeTruthy()
+    })
+    expect(dialog.querySelector('.mn-palette__empty--error')).not.toBeNull()
   })
 
   it('竞态丢弃：慢的旧请求后返回，不能覆盖新查询的结果', async () => {
