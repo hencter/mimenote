@@ -1146,6 +1146,10 @@ mod tests {
                 if f % 10 == 0 {
                     body.push_str("这一行里有关键词，别的行没有\n");
                 }
+                if f % 200 == 0 {
+                    // 只有极少数笔记才有的稀有词：代表"一次真实查询"（命中几十条）
+                    body.push_str("这里有一个稀有的词：独角鲸\n");
+                }
                 body.push_str(&format!("末尾一行 [[note{f:03}]]\n"));
                 std::fs::write(sub.join(format!("note{f:03}.md")), body).unwrap();
             }
@@ -1187,7 +1191,7 @@ mod tests {
             with_search.duration_ms
         );
 
-        for query in ["关键词", "全文搜索", "search", "关键"] {
+        for query in ["独角鲸", "关键词", "全文搜索", "search", "关键"] {
             let started = Instant::now();
             let outcome = search.search(query, 50).unwrap();
             eprintln!(
