@@ -848,6 +848,16 @@ export interface GraphEdgeVisual {
   phantom: boolean
   /** tooltip 文案（线段本身不堆文字；同一条边 `count > 1` 时在这里说明"共 N 条链接"）。 */
   title: string
+  /**
+   * 卡片**内部**的那一段虚线引线（ADR-0023）：从正文里 `[[链接]]` 那一段文字开始，
+   * 画到卡片边界为止。缺省 = 没有（全库视图的紧凑卡片没有正文位置，那里也就没有引线）。
+   *
+   * 为什么与卡片外那段放在同一个 visual 里：它们是**同一条边**的两段，分开渲染会出现
+   * "一段在图层上面、一段在下面"，以及 tooltip 只挂在其中一段上。
+   */
+  leadPath?: string
+  /** 引线的起点（正文里那段文字的位置，世界坐标）；只有 `leadPath` 存在时有意义。 */
+  leadFrom?: Point
 }
 
 const KIND_LABEL: Record<GraphEdge['kind'], string> = {

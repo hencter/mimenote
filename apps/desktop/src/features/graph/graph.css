@@ -197,6 +197,26 @@
  * 想比较"以前那张 DOM 卡片长什么样"，看本文件的历史版本即可（git log --follow）。
  */
 
+/*
+ * 卡片里的**引线**（ADR-0023）：从正文里 `[[链接]]` 那段文字画到卡片边界的那一段虚线。
+ *
+ * 为什么细、淡、且用虚线：它指示的是"外面那条线是从这句话出来的"，而不是边本身 ——
+ * 画得和卡片外那段一样重，卡片里就会多出一堆横穿正文的线，正文反而读不了。
+ * 小圆点是引线的起点（文字的左侧）。
+ */
+.mn-graph-edge--lead {
+  stroke: var(--mn-fg-subtle);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.55;
+  fill: none;
+}
+
+.mn-graph-edge-lead-dot {
+  fill: var(--mn-fg-subtle);
+  opacity: 0.7;
+}
+
 /* --------------------------------------------------------- HUD / 状态 */
 
 /*
@@ -255,6 +275,69 @@
 
 .mn-graph__stat {
   white-space: nowrap;
+}
+
+/*
+ * 浮动态面板（ADR-0023）：预设 / 张力 / 两个开关 / 选中卡片的尺寸与浮窗。
+ * 行内小胶囊而不是下拉框：这几个参数是"边看边拧"的，展开一个下拉再选一次会打断观察。
+ */
+.mn-graph__physics {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--mn-border);
+}
+
+.mn-graph__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.mn-graph__row-label {
+  color: var(--mn-fg-subtle);
+  font-size: 10px;
+}
+
+.mn-graph__row-value {
+  min-width: 30px;
+  color: var(--mn-fg-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.mn-graph__chip {
+  padding: 1px 7px;
+  border: 1px solid var(--mn-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--mn-fg-muted);
+  font: inherit;
+  font-size: 10px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.mn-graph__chip:hover {
+  border-color: var(--mn-accent);
+  color: var(--mn-fg);
+}
+
+.mn-graph__chip--active {
+  border-color: var(--mn-accent);
+  background: var(--mn-accent);
+  color: var(--mn-accent-fg);
+}
+
+/* 张力滑块：细一点，且不要把它撑满整行 —— HUD 只有 300px 宽 */
+.mn-graph__slider {
+  flex: 1 1 auto;
+  min-width: 90px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--mn-accent);
 }
 
 /*
@@ -600,4 +683,159 @@
 
 .mn-graph-preview__error {
   color: var(--mn-danger);
+}
+
+/* ------------------------------------------------------- 浮动笔记面板 */
+
+/*
+ * 浮动面板（`.mn-float-note`）：与停靠预览同一套观感，但它是**多个、可拖动、可缩放**的浮窗。
+ *
+ * 层级：停靠面板是 5（见上面 `.mn-graph-preview` 的注释），浮动面板必须**高于**它 ——
+ * 用户是把这一篇"拎出来"看的，被停靠面板盖住就等于点不出来。这里给 6 当底线；
+ * 每个浮窗具体在哪一层由组件行内 `zIndex` 决定（点一下置顶 = 调用方把值往上加）。
+ *
+ * 位置与大小一律走行内样式（受控组件算出来的像素值），所以这一段只写"长什么样"，
+ * 不写 left/top/width/height。
+ */
+.mn-float-note {
+  position: absolute;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  border: 1px solid var(--mn-border);
+  border-radius: 10px;
+  background: var(--mn-bg-elevated);
+  color: var(--mn-fg);
+  box-shadow: var(--mn-shadow);
+  /* 浮窗自己不滚：滚的是正文那一层（与停靠面板一致）。少了它，拖动/缩放时整块内容会跟着滚，
+     而"标题栏永远在顶上"正是这个面板存在的理由 */
+  overflow: hidden;
+  font-family: var(--mn-font-ui);
+  font-size: 13px;
+}
+
+/* 最上面那个（`active`）：边框提亮 + 1px 光晕 —— `Esc` 关的是它，得一眼认得出来 */
+.mn-float-note--active {
+  border-color: var(--mn-accent);
+  box-shadow: var(--mn-shadow), 0 0 0 1px var(--mn-accent);
+}
+
+/* 打开浮窗时的焦点是**程序化**的（`rootRef.focus()`）：画焦点环只会让人以为"要按 Tab 才能用"。
+   键盘用户真正要操作的控件（标题栏、两个按钮、正文里的链接）各有自己的焦点环。 */
+.mn-float-note:focus,
+.mn-float-note:focus-visible {
+  outline: none;
+}
+
+/*
+ * 标题栏 = 拖动区。
+ *
+ * `user-select: none`：否则按住一拖就把标题和路径拖成一片蓝底选区（浏览器默认行为）。
+ * `touch-action: none`：触摸设备上交给指针事件，不要让浏览器把它当成滚动/缩放手势。
+ */
+.mn-float-note__header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 8px 8px 12px;
+  border-bottom: 1px solid var(--mn-border);
+  border-radius: 9px 9px 0 0;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.mn-float-note__header:active {
+  cursor: grabbing;
+}
+
+/* 键盘用户的落点：焦点环画在内部（`outline-offset: -2px`），否则它会顶到圆角外面去 */
+.mn-float-note__header:focus-visible {
+  outline: 2px solid var(--mn-accent);
+  outline-offset: -2px;
+}
+
+.mn-float-note__heading {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mn-float-note__title {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mn-float-note__path {
+  color: var(--mn-fg-subtle);
+  font-size: 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 正文容器：滚这一层（`min-height: 0` 是 flex 子项能收缩、从而真的出现滚动条的前提） */
+.mn-float-note__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px 18px;
+  /* 正文要能选中：浮窗是"把这一篇拎出来读、抄一段"的形态。
+     注意这**与停靠面板不同** —— 停靠面板的正文继承了 `.mn-graph` 的 `user-select: none`
+     （整个画布都不许选字），于是它选不中；浮窗里显式要回来。 */
+  user-select: text;
+}
+
+/* 正文本体沿用阅读视图的 `.mn-preview__body`（同一套排版规则），只把字号压到 13px
+   —— 与停靠面板的 `.mn-graph-preview__article` 逐字对齐（浮窗更小，15px 正文一屏只放得下几行）。
+   与 `.mn-preview__body` 同权重、靠本文件在后面加载取胜，与停靠面板同理。 */
+.mn-float-note__article {
+  font-size: 13px;
+}
+
+.mn-float-note__error {
+  color: var(--mn-danger);
+}
+
+/*
+ * 右下角的缩放把手。
+ *
+ * 为什么用 `::after` 画斜线、而不是塞一个 SVG 或纹理图：面板里每个节点都可能被测试与 E2E
+ * 断言到，能只用一个伪元素就别加 DOM；`repeating-linear-gradient` 直接给出 45° 的斜线纹理
+ * （135deg 的条纹方向正好是 `/`，与 `nwse-resize` 的手势方向一致），改尺寸时也不会变形。
+ * 颜色走 `--mn-fg-subtle`（主题切换自动跟随），`opacity` 压低：它是提示，不是主体。
+ */
+.mn-float-note__handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  touch-action: none;
+  user-select: none;
+  opacity: 0.55;
+}
+
+.mn-float-note__handle::after {
+  content: '';
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 9px;
+  height: 9px;
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 3px,
+    var(--mn-fg-subtle) 3px 4px
+  );
+}
+
+/* 悬停、以及"最上面那个"：把手亮起来（"这里可以拖"），但别亮到抢正文的注意力 */
+.mn-float-note__handle:hover,
+.mn-float-note--active .mn-float-note__handle {
+  opacity: 0.9;
 }

@@ -74,6 +74,16 @@ export const GraphEdges = memo(function GraphEdges({ visuals, viewBox }: GraphEd
 
       {visuals.map((visual) => (
         <g key={visual.key}>
+          {/*
+            卡片**内部**的引线（ADR-0023）：从正文里 `[[链接]]` 那段文字画到卡片边界。
+            虚线 + 更细 + 半透明：它是"这条线从哪句话出来的"的**指示**，不是边本身 ——
+            画得和外面那段一样重，卡片里就会多出一堆横穿正文的线，正文反而读不了。
+          */}
+          {visual.leadPath !== undefined && (
+            <path className="mn-graph-edge mn-graph-edge--lead" d={visual.leadPath}>
+              <title>{visual.title}</title>
+            </path>
+          )}
           <path
             className={edgeClassName(visual)}
             d={visual.d}
@@ -81,6 +91,15 @@ export const GraphEdges = memo(function GraphEdges({ visuals, viewBox }: GraphEd
           >
             <title>{visual.title}</title>
           </path>
+          {/* 起点的小圆点：没有它，"线从哪句话出来"在卡片里只是一段虚线的末端 */}
+          {visual.leadFrom !== undefined && (
+            <circle
+              className="mn-graph-edge-lead-dot"
+              cx={visual.leadFrom.x}
+              cy={visual.leadFrom.y}
+              r={2}
+            />
+          )}
           {visual.phantom && (
             <circle className="mn-graph-phantom" cx={visual.end.x} cy={visual.end.y} r={4}>
               <title>{visual.title}</title>

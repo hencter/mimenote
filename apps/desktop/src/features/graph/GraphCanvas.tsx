@@ -44,7 +44,7 @@ import { GRAPH_COMMAND_IDS } from '@/app/builtin-commands'
 import { commands } from '@/app/commands'
 import { isTextEntryTarget } from '@/app/keymap'
 import { Icon } from '@/components/Icon'
-import { describeError, type GraphNode } from '@/ipc/types'
+import { describeError, type GraphEdge, type GraphNode } from '@/ipc/types'
 import {
   MAX_EGO_DEPTH,
   MIN_EGO_DEPTH,
@@ -66,23 +66,26 @@ import {
   type MeasureText,
 } from './canvas/measure'
 import { readPalette, type GraphPalette } from './canvas/palette'
-import { paintGraph, type PaintNode } from './canvas/paint'
+import { paintGraph, cardResizeHandleRect, type PaintNode } from './canvas/paint'
 import { createTokenReader } from './canvas/probe'
+import { FORCE_PRESETS, forcePreset } from './force-presets'
+import { createForceSimulation, type ForceSimulation } from './force'
+import { linkEdgeGeometry } from './link-edge'
+import { FloatingNote } from './FloatingNote'
 import {
   OVERSCAN,
   applyManualPositions,
   buildEdgeVisuals,
   buildLayout,
   buildRectIndex,
-  edgeAnchors,
   edgeKey,
-  edgePath,
   queryIndex,
   queryViewport,
   type EdgeStyle,
   type GraphCardBox,
   type GraphEdgeVisual,
   type GraphFolderBox,
+  type Point,
   type Rect,
 } from './layout'
 import {
@@ -127,6 +130,94 @@ const COMPACT_TAG_CHARS = 20
 /** 键盘上下左右选卡片时的最大搜索距离（世界坐标）。 */
 const KEYBOARD_REACH = 2400
 
+/**
+ * 漂浮的刷新率（每秒几帧）。
+ *
+ * 位置一变，画布上的卡片与 SVG 层的连线都要重画，而后者是 React 渲染 —— 20fps 下
+ * "缓慢漂移"看起来已经是连续的，代价只有 60fps 的三分之一。要更顺就得把连线也搬到 canvas
+ * （ADR-0023 的"下一步"）。
+ */
+const FLOAT_FPS = 20
+
+/**
+ * 浮动面板的层级基数。
+ *
+ * 必须**高于**停靠面板（`.mn-graph-preview` 是 5）：浮窗是"我把这篇拎出来看"的动作，
+ * 被停靠面板盖住就没有意义了。面板之间的顺序由 store 里的 `z` 决定（点一下置顶）。
+ */
+const FLOAT_PANE_Z = 6
+
+/** 浮动面板里最上面的那个（只有它响应 `Esc`，也只有它有醒目的边框）。 */
+function topPaneZ(panes: readonly { z: number }[]): number {
+  return panes.reduce((max, pane) => Math.max(max, pane.z), 0)
+}
+
+/**
+ * "正文高度上限"的几档（HUD 上的四个小胶囊）。
+ *
+ * 为什么给档位而不是一个滑块：卡片高度是**内容决定**的（短笔记撑不成高卡片），
+ * 上限只在"这篇太长、我只要看开头"时才有意义；档位比连续滑块更容易一眼选中想要的那个量级。
+ * `null` = 自动（回到默认上限）。
+ */
+const CARD_HEIGHT_CHOICES: readonly { label: string; value: number | null; hint: string }[] = [
+  { label: '自动', value: null, hint: '按默认上限截断（长笔记会在末尾补一行 …）' },
+  { label: '短', value: 400, hint: '只留开头几段（一屏能放下更多卡片）' },
+  { label: '中', value: 900, hint: '中等长度笔记基本能看全' },
+  { label: '长', value: 2000, hint: '尽量看全（卡片会很高）' },
+]
+
+/**
+ * 把模拟给出的位置换算成卡片矩形。
+ *
+ * ⚠️ `ForceSimulation.positions()` 给的是**左上角**（它内部已经做过 `中心 − 尺寸/2`），
+ * 这里**不能**再减一次 —— 真实踩过：多减半张卡片之后整幅图看着"没对齐"，
+ * 而错位量恰好是半个尺寸，很像布局算错了，查起来绕了一圈。
+ */
+function applySimulation(
+  cards: readonly EgoCardBox[],
+  positions: ReadonlyMap<string, Point>,
+): Map<string, Rect> {
+  const rects = new Map<string, Rect>()
+  for (const card of cards) {
+    const topLeft = positions.get(card.relPath)
+    rects.set(
+      card.relPath,
+      topLeft === undefined
+        ? card.rect
+        : { x: topLeft.x, y: topLeft.y, width: card.rect.width, height: card.rect.height },
+    )
+  }
+  return rects
+}
+
+/** 一组卡片的包围盒（力导向落定之后用它"适应窗口"）。 */
+function boundsOfRects(rects: ReadonlyMap<string, Rect>): Rect | null {
+  let minX = Number.POSITIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
+  for (const rect of rects.values()) {
+    minX = Math.min(minX, rect.x)
+    minY = Math.min(minY, rect.y)
+    maxX = Math.max(maxX, rect.x + rect.width)
+    maxY = Math.max(maxY, rect.y + rect.height)
+  }
+  if (!Number.isFinite(minX) || !Number.isFinite(minY)) return null
+  return { x: minX, y: minY, width: Math.max(1, maxX - minX), height: Math.max(1, maxY - minY) }
+}
+
+/**
+ * 一条边在正文里**可能**被写成哪几种样子（用于把边匹配到某一段 `[[…]]` 文字）。
+ *
+ * 三种来源，按"越具体越先试"排：用户写的原始目标（`[[笔记/丙|别名]]` 里那一整段不算、
+ * 锚点已经剥离）、目标笔记的标题、以及路径主干（`项目/子项目/细节.md` → `细节`）。
+ * 别名那一侧由写笔记的人决定，我们无法穷举 —— 匹配不到就如实降级（ADR-0023）。
+ */
+function edgeTargets(edge: GraphEdge, to: GraphNode): string[] {
+  const basename = (to.relPath.split('/').pop() ?? to.relPath).replace(/\.(md|markdown)$/i, '')
+  return [...new Set([edge.toRawTarget, to.title, basename, to.relPath].filter((text) => text !== ''))]
+}
+
 interface PointerState {
   pointerId: number | undefined
   button: number
@@ -138,6 +229,13 @@ interface PointerState {
   startWorldY: number
   /** 按在卡片上时：那张卡片的路径与"按下点相对卡片左上角"的偏移（拖动时保持不跳）。 */
   card: { relPath: string; grabX: number; grabY: number } | null
+  /**
+   * 按在**右下角的缩放手柄**上时：那张卡片与"它当时的左边界"（世界坐标）。
+   *
+   * 为什么与拖动分开记：两者的意图完全不同（一个搬位置、一个改大小），
+   * 而手柄落在卡片**内部** —— 不先判它，拖手柄就会变成拖动卡片。
+   */
+  resize: { relPath: string; left: number } | null
 }
 
 /** 全库视图紧凑卡片的附加行：目录、出入度、标签。 */
@@ -165,6 +263,13 @@ export function GraphCanvas() {
   const egoStatus = useGraphStore((state) => state.egoStatus)
   const egoError = useGraphStore((state) => state.egoError)
   const texts = useGraphStore((state) => state.texts)
+  const cardSizes = useGraphStore((state) => state.cardSizes)
+  const tension = useGraphStore((state) => state.tension)
+  const edgeFromLink = useGraphStore((state) => state.edgeFromLink)
+  const floatingPanes = useGraphStore((state) => state.floatingPanes)
+  /** 力导向的预设 id 与"是否持续漂浮"（两个偏好，见 `features/graph/force-presets.ts`）。 */
+  const forcePresetId = useGraphStore((state) => state.forcePreset)
+  const floating = useGraphStore((state) => state.floating)
   const status = useGraphStore((state) => state.status)
   const data = useGraphStore((state) => state.data)
   const error = useGraphStore((state) => state.error)
@@ -265,6 +370,9 @@ export function GraphCanvas() {
    * 顺序不能反：环半径取决于"卡片有多大"，而卡片高度取决于正文排完有多高。
    * 正文是**一次性**跟着子图回来的（`loadEgo` 一起读），所以这里不会出现"排版到一半、
    * 环半径反复变"的跳动 —— 只有读不到正文的那几篇用兜底尺寸。
+   *
+   * 每张卡片的宽度与"正文高度上限"都取自 store 里的**手工尺寸**（可调大小，ADR-0023）：
+   * 用户拉宽一张卡片之后，这里排出来的高度会跟着变（换行变了），环半径也随之外扩。
    */
   const egoLayout = useMemo(() => {
     if (mode !== 'focus' || ego === null || measure === null || layoutRef.current === null) return null
@@ -278,15 +386,18 @@ export function GraphCanvas() {
         sizes.set(node.relPath, EGO_FALLBACK_SIZE)
         continue
       }
+      const manual = cardSizes.get(node.relPath)
+      const width = manual?.width ?? EGO_CARD_WIDTH
+      const maxHeight = manual?.height ?? EGO_CARD_MAX_HEIGHT
       const card = cache.get(
-        { relPath: node.relPath, title: node.title, text, width: EGO_CARD_WIDTH, maxHeight: EGO_CARD_MAX_HEIGHT },
+        { relPath: node.relPath, title: node.title, text, width, maxHeight },
         () =>
           layoutCard({
             relPath: node.relPath,
             title: node.title,
             text,
-            width: EGO_CARD_WIDTH,
-            maxHeight: EGO_CARD_MAX_HEIGHT,
+            width,
+            maxHeight,
             measure,
           }),
       )
@@ -303,7 +414,7 @@ export function GraphCanvas() {
       fallbackSize: EGO_FALLBACK_SIZE,
     })
     return { layout, layouts }
-  }, [mode, ego, texts, measure])
+  }, [mode, ego, texts, measure, cardSizes])
 
   // -------------------------------------------------------------------------
   // 视口换算与"屏幕上有哪些卡片"
@@ -311,6 +422,110 @@ export function GraphCanvas() {
 
   const transform = useMemo(() => transformOf(view, viewport), [view, viewport])
   const visibleWorldRect = useMemo(() => visibleWorld(transform, OVERSCAN), [transform])
+
+  // -------------------------------------------------------------------------
+  // 力导向浮动态（ADR-0023）
+  //
+  // 位置**不进 React state**：漂移是每帧都在变的，把它塞进 state 会让整棵画布跟着重渲染。
+  // 这里把"当前世界矩形"放在 ref 里，由 `tick`（下面那个低速时钟）与直接重画来驱动 ——
+  // 命中测试读的也是同一份 ref，因此"看到的"和"点得中的"永远是同一个位置。
+  // -------------------------------------------------------------------------
+
+  const forceParams = useMemo(() => forcePreset(forcePresetId).params, [forcePresetId])
+  /** 被用户按住的卡片（ADR-0023）：力场不再移动它们，但它们仍然推开别人。 */
+  const pins = useGraphStore((state) => state.pins)
+  const positionsRef = useRef<Map<string, Rect>>(new Map())
+  const simRef = useRef<ForceSimulation | null>(null)
+  const [tick, setTick] = useState(0)
+
+  /**
+   * 种子：同心环布局给出的位置。
+   *
+   * 这就是 ADR-0021 与力导向共存的方式 —— 环布局保证"离中心几跳"一眼可分且每次打开都一样，
+   * 力导向只负责**松弛**（张力拉紧、斥力分开、向心力收拢）。因此几何仍然可复现：
+   * 同一份数据 + 同一组参数 ⇒ 同一份位置。
+   */
+  const seedKey = useMemo(() => {
+    if (egoLayout === null) return ''
+    return egoLayout.layout.cards
+      .map(
+        (card) =>
+          `${card.relPath}\u0001${Math.round(card.rect.x)},${Math.round(card.rect.y)},${Math.round(card.rect.width)},${Math.round(card.rect.height)}`,
+      )
+      .join('\u0002')
+  }, [egoLayout])
+
+  useEffect(() => {
+    if (mode !== 'focus' || egoLayout === null || ego === null) {
+      simRef.current = null
+      positionsRef.current = new Map()
+      return
+    }
+    const cards = egoLayout.layout.cards
+    const nodes = cards.map((card) => ({
+      relPath: card.relPath,
+      // 模拟跑在**中心点**上，卡片矩形由尺寸还原（见 force.ts 的说明）
+      x: card.rect.x + card.rect.width / 2,
+      y: card.rect.y + card.rect.height / 2,
+      width: card.rect.width,
+      height: card.rect.height,
+      hop: card.hop,
+      // 圆心那一篇钉在原点：用户打开图谱时希望"当前这篇"始终在中心
+      fixed: card.relPath === ego.root || pins.has(card.relPath),
+    }))
+    const edges = ego.data.edges
+      .filter((edge) => edge.toRelPath !== null)
+      .map((edge) => ({ from: edge.fromRelPath, to: edge.toRelPath ?? '' }))
+    const sim = createForceSimulation({ nodes, edges, params: forceParams })
+    // 先**确定性地落定**：打开图谱时不该看到一团正在乱飞的卡片（ADR-0021 的"空间记忆"
+    // 要求位置可复现，而"跑多少步"是输入的一部分）。
+    sim.settle()
+    simRef.current = sim
+    const rects = applySimulation(cards, sim.positions())
+    positionsRef.current = rects
+    // "适应窗口"必须用**落定之后**的包围盒：力场会把环收紧（默认档实测约收三分之二），
+    // 用环的包围盒去 fit 会让整幅图偏在一角。键里带预设与"松开"的次数 ⇒
+    // 换档 / 松开卡片要重新适应，而同一次会话里拖动卡片不会。
+    const bounds = boundsOfRects(rects)
+    if (bounds !== null) {
+      useGraphStore.getState().setEgoBounds(bounds)
+      useGraphStore
+        .getState()
+        .autoFitBounds(`${ego.root}\u0000${ego.depth}\u0000${forcePresetId}\u0000${pins.size}`, bounds)
+    }
+    setTick((value) => value + 1)
+  }, [mode, egoLayout, ego, forceParams, forcePresetId, seedKey, pins])
+
+  /**
+   * 漂浮：以 **20fps** 推进模拟并重画。
+   *
+   * 为什么不是 60fps：位置一变，连线（SVG 层）也要跟着重画，而那是 React 渲染 ——
+   * 20fps 下"缓慢漂移"看起来是连续的，代价却只有 1/3。要更顺的话下一步应当把连线也搬到
+   * canvas 上（那时就能 60fps），这条取舍写在 ADR-0023 里。
+   */
+  useEffect(() => {
+    if (mode !== 'focus' || !floating || egoLayout === null) return
+    const interval = 1000 / FLOAT_FPS
+    const timer = setInterval(() => {
+      const sim = simRef.current
+      if (sim === null) return
+      const moving = sim.step()
+      if (!moving) return
+      positionsRef.current = applySimulation(egoLayout.layout.cards, sim.positions())
+      setTick((value) => value + 1)
+    }, interval)
+    return () => clearInterval(timer)
+  }, [mode, floating, egoLayout, forceParams])
+
+  /** 当前（可能是漂浮之后的）卡片矩形；没有模拟时退回布局给的确定性位置。 */
+  const currentRect = useCallback(
+    (relPath: string): Rect | null => {
+      const simulated = positionsRef.current.get(relPath)
+      if (simulated !== undefined) return simulated
+      return egoLayout?.layout.cardsByPath.get(relPath)?.rect ?? null
+    },
+    [egoLayout],
+  )
 
   const visibleCardsList = useMemo<EgoCardBox[] | GraphCardBox[]>(() => {
     if (mode === 'focus') {
@@ -341,7 +556,8 @@ export function GraphCanvas() {
       return egoLayout.layout.cards.map((card) => ({
         relPath: card.relPath,
         title: card.node.title,
-        rect: card.rect,
+        // 位置取**当前**（漂浮之后的）矩形；`tick` 是这里的刷新时钟
+        rect: currentRect(card.relPath) ?? card.rect,
         hop: card.hop,
         isRoot: card.relPath === root,
         hasFocus: card.relPath === root || card.relPath === selected,
@@ -361,22 +577,30 @@ export function GraphCanvas() {
       layout: null,
       compactLines: compactLinesFor(card.node),
     }))
-  }, [mode, egoLayout, ego, vaultLayout, selected])
+  }, [mode, egoLayout, ego, vaultLayout, selected, currentRect, tick])
 
-  /** 连线：两种视图都交给 SVG 层（正交折线、箭头、悬空虚影都已经在那里实现好了）。 */
+  /**
+   * 连线：两种视图都交给 SVG 层（正交折线、箭头、悬空虚影都已经在那里实现好了）。
+   *
+   * **焦点视图**的连线从正文里那段 `[[链接]]` 文字出发（ADR-0023）：卡片内是虚线引线，
+   * 出了卡片边界才变成实线/张力曲线。找不到对应文字时（正文没读到、卡片被截断、
+   * 或者作者写的是 Markdown 链接）如实降级成"从卡片边界出发"，并在 tooltip 里说明。
+   */
   const edgeVisuals = useMemo<GraphEdgeVisual[]>(() => {
     if (mode === 'focus') {
       if (egoLayout === null || ego === null) return []
-      const cards = egoLayout.layout.cardsByPath
       const root = ego.root
       const visuals: GraphEdgeVisual[] = []
       for (const edge of ego.data.edges) {
         // 悬空边在焦点视图里不画：目标不在这一圈里，"线到这里断了"的小刺只会让环更乱
         if (edge.toRelPath === null) continue
-        const from = cards.get(edge.fromRelPath)
-        const to = cards.get(edge.toRelPath)
-        if (from === undefined || to === undefined) continue
-        const anchors = edgeAnchors(from.rect, to.rect)
+        const fromRect = currentRect(edge.fromRelPath)
+        const toRect = currentRect(edge.toRelPath)
+        const fromCard = egoLayout.layout.cardsByPath.get(edge.fromRelPath)
+        const toCard = egoLayout.layout.cardsByPath.get(edge.toRelPath)
+        if (fromRect === null || toRect === null || fromCard === undefined || toCard === undefined) {
+          continue
+        }
         const touchesRoot = edge.fromRelPath === root || edge.toRelPath === root
         const touchesSelected =
           selected !== null && (edge.fromRelPath === selected || edge.toRelPath === selected)
@@ -386,18 +610,37 @@ export function GraphCanvas() {
           dim: !touchesRoot && !touchesSelected,
           highlight: touchesRoot || touchesSelected,
         }
+        const title =
+          edge.count > 1
+            ? `${fromCard.node.title} → ${toCard.node.title} · 共 ${edge.count} 条链接`
+            : `${fromCard.node.title} → ${toCard.node.title}`
+
+        // `edgeFromLink` 关掉时就当"没有正文位置"处理（回到从卡片边界出发的老行为）
+        const layout = edgeFromLink ? (egoLayout.layouts.get(edge.fromRelPath) ?? null) : null
+        const geometry = linkEdgeGeometry({
+          edge,
+          from: { rect: fromRect, layout, title: fromCard.node.title },
+          to: { rect: toRect, title: toCard.node.title },
+          targets: edgeTargets(edge, toCard.node),
+          tension,
+          // 量宽函数必须传：`LaidOutLine` 只记了整行宽度，而"这段字从哪开始"要知道它前面的
+          // run 各有多宽 —— 不传就只能按字符数摊派（中英混排会偏十几像素）
+          ...(measure === null ? {} : { measure }),
+        })
         visuals.push({
           key: edgeKey(edge),
           edge,
           style,
-          d: edgePath(anchors.start, anchors.end, anchors.axis, anchors.loop),
-          start: anchors.start,
-          end: anchors.end,
+          d: geometry.spanPath,
+          start: geometry.exit,
+          end: geometry.entry,
           phantom: false,
-          title:
-            edge.count > 1
-              ? `${from.node.title} → ${to.node.title} · 共 ${edge.count} 条链接`
-              : `${from.node.title} → ${to.node.title}`,
+          title: geometry.fromLink
+            ? `${title}（从正文里的 [[${geometry.matchedText ?? ''}]] 引出）`
+            : `${title}（正文里没找到对应的链接写法，从卡片边缘出发）`,
+          ...(geometry.fromLink && geometry.leadPath !== ''
+            ? { leadPath: geometry.leadPath, leadFrom: geometry.anchor }
+            : {}),
         })
       }
       return visuals
@@ -406,7 +649,20 @@ export function GraphCanvas() {
     // 注意这里用的是**全部可见卡片**（而不是裁剪后的那一批）：线要从卡片边缘出发，
     // 只画两端都在视口里的边会让"线在屏幕中间凭空开始"
     return buildEdgeVisuals(data.edges, cardsById, selected, visibleWorldRect)
-  }, [mode, egoLayout, ego, data, cardsById, selected, visibleWorldRect])
+  }, [
+    mode,
+    egoLayout,
+    ego,
+    data,
+    cardsById,
+    selected,
+    visibleWorldRect,
+    currentRect,
+    tension,
+    edgeFromLink,
+    measure,
+    tick,
+  ])
 
   const paletteRef = useRef<{
     key: string
@@ -601,16 +857,9 @@ export function GraphCanvas() {
     useGraphStore.getState().autoFit()
   }, [mode, vaultLayout, rootPath, viewport])
 
-  useEffect(() => {
-    if (mode !== 'focus' || egoLayout === null) return
-    // 焦点视图的包围盒只有组件量得到（它取决于每篇正文排完有多高），所以"适应窗口"的算术
-    // 留在 store、包围盒由这里交进去（`Ctrl+0` 那条命令路径也要用它）；同一个 (圆心, 跳数)
-    // 只适应一次（跨挂载记账）
-    const bounds = egoLayout.layout.bounds
-    useGraphStore.getState().setEgoBounds(bounds)
-    const key = `${ego?.root ?? ''}\u0000${depth}`
-    useGraphStore.getState().autoFitBounds(key, bounds)
-  }, [mode, egoLayout, ego, depth, viewport])
+  // 焦点视图的"适应窗口"由**力导向那条 effect** 负责（它在落定之后用**落定后**的包围盒调用
+  // `setEgoBounds` / `autoFitBounds`）—— 这里刻意不再单独来一次：两个 effect 各调一次
+  // 会互相覆盖（真实踩过：后声明的那个用**环**的包围盒把镜头拉回去，画布看起来"偏在角落"）。
 
   // -------------------------------------------------------------------------
   // 交互：滚轮（平移 + Ctrl 缩放）、拖动平移 / 拖动卡片、命中测试
@@ -644,9 +893,12 @@ export function GraphCanvas() {
   const applyWheel = useCallback((event: WheelEvent): void => {
     const host = hostRef.current
     if (host === null) return
-    // 预览面板里的滚轮属于"滚正文"，不该把画布缩放掉。
+    // 预览面板与浮动面板里的滚轮属于"滚正文"，不该把画布缩放掉。
     // （HUD 没有可滚动内容，因此不在排除之列 —— 光标停在 HUD 上时滚轮照样平移/缩放画布。）
-    if (event.target instanceof Element && event.target.closest('.mn-graph-preview') !== null) {
+    if (
+      event.target instanceof Element &&
+      event.target.closest('.mn-graph-preview, .mn-float-note') !== null
+    ) {
       return
     }
     event.preventDefault()
@@ -743,6 +995,11 @@ export function GraphCanvas() {
       const world = worldPointOf(event.clientX, event.clientY)
       if (world === null) return
       const hit = event.button === 0 ? hitCard(world) : null
+      // 手柄落在卡片**内部**，所以必须先判它：否则拖手柄会变成拖动卡片（焦点视图里那种"拖不动"的观感）
+      const handle =
+        hit !== null && mode === 'focus' && rectHit(cardResizeHandleRect(hit.rect), world, 2 / transform.scale)
+          ? { relPath: hit.relPath, left: hit.rect.x }
+          : null
 
       const element = event.currentTarget
       if (typeof element.setPointerCapture === 'function') {
@@ -760,16 +1017,18 @@ export function GraphCanvas() {
         moved: false,
         startWorldX: world.x,
         startWorldY: world.y,
-        // 拖卡片只在全库视图里成立：焦点视图里卡片的位置**就是**"离中心几跳"，
-        // 拖动会把这个唯一的信息变成谎话（"我明明把它拖到外圈了"）
+        // 焦点视图里拖动 = **把这张卡片按住**（力场不再移动它，但它仍然推开别人）：
+        // 位置本来就是"离中心几跳 + 张力"的产物，允许用户按住其中一张正是"漂浮"该有的手感。
+        // 全库视图里拖动 = 搬位置（那是装箱布局，位置由用户说了算，并且要落盘）。
         card:
-          hit !== null && mode === 'vault'
+          handle === null && hit !== null
             ? { relPath: hit.relPath, grabX: world.x - hit.rect.x, grabY: world.y - hit.rect.y }
             : null,
+        resize: handle,
       }
       setPanning(true)
     },
-    [hitCard, mode, worldPointOf],
+    [hitCard, mode, worldPointOf, transform.scale],
   )
 
   const handlePointerMove = useCallback(
@@ -791,23 +1050,50 @@ export function GraphCanvas() {
       state.lastX = event.clientX
       state.lastY = event.clientY
 
-      if (state.card !== null && state.moved) {
-        // 拖卡片：抓点相对卡片左上角的偏移保持不变（否则卡片会"跳"到光标下）
+      if (state.resize !== null) {
+        // 拉宽卡片：右边界跟着光标走（左边界固定），宽度在 store 里夹好范围并落盘
         const world = worldPointOf(event.clientX, event.clientY)
-        if (world !== null) {
-          useGraphStore.getState().moveCard(
-            state.card.relPath,
-            world.x - state.card.grabX,
-            world.y - state.card.grabY,
-          )
+        if (world === null) return
+        useGraphStore.getState().setCardWidth(state.resize.relPath, world.x - state.resize.left)
+        return
+      }
+
+      if (state.card !== null && state.moved) {
+        const world = worldPointOf(event.clientX, event.clientY)
+        if (world === null) return
+        if (mode === 'focus') {
+          // 焦点视图：把这张卡片**钉住**在光标下（模拟里 fixed = true），其余继续被张力牵着
+          const rect = currentRect(state.card.relPath)
+          const sim = simRef.current
+          if (rect !== null && sim !== null) {
+            const centerX = world.x - state.card.grabX + rect.width / 2
+            const centerY = world.y - state.card.grabY + rect.height / 2
+            sim.pin(state.card.relPath, centerX, centerY)
+            // 记进 store：HUD 要显示"已按住几张"，重建模拟也要以它为输入（`pins` 是那条 effect 的依赖）
+            useGraphStore.getState().pinCard(state.card.relPath, { x: centerX, y: centerY })
+            positionsRef.current = new Map(positionsRef.current).set(state.card.relPath, {
+              x: centerX - rect.width / 2,
+              y: centerY - rect.height / 2,
+              width: rect.width,
+              height: rect.height,
+            })
+            setTick((value) => value + 1)
+          }
+          return
         }
+        // 全库视图：抓点相对卡片左上角的偏移保持不变（否则卡片会"跳"到光标下）
+        useGraphStore.getState().moveCard(
+          state.card.relPath,
+          world.x - state.card.grabX,
+          world.y - state.card.grabY,
+        )
         return
       }
       // 按在卡片上但还没超过拖动阈值：**先不动**（否则拖卡片之前画布会先抖一下）
       if (state.card !== null) return
       useGraphStore.getState().panBy(dx, dy)
     },
-    [hitCard, worldPointOf],
+    [hitCard, worldPointOf, mode, currentRect],
   )
 
   const endPointer = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -825,7 +1111,7 @@ export function GraphCanvas() {
     }
     if (event.type !== 'pointerup' || state.button !== 0) return
 
-    if (state.moved) return // 拖动过：不改选中（拖卡片 / 拖画布都不是"点了一下"）
+    if (state.moved) return // 拖动过：不改选中（拖卡片 / 拉宽 / 拖画布都不是"点了一下"）
     // 没拖动：点在卡片上 = 选中（右侧出现预览），点在空白 = 关掉预览
     const world = { x: state.startWorldX, y: state.startWorldY }
     const hit = hitCard(world)
@@ -930,6 +1216,18 @@ export function GraphCanvas() {
   const selectedCard =
     selected === null ? undefined : (focusCardByPath.get(selected) ?? cardsById.get(selected))
   const selectedNode = selected === null ? undefined : nodesByPath.get(selected)
+  /**
+   * 圆心那张卡片**当前**的世界矩形（`x,y,w,h`）。
+   *
+   * 卡片画在 canvas 上，位置还受力导向影响 —— 外面（测试、自动化、调试）无从知道它此刻在哪，
+   * 而"精确点到它"和"拖它的缩放手柄"正需要这个数。
+   */
+  const rootRect =
+    mode === 'focus' && ego !== null ? currentRect(ego.root) : null
+  const rootRectAttr =
+    rootRect === null
+      ? ''
+      : [rootRect.x, rootRect.y, rootRect.width, rootRect.height].map((value) => Math.round(value)).join(',')
   const nodeCount = mode === 'focus' ? (ego?.data.nodes.length ?? 0) : (data?.nodes.length ?? 0)
   const edgeCount = mode === 'focus' ? (ego?.data.edges.length ?? 0) : (data?.edges.length ?? 0)
   const truncated = mode === 'focus' ? (ego?.data.truncated ?? false) : (data?.truncated ?? true)
@@ -969,6 +1267,9 @@ export function GraphCanvas() {
       data-graph-canvas-cards={paintNodes.length}
       /* 上一帧真正画出来的张数（裁剪之后） */
       data-graph-painted-cards={paintedCards}
+      data-graph-root-rect={rootRectAttr}
+      /* 被按住的卡片数（漂浮时"我按住了几张"一眼可见） */
+      data-graph-pinned={pins.size}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={endPointer}
@@ -1100,6 +1401,125 @@ export function GraphCanvas() {
             </span>
           )}
         </div>
+
+        {/*
+          浮动态（ADR-0023）：张力、预设、两个开关，以及选中那张卡片的浮窗/尺寸。
+          只在关系图里出现 —— 全库视图是"看结构"的视图，卡片是紧凑卡片、没有正文位置可指。
+        */}
+        {mode === 'focus' && (
+          <div className="mn-graph__physics" data-mn-graph-nopan>
+            <div className="mn-graph__row">
+              <span className="mn-graph__row-label">浮动态</span>
+              {FORCE_PRESETS.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className={`mn-graph__chip${preset.id === forcePresetId ? ' mn-graph__chip--active' : ''}`}
+                  aria-pressed={preset.id === forcePresetId}
+                  data-force-preset={preset.id}
+                  title={preset.hint}
+                  onClick={() => useGraphStore.getState().setForcePreset(preset.id)}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="mn-graph__row">
+              <span className="mn-graph__row-label">张力</span>
+              <input
+                className="mn-graph__slider"
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={tension}
+                aria-label="连线张力"
+                data-graph-tension={tension}
+                onChange={(event) =>
+                  useGraphStore.getState().setTension(Number(event.target.value))
+                }
+              />
+              <span className="mn-graph__row-value">{Math.round(tension * 100)}%</span>
+            </div>
+
+            <div className="mn-graph__row">
+              <button
+                type="button"
+                className={`mn-graph__chip${edgeFromLink ? ' mn-graph__chip--active' : ''}`}
+                aria-pressed={edgeFromLink}
+                data-graph-action="toggle-edge-from-link"
+                title="连线从正文里对应的 [[链接]] 文字处画虚线引出，出了卡片再变实线"
+                onClick={() => useGraphStore.getState().setEdgeFromLink(!edgeFromLink)}
+              >
+                从链接引出
+              </button>
+              <button
+                type="button"
+                className={`mn-graph__chip${floating ? ' mn-graph__chip--active' : ''}`}
+                aria-pressed={floating}
+                data-graph-action="toggle-floating"
+                title="节点持续缓慢漂浮（关掉 = 落定后静止，省电）"
+                onClick={() => useGraphStore.getState().setFloating(!floating)}
+              >
+                漂浮
+              </button>
+              <button
+                type="button"
+                className="mn-graph__chip"
+                data-graph-action="reset-card-size"
+                title="把调过大小的卡片恢复成自动尺寸"
+                onClick={() => useGraphStore.getState().resetCardSize()}
+              >
+                重置卡片
+              </button>
+              <button
+                type="button"
+                className="mn-graph__chip"
+                data-graph-action="unpin-cards"
+                title="松开被拖住的卡片，让张力重新把它们摆回去"
+                onClick={() => useGraphStore.getState().unpinCards()}
+              >
+                松开卡片
+              </button>
+            </div>
+
+            {selected !== null && (
+              <div className="mn-graph__row">
+                <span className="mn-graph__row-label">高度</span>
+                {CARD_HEIGHT_CHOICES.map((choice) => {
+                  const current = cardSizes.get(selected)?.height ?? null
+                  const active = current === choice.value
+                  return (
+                    <button
+                      key={choice.label}
+                      type="button"
+                      className={`mn-graph__chip${active ? ' mn-graph__chip--active' : ''}`}
+                      aria-pressed={active}
+                      data-card-height={choice.value ?? 'auto'}
+                      title={choice.hint}
+                      onClick={() => {
+                        if (choice.value === null) useGraphStore.getState().resetCardSize(selected)
+                        else useGraphStore.getState().setCardHeight(selected, choice.value)
+                      }}
+                    >
+                      {choice.label}
+                    </button>
+                  )
+                })}
+                <button
+                  type="button"
+                  className="mn-graph__chip"
+                  data-graph-action="open-floating"
+                  title="把这篇文章拎出来，浮在画布上看（可拖动、可缩放、可多个）"
+                  onClick={() => useGraphStore.getState().openFloating(selected)}
+                >
+                  浮窗打开
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="mn-graph__legend">
           {mode === 'focus' ? (
@@ -1236,6 +1656,26 @@ export function GraphCanvas() {
           </button>
         </div>
       </div>
+
+      {/*
+        浮动笔记面板（ADR-0023）：可拖动、可缩放、可多个并存，点一下置顶。
+        渲染在停靠面板之后（DOM 靠后 = 盖在上面），层级再用 `zIndex` 排一次。
+      */}
+      {floatingPanes.map((pane) => (
+        <FloatingNote
+          key={pane.relPath}
+          relPath={pane.relPath}
+          title={nodesByPath.get(pane.relPath)?.title ?? pane.relPath}
+          rect={{ x: pane.x, y: pane.y, width: pane.width, height: pane.height }}
+          zIndex={FLOAT_PANE_Z + pane.z}
+          active={pane.z === topPaneZ(floatingPanes)}
+          area={{ width: viewport.width, height: viewport.height }}
+          onRaise={() => useGraphStore.getState().raiseFloating(pane.relPath)}
+          onMove={(rect) => useGraphStore.getState().moveFloating(pane.relPath, rect)}
+          onClose={() => useGraphStore.getState().closeFloating(pane.relPath)}
+          onOpenInEditor={handleOpenInEditor}
+        />
+      ))}
 
       {/*
         顶部只留**一条**横幅：刷新提示与"索引构建中"说的是同一件事（画布上的数据可能不是最新），

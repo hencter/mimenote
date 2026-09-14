@@ -227,13 +227,26 @@ class RecordingPaintContext implements PaintContext {
   /** 画过的每一段文字（按顺序、含重复 —— 平移/缩放会让同一张卡片被重画）。 */
   private readonly texts: string[] = []
 
+  /** 每一段文字**画在哪**（世界坐标换算后的屏幕坐标）：断言"卡片跟着光标走了"要用它。 */
+  private readonly placed: Array<{ text: string; x: number; y: number }> = []
+
   /** 这一段里画过的文字（去重：断言"画没画"时不该关心它被画了几遍）。 */
   drawnTexts(): string[] {
     return [...new Set(this.texts)]
   }
 
+  /** 某段文字最近一次被画在哪个位置（`null` = 这一段没画过它）。 */
+  lastPlacedAt(text: string): { x: number; y: number } | null {
+    for (let index = this.placed.length - 1; index >= 0; index -= 1) {
+      const entry = this.placed[index]
+      if (entry !== undefined && entry.text === text) return { x: entry.x, y: entry.y }
+    }
+    return null
+  }
+
   clear(): void {
     this.texts.length = 0
+    this.placed.length = 0
   }
 
   // 只记 fillText，其余调用一律忽略：这一层要证明的是"卡片被画出来了、内容是什么"，
@@ -256,8 +269,9 @@ class RecordingPaintContext implements PaintContext {
   strokeRect(): void {}
   setLineDash(): void {}
 
-  fillText(text: string): void {
+  fillText(text: string, x: number, y: number): void {
     this.texts.push(text)
+    this.placed.push({ text, x, y })
   }
 
   /** 每字 8px：只要**非零**就够（真字体的度量只有浏览器里有，jsdom 里没有任何来源）。 */
@@ -297,6 +311,8 @@ function drawnTexts(): string[] {
 function resetDrawnTexts(): void {
   paint.clear()
 }
+
+
 
 // ---------------------------------------------------------------------------
 // 挂载与几何：所有交互入口都在宿主元素上
@@ -1929,15 +1945,21 @@ describe('知识图谱画布', () => {
     expect(folderPaths()).toEqual(expect.arrayContaining(['', '日记', '项目', '项目/子项目']))
   })
 
-  it('焦点视图里拖动卡片不会移动它（位置由"离中心几跳"决定），拖的是一起平移画布', async () => {
+  it('焦点视图里拖动卡片 = 把它按住（力场不再推它），空白处拖动才是平移画布', async () => {
     /*
-      这条守的是一个**有意为之的不对称**：卡片上拖动只在全库视图里变成"移动卡片"，
-      焦点视图里它退化成"平移画布"。理由写在 `handlePointerDown` 里 ——
-      焦点视图里一张卡片的位置**就是**"离中心几跳"，允许拖动会把这个唯一的信息变成谎话
-      （"我明明把它拖到外圈了，它却还在第 1 跳"）。
+      这条守的是**两种拖动**的区别（ADR-0023 把焦点视图那一半改过）：
+      - 卡片上拖动 → 焦点视图里"按住这一张"（模拟里 `fixed = true`），其余卡片继续被张力牵着；
+        全库视图里仍是"搬位置"（装箱布局 + 落盘）。
+        按住只是这一次会话里的临时状态：位置依然由**布局与力场**决定，不写 localStorage。
+      - 空白处拖动 → 平移画布（两个视图都一样）。
+
+      为什么不再像 canvas 化的第一版那样"焦点视图里拖卡片 = 平移画布"：那时卡片位置完全由
+      环形布局决定，拖一下就把"离中心几跳"变成谎话。加了力导向之后位置本来就由力场决定，
+      "按住其中一张、其余继续漂"正是漂浮该有的手感（用户明确要的那件事）。
     */
     await mountFocus('项目/设计.md')
-    const before = useGraphStore.getState().view
+    const viewBefore = useGraphStore.getState().view
+    const relPath = '项目/设计.md'
 
     const from = screenPoint({ x: 0, y: 0 }) // 圆心那张卡片上按住
     const host = graphHost()
@@ -1945,15 +1967,33 @@ describe('知识图谱画布', () => {
     pointer(host, 'pointermove', { x: from.x + 90, y: from.y + 60 })
     pointer(host, 'pointerup', { x: from.x + 90, y: from.y + 60 })
 
-    // 没有"手工位置"这回事：焦点视图的布局里根本没有这一层
+    // 没有"手工位置"这回事：焦点视图的布局里根本没有这一层，也不落盘
     expect(useGraphStore.getState().manual.size).toBe(0)
     expect(window.localStorage.getItem(POSITIONS_KEY)).toBeNull()
+    // 画布没有跟着平移（拖的是卡片，不是画布）
+    expect(useGraphStore.getState().view).toEqual(viewBefore)
 
-    // 拖的是画布：平移量就是拖动的位移（屏幕像素），缩放不变
-    const after = useGraphStore.getState().view
-    expect(after.x - before.x).toBeCloseTo(90, 6)
-    expect(after.y - before.y).toBeCloseTo(60, 6)
-    expect(after.zoom).toBe(before.zoom)
+    // 卡片被**按住**了：store 里记下了它的新中心（世界坐标），位移等于拖动的屏幕位移 ÷ 缩放
+    const scale = useGraphStore.getState().view.zoom
+    const pinned = useGraphStore.getState().pins.get(relPath)
+    expect(pinned).toBeDefined()
+    expect(pinned?.x).toBeCloseTo(90 / scale, 1)
+    expect(pinned?.y).toBeCloseTo(60 / scale, 1)
+
+    // 松开：pins 清空（HUD 上那个「松开卡片」按钮走的就是这条命令）
+    act(() => {
+      useGraphStore.getState().unpinCards()
+    })
+    expect(useGraphStore.getState().pins.size).toBe(0)
+
+    // 空白处拖动仍然平移画布：用一个肯定没有卡片的世界坐标点
+    const blank = screenPoint({ x: 1_000_000, y: 1_000_000 })
+    const panBefore = useGraphStore.getState().view
+    pointer(host, 'pointerdown', { x: blank.x, y: blank.y })
+    pointer(host, 'pointermove', { x: blank.x + 40, y: blank.y + 25 })
+    pointer(host, 'pointerup', { x: blank.x + 40, y: blank.y + 25 })
+    expect(useGraphStore.getState().view.x - panBefore.x).toBeCloseTo(40, 6)
+    expect(useGraphStore.getState().view.y - panBefore.y).toBeCloseTo(25, 6)
   })
 
   it('方向键把选中项换到另一张卡片，并把它带到视口正中央', async () => {
@@ -2051,5 +2091,166 @@ describe('知识图谱画布', () => {
     expect(drawnTexts()).toHaveLength(0)
     // 交给画笔的张数没变：裁剪发生在画笔内部，不是布局或数据被清掉了
     expect(cardCount()).toBe(handedIn)
+  })
+
+  it('连接线从正文里的 `[[链接]]` 引出：卡片内是虚线引线，出了卡片才是实线（ADR-0023）', async () => {
+    /*
+      用户要的那件事："连接线不是凭空渲染在卡片边缘，要通过虚线从对应的 wiki link 处
+      到卡片边缘再转为实线"。这里守两件事：
+        1. 有对应文字时 → 每个 `[[链接]]` 都产生一段**卡片内的虚线**（`.mn-graph-edge--lead`）；
+        2. 关掉这个开关 → 那些虚线消失（退回"从卡片边界出发"的老行为），不是"永远画着"。
+      Mock Vault 里 `项目/设计.md` 正文写着 `[[路线图]]` 与 `[[细节]]`，所以圆心那张卡片
+      应当有两条引线。
+    */
+    await mountFocus('项目/设计.md')
+
+    const leadPaths = (): SVGPathElement[] =>
+      Array.from(document.querySelectorAll<SVGPathElement>('path.mn-graph-edge--lead'))
+    await waitFor(() => {
+      expect(leadPaths().length).toBeGreaterThanOrEqual(2)
+    })
+    // 引线真的有几何（`d` 非空），并且从**卡片内部**的某一点开始（不是一个零长度点）
+    for (const path of leadPaths()) {
+      const d = path.getAttribute('d') ?? ''
+      expect(d.startsWith('M')).toBe(true)
+      expect(d.length).toBeGreaterThan(8)
+    }
+    // 起点的小圆点也在（"线从哪句话出来"的指示）
+    expect(document.querySelectorAll('.mn-graph-edge-lead-dot').length).toBeGreaterThanOrEqual(2)
+
+    // 关掉开关：引线消失，但边还在（退回从卡片边界出发）
+    act(() => {
+      useGraphStore.getState().setEdgeFromLink(false)
+    })
+    await waitFor(() => {
+      expect(leadPaths()).toHaveLength(0)
+    })
+    expect(document.querySelectorAll('path.mn-graph-edge').length).toBeGreaterThan(0)
+  })
+
+  it('张力旋钮真的作用在连线上：调大之后路径的控制点变了，而且落盘', async () => {
+    /*
+      "张力"如果不能从画出来的路径上看出来，它就只是个滑块。这里断言 `d` 变了（同一条边），
+      并断言它写进偏好 —— 后者是"下次打开还是这个手感"的前提。
+    */
+    await mountFocus('项目/设计.md')
+    const dOf = (): string =>
+      document.querySelector('path.mn-graph-edge:not(.mn-graph-edge--lead)')?.getAttribute('d') ?? ''
+
+    await waitFor(() => {
+      expect(dOf()).not.toBe('')
+    })
+    const before = dOf()
+
+    act(() => {
+      useGraphStore.getState().setTension(0.9)
+    })
+    await waitFor(() => {
+      expect(dOf()).not.toBe(before)
+    })
+    expect(JSON.parse(window.localStorage.getItem(PREFS_KEY) ?? '{}')['tension']).toBeCloseTo(0.9, 5)
+  })
+
+  it('卡片尺寸可调：HUD 上选一档"高度上限"、拉一次缩放手柄、再重置', async () => {
+    /*
+      三种改法各有各的真实入口：
+        1. HUD 的高度档位（选中一张卡片才出现）；
+        2. 画布上右下角的缩放手柄（拖它改宽度）；
+        3. 「重置卡片」把两者一起还原。
+      拖动用的是**几何**：宿主上带 `data-graph-root-rect`（圆心那张卡片的当前世界矩形），
+      手柄在右下角内缩 14 像素（与 `cardResizeHandleRect` 同一个常量）。
+    */
+    await mountFocus('项目/设计.md')
+    const relPath = '项目/设计.md'
+
+    // 先选中圆心那张卡片（HUD 那一行才会出现）
+    clickAtWorld({ x: 0, y: 0 })
+    await waitFor(() => {
+      expect(useGraphStore.getState().selected).toBe(relPath)
+    })
+
+    // 1) 高度档位
+    const heightChip = await waitFor(() => {
+      const element = document.querySelector<HTMLElement>('[data-card-height="400"]')
+      expect(element).not.toBeNull()
+      return element as HTMLElement
+    })
+    fireEvent.click(heightChip)
+    await waitFor(() => {
+      expect(useGraphStore.getState().cardSizes.get(relPath)?.height).toBe(400)
+    })
+
+    // 2) 缩放手柄：从右下角往外拖 60 像素（世界坐标）⇒ 宽度变大
+    const rectAttr = graphHost().getAttribute('data-graph-root-rect') ?? ''
+    const [rx = 0, ry = 0, rw = 0, rh = 0] = rectAttr.split(',').map((part) => Number(part))
+    expect(rw).toBeGreaterThan(0)
+    const handleWorld = { x: rx + rw - 7, y: ry + rh - 7 }
+    const handleScreen = screenPoint(handleWorld)
+    pointer(graphHost(), 'pointerdown', { x: handleScreen.x, y: handleScreen.y })
+    pointer(graphHost(), 'pointermove', { x: handleScreen.x + 60, y: handleScreen.y })
+    pointer(graphHost(), 'pointerup', { x: handleScreen.x + 60, y: handleScreen.y })
+
+    const scale = useGraphStore.getState().view.zoom
+    await waitFor(() => {
+      const width = useGraphStore.getState().cardSizes.get(relPath)?.width ?? 0
+      // 拉宽的语义是"右边界跟着光标走"：新宽度 = 光标的世界 x − 卡片左边界。
+      // 按下点在**手柄里**（右下角内缩 `CARD_RESIZE_HANDLE/2` 处），所以基准是 `rw - 7` 而不是 `rw`。
+      // 容差 ±2：两边都取整过（属性里的矩形取整、store 写入时取整），差一个像素是**取整**不是错。
+      const expected = rw - 7 + 60 / scale
+      expect(Math.abs(width - expected)).toBeLessThanOrEqual(2)
+      expect(width).toBeGreaterThan(rw)
+    })
+    // 拉宽之后高度上限回到"自动"（换行变了，见 store 的说明）
+    expect(useGraphStore.getState().cardSizes.get(relPath)?.height).toBeNull()
+    // 拉手柄没有把画布也拖走
+    expect(useGraphStore.getState().view).toEqual(useGraphStore.getState().view)
+
+    // 拉宽之后卡片仍然被画出来（重新排版的环半径变了，位置会跟着动 —— 那是**应该**的：
+    // 卡片变宽了，"这一环装得下多少张"就要重算。这里只守"没有被裁掉"这条底线。）
+    await waitFor(() => {
+      expect(drawnTexts()).toContain('设计')
+    })
+
+    // 3) 重置
+    fireEvent.click(hudButton('reset-card-size'))
+    await waitFor(() => {
+      expect(useGraphStore.getState().cardSizes.size).toBe(0)
+    })
+  })
+
+  it('浮动笔记面板：从 HUD 打开一个浮窗，`Esc` 先关它、再关停靠预览（ADR-0023）', async () => {
+    /*
+      浮窗是这一轮新增的"把一篇拎出来读"的姿势，它必须在**画布之上**、可多个、且与 `Esc`
+      的语义一致：`Esc` 在用户心里的意思是"关掉最上面那层"。
+    */
+    await mountFocus('项目/设计.md')
+    clickAtWorld({ x: 0, y: 0 })
+    await waitFor(() => {
+      expect(useGraphStore.getState().selected).toBe('项目/设计.md')
+    })
+
+    fireEvent.click(hudButton('open-floating'))
+    const pane = await waitFor(() => {
+      const element = document.querySelector('.mn-float-note')
+      expect(element).not.toBeNull()
+      return element as HTMLElement
+    })
+    expect(pane.getAttribute('data-mn-graph-nopan')).not.toBeNull()
+    expect(useGraphStore.getState().floatingPanes).toHaveLength(1)
+
+    // `Esc`（命令走 `closePreview`）先关浮窗，停靠预览留着
+    act(() => {
+      useGraphStore.getState().closePreview()
+    })
+    await waitFor(() => {
+      expect(document.querySelector('.mn-float-note')).toBeNull()
+    })
+    expect(useGraphStore.getState().selected).toBe('项目/设计.md')
+
+    // 再按一次才关停靠预览
+    act(() => {
+      useGraphStore.getState().closePreview()
+    })
+    expect(useGraphStore.getState().selected).toBeNull()
   })
 })

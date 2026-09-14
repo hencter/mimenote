@@ -180,6 +180,9 @@ export interface PaintStats {
 
 /** 卡片圆角（与 `--mn-radius` 的观感对应）。 */
 const CARD_RADIUS = 6
+
+/** 缩放手柄离卡片右下角的边距（世界坐标）。 */
+const CHEVRON_INSET = 5
 /** 行内代码 / 代码块 / 图片占位框的圆角。 */
 const CODE_RADIUS = 3
 const IMAGE_RADIUS = 4
@@ -497,7 +500,55 @@ function drawCard(context: PaintContext, node: PaintNode, env: PaintEnv): void {
     drawBody(context, layout.blocks, contentLeft, bodyTop, env)
   }
 
+  // 右下角的缩放手柄：只在**活跃**的卡片上画（悬停或选中）。
+  // 为什么画在这里而不是每个卡片都画：一屏几十张卡片上各挂一个把手会变成一片噪点，
+  // 而"能调大小"这件事在用户把鼠标移上去时告诉他一次就够了。
+  if (focused) drawResizeHandle(context, rect, env)
+
   context.restore()
+}
+
+/**
+ * 缩放手柄的边长（**世界坐标**，随缩放一起缩放）。
+ *
+ * 导出它是因为命中测试要用同一个数：组件按这个尺寸算把手的矩形，画的时候也用它 ——
+ * 两处各写一个 14 就会出现"看着在把手上、按下去却是拖动卡片"。
+ */
+export const CARD_RESIZE_HANDLE = 14
+
+/**
+ * 手柄在世界坐标下的矩形（右下角内缩 `CARD_RESIZE_HANDLE`）。
+ *
+ * 组件用它做命中测试：`rectHit(cardResizeHandleRect(card.rect), worldPoint, tolerance)`。
+ * 放在卡片**内部**而不是外侧：外侧的把手会在两张卡片靠近时互相重叠，用户按下去分不清拖哪一个。
+ */
+export function cardResizeHandleRect(rect: Rect): Rect {
+  const size = CARD_RESIZE_HANDLE
+  return {
+    x: rect.x + rect.width - size,
+    y: rect.y + rect.height - size,
+    width: size,
+    height: size,
+  }
+}
+
+/** 手柄的观感：两条斜线（像窗口右下角的拉伸纹），颜色走主题的次要前景色。 */
+function drawResizeHandle(context: PaintContext, rect: Rect, env: PaintEnv): void {
+  const size = CARD_RESIZE_HANDLE * env.scale
+  const right = rect.x + rect.width - CHEVRON_INSET * env.scale
+  const bottom = rect.y + rect.height - CHEVRON_INSET * env.scale
+  context.setLineDash([])
+  context.globalAlpha = 0.75
+  context.strokeStyle = env.palette.muted
+  context.lineWidth = env.scale
+  // 两道斜线：从右下角往左上叠（第一道长、第二道短，读起来就是"这里能拉"）
+  for (const offset of [0, size * 0.42]) {
+    context.beginPath()
+    context.moveTo(right - size + offset, bottom)
+    context.lineTo(right, bottom - size + offset)
+    context.stroke()
+  }
+  context.globalAlpha = 1
 }
 
 /**
@@ -630,12 +681,21 @@ function drawTextBlock(
   const block = item.block
   const base = fontFor(block, metrics)
   const lineHeight = lineHeightFor(block, metrics) * scale
+  /**
+   * 块自己的内容左偏移（**世界坐标 → 屏幕像素**）。
+   *
+   * 这一笔过去漏掉了，于是嵌套列表 / 引用里"符号缩进了、文字没缩进"：
+   * `text-layout` 是按 `width - indent - markerWidth` 折行的、`indentFor` 也说"内容的左偏移是 indent"，
+   * 画笔少加这一笔会让子级文字与父级对齐（嵌套看起来像不存在），
+   * 而从排版结果推出来的锚点（`link-edge.ts`）则会比画出来的字右移一个 `indent`。
+   */
+  const indentX = item.indent * scale
 
   let color = palette.text
-  // 文字左边界 = 块左边界 + 符号留白。**必须**是排版层留出来的 `markerWidth`：
+  // 文字左边界 = 块左边界 + 内容偏移 + 符号留白。**必须**是排版层留出来的 `markerWidth`：
   // 折行是按 `width - indent - markerWidth` 算的，画笔若从小一点的地方起画，
   // 最后几个字就会越过卡片右边被裁掉（"看起来只是有点挤"的溢出最难发现）
-  let textLeft = left
+  let textLeft = left + indentX
   let marker: string | null = null
 
   switch (block.kind) {
@@ -645,16 +705,16 @@ function drawTextBlock(
     }
     case 'list-item': {
       marker = listMarker(block)
-      textLeft = left + metrics.markerWidth * scale
+      textLeft = left + indentX + metrics.markerWidth * scale
       break
     }
     case 'quote': {
       // 竖线画在符号留白那一栏的左端（`indent` 处），与 CSS 的 `border-left: 3px` 对应
       context.setLineDash([])
       context.fillStyle = palette.quoteBorder
-      context.fillRect(left, top, QUOTE_BAR_WIDTH * scale, item.height * scale)
+      context.fillRect(left + indentX, top, QUOTE_BAR_WIDTH * scale, item.height * scale)
       color = palette.muted
-      textLeft = left + metrics.markerWidth * scale
+      textLeft = left + indentX + metrics.markerWidth * scale
       break
     }
     default: {
@@ -794,6 +854,8 @@ function drawCodeBlock(
   env: PaintEnv,
 ): void {
   const { metrics, palette, scale } = env
+  // 内容偏移也要算上（同 `drawTextBlock`：嵌套的代码块不该与父级左对齐）
+  const innerLeft = left + item.indent * scale
   const blockWidth = (metrics.width - item.indent) * scale
   const lineHeight = metrics.codeLineHeight * scale
   const font = scaleFont(fontFor(item.block, metrics), scale)
@@ -802,7 +864,7 @@ function drawCodeBlock(
   context.fillStyle = palette.codeBg
   roundRectPath(
     context,
-    { x: left, y: top, width: blockWidth, height: item.height * scale },
+    { x: innerLeft, y: top, width: blockWidth, height: item.height * scale },
     CODE_RADIUS * scale,
   )
   context.fill()
@@ -814,14 +876,14 @@ function drawCodeBlock(
     if (overflows) {
       context.save()
       context.beginPath()
-      context.rect(left, lineTop, blockWidth, lineHeight)
+      context.rect(innerLeft, lineTop, blockWidth, lineHeight)
       context.clip()
     }
 
     drawRuns(
       context,
       line,
-      { x: left, centerY: lineTop + lineHeight / 2, lineHeight, base: font, color: palette.codeText },
+      { x: innerLeft, centerY: lineTop + lineHeight / 2, lineHeight, base: font, color: palette.codeText },
       env,
     )
 

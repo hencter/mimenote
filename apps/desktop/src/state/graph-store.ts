@@ -82,6 +82,98 @@ export const DEFAULT_EGO_DEPTH = 1
  */
 const TEXT_BATCH_SIZE = 40
 
+/** 连线张力的范围：0 = 直线，1 = 最绷（控制点偏移弦长的 1/4）。 */
+export const MIN_TENSION = 0
+export const MAX_TENSION = 1
+
+/**
+ * 默认张力：**0.35**。
+ *
+ * 依据：0 时线是直的，"张力"这个旋钮看不出效果；1 时曲线会绕过卡片、也容易与其它线交叉。
+ * 0.35 在 1200×800 的视口、一跳邻居围一圈的情况下曲线微微外扩，既不压住卡片也不像乱麻。
+ */
+export const DEFAULT_TENSION = 0.35
+
+/** 默认力导向预设（见 `features/graph/force-presets.ts`）。 */
+export const DEFAULT_FORCE_PRESET = 'balanced'
+
+// ---------------------------------------------------------------------------
+// 卡片尺寸（可调大小）
+// ---------------------------------------------------------------------------
+
+/** 卡片宽度的范围：比手机窄就没法读，比一屏还宽就不像卡片了。 */
+export const MIN_CARD_WIDTH = 220
+export const MAX_CARD_WIDTH = 900
+
+/**
+ * 卡片**正文高度上限**的范围。
+ *
+ * 为什么是"上限"而不是固定高度：卡片正面是笔记正文，高度本来就由内容决定；
+ * 用户调小它是"这一篇太长，我只要看开头"，调大它是"这一篇我想多看点"。
+ * 固定高度反而会把短笔记撑成一堆空白。
+ */
+export const MIN_CARD_HEIGHT = 120
+export const MAX_CARD_HEIGHT = 2400
+
+/** 卡片的手工尺寸（按 Vault + relPath 持久化；没调过的字段是 `null` = 用默认）。 */
+export interface CardSize {
+  /** 卡片宽度；`null` = 默认宽度（焦点视图 320）。 */
+  width: number | null
+  /** 正文高度上限；`null` = 用默认上限。 */
+  height: number | null
+}
+
+export const CARD_SIZE_KEY = 'mimenote.graph.sizes.v1'
+
+/** 卡片尺寸的归一化（越界与非法值都夹回范围内）。 */
+export function clampCardWidth(width: number): number {
+  if (!Number.isFinite(width)) return MAX_CARD_WIDTH
+  return Math.min(MAX_CARD_WIDTH, Math.max(MIN_CARD_WIDTH, Math.round(width)))
+}
+
+/** 高度上限可以显式"自动"（`null`），所以这里接受 `null` 原样返回。 */
+export function clampCardSizeHeight(height: number | null): number | null {
+  return height === null ? null : clampCardHeight(height)
+}
+
+export function clampCardHeight(height: number): number {
+  if (!Number.isFinite(height)) return MIN_CARD_HEIGHT
+  return Math.min(MAX_CARD_HEIGHT, Math.max(MIN_CARD_HEIGHT, Math.round(height)))
+}
+
+// ---------------------------------------------------------------------------
+// 浮动笔记面板（ADR-0023）
+// ---------------------------------------------------------------------------
+
+/**
+ * 一个浮动面板的位置与大小（屏幕像素，相对画布宿主）。
+ *
+ * 为什么不持久化：浮窗是**临时**的阅读姿势（Obsidian 的 hover editor 同样不跨会话保留）——
+ * 下次打开应用还挂着一堆不知道从哪来的浮窗，比"什么都没有"更让人困惑。
+ * 卡片尺寸则相反：那是"我怎么看这一篇"的偏好，要留住。
+ */
+export interface FloatingPane {
+  relPath: string
+  x: number
+  y: number
+  width: number
+  height: number
+  /** 层级：点一下置顶（数值越大越靠上）。 */
+  z: number
+}
+
+/**
+ * 浮动面板的最小/默认尺寸。
+ *
+ * ⚠️ 最小值必须与 `features/graph/FloatingNote.tsx` 导出的那两个常量**一致**：
+ * 面板自己拖动时会按它的常量夹一次，store 在写入时再夹一次，两处数值不同就会出现
+ * "拖到某个尺寸又被弹回来"这种说不清的抖动。这里取同一组数（220/140）。
+ */
+export const MIN_FLOAT_WIDTH = 220
+export const MIN_FLOAT_HEIGHT = 140
+export const DEFAULT_FLOAT_WIDTH = 420
+export const DEFAULT_FLOAT_HEIGHT = 520
+
 /** 拖动时每次 pointermove 都写 localStorage 是浪费（一次 JSON.stringify 可能是几千项），
  *  因此合并成一次延迟写入；窗口关闭前的最后一次拖动仍在 400ms 内落盘。 */
 const PERSIST_DEBOUNCE_MS = 400
@@ -120,6 +212,14 @@ type StoredPositions = Record<string, Record<string, Point>>
 interface StoredPrefs {
   mode: GraphMode
   depth: number
+  /** 连线的张力（0..1，ADR-0023）。缺省按默认值补（老用户的偏好里没有这一项）。 */
+  tension?: number
+  /** 连接线是否从正文里的 wiki link 文字处引出（ADR-0023）。 */
+  edgeFromLink?: boolean
+  /** 力导向浮动态的预设 id（ADR-0023）。 */
+  forcePreset?: string
+  /** 是否让节点持续漂浮（false = 打开时落定后就静止）。 */
+  floating?: boolean
 }
 
 function isStoredPrefs(value: unknown): value is StoredPrefs {
@@ -131,14 +231,32 @@ function isStoredPrefs(value: unknown): value is StoredPrefs {
 }
 
 function readPrefs(): StoredPrefs {
-  const stored = loadJson<StoredPrefs>(PREFS_KEY, { mode: 'focus', depth: DEFAULT_EGO_DEPTH }, isStoredPrefs)
-  return { mode: stored.mode, depth: clampEgoDepth(stored.depth) }
+  const stored = loadJson<StoredPrefs>(
+    PREFS_KEY,
+    { mode: 'focus', depth: DEFAULT_EGO_DEPTH },
+    isStoredPrefs,
+  )
+  return {
+    mode: stored.mode,
+    depth: clampEgoDepth(stored.depth),
+    tension: clampTension(stored.tension ?? DEFAULT_TENSION),
+    // 缺省开：这条是用户明确要的（"虚线从对应的 wiki link 处引出"），不是可选装饰
+    edgeFromLink: stored.edgeFromLink !== false,
+    floating: stored.floating !== false,
+    forcePreset: stored.forcePreset ?? DEFAULT_FORCE_PRESET,
+  }
 }
 
 /** 跳数归一化：非法值一律回到范围内（宿主也会再夹一次，前端不做"等宿主纠正"的假设）。 */
 export function clampEgoDepth(depth: number): number {
   if (!Number.isFinite(depth)) return DEFAULT_EGO_DEPTH
   return Math.min(MAX_EGO_DEPTH, Math.max(MIN_EGO_DEPTH, Math.round(depth)))
+}
+
+/** 张力归一化（0 = 直线，1 = 最绷）。 */
+export function clampTension(tension: number): number {
+  if (!Number.isFinite(tension)) return DEFAULT_TENSION
+  return Math.min(MAX_TENSION, Math.max(MIN_TENSION, tension))
 }
 
 /** 画布视口的像素尺寸。 */
@@ -270,6 +388,65 @@ interface GraphState {
   /** 组件上报焦点视图的包围盒（`null` = 没有可适应的内容）。 */
   setEgoBounds: (bounds: Rect | null) => void
 
+  // ---------------------------------------------------------------------------
+  // 可调大小的卡片（ADR-0023）
+  // ---------------------------------------------------------------------------
+
+  /** 用户手工调过的卡片尺寸（按 Vault + relPath 持久化）。 */
+  cardSizes: ReadonlyMap<string, CardSize>
+  /** 调宽度（同时把高度上限放开到新宽度下自然需要的高度，见实现里的说明）。 */
+  setCardWidth: (relPath: string, width: number) => void
+  /** 调正文高度上限。 */
+  setCardHeight: (relPath: string, height: number) => void
+  /** 恢复一张卡片（或全部）的自动尺寸。 */
+  resetCardSize: (relPath?: string) => void
+
+  // ---------------------------------------------------------------------------
+  // 连线张力与浮动态（ADR-0023）
+  // ---------------------------------------------------------------------------
+
+  /** 连线张力（0..1）：控制点沿垂直方向偏移弦长的多少。 */
+  tension: number
+  setTension: (tension: number) => void
+  /** 连接线是否从正文里的 wiki link 文字处引出（关掉 = 全部从卡片边界出发）。 */
+  edgeFromLink: boolean
+  setEdgeFromLink: (on: boolean) => void
+  /** 力导向的预设 id（见 `features/graph/force-presets.ts`）。 */
+  forcePreset: string
+  setForcePreset: (id: string) => void
+  /** 是否让节点持续漂浮（false = 落定后静止，省电）。 */
+  floating: boolean
+  setFloating: (on: boolean) => void
+
+  // ---------------------------------------------------------------------------
+  // 浮动笔记面板（ADR-0023）
+  // ---------------------------------------------------------------------------
+
+  /** 当前打开的浮动面板（可多个；`z` 大的在上面）。 */
+  floatingPanes: readonly FloatingPane[]  /** 打开（或置顶）一篇笔记的浮动面板。 */
+  openFloating: (relPath: string) => void
+  closeFloating: (relPath: string) => void
+  closeAllFloating: () => void
+  moveFloating: (relPath: string, rect: { x: number; y: number; width: number; height: number }) => void
+  raiseFloating: (relPath: string) => void
+
+  // ---------------------------------------------------------------------------
+  // 被"按住"的卡片（ADR-0023）
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 用户按住的卡片（relPath → 世界坐标里的**中心点**）。
+   *
+   * 放在 store 而不是组件 ref 里：它是**用户看得见的状态**（HUD 上要显示"已按住 N 张"、
+   * 力导向的重建也要以它为输入），而且"按住/松开"要能被命令与测试观察到。
+   * 不落盘：这是这一次会话里的临时摆放，下次打开图谱应当重新落定。
+   */
+  pins: ReadonlyMap<string, Point>
+  /** 按住一张卡片（拖动时逐帧调用，中心点坐标）。 */
+  pinCard: (relPath: string, center: Point) => void
+  /** 松开全部（或某一张）被按住的卡片，让张力重新把位置摆回去。 */
+  unpinCards: (relPath?: string) => void
+
   setMode: (mode: GraphMode) => void
   /** 调节跳数（会立刻重拉子图；视角保留）。 */
   setDepth: (depth: number) => void
@@ -346,6 +523,83 @@ function autoFitKey(rootPath: string | null, viewport: GraphViewport): string {
   return `${rootPath ?? ''}\u0000${viewport.known ? 'known' : 'fallback'}`
 }
 
+// ---------------------------------------------------------------------------
+// 偏好与卡片尺寸的落盘
+// ---------------------------------------------------------------------------
+
+interface PrefsSource {
+  mode: GraphMode
+  depth: number
+  tension: number
+  edgeFromLink: boolean
+  floating: boolean
+  forcePreset: string
+}
+
+/** 把当前状态收成一份可落盘的偏好（四个 setter 共用，避免各自漏写一个字段）。 */
+function prefsOf(source: PrefsSource): StoredPrefs {
+  return {
+    mode: source.mode,
+    depth: source.depth,
+    tension: source.tension,
+    edgeFromLink: source.edgeFromLink,
+    floating: source.floating,
+    forcePreset: source.forcePreset,
+  }
+}
+
+/** 浮动面板的层级：只增不减（`z` 只用来排序，数值本身没有意义）。 */
+function topZ(panes: readonly FloatingPane[]): number {
+  return panes.reduce((max, pane) => Math.max(max, pane.z), 0)
+}
+
+type StoredCardSizes = Record<
+  string,
+  Record<string, { width: number | null; height: number | null }>
+>
+
+function readStoredCardSizes(): StoredCardSizes {
+  return loadJson<StoredCardSizes>(CARD_SIZE_KEY, {}, (value): value is StoredCardSizes => {
+    return typeof value === 'object' && value !== null
+  })
+}
+
+function toStoredSizes(sizes: ReadonlyMap<string, CardSize>): Record<string, CardSize> {
+  const record: Record<string, CardSize> = {}
+  for (const [relPath, size] of sizes) record[relPath] = size
+  return record
+}
+
+/** 落盘卡片尺寸（按 Vault 分：这是"这个 Vault 长什么样"的一部分）。 */
+function persistCardSizes(rootPath: string | null, sizes: ReadonlyMap<string, CardSize>): void {
+  const stored = readStoredCardSizes()
+  if (rootPath === null) return
+  saveJson(CARD_SIZE_KEY, { ...stored, [rootPath]: toStoredSizes(sizes) })
+}
+
+/**
+ * 换 Vault 时把该 Vault 的卡片尺寸读回来。
+ *
+ * 与手工位置（`positions`）不同，尺寸是**布局的输入**：不读回来的话，用户为一个长笔记
+ * 调好的宽度每次打开都要重调，而"卡片多大"恰恰是这一轮新增的东西。
+ */
+function loadCardSizes(rootPath: string | null): Map<string, CardSize> {
+  const map = new Map<string, CardSize>()
+  if (rootPath === null) return map
+  const record = readStoredCardSizes()[rootPath]
+  if (record === undefined) return map
+  for (const [relPath, size] of Object.entries(record)) {
+    if (size === null || typeof size !== 'object') continue
+    const width = size.width
+    if (width !== null && !Number.isFinite(width)) continue
+    map.set(relPath, {
+      width: width === null ? null : clampCardWidth(width),
+      height: clampCardSizeHeight(size.height === undefined ? null : size.height),
+    })
+  }
+  return map
+}
+
 export const useGraphStore = create<GraphState>((set, get) => ({
   status: 'idle',
   data: null,
@@ -368,6 +622,13 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   egoError: null,
   texts: new Map<string, string>(),
   egoBounds: null,
+  cardSizes: new Map<string, CardSize>(),
+  tension: readPrefs().tension ?? DEFAULT_TENSION,
+  edgeFromLink: readPrefs().edgeFromLink !== false,
+  forcePreset: readPrefs().forcePreset ?? DEFAULT_FORCE_PRESET,
+  floating: readPrefs().floating !== false,
+  floatingPanes: [],
+  pins: new Map<string, Point>(),
 
   load: async (rootPath, options = {}) => {
     if (rootPath === null) {
@@ -486,12 +747,35 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       refreshing: false,
       refreshNotice: null,
       fitKey: null,
+      // 卡片尺寸、浮动面板、力导向都跟着 Vault 一起作废（它们都是"这个 Vault 的视图状态"）
+      cardSizes: new Map<string, CardSize>(),
+      floatingPanes: [],
+      ego: null,
+      egoStatus: 'idle',
+      egoError: null,
+      texts: new Map<string, string>(),
+      egoBounds: null,
     })
   },
 
   select: (selected) => set({ selected }),
 
-  closePreview: () => set({ selected: null }),
+  /**
+   * `Esc`（`graph.closePreview` 命令）走这里。
+   *
+   * **先关最上面的浮窗，没有浮窗才关停靠预览**：`Esc` 在用户心里的意思是"关掉最上面那层"，
+   * 而浮窗是后出现的、盖在停靠面板之上的东西。反过来的话，用户按 `Esc` 会发现
+   * "浮窗还在，右下角那个面板却没了"。
+   */
+  closePreview: () => {
+    const panes = get().floatingPanes
+    if (panes.length > 0) {
+      const top = panes.reduce((best, pane) => (pane.z > best.z ? pane : best), panes[0] as FloatingPane)
+      get().closeFloating(top.relPath)
+      return
+    }
+    set({ selected: null })
+  },
 
   toggleFolder: (path) => {
     const next = new Set(get().collapsed)
@@ -594,8 +878,11 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     // 判据放在这里而不是调用方：只有 store 同时知道"旧的这份数据是谁的、用的几跳"。
     const keepView =
       options.keepView === true && previous !== null && previous.root === relPath && previous.depth === depth
-    if (!keepView) set({ egoStatus: 'loading', egoError: null })
-
+    if (!keepView) {
+      // 卡片尺寸是**布局的输入**：非保留视角的加载顺手把它从落盘读回来（用户为此调过宽度，
+      // 每次换深度都重调一遍是不能接受的）。保留视角的刷新不动它 —— 内存里的才是最新的。
+      set({ egoStatus: 'loading', egoError: null, cardSizes: loadCardSizes(get().rootPath) })
+    }
     try {
       const data = await ipc.graphEgo(relPath, depth)
       if (seq !== egoSeq) return
@@ -636,8 +923,162 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     set({ egoBounds: bounds })
   },
 
-  autoFitBounds: (key, bounds) => {
-    const state = get()
+  // -------------------------------------------------------------------------
+  // 可调大小的卡片（ADR-0023）
+  // -------------------------------------------------------------------------
+
+  setCardWidth: (relPath, width) => {
+    const next = clampCardWidth(width)
+    const current = get().cardSizes
+    if (current.get(relPath)?.width === next) return
+    const sizes = new Map(current)
+    // 调宽度时把**高度上限一并重置成"自动"**：宽度变了，正文的换行就变了 —— 同一个上限下
+    // 更宽的卡片会显示更多行。若此时仍钉着旧上限，用户会觉得"我拉宽了，怎么反而看着更短"。
+    sizes.set(relPath, { width: next, height: null })
+    persistCardSizes(get().rootPath, sizes)
+    set({ cardSizes: sizes })
+  },
+
+  setCardHeight: (relPath, height) => {
+    const next = clampCardHeight(height)
+    const current = get().cardSizes
+    if (current.get(relPath)?.height === next) return
+    const width = current.get(relPath)?.width ?? null
+    const sizes = new Map(current)
+    sizes.set(relPath, { width, height: next })
+    persistCardSizes(get().rootPath, sizes)
+    set({ cardSizes: sizes })
+  },
+
+  resetCardSize: (relPath) => {
+    const current = get().cardSizes
+    const sizes = new Map(current)
+    if (relPath === undefined) sizes.clear()
+    else sizes.delete(relPath)
+    persistCardSizes(get().rootPath, sizes)
+    set({ cardSizes: sizes })
+  },
+
+  // -------------------------------------------------------------------------
+  // 张力与浮动态（ADR-0023）
+  // -------------------------------------------------------------------------
+
+  setTension: (tension) => {
+    const next = clampTension(tension)
+    if (get().tension === next) return
+    saveJson(PREFS_KEY, prefsOf({ ...get(), tension: next }))
+    set({ tension: next })
+  },
+
+  setEdgeFromLink: (on) => {
+    if (get().edgeFromLink === on) return
+    saveJson(PREFS_KEY, prefsOf({ ...get(), edgeFromLink: on }))
+    set({ edgeFromLink: on })
+  },
+
+  setForcePreset: (id) => {
+    if (get().forcePreset === id) return
+    saveJson(PREFS_KEY, prefsOf({ ...get(), forcePreset: id }))
+    set({ forcePreset: id })
+  },
+
+  setFloating: (on) => {
+    if (get().floating === on) return
+    saveJson(PREFS_KEY, prefsOf({ ...get(), floating: on }))
+    set({ floating: on })
+  },
+
+  // -------------------------------------------------------------------------
+  // 浮动笔记面板（ADR-0023）
+  // -------------------------------------------------------------------------
+
+  openFloating: (relPath) => {
+    const current = get().floatingPanes
+    if (current.some((pane) => pane.relPath === relPath)) {
+      get().raiseFloating(relPath)
+      return
+    }
+    // 位置错开一点：同一处叠着会让人以为只开了一个；尺寸不超过视口（小窗口里也要能用）
+    const step = (current.length % 5) * 28
+    const { viewport } = get()
+    const width = Math.min(DEFAULT_FLOAT_WIDTH, Math.max(MIN_FLOAT_WIDTH, viewport.width - 48))
+    const height = Math.min(DEFAULT_FLOAT_HEIGHT, Math.max(MIN_FLOAT_HEIGHT, viewport.height - 48))
+    const pane: FloatingPane = {
+      relPath,
+      x: Math.max(12, viewport.width - width - 24 - step),
+      y: Math.max(12, 60 + step),
+      width,
+      height,
+      z: topZ(current) + 1,
+    }
+    set({ floatingPanes: [...current, pane] })
+  },
+
+  closeFloating: (relPath) => {
+    const current = get().floatingPanes
+    const next = current.filter((pane) => pane.relPath !== relPath)
+    if (next.length === current.length) return
+    set({ floatingPanes: next })
+  },
+
+  closeAllFloating: () => {
+    if (get().floatingPanes.length === 0) return
+    set({ floatingPanes: [] })
+  },
+
+  moveFloating: (relPath, rect) => {
+    const current = get().floatingPanes
+    const index = current.findIndex((pane) => pane.relPath === relPath)
+    const pane = index < 0 ? undefined : current[index]
+    if (pane === undefined) return
+    const next = [...current]
+    next[index] = {
+      ...pane,
+      x: rect.x,
+      y: rect.y,
+      width: Math.max(MIN_FLOAT_WIDTH, rect.width),
+      height: Math.max(MIN_FLOAT_HEIGHT, rect.height),
+    }
+    set({ floatingPanes: next })
+  },
+
+  raiseFloating: (relPath) => {
+    const current = get().floatingPanes
+    const index = current.findIndex((pane) => pane.relPath === relPath)
+    const pane = index < 0 ? undefined : current[index]
+    if (pane === undefined) return
+    const top = topZ(current)
+    if (pane.z === top) return
+    const next = [...current]
+    next[index] = { ...pane, z: top + 1 }
+    set({ floatingPanes: next })
+  },
+
+  // -------------------------------------------------------------------------
+  // 被按住的卡片
+  // -------------------------------------------------------------------------
+
+  pinCard: (relPath, center) => {
+    if (!Number.isFinite(center.x) || !Number.isFinite(center.y)) return
+    const pins = new Map(get().pins)
+    pins.set(relPath, { x: center.x, y: center.y })
+    set({ pins })
+  },
+
+  unpinCards: (relPath) => {
+    const current = get().pins
+    if (current.size === 0) return
+    if (relPath === undefined) {
+      set({ pins: new Map<string, Point>() })
+      return
+    }
+    if (!current.has(relPath)) return
+    const pins = new Map(current)
+    pins.delete(relPath)
+    set({ pins })
+  },
+
+  autoFitBounds: (key, bounds) => {    const state = get()
     if (state.fitKey === key) return
     if (bounds.width <= 0 || bounds.height <= 0) return
     set({
