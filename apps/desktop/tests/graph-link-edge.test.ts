@@ -22,6 +22,7 @@ import type { Point, Rect } from '@/features/graph/layout'
 import {
   cardLocalToWorld,
   findLinkAnchor,
+  leadDash,
   linkEdgeGeometry,
   rayRectExit,
   tensionPath,
@@ -124,6 +125,21 @@ function distanceToChord(start: Point, end: Point, point: Point): number {
   const dy = end.y - start.y
   const chord = Math.hypot(dx, dy)
   return Math.abs(dx * (point.y - start.y) - dy * (point.x - start.x)) / chord
+}
+
+/**
+ * 点在矩形**内**时，离最近那条边有多远（分界点的定义就是"这个数为 0"）。
+ *
+ * 只对内部点有意义：给一个外面的点，返回的"到最近边的距离"是负数 —— 那正好也是想知道的
+ * （"这点不在卡片里"），所以不额外做分支，读到负数就当"在外面"。
+ */
+function distanceToBorder(rect: Rect, point: Point): number {
+  return Math.min(
+    point.x - rect.x,
+    rect.x + rect.width - point.x,
+    point.y - rect.y,
+    rect.y + rect.height - point.y,
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -559,5 +575,266 @@ describe('linkEdgeGeometry', () => {
     expect(onVertical || onHorizontal).toBe(true)
     expect(geometry.entry.y).toBeGreaterThanOrEqual(toRect.y)
     expect(geometry.entry.y).toBeLessThanOrEqual(toRect.y + toRect.height)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 分界点：虚线在哪里交到卡片边界（用户那句话的判据全在这几条里）
+// ---------------------------------------------------------------------------
+
+/**
+ * 用户的原话是"从 wiki 链接处虚线开始，卡片边缘处实线出连接到卡片"。
+ * 这句话能拆成三个**坐标级**的判据，下面逐条钉：
+ *
+ * 1. 虚线的起点 = 链接文字的位置（在卡片**里**，不是卡片边缘、不是卡片中心）；
+ * 2. 虚线的终点 = 分界点 = 卡片边界上"从起点朝目标中心那条射线"的交点（距离四条边最近的那条为 0）；
+ * 3. 实线的第一个点 = 分界点（与虚线的终点逐坐标相同），最后一个点 = 目标卡片的入点。
+ *
+ * 本文件里的数字全部手算（0 不用实现里的常量拼），所以它证明的是"画法对不对"，
+ * 而不是"实现有没有变"。卡片外框 220 ⇒ 内容宽 200 ⇒ 每行 20 个汉字（每字 10px）。
+ */
+describe('分界点：虚线在哪里交到卡片边界', () => {
+  const fromRect: Rect = { x: 0, y: 0, width: CARD_WIDTH, height: 200 }
+  const toRect: Rect = { x: 400, y: 300, width: 200, height: 120 }
+  /** 目标卡片中心 —— `exit` / `entry` 的方向判据都从它出发（见 `linkEdgeGeometry`）。 */
+  const toCenter: Point = { x: 500, y: 360 }
+
+  /**
+   * 本文件里那条边的几何：来源卡片在左上、目标在右下。
+   *
+   * `bodyTop = 47` 是手算出来的（内边距 10 + 标题 20×1.25 = 25 + 间距 6），
+   * 所以卡片内坐标 `(x, y)` 对应的世界坐标恒是 `(rect.x + 10 + x, rect.y + 47 + y)`。
+   */
+  function geometryOf(
+    options: {
+      text?: string
+      width?: number
+      fromRect?: Rect
+      toRect?: Rect
+      occurrence?: number
+    } = {},
+  ) {
+    const width = options.width ?? CARD_WIDTH
+    return linkEdgeGeometry({
+      edge: { toRawTarget: '甲', toRelPath: '甲.md', count: 1 },
+      from: {
+        rect: options.fromRect ?? fromRect,
+        layout: card(options.text ?? THREE_PARA, { width }),
+        title: '甲卡',
+      },
+      to: { rect: options.toRect ?? toRect, title: '乙卡' },
+      targets: ['甲'],
+      occurrence: options.occurrence,
+      metrics: METRICS,
+      measure: TEN_PER_CHAR,
+    })
+  }
+
+  it('起点在链接文字上（卡片里），终点 = 射线与卡片边界的交点（与 rayRectExit 逐位相同）', () => {
+    const geometry = geometryOf()
+
+    // 起点：卡片内 (20, 56) ⇒ 世界 (0 + 10 + 20, 0 + 47 + 56) —— 它离卡片左边界还有 30px
+    // （= 内边距 10 + 链接前那两个字符 `见 `），所以它不是"卡片边缘上的那个点"
+    expect(geometry.anchor).toEqual({ x: 30, y: 103 })
+    expect(geometry.anchor.x - fromRect.x).toBe(30)
+
+    // 终点：目标在右下方 ⇒ 射线从**下边界**出去。
+    //   手算：dx = 500 - 30 = 470、dy = 360 - 103 = 257；下边界 t = (200 - 103) / 257 = 97/257，
+    //   此时 x = 30 + 470 × 97/257 = 207.3937741…（在 [0, 220] 内 ⇒ 这条边先被穿过）
+    expect(geometry.exit.y).toBe(200)
+    expect(geometry.exit.x).toBeCloseTo(30 + (470 * 97) / 257, 9)
+
+    // 同一个交点在测试里独立算一遍（不经过实现）：两者必须逐位相同
+    expect(geometry.exit).toEqual(rayRectExit(fromRect, geometry.anchor, toCenter))
+  })
+
+  it('分界点严格在边界上（离最近那条边 0px），起点严格在卡片里（离最近那条边 > 0）', () => {
+    const geometry = geometryOf()
+
+    expect(Math.abs(distanceToBorder(fromRect, geometry.exit))).toBeLessThan(0.5)
+    expect(distanceToBorder(fromRect, geometry.anchor)).toBeGreaterThan(0.5)
+    // 而且分界点不是起点自己（引线有真实的长度）
+    expect(Math.hypot(geometry.exit.x - geometry.anchor.x, geometry.exit.y - geometry.anchor.y))
+      .toBeGreaterThan(1)
+  })
+
+  it('引线整段都在卡片里：沿线上每一点都不冒到卡片外（边界那一点除外）', () => {
+    const geometry = geometryOf()
+
+    for (let step = 0; step <= 100; step += 1) {
+      const t = step / 100
+      const point = {
+        x: geometry.anchor.x + (geometry.exit.x - geometry.anchor.x) * t,
+        y: geometry.anchor.y + (geometry.exit.y - geometry.anchor.y) * t,
+      }
+      // 1e-9 的容差只用来吃浮点噪声：交点被 `snapTo` 贴回边界之后，t = 1 那一点离边界正好是 0
+      expect(distanceToBorder(fromRect, point)).toBeGreaterThanOrEqual(-1e-9)
+    }
+  })
+
+  it('两段首尾相接：实线的第一个点与虚线的最后一个点逐坐标相同（差 < 1e-9）', () => {
+    const geometry = geometryOf()
+
+    const leadEnd = lastPoint(geometry.leadPath)
+    const spanStart = firstPoint(geometry.spanPath)
+    expect(Math.abs(spanStart.x - leadEnd.x)).toBeLessThan(1e-9)
+    expect(Math.abs(spanStart.y - leadEnd.y)).toBeLessThan(1e-9)
+    // 两段的交点就是 `exit` 本身：分界点没有第二套口径
+    expect(leadEnd).toEqual(geometry.exit)
+    expect(spanStart).toEqual(geometry.exit)
+  })
+
+  it('实线一路连到目标卡片：最后一个点是 entry，且落在目标卡片的边界上', () => {
+    const geometry = geometryOf()
+
+    expect(lastPoint(geometry.spanPath)).toEqual(geometry.entry)
+    expect(Math.abs(distanceToBorder(toRect, geometry.entry))).toBeLessThan(0.5)
+    // 目标在右下方 ⇒ 从**左**边界进来（手算：左侧 t = (400 - 500) / (207.39… - 500) 最小）
+    expect(geometry.entry.x).toBe(toRect.x)
+    expect(geometry.entry.y).toBeGreaterThan(toRect.y)
+    expect(geometry.entry.y).toBeLessThan(toRect.y + toRect.height)
+  })
+
+  it('链接靠右（同一行末尾）：分界点改落在**右**边界上，x 是卡片的右边界精确值', () => {
+    // `一×18 + 空格 + 甲` = 20 个字 ⇒ 正好一行放得下；链接前有 19 个字符
+    // 卡片内 (190, 10) ⇒ 世界 (200, 57)
+    const geometry = geometryOf({ text: `${'一'.repeat(18)} [[甲]]` })
+
+    expect(geometry.anchor).toEqual({ x: 200, y: 57 })
+    // dx = 300、dy = 303：右边界 t = 20/300 = 1/15 ⇒ y = 57 + 303/15 = 77.2（在下边界之前）
+    expect(geometry.exit.x).toBe(fromRect.x + fromRect.width)
+    expect(geometry.exit.y).toBeCloseTo(77.2, 9)
+    expect(Math.abs(distanceToBorder(fromRect, geometry.exit))).toBeLessThan(0.5)
+  })
+
+  it('链接折到第二行：分界点按第二行的锚点重算（仍然落在边界上）', () => {
+    // `一×21 + 空格 + 甲`：第一行 20 个 `一`，第二行是 `一 空格 甲` ⇒ 链接在 (20, 30) ⇒ 世界 (30, 77)
+    const geometry = geometryOf({ text: `${'一'.repeat(21)} [[甲]]` })
+
+    expect(geometry.anchor).toEqual({ x: 30, y: 77 })
+    // dx = 470、dy = 283：右边界 t = 190/470 = 19/47 ⇒ y = 77 + 283 × 19/47 = 191.4042553…
+    expect(geometry.exit.x).toBe(fromRect.x + fromRect.width)
+    expect(geometry.exit.y).toBeCloseTo(77 + (283 * 19) / 47, 9)
+    expect(Math.abs(distanceToBorder(fromRect, geometry.exit))).toBeLessThan(0.5)
+  })
+
+  it('链接顶在行首：起点是**文字**的位置（内边距之内），不是卡片外框那一条边', () => {
+    // `[[甲]] 开头`：链接是这一行的第一段 ⇒ 卡片内 x = 0 ⇒ 世界 x = 0 + 内边距 10
+    const geometry = geometryOf({ text: '[[甲]] 开头' })
+
+    expect(geometry.anchor).toEqual({ x: 10, y: 57 })
+    expect(geometry.anchor.x).toBe(fromRect.x + 10)
+    expect(geometry.anchor.x).toBeGreaterThan(fromRect.x)
+    // 目标在右下方：dx = 490、dy = 303 ⇒ 右边界 t = 210/490 = 3/7 ⇒ y = 57 + 303 × 3/7 = 186.8571428…
+    expect(geometry.exit.x).toBe(fromRect.x + fromRect.width)
+    expect(geometry.exit.y).toBeCloseTo(57 + (303 * 3) / 7, 9)
+  })
+
+  it('目标在左上方：分界点落在**左**边界上（引线朝左走，仍然是同一条判据）', () => {
+    const geometry = geometryOf({ toRect: { x: -400, y: -300, width: 200, height: 120 } })
+
+    // 起点不变（它只由正文排版决定）：世界 (30, 103)
+    expect(geometry.anchor).toEqual({ x: 30, y: 103 })
+    // dx = -300 - 30 = -330、dy = -240 - 103 = -343：左边界 t = 30/330 = 1/11
+    // ⇒ y = 103 - 343/11 = 71.8181818…（在上边界 t = 103/343 之前，所以这条边先被穿过）
+    expect(geometry.exit.x).toBe(fromRect.x)
+    expect(geometry.exit.y).toBeCloseTo(103 - 343 / 11, 9)
+    expect(Math.abs(distanceToBorder(fromRect, geometry.exit))).toBeLessThan(0.5)
+  })
+
+  it('卡片被拖动（两张一起平移）：三个点与两段路径跟着平移，分界点仍在边界上', () => {
+    const before = geometryOf()
+    const dx = 120
+    const dy = -45
+    const moved = geometryOf({
+      fromRect: { ...fromRect, x: fromRect.x + dx, y: fromRect.y + dy },
+      toRect: { ...toRect, x: toRect.x + dx, y: toRect.y + dy },
+    })
+
+    // 整体平移是**严格**等距的：三个点各偏 (dx, dy)，差为 0（不是"差不多"）
+    expect(moved.anchor.x - before.anchor.x).toBeCloseTo(dx, 9)
+    expect(moved.anchor.y - before.anchor.y).toBeCloseTo(dy, 9)
+    expect(moved.exit.x - before.exit.x).toBeCloseTo(dx, 9)
+    expect(moved.exit.y - before.exit.y).toBeCloseTo(dy, 9)
+    expect(moved.entry.x - before.entry.x).toBeCloseTo(dx, 9)
+    expect(moved.entry.y - before.entry.y).toBeCloseTo(dy, 9)
+
+    // 分界点跟着卡片走：它是**新**矩形边界上的点，不再是老矩形上的那个点
+    const movedRect: Rect = { ...fromRect, x: fromRect.x + dx, y: fromRect.y + dy }
+    expect(Math.abs(distanceToBorder(movedRect, moved.exit))).toBeLessThan(0.5)
+    expect(Math.abs(moved.exit.y - before.exit.y)).toBeCloseTo(Math.abs(dy), 9)
+  })
+
+  it('只拖动来源卡片：分界点落在**新**矩形的边界上（用的是当前矩形，不是老位置）', () => {
+    const movedRect: Rect = { ...fromRect, x: fromRect.x - 300 }
+    const moved = geometryOf({ fromRect: movedRect })
+
+    // 起点跟着卡片走：卡片内 (20, 56) ⇒ 世界 (-300 + 30, 103) = (-270, 103)
+    expect(moved.anchor).toEqual({ x: -270, y: 103 })
+    // dx = 500 - (-270) = 770、dy = 257：下边界 t = 97/257 ⇒ x = -270 + 770 × 97/257 = 20.62…
+    // 越过了右边界（-80）⇒ 右边界 t = 190/770 = 19/77 先被穿过：y = 103 + 257 × 19/77 = 166.4155844…
+    expect(moved.exit.x).toBe(movedRect.x + movedRect.width)
+    expect(moved.exit.y).toBeCloseTo(103 + (257 * 19) / 77, 9)
+    expect(Math.abs(distanceToBorder(movedRect, moved.exit))).toBeLessThan(0.5)
+    // 老矩形上的那个点已经不在了（卡片被拖走之后再画在老边界上就是错的位置）
+    expect(moved.exit.x).not.toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 引线虚线的相位（分界处不能留缝）
+// ---------------------------------------------------------------------------
+
+/**
+ * 虚线的图案位置定义成 `p(s) = (s + strokeDashoffset) mod 周期`（SVG 的语义：
+ * `stroke-dashoffset` 是"从图案的第几个像素开始画"）。`p` 落在 `[0, 实线段长度)` 就是有墨。
+ *
+ * 这两条判据合起来才是用户要的"卡片边缘处实线出"：
+ * 1. **分界处必须有墨**（`p(L)` 正好落在实线段末尾 ⇒ 虚线一路画到卡片边界，不留缝）；
+ * 2. 链接那一端最多只空 `空隙` 那么大 —— 它由起点那个半径 2 的圆点盖住（见渲染层）。
+ */
+describe('引线虚线的相位', () => {
+  const DASH = 3
+  const GAP = 3
+  const PERIOD = DASH + GAP
+
+  /** 图案位置（`s` 处的墨是第几段图案）。 */
+  function patternAt(s: number, offset: number): number {
+    return (((s + offset) % PERIOD) + PERIOD) % PERIOD
+  }
+
+  it('最后一段实线正好在卡片边界处收笔（分界处不会留下一段空隙）', () => {
+    // 覆盖"长度 mod 6"的全部六种余数：0 / 1 / 2 / 3 / 4 / 5 都要能收在边界上
+    for (const length of [3, 6, 7, 8, 9, 10.5, 12, 17.4, 30, 61.5, 200]) {
+      const { dashArray, dashOffset } = leadDash(length)
+
+      expect(dashArray).toBe(`${DASH} ${GAP}`)
+      // 边界那一点正好落在"实线段结束"上
+      expect(patternAt(length, dashOffset)).toBeCloseTo(DASH, 9)
+      // 边界**之前**的一小段仍然在实线段上 ⇒ 卡边附近确实有墨（这就是"不留缝"）
+      expect(patternAt(length - 0.5, dashOffset)).toBeLessThan(DASH)
+      // 相位是非负数且在 [0, 周期) 内：负的 dashoffset 在不同渲染器里的解释更绕，不给自己找麻烦
+      expect(dashOffset).toBeGreaterThanOrEqual(0)
+      expect(dashOffset).toBeLessThan(PERIOD)
+    }
+  })
+
+  it('链接那一端的空隙不超过起点小圆点的直径（半径 2 ⇒ 4px）', () => {
+    for (const length of [3, 6, 7, 8, 9, 10.5, 12, 17.4, 30, 61.5, 200]) {
+      const { dashOffset } = leadDash(length)
+      // 从起点量到第一笔墨有多远：图案在实线段里就说明起点就有墨（空隙 0）
+      const head = patternAt(0, dashOffset)
+      const startGap = head < DASH ? 0 : PERIOD - head
+      expect(startGap).toBeLessThanOrEqual(GAP)
+      expect(startGap).toBeLessThanOrEqual(4) // 圆点直径
+    }
+  })
+
+  it('相位是可重复的：同一条引线每次算出来逐位相同（重算不会让虚线跳动）', () => {
+    expect(leadDash(37.25)).toEqual(leadDash(37.25))
+    // 长度合法化：NaN / 负数 / 0 都按 0 处理，不产生 NaN 的相位
+    expect(leadDash(Number.NaN).dashOffset).toBe(leadDash(0).dashOffset)
+    expect(leadDash(-5).dashOffset).toBe(leadDash(0).dashOffset)
+    expect(Number.isFinite(leadDash(Number.POSITIVE_INFINITY).dashOffset)).toBe(true)
   })
 })

@@ -854,6 +854,11 @@ export interface GraphEdgeVisual {
    *
    * 为什么与卡片外那段放在同一个 visual 里：它们是**同一条边**的两段，分开渲染会出现
    * "一段在图层上面、一段在下面"，以及 tooltip 只挂在其中一段上。
+   *
+   * **不变量**：这段引线的另一端就是 `start`（= 卡片边界上的那个 `exit` 点），
+   * 而 `start` 同时是卡片外那段的起点 —— 两段因此在边界上严丝合缝。
+   * 引线的虚线相位按 `leadFrom → start` 的长度算（见 `link-edge.ts` 的 `leadDash`），
+   * 所以这两处口径必须一直保持一致。
    */
   leadPath?: string
   /** 引线的起点（正文里那段文字的位置，世界坐标）；只有 `leadPath` 存在时有意义。 */

@@ -35,6 +35,8 @@ import {
   isMarkdown } from '@/domain/paths'
 import {
   GraphCanvas } from '@/features/graph/GraphCanvas'
+import {
+  GraphEdges } from '@/features/graph/GraphEdges'
 import type { PaintContext } from '@/features/graph/canvas/paint'
 import {
   CARD_GAP,
@@ -62,6 +64,7 @@ import {
   worldViewport,
   zoomAround,
   type GraphCardBox,
+  type GraphEdgeVisual,
   type Point,
   type Rect,
 } from '@/features/graph/layout'
@@ -2159,6 +2162,124 @@ describe('知识图谱画布', () => {
     expect(document.querySelectorAll('path.mn-graph-edge').length).toBeGreaterThan(0)
   })
 
+  it('分界处严丝合缝：引线是虚线、相位收在卡片边界上，卡外那段是实线、箭头只在目标端（ADR-0023）', async () => {
+    /*
+      用户那句话的后半句是"卡片边缘处实线出连接到卡片"，判据全落在**分界点**上：
+
+        1. 两段的 `d` 在分界点上逐坐标相同（"缝"就是在这里出现的）；
+        2. 卡内那段带 `stroke-dasharray`，并把相位调到最后一段实线**正好收在分界点**上
+           （相位取 0 时，长度 mod 周期 不巧就会让虚线停在离卡边 1~3px 的空隙里）；
+        3. 卡外那段（出链 ⇒ 实线）没有虚线的图案，也不带 `--dashed` 类；
+        4. 箭头只在目标端（`marker-end` 在卡外那段上，引线上没有）；
+        5. 两端都是 butt 线帽：分界处齐平切断，不会多出一个圆头。
+
+      入链/上下文边在卡外**刻意**仍是虚线（那是 ADR-0023 的语义：虚线表示"被别人提到"），
+      所以第 3 条只对**出链**（标题里 `设计 → …` 那几条）断言。
+    */
+    /*
+      上一条用例（"连接线从正文里的 [[链接]] 引出"）结尾把这个开关关掉了验证"关掉就没有引线"，
+      而 store 里这份状态不在 `resetStores()` 的重置范围内（它只重置全库视图那一半）——
+      先显式打开，用例才不会依赖"谁先跑"。
+    */
+    act(() => {
+      useGraphStore.getState().setEdgeFromLink(true)
+    })
+    await mountFocus('项目/设计.md')
+
+    const leads = (): SVGPathElement[] =>
+      Array.from(document.querySelectorAll<SVGPathElement>('path.mn-graph-edge--lead'))
+    await waitFor(() => {
+      expect(leads().length).toBeGreaterThanOrEqual(2)
+    })
+
+    /**
+     * 同一条边的卡片外那段。
+     *
+     * 两段现在分居**两个 `<svg>`**（引线必须盖在卡片层之上才看得见，见 `GraphEdges` 文件头），
+     * 所以配对靠 `<g data-edge>` 上那个同一份 `key`，而不是"同一个父节点"。
+     * 用 `getAttribute` 比较而不是拼选择器：`key` 里是中文路径，拼进选择器要处理转义。
+     */
+    const spanOf = (lead: SVGPathElement): SVGPathElement | null => {
+      const key = lead.closest('g')?.getAttribute('data-edge')
+      if (key === null || key === undefined) return null
+      for (const group of document.querySelectorAll<SVGGElement>('g[data-edge]')) {
+        if (group.getAttribute('data-edge') !== key) continue
+        const found = group.querySelector<SVGPathElement>(
+          'path.mn-graph-edge:not(.mn-graph-edge--lead)',
+        )
+        if (found !== null) return found
+      }
+      return null
+    }
+
+    /** `d` 里的数字（引线与卡外那段都是 `d` 一比就清楚的路径）。 */
+    const pointsOf = (d: string): Point[] => {
+      const values = (d.match(/-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/g) ?? []).map(Number)
+      const out: Point[] = []
+      for (let index = 0; index + 1 < values.length; index += 2) {
+        out.push({ x: values[index] ?? Number.NaN, y: values[index + 1] ?? Number.NaN })
+      }
+      return out
+    }
+    const firstOf = (d: string): Point => pointsOf(d)[0] ?? { x: Number.NaN, y: Number.NaN }
+    const lastOf = (d: string): Point => {
+      const all = pointsOf(d)
+      return all[all.length - 1] ?? { x: Number.NaN, y: Number.NaN }
+    }
+
+    let outbound = 0
+    /** 相位被算成 0 的引线（长度正好 mod 周期 = 实线段长度）—— 那几条不靠修正也是对的。 */
+    let aligned = 0
+    for (const lead of leads()) {
+      const span = spanOf(lead)
+      if (span === null) throw new Error('引线没有同一条边的卡片外那段（`<g>` 里应当成对）')
+      const start = firstOf(lead.getAttribute('d') ?? '')
+      const end = lastOf(lead.getAttribute('d') ?? '')
+      const spanD = span.getAttribute('d') ?? ''
+
+      // 1. 两段首尾相接：引线的终点与卡外那段的起点是同一个点（分界点），逐坐标相同
+      expect(lastOf(lead.getAttribute('d') ?? '')).toEqual(firstOf(spanD))
+      expect(Number.isFinite(end.x) && Number.isFinite(end.y)).toBe(true)
+
+      // 2. 卡内那段是虚线，且相位把最后一段实线收在分界点上（周期 = 3 + 3 = 6）
+      expect(lead.getAttribute('stroke-dasharray')).toBe('3 3')
+      const offset = Number(lead.getAttribute('stroke-dashoffset'))
+      expect(Number.isFinite(offset)).toBe(true)
+      const length = Math.hypot(end.x - start.x, end.y - start.y)
+      expect(length).toBeGreaterThan(0)
+      expect((length + offset) % 6).toBeCloseTo(3, 6)
+
+      // 相位选了"分界处收笔"，代价是链接那一端可能空出最多 3px ——
+      // 那个取舍能不能成立，全看起点的小圆点盖不盖得住（半径 2 ⇒ 4px 的墨）
+      const dot = lead.parentElement?.querySelector('.mn-graph-edge-lead-dot')
+      const radius = Number(dot?.getAttribute('r') ?? Number.NaN)
+      expect(Number.isFinite(radius)).toBe(true)
+      const head = offset % 6
+      const startGap = head < 3 ? 0 : 6 - head
+      expect(startGap).toBeLessThanOrEqual(radius * 2)
+      if (offset === 0) aligned += 1
+
+      // 4 + 5. 线帽与箭头：分界处齐平、箭头只在目标端
+      expect(lead.getAttribute('stroke-linecap')).toBe('butt')
+      expect(span.getAttribute('stroke-linecap')).toBe('butt')
+      expect(lead.getAttribute('marker-end')).toBeNull()
+      expect(span.getAttribute('marker-end')).not.toBeNull()
+
+      // 3. 出链在卡外是实线：不塞任何虚线的图案
+      const title = lead.querySelector('title')?.textContent ?? ''
+      if (title.includes('设计 →')) {
+        outbound += 1
+        expect(span.getAttribute('stroke-dasharray')).toBeNull()
+        expect(span.getAttribute('class')?.includes('mn-graph-edge--dashed')).toBe(false)
+      }
+    }
+    // 圆心那张卡片上写着两条链接（`[[路线图]]` 与 `[[细节]]`）⇒ 至少两条出链各自验过一遍
+    expect(outbound).toBeGreaterThanOrEqual(2)
+    // 而且至少有一条引线的相位**真的**被修正过（相位恒为 0 就意味着这条用例没在验任何东西：
+    // 那种长度下"从链接那端起算"恰好也能收在边界上）
+    expect(aligned).toBeLessThan(leads().length)
+  })
+
   it('张力旋钮真的作用在连线上：调大之后路径的控制点变了，而且落盘', async () => {
     /*
       "张力"如果不能从画出来的路径上看出来，它就只是个滑块。这里断言 `d` 变了（同一条边），
@@ -2369,5 +2490,91 @@ describe('知识图谱画布', () => {
       useGraphStore.getState().closePreview()
     })
     expect(useGraphStore.getState().selected).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 连线的两层（卡片内那段引线必须能单独画在卡片层之上）
+// ---------------------------------------------------------------------------
+
+/**
+ * 为什么单开一组：卡片是**不透明底**画在 canvas 上，而 canvas 的 `z-index` 比连线层高。
+ * 引线整段都在卡片矩形里 —— 留在连线层里会被卡片整段盖掉，用户看到的就是"线从卡片边缘
+ * 凭空开始"（这正是报障里的现象）。修复要把引线单独挂一层、画到卡片层**之上**，
+ * 所以 `GraphEdges` 得能只渲染其中一层。这几条钉的就是那个开关：
+ * 引线层只有引线（+ 起点小圆点），卡外层才有箭头与虚影。
+ */
+describe('连线的两层', () => {
+  afterEach(() => {
+    cleanup()
+  })
+
+  const edge: GraphEdge = {
+    fromRelPath: '甲.md',
+    toRelPath: '乙.md',
+    toRawTarget: '乙',
+    kind: 'wiki',
+    count: 1,
+  }
+
+  const visual: GraphEdgeVisual = {
+    key: 'k',
+    edge,
+    style: { dashed: false, dim: false, highlight: true },
+    // 卡片外那段：从卡片边界 (220, 100) 到目标卡片边界 (400, 200)
+    d: 'M 220 100 C 280 100, 340 200, 400 200',
+    start: { x: 220, y: 100 },
+    end: { x: 400, y: 200 },
+    phantom: false,
+    title: '甲 → 乙',
+    // 卡片内那段：从正文里的链接 (30, 103) 到卡片边界 (220, 100) —— 长度 190.023…
+    leadPath: 'M 30 103 L 220 100',
+    leadFrom: { x: 30, y: 103 },
+  }
+
+  const box = { x: 0, y: 0, width: 800, height: 600 }
+
+  it('引线层只画引线与起点小圆点：没有卡外那段、没有箭头、没有虚影', () => {
+    const { container } = render(<GraphEdges visuals={[visual]} viewBox={box} layer="lead" />)
+
+    const leads = container.querySelectorAll('path.mn-graph-edge--lead')
+    expect(leads).toHaveLength(1)
+    expect(container.querySelectorAll('path.mn-graph-edge:not(.mn-graph-edge--lead)')).toHaveLength(0)
+    expect(container.querySelectorAll('.mn-graph-edge-lead-dot')).toHaveLength(1)
+    // 箭头只有卡外那段用得到 ⇒ 引线层里连 marker 定义都不生成
+    expect(container.querySelectorAll('marker')).toHaveLength(0)
+
+    // 引线的相位按 `leadFrom → start` 的长度算（同一条引线在两层里的长度必须一致）
+    const lead = leads[0] as SVGPathElement
+    const length = Math.hypot(visual.start.x - visual.leadFrom!.x, visual.start.y - visual.leadFrom!.y)
+    expect(lead.getAttribute('stroke-dasharray')).toBe('3 3')
+    expect(Number(lead.getAttribute('stroke-dashoffset'))).toBeCloseTo((3 - (length % 6) + 6) % 6, 9)
+  })
+
+  it('卡外层只画卡外那段：带箭头与虚影圆点，一条引线都不画', () => {
+    const phantom: GraphEdgeVisual = {
+      ...visual,
+      key: 'p',
+      phantom: true,
+      edge: { ...edge, toRelPath: null, toRawTarget: '还不存在的笔记' },
+    }
+    const { container } = render(
+      <GraphEdges visuals={[visual, phantom]} viewBox={box} layer="span" />,
+    )
+
+    expect(container.querySelectorAll('path.mn-graph-edge--lead')).toHaveLength(0)
+    expect(container.querySelectorAll('path.mn-graph-edge:not(.mn-graph-edge--lead)')).toHaveLength(2)
+    expect(container.querySelectorAll('.mn-graph-edge-lead-dot')).toHaveLength(0)
+    expect(container.querySelectorAll('.mn-graph-phantom')).toHaveLength(1)
+    // 箭头定义在卡外层：marker 的 id 要能被 `marker-end` 引到
+    expect(container.querySelectorAll('marker')).toHaveLength(3)
+  })
+
+  it('不给 layer 时两条段还在同一个 SVG 里（默认行为不变）', () => {
+    const { container } = render(<GraphEdges visuals={[visual]} viewBox={box} />)
+
+    expect(container.querySelectorAll('svg.mn-graph__edges')).toHaveLength(1)
+    expect(container.querySelectorAll('path.mn-graph-edge--lead')).toHaveLength(1)
+    expect(container.querySelectorAll('path.mn-graph-edge:not(.mn-graph-edge--lead)')).toHaveLength(1)
   })
 })
