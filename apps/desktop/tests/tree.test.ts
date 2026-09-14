@@ -11,12 +11,15 @@ import { describe, expect, it } from 'vitest'
 import { makeEntry } from '@/ipc/client'
 import type { EntryMeta } from '@/ipc/types'
 import {
+  DEFAULT_TREE_SORT,
   ancestorsOf,
   buildTree,
   collectDirectoryPaths,
   compareEntries,
   countNodes,
   flattenTree,
+  isTreeSort,
+  makeEntryComparator,
   matchesFilter,
 } from '@/domain/tree'
 
@@ -66,6 +69,135 @@ describe('compareEntries', () => {
       '日记',
       '项目',
     ])
+  })
+})
+
+describe('makeEntryComparator（可配置排序）', () => {
+  it('默认配置的比较器与 compareEntries 逐点一致（默认行为不得变）', () => {
+    const made = makeEntryComparator(DEFAULT_TREE_SORT)
+    // 两两比较全排列：任何一对输入下两个比较器都必须给出同号结果
+    for (const a of entries) {
+      for (const b of entries) {
+        expect(Math.sign(made(a, b)), `${a.relPath} vs ${b.relPath}`).toBe(
+          Math.sign(compareEntries(a, b)),
+        )
+      }
+    }
+  })
+
+  it('名称降序：只翻转主键，目录仍在最前', () => {
+    const files = [makeEntry({ relPath: 'a.md' }), makeEntry({ relPath: 'b.md' })]
+    const sorted = files.sort(
+      makeEntryComparator({ by: 'name', direction: 'desc', foldersFirst: true }),
+    )
+    expect(sorted.map((entry) => entry.relPath)).toEqual(['b.md', 'a.md'])
+
+    const mixed = [
+      makeEntry({ relPath: 'a.md' }),
+      makeEntry({ relPath: 'z目录', isDir: true }),
+      makeEntry({ relPath: 'b.md' }),
+    ]
+    const result = mixed.sort(
+      makeEntryComparator({ by: 'name', direction: 'desc', foldersFirst: true }),
+    )
+    expect(result.map((entry) => entry.relPath)).toEqual(['z目录', 'b.md', 'a.md'])
+  })
+
+  it('修改时间：升序/降序都按 mtimeMs，null（目录/附件）恒在最后', () => {
+    // 注意不能用 makeEntry 构造 null mtime（它把 null 归一成 0）——这里手工造条目
+    const entry = (relPath: string, mtimeMs: number | null, isDir = false): EntryMeta => ({
+      relPath,
+      name: relPath.split('/').pop() ?? relPath,
+      isDir,
+      sizeBytes: 0,
+      mtimeMs,
+      ext: isDir ? null : (relPath.split('.').pop() ?? null),
+    })
+    const list = (): EntryMeta[] => [
+      entry('old.md', 100),
+      entry('dir', null, true),
+      entry('new.md', 300),
+      entry('mid.md', 200),
+      entry('asset.png', null),
+    ]
+    const comparator = (direction: 'asc' | 'desc') =>
+      // 关掉"目录在前"才能真正考验 null 的落点（否则目录被 foldersFirst 提前拦走）
+      makeEntryComparator({ by: 'mtime', direction, foldersFirst: false })
+
+    const asc = list().sort(comparator('asc')).map((item) => item.relPath)
+    expect(asc.slice(0, 3)).toEqual(['old.md', 'mid.md', 'new.md'])
+    // 两个 null 之间的相对顺序走名称兜底，而 CJK/拉丁的相对序由 ICU 决定 —— 只断言"都在最后"
+    expect([...asc.slice(3)].sort()).toEqual(['asset.png', 'dir'].sort())
+
+    // 降序：时间倒排，但 null 仍然在最后 —— "没有修改时间"不等于"最新"
+    const desc = list().sort(comparator('desc')).map((item) => item.relPath)
+    expect(desc.slice(0, 3)).toEqual(['new.md', 'mid.md', 'old.md'])
+    expect([...desc.slice(3)].sort()).toEqual(['asset.png', 'dir'].sort())
+  })
+
+  it('大小排序：按 sizeBytes，同大小按名称兜底（确定性）', () => {
+    const sorted = [
+      makeEntry({ relPath: 'b.md', sizeBytes: 10 }),
+      makeEntry({ relPath: 'a.md', sizeBytes: 10 }),
+      makeEntry({ relPath: 'c.md', sizeBytes: 5 }),
+    ].sort(makeEntryComparator({ by: 'size', direction: 'asc', foldersFirst: true }))
+    expect(sorted.map((entry) => entry.relPath)).toEqual(['c.md', 'a.md', 'b.md'])
+  })
+
+  it('类型排序：按扩展名（无扩展名按空串排在最前）', () => {
+    const sorted = [
+      makeEntry({ relPath: 'b.md' }),
+      makeEntry({ relPath: 'a.png' }),
+      makeEntry({ relPath: '无后缀', ext: null }),
+    ].sort(makeEntryComparator({ by: 'type', direction: 'asc', foldersFirst: false }))
+    expect(sorted.map((entry) => entry.relPath)).toEqual(['无后缀', 'b.md', 'a.png'])
+  })
+
+  it('foldersFirst: false 时目录与文件按主键混排', () => {
+    const sorted = [
+      makeEntry({ relPath: 'b.md' }),
+      makeEntry({ relPath: 'a目录', isDir: true }),
+      makeEntry({ relPath: 'c.md' }),
+    ].sort(makeEntryComparator({ by: 'name', direction: 'asc', foldersFirst: false }))
+    expect(sorted.map((entry) => entry.relPath)).toEqual(['a目录', 'b.md', 'c.md'])
+  })
+
+  it('主键与名称都相同（理论上不该存在）时按 relPath 兜底，结果与输入顺序无关', () => {
+    const comparator = makeEntryComparator({ by: 'size', direction: 'asc', foldersFirst: false })
+    const forward = [makeEntry({ relPath: 'x/a.md' }), makeEntry({ relPath: 'y/a.md' })]
+    const backward = [...forward].reverse()
+    expect(forward.sort(comparator).map((entry) => entry.relPath)).toEqual(['x/a.md', 'y/a.md'])
+    expect(backward.sort(comparator).map((entry) => entry.relPath)).toEqual(['x/a.md', 'y/a.md'])
+  })
+
+  it('buildTree 接受比较器：同一批条目按不同配置得到不同的树', () => {
+    const source = [
+      makeEntry({ relPath: 'b.md', mtimeMs: 100 }),
+      makeEntry({ relPath: 'a.md', mtimeMs: 200 }),
+    ]
+    const byName = buildTree(source).map((node) => node.entry.relPath)
+    const byMtime = buildTree(
+      source,
+      makeEntryComparator({ by: 'mtime', direction: 'asc', foldersFirst: true }),
+    ).map((node) => node.entry.relPath)
+    expect(byName).toEqual(['a.md', 'b.md'])
+    expect(byMtime).toEqual(['b.md', 'a.md'])
+  })
+})
+
+describe('isTreeSort（持久化恢复的形状校验）', () => {
+  it('合法配置原样通过', () => {
+    expect(isTreeSort(DEFAULT_TREE_SORT)).toBe(true)
+    expect(isTreeSort({ by: 'mtime', direction: 'desc', foldersFirst: false })).toBe(true)
+  })
+
+  it('坏形状一律不认（调用方退回默认）', () => {
+    expect(isTreeSort(null)).toBe(false)
+    expect(isTreeSort('name')).toBe(false)
+    expect(isTreeSort({ by: 'date', direction: 'asc', foldersFirst: true })).toBe(false)
+    expect(isTreeSort({ by: 'name', direction: 'up', foldersFirst: true })).toBe(false)
+    expect(isTreeSort({ by: 'name', direction: 'asc' })).toBe(false)
+    expect(isTreeSort([])).toBe(false)
   })
 })
 

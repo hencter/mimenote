@@ -267,6 +267,8 @@ describe('导出为自包含 HTML', () => {
     // 4) 样式内联进导出件：导出件离开应用后没有 app.css，也不会去读站点的 site.css
     expect(html).toContain('.mn-task-item__box')
     expect(html).toContain('accent-color')
+    // 5) 已完成任务的文字带删除线（与阅读视图同一观感，用户明确要求的口径）
+    expect(html).toMatch(/li\.mn-task-item--done\s*\{[^}]*text-decoration:\s*line-through/)
   })
 
   it('frontmatter 不进正文，标题优先取 frontmatter 的 title', async () => {

@@ -7,7 +7,14 @@
 
 import { create } from 'zustand'
 
-import { buildTree, collectDirectoryPaths, ancestorsOf, type TreeNode } from '@/domain/tree'
+import {
+  buildTree,
+  collectDirectoryPaths,
+  ancestorsOf,
+  makeEntryComparator,
+  type EntryComparator,
+  type TreeNode,
+} from '@/domain/tree'
 import { extensionOf, parentOf } from '@/domain/paths'
 import { ipc } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
@@ -15,9 +22,14 @@ import type { EntryMeta, NoteContent, RenameOutcome, TrashRecord, VaultInfo, Vau
 import { useNoteStore } from './note-store'
 import { loadJson, loadString, saveJson, saveString } from './persist'
 import { toast } from './toast-store'
+import { useUiStore } from './ui-store'
 
 const LAST_VAULT_KEY = 'mimenote.vault.last'
 const EXPANDED_KEY = 'mimenote.vault.expanded.v1'
+/** 最近打开的 Vault 列表（`removeRecentVault` 的测试与组件都需要这个键名）。 */
+export const RECENT_VAULTS_KEY = 'mimenote.vault.recent.v1'
+/** 最近列表的上限：再多就从"快速切换"退化成"又一个要管理的列表"。 */
+export const RECENT_VAULTS_MAX = 8
 
 /** 宿主推送"Vault 被外部改动"的事件名（与 `src-tauri/src/watcher.rs` 保持一致）。 */
 export const VAULT_CHANGED_EVENT = 'mn://vault-changed'
@@ -41,6 +53,15 @@ export interface VaultChanged {
 
 export type VaultStatus = 'idle' | 'loading' | 'ready' | 'error'
 
+/** 最近打开的 Vault 的一条记录。 */
+export interface RecentVaultEntry {
+  rootPath: string
+  /** 显示名（目录 basename，与 `VaultInfo.name` 同一来源）。 */
+  name: string
+  /** 最近一次成功打开的时刻（毫秒时间戳；排序本身靠数组顺序，它只是展示/排障用）。 */
+  openedAtMs: number
+}
+
 interface VaultState {
   status: VaultStatus
   info: VaultInfo | null
@@ -52,10 +73,28 @@ interface VaultState {
   error: MimenoteError | null
   /** 上次成功打开的 Vault 根（启动时尝试恢复）。 */
   lastRoot: string | null
+  /**
+   * 最近打开的 Vault（最新在前，按 `rootPath` 去重，最多 {@link RECENT_VAULTS_MAX} 条）。
+   *
+   * `closeVault` **不**清它 —— 这个列表就是为"切走再切回来"准备的；
+   * 条目失效（目录已不在）时 `openVault` 自己会失败并弹提示，不在读取时做存活性检查
+   * （每个条目一次 IPC，代价与收益不成比例）。
+   */
+  recentVaults: RecentVaultEntry[]
 
   openVault: (path: string) => Promise<boolean>
   restoreLastVault: () => Promise<void>
   rescan: () => Promise<void>
+  /** 从最近列表移除一条（用户显式点 ×；不影响 `lastRoot`，也不碰磁盘）。 */
+  removeRecentVault: (rootPath: string) => void
+  /**
+   * 用当前的排序偏好重建树（排序变化时由 ui-store 的订阅触发，见文件末尾）。
+   *
+   * 为什么不是"就地重排现有树"：`sortTree` 是**就地**排序，直接调会污染
+   * store 里的树对象（引用不变，React 察觉不到）；从 `entries` 重建反而更便宜、
+   * 也不会有半个树排过、半个没排的中间态。
+   */
+  resortTree: () => void
   /**
    * 宿主报告"Vault 在应用之外被改动了"（ADR-0016）：静默重扫条目表 → 让当前笔记跟随磁盘。
    *
@@ -116,6 +155,51 @@ export function infoFromSnapshot(snapshot: VaultSnapshot): VaultInfo {
 
 type ExpandedMap = Record<string, string[]>
 
+/**
+ * 当前排序偏好的比较器。
+ *
+ * 排序判据在 `domain/tree.ts`（唯一真源），偏好存在 `ui-store`；数据层在**每次建树时**
+ * 现取 —— 建树总是从这里拿同一份口径，就不会出现"打开时按名称、重扫后按修改时间"。
+ */
+function treeComparator(): EntryComparator {
+  return makeEntryComparator(useUiStore.getState().treeSort)
+}
+
+/** 校验持久化回来的最近列表；任何一条形状不对就整份当空表（坏数据不该半恢复）。 */
+function isRecentVaults(value: unknown): value is RecentVaultEntry[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        typeof item === 'object' &&
+        item !== null &&
+        typeof (item as Record<string, unknown>)['rootPath'] === 'string' &&
+        (item as Record<string, unknown>)['rootPath'] !== '' &&
+        typeof (item as Record<string, unknown>)['name'] === 'string' &&
+        typeof (item as Record<string, unknown>)['openedAtMs'] === 'number',
+    )
+  )
+}
+
+function loadRecentVaults(): RecentVaultEntry[] {
+  return loadJson<RecentVaultEntry[]>(RECENT_VAULTS_KEY, [], isRecentVaults)
+}
+
+/**
+ * 记录一次成功打开：按 `rootPath` 去重、最新在前、截到上限。
+ *
+ * 去重键是**完整根路径**而不是显示名 —— 两台同名目录（`D:\笔记` 与 `E:\笔记`）
+ * 是两个 Vault，不能因为名字一样互相顶掉。
+ */
+function recordRecentVault(list: readonly RecentVaultEntry[], rootPath: string, name: string): RecentVaultEntry[] {
+  const next = [
+    { rootPath, name, openedAtMs: Date.now() },
+    ...list.filter((item) => item.rootPath !== rootPath),
+  ].slice(0, RECENT_VAULTS_MAX)
+  saveJson(RECENT_VAULTS_KEY, next)
+  return next
+}
+
 function restoreExpanded(rootPath: string, entries: readonly EntryMeta[]): Set<string> {
   const map = loadJson<ExpandedMap>(EXPANDED_KEY, {})
   const saved = map[rootPath]
@@ -145,12 +229,13 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   filter: '',
   error: null,
   lastRoot: loadString(LAST_VAULT_KEY),
+  recentVaults: loadRecentVaults(),
 
   openVault: async (path) => {
     set({ status: 'loading', error: null })
     try {
       const snapshot = await ipc.vaultOpen(path)
-      const tree = buildTree(snapshot.entries)
+      const tree = buildTree(snapshot.entries, treeComparator())
       const expanded = restoreExpanded(snapshot.rootPath, snapshot.entries)
       saveString(LAST_VAULT_KEY, snapshot.rootPath)
 
@@ -164,6 +249,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         filter: '',
         error: null,
         lastRoot: snapshot.rootPath,
+        recentVaults: recordRecentVault(get().recentVaults, snapshot.rootPath, snapshot.name),
       })
 
       if (snapshot.truncated) {
@@ -226,6 +312,19 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       set({ error })
       toast.error(describeError(error, '重扫失败'))
     }
+  },
+
+  removeRecentVault: (rootPath) => {
+    const next = get().recentVaults.filter((item) => item.rootPath !== rootPath)
+    if (next.length === get().recentVaults.length) return
+    saveJson(RECENT_VAULTS_KEY, next)
+    set({ recentVaults: next })
+  },
+
+  resortTree: () => {
+    // 没打开 Vault 时没有树可排（entries 为空时 buildTree 也会返回空树，但连状态都不必换）
+    if (get().entries.length === 0) return
+    set({ tree: buildTree(get().entries, treeComparator()) })
   },
 
   applyExternalChange: async (payload) => {
@@ -357,7 +456,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     const info = get().info
     set({
       entries,
-      tree: buildTree(entries),
+      tree: buildTree(entries, treeComparator()),
       expanded,
       selected: note.relPath,
       info:
@@ -393,10 +492,10 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       const expanded = new Set(get().expanded)
       for (const ancestor of ancestorsOf(selectedAfter)) expanded.add(ancestor)
       persistExpanded(info?.rootPath ?? '', expanded)
-      set({ entries, tree: buildTree(entries), selected: selectedAfter, expanded, info: nextInfo })
+      set({ entries, tree: buildTree(entries, treeComparator()), selected: selectedAfter, expanded, info: nextInfo })
       return
     }
-    set({ entries, tree: buildTree(entries), selected: selectedAfter, info: nextInfo })
+    set({ entries, tree: buildTree(entries, treeComparator()), selected: selectedAfter, info: nextInfo })
   },
 
   registerRelocatedDirectory: (outcome) => {
@@ -432,7 +531,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
 
     set({
       entries: withAncestors,
-      tree: buildTree(withAncestors),
+      tree: buildTree(withAncestors, treeComparator()),
       expanded,
       selected: selectedAfter,
       info: nextInfo,
@@ -460,7 +559,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     const info = get().info
     set({
       entries,
-      tree: buildTree(entries),
+      tree: buildTree(entries, treeComparator()),
       expanded,
       info:
         info === null
@@ -496,7 +595,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
 
     set({
       entries,
-      tree: buildTree(entries),
+      tree: buildTree(entries, treeComparator()),
       selected: selectedRemoved ? null : selected,
       info:
         info === null
@@ -573,7 +672,7 @@ function snapshotPatch(snapshot: VaultSnapshot, selected: string | null): Partia
     status: 'ready',
     info: infoFromSnapshot(snapshot),
     entries: snapshot.entries,
-    tree: buildTree(snapshot.entries),
+    tree: buildTree(snapshot.entries, treeComparator()),
     selected: stillExists ? selected : null,
     error: null,
   }
@@ -601,6 +700,18 @@ async function followDiskForOpenNote(entries: readonly EntryMeta[]): Promise<voi
 
   await note.applyExternalChange({ currentMtimeMs: entry.mtimeMs ?? 0 })
 }
+
+/**
+ * 排序偏好变化 → 用同一份判据重建树。
+ *
+ * 订阅方放在**消费树的 store** 这一侧（而不是 ui-store 反过来调 vault-store）：
+ * ui-store 只管偏好本身，不需要知道谁在意它；方向反过来会让"UI 偏好"这个最底层的
+ * store 依赖业务 store，层级就倒了。
+ */
+useUiStore.subscribe((state, previous) => {
+  if (state.treeSort === previous.treeSort) return
+  useVaultStore.getState().resortTree()
+})
 
 /**
  * 订阅"Vault 被外部改动"事件（`App` 挂载时调用一次，返回取消订阅函数）。

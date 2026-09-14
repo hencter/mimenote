@@ -55,6 +55,8 @@ const PATHS = {
   ],
   // "大纲"：长短不一的横线（标题层级），最上面一条最短 = 一级标题
   outline: ['M4 6.5h8', 'M7 12h11', 'M10 17.5h8'],
+  // "排序"：两支反向箭头（左升右降），文件树工具栏的排序菜单入口用
+  sort: ['M7 4.5v14', 'M4 8l3-3.5L10 8', 'M17 19.5v-14', 'M14 16l3 3.5 3-3.5'],
 } as const
 
 export type IconName = keyof typeof PATHS

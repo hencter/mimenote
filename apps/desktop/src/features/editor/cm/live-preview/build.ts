@@ -657,6 +657,11 @@ function emitTaskMarker(build: Build, entry: Collected): void {
     line.from,
     Decoration.line({ class: checked ? `${MD.task} ${MD.taskDone}` : MD.task }),
   )
+  // 已完成：给**文字**加删除线。只圈标记之后的区间 —— 挂在行上会把复选框里的 ✓ 一起划掉，
+  // 而 `text-decoration` 的传播无法被子元素豁免（详见 theme.ts 的 MD.taskDoneText）
+  if (checked && entry.to < line.to) {
+    build.collection.add(entry.to, line.to, Decoration.mark({ class: MD.taskDoneText }))
+  }
 }
 
 function emitHorizontalRule(build: Build, entry: Collected): void {

@@ -1,0 +1,134 @@
+/*
+ * 「最近打开的 Vault」样式（侧栏底部）。
+ *
+ * 与 tag-filter.css / tree-sort.css 同一姿态：单组件自带样式，颜色一律走主题令牌。
+ * 整体刻意低调（弱化前景 + 无背景块）：它是**次要入口**，不能跟文件树抢视觉权重。
+ */
+
+.mn-recent-vaults {
+  /* 钉在侧栏底部：侧栏是列方向 flex，树吃掉了全部剩余高度（flex: 1 1 auto），
+     这里只做不伸缩的一截 */
+  flex: 0 0 auto;
+  border-top: 1px solid var(--mn-border);
+  font-family: var(--mn-font-ui);
+  font-size: 12px;
+}
+
+.mn-recent-vaults__summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  color: var(--mn-fg-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  text-align: left;
+}
+
+.mn-recent-vaults__summary:hover {
+  color: var(--mn-fg);
+  background: var(--mn-hover);
+}
+
+.mn-recent-vaults__summary-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mn-recent-vaults__chevron {
+  display: inline-flex;
+  /* 收起时箭头朝右（与树行的目录箭头同一观感） */
+  transition: transform 120ms ease;
+}
+
+.mn-recent-vaults__chevron--open {
+  transform: rotate(90deg);
+}
+
+.mn-recent-vaults__list {
+  margin: 0;
+  padding: 0 4px 6px;
+  list-style: none;
+  /* 列表最多 8 条：给一个温和的高度上限，极端窄窗口里不把树挤没了 */
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.mn-recent-vaults__item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.mn-recent-vaults__entry {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  color: var(--mn-fg);
+  background: transparent;
+  border: none;
+  border-radius: var(--mn-radius);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  text-align: left;
+}
+
+.mn-recent-vaults__entry:hover:not(:disabled) {
+  background: var(--mn-hover);
+}
+
+/* 当前 Vault：高亮且不可点 —— 重开同一个 Vault 只会白白重扫一次 */
+.mn-recent-vaults__entry--current {
+  color: var(--mn-accent);
+  background: var(--mn-active);
+  cursor: default;
+}
+
+.mn-recent-vaults__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mn-recent-vaults__path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--mn-fg-subtle);
+}
+
+.mn-recent-vaults__remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--mn-fg-subtle);
+  background: transparent;
+  border: none;
+  border-radius: var(--mn-radius);
+  cursor: pointer;
+  /* 平时收起存在感，悬停到这一行才出现（× 是低频操作，不该常驻视觉） */
+  opacity: 0;
+}
+
+.mn-recent-vaults__item:hover .mn-recent-vaults__remove,
+.mn-recent-vaults__remove:focus-visible {
+  opacity: 1;
+}
+
+.mn-recent-vaults__remove:hover {
+  color: var(--mn-danger);
+  background: var(--mn-hover);
+}

@@ -46,10 +46,24 @@ describe('主题', () => {
     expect(getTheme('不存在的主题').id).toBe(DEFAULT_THEME_ID)
   })
 
-  it('nextThemeId 循环切换', () => {
-    const first = DEFAULT_THEME_ID
-    const second = nextThemeId(first)
-    expect(second).not.toBe(first)
-    expect(nextThemeId(second)).toBe(first)
+  it('「纸墨」阅读主题在内置清单里：浅色、令牌完整', () => {
+    // 通用校验（上面的"每个内置主题都完整"）只能发现"缺令牌"，发现不了"主题根本没被
+    // import.meta.glob 收进来"（例如文件放错了目录）—— 所以按 id 点名一次
+    const paper = THEMES.find((theme) => theme.id === 'mimenote-paper')
+    expect(paper).toBeDefined()
+    if (paper === undefined) return
+    expect(paper.appearance).toBe('light')
+    expect(validateTheme(paper)).toEqual([])
+  })
+
+  it('nextThemeId 循环切换（走满一圈回到起点，中途不重复）', () => {
+    // 断言不能假设"只有两个主题"（新增主题时 `next(next(first)) === first` 就会假红）：
+    // 走满 THEMES.length 步必须正好遍历每个主题一次并回到起点
+    const seen: string[] = [DEFAULT_THEME_ID]
+    for (let step = 1; step < THEMES.length; step += 1) {
+      seen.push(nextThemeId(seen[seen.length - 1] as string))
+    }
+    expect(new Set(seen).size).toBe(THEMES.length)
+    expect(nextThemeId(seen[seen.length - 1] as string)).toBe(DEFAULT_THEME_ID)
   })
 })

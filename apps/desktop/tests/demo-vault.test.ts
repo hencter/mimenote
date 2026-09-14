@@ -70,8 +70,13 @@ const NOTES = FILES.filter((rel) => rel.toLowerCase().endsWith('.md'))
  * 为什么列成显式名单而不是"凡是没写进 README 的都跳过"：显式名单在新增草稿时只会影响
  * 这一条检查、而且**看得见**（有人往里加名字时，评审会看到这行）；反过来"没写进 README
  * 就跳过"会把真正的夹具文件漏掉都不报警 —— 那个方向的放宽要危险得多。
+ *
+ * ⚠️ 名字要跟着草稿走：这份草稿原来叫「未命名笔记 1.md」，用户自己改成
+ * 「Markdown 全元素测试用例.md」之后，白名单没跟上 —— 于是他那张**故意写的外链图片**
+ * （`https://example.com/image.png`，用来试渲染外链）把"图片引用必须都在 Vault 内"这条检查点红了。
+ * 用户改名/新建草稿是常态，改到这一行时只需改名字，不要放宽判据。
  */
-const NOT_FIXTURE = new Set(['未命名笔记 1.md'])
+const NOT_FIXTURE = new Set(['Markdown 全元素测试用例.md'])
 const ENTRIES: AssetEntry[] = FILES.map((relPath) => ({ relPath, isDir: false }))
 
 const read = (rel: string): string => readFileSync(join(VAULT_ROOT, ...rel.split('/')), 'utf8')

@@ -7,13 +7,25 @@
  * 原有的单行布局，见 `tag-filter.css`）。
  */
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { FOCUS_FILTER_EVENT } from '@/app/dom-events'
 import { createNoteHere, moveSelected, openVaultInteractive, renameSelected, rescanVault } from '@/app/actions'
 import { Icon } from '@/components/Icon'
+import type { TreeSort } from '@/domain/tree'
+import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 import { TagFilterControl } from './TagFilterControl'
+
+import './tree-sort.css'
+
+/** 排序依据的可选项（标签是给人看的；键与 `TreeSort['by']` 一一对应）。 */
+const SORT_BY_OPTIONS: readonly { value: TreeSort['by']; label: string }[] = [
+  { value: 'name', label: '名称' },
+  { value: 'mtime', label: '修改时间' },
+  { value: 'size', label: '大小' },
+  { value: 'type', label: '类型' },
+]
 
 export function TreeToolbar() {
   const filter = useVaultStore((state) => state.filter)
@@ -21,7 +33,11 @@ export function TreeToolbar() {
   const expandAll = useVaultStore((state) => state.expandAll)
   const collapseAll = useVaultStore((state) => state.collapseAll)
   const info = useVaultStore((state) => state.info)
+  const treeSort = useUiStore((state) => state.treeSort)
+  const setTreeSort = useUiStore((state) => state.setTreeSort)
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const [sortOpen, setSortOpen] = useState(false)
+  const sortRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     const focus = (): void => {
@@ -33,6 +49,25 @@ export function TreeToolbar() {
       window.removeEventListener(FOCUS_FILTER_EVENT, focus)
     }
   }, [])
+
+  // 排序菜单：点外面 / 按 Esc 收起（与标签过滤控件同一套手势，见 TagFilterControl）
+  useEffect(() => {
+    if (!sortOpen) return
+    const onPointerDown = (event: MouseEvent): void => {
+      const node = sortRef.current
+      if (node !== null && event.target instanceof Node && node.contains(event.target)) return
+      setSortOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setSortOpen(false)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [sortOpen])
 
   return (
     <div className="mn-tree-toolbar mn-tree-toolbar--with-tags">
@@ -119,6 +154,70 @@ export function TreeToolbar() {
         >
           <Icon name="refresh" />
         </button>
+        <div className="mn-tree-sort" ref={sortRef}>
+          <button
+            type="button"
+            className={`mn-icon-button${sortOpen ? ' mn-icon-button--active' : ''}`}
+            title="文件树排序…"
+            aria-label="文件树排序"
+            aria-haspopup="menu"
+            aria-expanded={sortOpen}
+            onClick={() => setSortOpen((open) => !open)}
+          >
+            <Icon name="sort" />
+          </button>
+          {sortOpen && (
+            <div className="mn-tree-sort__popover" role="menu" aria-label="文件树排序">
+              <div className="mn-tree-sort__group" role="group" aria-label="排序依据">
+                {SORT_BY_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={treeSort.by === option.value}
+                    className={`mn-tree-sort__option${
+                      treeSort.by === option.value ? ' mn-tree-sort__option--active' : ''
+                    }`}
+                    // 选中后不自动关菜单：排序常常要连调几项（依据 + 方向），
+                    // 每点一次就收起来等于逼着用户重开三次
+                    onClick={() => setTreeSort({ by: option.value })}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <div className="mn-tree-sort__group" role="group" aria-label="排序方向">
+                {(
+                  [
+                    { value: 'asc', label: '升序' },
+                    { value: 'desc', label: '降序' },
+                  ] as const
+                ).map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={treeSort.direction === option.value}
+                    className={`mn-tree-sort__option${
+                      treeSort.direction === option.value ? ' mn-tree-sort__option--active' : ''
+                    }`}
+                    onClick={() => setTreeSort({ direction: option.value })}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <label className="mn-tree-sort__toggle">
+                <input
+                  type="checkbox"
+                  checked={treeSort.foldersFirst}
+                  onChange={(event) => setTreeSort({ foldersFirst: event.target.checked })}
+                />
+                目录在前
+              </label>
+            </div>
+          )}
+        </div>
         <button
           type="button"
           className="mn-icon-button"

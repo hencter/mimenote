@@ -53,6 +53,14 @@ export const MD = {
   listNumber: 'mn-md-list-number',
   task: 'mn-md-task',
   taskDone: 'mn-md-task--done',
+  /**
+   * 已完成任务的**文字**（mark 装饰，只盖住标记之后的正文区间）。
+   *
+   * 为什么不能挂在行装饰（`taskDone`）上做删除线：`text-decoration` 会传播给所有行内后代，
+   * 且**无法**被子元素豁免 —— 复选框 widget 里的 ✓ 也会被划掉。删除线只能是一个
+   * 只圈文字的 mark（见 `build.ts` 的 `emitTaskMarker`）。
+   */
+  taskDoneText: 'mn-md-task-done-text',
   collapsedLine: 'mn-md-collapsed-line',
   codeLine: 'mn-md-code-line',
   codeLineFirst: 'mn-md-code-line--first',
@@ -210,8 +218,10 @@ export const livePreviewThemeSpec: { [selector: string]: { [property: string]: s
     userSelect: 'none',
   },
 
-  /* 已勾选的任务：整行淡出（用 opacity 而不是 color，否则行内的粗体/链接会各自保留颜色） */
+  /* 已勾选的任务：整行淡出（用 opacity 而不是 color，否则行内的粗体/链接会各自保留颜色），
+     文字加删除线（用户明确要求；为什么不挂在行上见 MD.taskDoneText 的注释） */
   '.cm-line.mn-md-task--done': { opacity: '0.62' },
+  '.mn-md-task-done-text': { textDecoration: 'line-through' },
   '.mn-md-task-box': {
     display: 'inline-flex',
     alignItems: 'center',

@@ -306,9 +306,10 @@ ${scope} .mn-task-item__box {
   cursor: default;
 }
 
-/* 已完成：文字变暗。**不用**删除线 —— 那在 Markdown 里已经是 ~~ 的含义 */
+/* 已完成：文字变暗 + 删除线（用户明确要求；复选框是替换元素，划不到它） */
 ${scope} li.mn-task-item--done {
   color: var(--mn-fg-muted);
+  text-decoration: line-through;
 }
 
 /* 图片：导出件里没有灯箱可以放大，因此**不做高度封顶**（应用内封顶是为了配合点击看原图），

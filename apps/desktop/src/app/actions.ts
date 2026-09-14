@@ -15,7 +15,7 @@ import type { RenameOutcome, TagRenameOutcome } from '@/ipc/types'
 import { useConfirmStore } from '@/state/confirm-store'
 import { refreshGraphData } from '@/state/graph-store'
 import { useLinksStore } from '@/state/links-store'
-import { hasUnsavedChanges, useNoteStore } from '@/state/note-store'
+import { hasUnsavedChanges, useNoteStore, flushAutosave } from '@/state/note-store'
 import { relocateTabsForDirectory } from '@/state/tabs-store'
 import { useTagsStore } from '@/state/tags-store'
 import { toast } from '@/state/toast-store'
@@ -48,6 +48,17 @@ export async function openVaultInteractive(): Promise<void> {
 /** 重新扫描当前 Vault。 */
 export async function rescanVault(): Promise<void> {
   await useVaultStore.getState().rescan()
+}
+
+/**
+ * 切到「最近打开的 Vault」列表里的一个（先把未保存内容落盘）。
+ *
+ * 与工具栏的「切换 Vault」同一条链路（`openVault` 失败时弹 toast、留在原 Vault），
+ * 只是入口从系统目录选择框换成最近列表 —— 路径已经在列表里，不需要再选一次。
+ */
+export async function openRecentVault(rootPath: string): Promise<void> {
+  flushAutosave()
+  await useVaultStore.getState().openVault(rootPath)
 }
 
 /**

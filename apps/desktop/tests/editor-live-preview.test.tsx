@@ -463,6 +463,23 @@ describe('任务列表', () => {
     expect(classOf(lineAt(items, at(source, '- [x]')) as Deco)).toContain(MD.taskDone)
   })
 
+  it('已完成任务的**文字**带删除线装饰，而复选框那一段不划', () => {
+    const items = decosOf(stateOf(source, at(source, '甲')))
+    const done = marks(items).find((item) => classOf(item).includes(MD.taskDoneText))
+    expect(done).toBeDefined()
+    // 从 `[x]` 之后开始、到行尾为止 —— 复选框（标记那一段被 widget 换掉）不在圈里，
+    // 因为 text-decoration 的传播无法被子元素豁免（见 theme.ts 的 MD.taskDoneText）
+    expect(done?.from).toBe(at(source, '[x]') + 3)
+    expect(done?.to).toBe(source.length)
+    // 未完成的任务项不该有这条装饰
+    const openFrom = at(source, '[ ]') + 3
+    expect(
+      marks(items).some(
+        (item) => classOf(item).includes(MD.taskDoneText) && item.from === openFrom,
+      ),
+    ).toBe(false)
+  })
+
   it('光标在该行：保留 `- [ ]` 原文（可编辑）', () => {
     const items = decosOf(stateOf(source, at(source, '未完成')))
     // 只剩"已完成"那一行的复选框。这里按 **widget 类型**数而不是数全部 widget：

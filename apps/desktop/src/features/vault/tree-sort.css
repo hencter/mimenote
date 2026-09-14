@@ -1,0 +1,76 @@
+/*
+ * 文件树排序菜单样式（工具栏的小浮层）。
+ *
+ * 与 tag-filter.css 同一姿态：单组件自带样式、颜色一律走主题令牌。
+ * 浮层从按钮**向下向右**展开（right: 0 对齐按钮右缘，避免溢出侧栏左缘外）。
+ */
+
+.mn-tree-sort {
+  /* 浮层的定位基准 */
+  position: relative;
+}
+
+.mn-tree-sort__popover {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 132px;
+  margin-top: 4px;
+  padding: 6px;
+  background: var(--mn-bg-elevated);
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  box-shadow: var(--mn-shadow);
+  font-family: var(--mn-font-ui);
+  font-size: 12px;
+}
+
+/* 依据 / 方向两组之间留一条缝（同一组内选项紧挨着，跨组才有间隔） */
+.mn-tree-sort__group + .mn-tree-sort__group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--mn-border);
+}
+
+.mn-tree-sort__option {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  text-align: left;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--mn-fg);
+  background: transparent;
+  border: none;
+  border-radius: var(--mn-radius);
+  cursor: pointer;
+}
+
+.mn-tree-sort__option:hover {
+  background: var(--mn-hover);
+}
+
+.mn-tree-sort__option--active {
+  color: var(--mn-accent);
+  background: var(--mn-active);
+}
+
+.mn-tree-sort__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 4px 8px 2px;
+  border-top: 1px solid var(--mn-border);
+  color: var(--mn-fg-muted);
+  cursor: pointer;
+}
+
+.mn-tree-sort__toggle input {
+  /* 与设置页复选框同一令牌（accent-color 是原生控件唯一能跟主题走的通道） */
+  accent-color: var(--mn-accent, var(--mn-link));
+}

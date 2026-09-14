@@ -276,6 +276,8 @@ describe('整库导出：写出来的目录里到底有什么', () => {
     expect(css).toContain('.mn-task-item__box')
     expect(css).toContain('.mn-task-item--done')
     expect(css).toContain('accent-color')
+    // 已完成任务的文字带删除线（与阅读视图同一观感）
+    expect(css).toMatch(/li\.mn-task-item--done\s*\{[^}]*text-decoration:\s*line-through/)
   })
 
   it('共享样式表：整站一份，每页按自身深度引用它', async () => {
