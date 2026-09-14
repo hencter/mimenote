@@ -71,6 +71,10 @@ pub fn run() {
             commands::index_status,
             commands::note_links,
             commands::graph_data,
+            // 自我中心图谱（ADR-0021）：以某一篇笔记为圆心、**双向**若干跳的子图。
+            // 与 graph_data 共用同一段节点/边组装（`mn_index::graph`），因此同一篇笔记在
+            // 两个视图里的度数逐字相同 —— 前端不该看到"全图说 7、中心视图说 3"
+            commands::graph_ego,
             commands::note_tags,
             commands::tags_list,
             commands::tag_notes,

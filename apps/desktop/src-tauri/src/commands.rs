@@ -1181,6 +1181,42 @@ pub async fn graph_data(state: State<'_, Arc<AppState>>) -> Result<GraphData, Ip
     run_blocking(move || graph_data_in(&app, MAX_GRAPH_NODES)).await
 }
 
+/// 以某一篇笔记为中心的**自我中心子图**（ego graph，ADR-0021）。
+///
+/// 为什么要有它、而不是在前端拿 `graph_data` 的结果自己筛：`graph_data` 会在大 Vault 上按度数
+/// **截断**（上限 `MAX_GRAPH_NODES`），从那批数据里做 BFS 拿到的"邻居"可能根本不完整 ——
+/// 用户看到的是"这篇笔记只连着 3 篇"，而真相是"另外 7 篇被截断掉了"。邻接只有索引知道，
+/// 所以 BFS 在宿主里做（纯内存索引，仍然零文件 IO）。
+///
+/// 契约（`src/ipc/types.ts` 手工镜像同一份 `GraphData`，字段名不可偏离）：
+///
+/// * 形状与 `graph_data` **完全一样**：`{ nodes, edges, truncated, elapsedMs }`，
+///   两级视图共用同一个 DTO，因此卡片绘制/手工位置/命中测试都不用分支；
+/// * 节点/边的口径（`(from, to)` 去重并累加 `count`、度数、`title`/`tags`/`folder`、排序）
+///   与 `graph_data` **逐条相同** —— 用的是 `mn_index::graph` 里同一段组装代码；
+/// * `depth` 是**双向**跳数（出链与反链都算一跳），归一化到 1..=5，缺省 1；
+/// * `maxNodes` 缺省 80、上限 300；超出时按"离起点近优先 → 同层度数降序 → 路径字典序"取，
+///   并置 `truncated = true`（**不静默截断**：界面要能如实说出"只显示了最近的一部分"）；
+/// * 起点**永远**在结果里（哪怕它一条链接都没有）；
+/// * 起点不在索引里（含索引还在构建）→ 空结果 + `truncated = false`，**不报错**：
+///   前端据此显示"这篇笔记还没有进入索引"，而不是弹一条红色错误；
+/// * Vault 未打开 → `VAULT_NOT_SET`（与其它命令一致）。
+#[tauri::command]
+pub async fn graph_ego(
+    state: State<'_, Arc<AppState>>,
+    rel_path: String,
+    depth: Option<u32>,
+    max_nodes: Option<usize>,
+) -> Result<GraphData, IpcError> {
+    let app = Arc::clone(state.inner());
+    // 缺省值取自 `mn_index::graph`（与归一化范围同一处定义）：宿主不另写一份 1 / 80 ——
+    // 否则"前端不传 depth 时走几跳"这个问题会有两个答案，取决于读的是哪份代码。
+    // 越界的值不在这里夹：归一化只有一处（`ego_graph`），免得两层各夹一个不同的范围。
+    let depth = depth.unwrap_or(mn_index::graph::DEFAULT_EGO_DEPTH);
+    let max_nodes = max_nodes.unwrap_or(mn_index::graph::DEFAULT_EGO_MAX_NODES);
+    run_blocking(move || graph_ego_in(&app, &rel_path, depth, max_nodes)).await
+}
+
 // ---------------------------------------------------------------------------
 // 标签与 frontmatter 属性
 // ---------------------------------------------------------------------------
@@ -2289,6 +2325,37 @@ fn graph_data_in(state: &AppState, max_nodes: usize) -> mn_core::Result<GraphDat
     let data = indexer::graph_data(state, max_nodes);
     log::debug!(
         "图谱数据：{} 节点 / {} 边（截断 {}），组装 {}ms",
+        data.nodes.len(),
+        data.edges.len(),
+        data.truncated,
+        data.elapsed_ms
+    );
+    Ok(data)
+}
+
+/// `graph_ego` 的主体（与 Tauri 无关，可单测）。
+///
+/// 与 [`graph_data_in`] 同一姿态：只确认 Vault 已打开（否则 `VAULT_NOT_SET`）、取索引、
+/// 记一条 debug 日志；组装与筛选全在 `mn_index::graph`（宿主不放业务逻辑）。
+///
+/// **起点不在索引里不算错误**：那通常意味着后台索引还没收录这一篇（刚打开 Vault 就是这种
+/// 情形），前端据此显示"这篇笔记还没有进入索引"，比弹一条红色提示有用得多 ——
+/// 与"索引为空时 `graph_data` 返回空图谱"是同一个口径。
+///
+/// 这里直接取索引而不是像全图那样经 `indexer::graph_data` 转发：那一层是给"全图 + 多处复用"
+/// 准备的壳，自我中心子图只有这一个调用点，再包一层只会多一个改一处忘一处的地方。
+fn graph_ego_in(
+    state: &AppState,
+    rel_path: &str,
+    depth: u32,
+    max_nodes: usize,
+) -> mn_core::Result<GraphData> {
+    if !state.is_open() {
+        return Err(Error::VaultNotSet);
+    }
+    let data = state.index_write().ego_graph(rel_path, depth, max_nodes);
+    log::debug!(
+        "自我中心图谱：{rel_path} 双向 {depth} 跳 → {} 节点 / {} 边（截断 {}），组装 {}ms",
         data.nodes.len(),
         data.edges.len(),
         data.truncated,
@@ -4217,6 +4284,93 @@ mod tests {
         assert!(data.nodes.is_empty(), "索引还没收录任何笔记");
         assert!(data.edges.is_empty());
         assert!(!data.truncated, "空索引不算'被截断'");
+    }
+
+    #[test]
+    fn graph_ego_without_vault_is_rejected() {
+        // 与 graph_data 同一个错误码口径：Vault 未打开是**调用方**的错误，不是"索引里没有这篇"
+        let state = AppState::default();
+        let error = graph_ego_in(&state, "甲.md", 1, 80).unwrap_err();
+        assert_eq!(error.code(), mn_core::ErrorCode::VaultNotSet);
+        assert_eq!(IpcError::from(error).code, "VAULT_NOT_SET");
+    }
+
+    #[test]
+    fn graph_ego_serializes_to_the_frontend_contract() {
+        let (_dir, state) = state_with(&[
+            (
+                "中心.md",
+                "---\ntitle: 中心\ntags: [项目]\n---\n\n[[邻.md]] 与 [[还没有]]\n",
+            ),
+            ("邻.md", "见 [[中心]]\n"),
+            ("无关.md", "谁都不认识\n"),
+        ]);
+
+        // 双向一跳：出链（邻.md）与反链都在（邻.md 也指回中心），无关.md 不出现
+        let data = graph_ego_in(&state, "中心.md", 1, 80).unwrap();
+        assert_eq!(
+            data.nodes
+                .iter()
+                .map(|node| node.rel_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["中心.md", "邻.md"],
+            "节点按 relPath 字典序（前端不二次排序）"
+        );
+        assert!(!data.truncated);
+        assert_eq!(
+            data.edges.len(),
+            3,
+            "中心→邻、邻→中心（双向都在），外加起点自己那条悬空边"
+        );
+        assert_eq!(
+            data.nodes[0].out_degree, 2,
+            "度数是全图口径（与 graph_data 逐字相同）"
+        );
+
+        // 起点不在索引里：空结果 + truncated=false，**不报错**（前端据此显示"还没进入索引"）
+        let missing = graph_ego_in(&state, "还没进索引.md", 1, 80).unwrap();
+        assert!(missing.nodes.is_empty());
+        assert!(missing.edges.is_empty());
+        assert!(!missing.truncated);
+
+        // JSON 字段名必须与前端类型逐字一致（camelCase，一个 snake_case 都不能有）
+        let json = serde_json::to_string(&data).unwrap();
+        for key in [
+            "\"nodes\"",
+            "\"edges\"",
+            "\"truncated\"",
+            "\"elapsedMs\"",
+            "\"relPath\"",
+            "\"title\"",
+            "\"folder\"",
+            "\"tags\"",
+            "\"outDegree\"",
+            "\"inDegree\"",
+            "\"fromRelPath\"",
+            "\"toRelPath\"",
+            "\"toRawTarget\"",
+            "\"kind\"",
+            "\"count\"",
+        ] {
+            assert!(json.contains(key), "缺少字段 {key}：{json}");
+        }
+        assert!(
+            json.contains("\"toRelPath\":null"),
+            "悬空链接是 null：{json}"
+        );
+        assert!(json.contains("\"outDegree\":2"), "实际：{json}");
+        for snake in [
+            "rel_path",
+            "out_degree",
+            "in_degree",
+            "from_rel_path",
+            "to_rel_path",
+            "to_raw_target",
+            "elapsed_ms",
+            "max_nodes",
+        ] {
+            assert!(!json.contains(snake), "不该出现 snake_case {snake}：{json}");
+        }
     }
 
     #[test]

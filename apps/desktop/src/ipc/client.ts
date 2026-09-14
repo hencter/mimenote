@@ -366,6 +366,20 @@ export const ipc = {
    */
   graphData: () => call<GraphData>('graph_data'),
 
+  /**
+   * 以某一篇笔记为中心的**自我中心子图**（ego graph，ADR-0021）。
+   *
+   * 为什么要有它、而不是在 `graph_data` 的结果上自己筛：`graph_data` 会在大 Vault 上按度数
+   * 截断（上限 8000 节点），从那批数据里做 BFS 拿到的"邻居"**可能根本不完整** ——
+   * 用户看到的是"这篇笔记只连着 3 篇"，而真相是"另外 7 篇被截断掉了"。
+   * 邻接只有索引知道，所以 BFS 在宿主里做（纯内存索引，不读文件）。
+   *
+   * `depth` 是**双向**跳数（出链与反链都算一跳），归一化到 1..5；
+   * `maxNodes` 超出时宿主按"离中心近优先"截断并把 `truncated` 置为 true（界面要如实说出来）。
+   */
+  graphEgo: (relPath: string, depth: number, maxNodes?: number) =>
+    call<GraphData>('graph_ego', { relPath, depth, ...(maxNodes === undefined ? {} : { maxNodes }) }),
+
   snippetsList: () => call<SnippetFile[]>('snippets_list'),
   versionInfo: () => call<VersionInfo>('version_info'),
 } as const
