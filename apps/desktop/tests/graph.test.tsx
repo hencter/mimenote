@@ -2728,13 +2728,20 @@ describe('知识图谱画布', () => {
     resetDrawnTexts()
     fireEvent.click(hudButton('toggle-title-only'))
 
-    // 等到重画之后：标题还在，正文与"目录/度数"那一行都不在了
+    /*
+      门闸是**布局高度**，不是"画过某个字"：后者会被任何一次无关的重绘满足
+      （浮动每 50ms 就可能推一帧，并行跑整个套件时真的踩到过这个抖动），
+      而高度只由布局决定 —— 它变了，才说明纯标题那一档真的生效了。
+    */
+    await waitFor(() => {
+      expect(heightOfRoot()).toBeLessThan(fullHeight)
+    })
+    // 正文与"目录/度数"那一行都不在了；标题还在
+    expect(drawnTexts().some((text) => text.includes('原子写'))).toBe(false)
+    expect(drawnTexts()).not.toContain('项目')
     await waitFor(() => {
       expect(drawnTexts()).toContain('设计')
     })
-    expect(drawnTexts().some((text) => text.includes('原子写'))).toBe(false)
-    expect(drawnTexts()).not.toContain('项目')
-    expect(heightOfRoot()).toBeLessThan(fullHeight)
     // 卡片内那段虚线引线来自"正文里的 [[链接]]"：没有正文就没有引线
     expect(document.querySelectorAll('path.mn-graph-edge--lead')).toHaveLength(0)
     // 高度档与纯标题无关，整行收起
@@ -2743,9 +2750,12 @@ describe('知识图谱画布', () => {
       titleOnly: true,
     })
 
-    // 关掉之后正文与高度档都回来（开关可逆）
+    // 关掉之后正文与高度档都回来（开关可逆）—— 同样以高度回升为门闸
     resetDrawnTexts()
     fireEvent.click(hudButton('toggle-title-only'))
+    await waitFor(() => {
+      expect(heightOfRoot()).toBeGreaterThan(fullHeight - 1)
+    })
     await waitFor(() => {
       expect(drawnTexts().some((text) => text.includes('原子写'))).toBe(true)
     })
