@@ -57,6 +57,19 @@ function ruleBody(css: string, selector: string): string {
   return css.slice(start, end)
 }
 
+/**
+ * 同上去声明块，但取**最后**一处匹配。
+ *
+ * 用途：选择器既出现在 `.a,\n.b,\n.c {` 这样的共用列表里、又有一条自己的规则时，
+ * `ruleBody` 会命中列表末尾那一行 —— 想读"只属于 `.c` 的那条"就得从后往前找。
+ */
+function ownRuleBody(css: string, selector: string): string {
+  const start = css.lastIndexOf(`\n${selector} {`)
+  if (start === -1) throw new Error(`样式表里找不到独立规则：${selector}`)
+  const end = css.indexOf('}', start)
+  return css.slice(start, end)
+}
+
 beforeEach(() => {
   setIpcAdapter(createMockAdapter())
   registerBuiltinCommands()
@@ -116,6 +129,37 @@ describe('外壳渲染', () => {
       expect(document.querySelector('.mn-body')).not.toBeNull()
       expect(document.querySelector('.mn-statusbar')).not.toBeNull()
     })
+  })
+
+  it('标题栏分左/中/右三区，当前笔记路径在中区（编辑器里不再有那一行）', async () => {
+    /*
+      用户的要求：路径原来在编辑器面板**内部**（只横跨中间那一列、只在编辑视图里存在，
+      于是"打开一篇笔记"会让下面所有内容整体往下跳 26px），现在搬进标题栏中区（ADR-0029）。
+
+      这里钉**结构**：三区都在、路径在**中区**、编辑器那一行确实没了。
+      "路径落在窗口正中"是像素级的事，jsdom 没有布局引擎，留给 Playwright（`e2e/ui.e2e.test.ts`）。
+    */
+    render(<App />)
+    await useVaultStore.getState().openVault('C:\\MockVault')
+
+    await waitFor(() => {
+      expect(document.querySelector('.mn-titlebar__left')).not.toBeNull()
+      expect(document.querySelector('.mn-titlebar__center')).not.toBeNull()
+      expect(document.querySelector('.mn-titlebar__right')).not.toBeNull()
+    })
+
+    // 没有文档时中区是空的：不能留着上一篇的路径，也不能拿"空字符串"占位
+    expect(document.querySelector('.mn-titlebar__path')).toBeNull()
+
+    await openNote('项目/设计.md')
+
+    await waitFor(() => {
+      const center = document.querySelector('.mn-titlebar__center')
+      expect(center?.querySelector('.mn-titlebar__path')?.textContent ?? '').toContain(
+        '项目/设计.md',
+      )
+    })
+    expect(document.querySelector('.mn-editor__path')).toBeNull()
   })
 
   it('打开第一篇笔记后编辑器真的被创建（回归：曾因 useEffect([]) 空转而空白）', async () => {
@@ -181,7 +225,7 @@ describe('链接面板（M2）', () => {
       panel.querySelector<HTMLButtonElement>('[data-backlink-from="项目/路线图.md"]')?.click()
     })
     await waitFor(() => {
-      expect(document.querySelector('.mn-editor__path')?.textContent ?? '').toContain(
+      expect(document.querySelector('.mn-titlebar__path')?.textContent ?? '').toContain(
         '项目/路线图.md',
       )
     })
@@ -207,10 +251,14 @@ describe('链接面板（M2）', () => {
     await act(async () => {
       document.querySelector<HTMLAnchorElement>('a.mn-wikilink')?.click()
     })
-    // 阅读视图里没有编辑器（`.mn-editor__path` 在编辑工具栏上），所以断言 store：
     // 点击 wikilink 走的是 `app/actions.openNote`，它必须真的把目标笔记打开。
+    // 这里既能读 store、也能读标题栏中区的路径 —— 路径现在**在阅读视图里也在**（ADR-0029），
+    // 从前它挂在编辑器工具栏上，这个视图里读不到，只能退回断言 store。
     await waitFor(() => {
       expect(useNoteStore.getState().doc?.relPath).toBe('项目/设计.md')
+      expect(document.querySelector('.mn-titlebar__path')?.textContent ?? '').toContain(
+        '项目/设计.md',
+      )
     })
     expect(useVaultStore.getState().selected).toBe('项目/设计.md')
   })
@@ -233,6 +281,22 @@ describe('布局契约（防止再次出现"必须先选中笔记才对得齐窗
     expect(ruleBody(appCss, '.mn-titlebar')).toContain('flex: 0 0 auto')
     expect(ruleBody(appCss, '.mn-statusbar')).toContain('flex: 0 0 auto')
     expect(ruleBody(appCss, '.mn-conflict')).toContain('flex: 0 0 auto')
+  })
+
+  it('标题栏三区列宽是 1fr / 2fr / 1fr（中区的"居中"是网格的性质，不是巧合）', () => {
+    /*
+      ADR-0029：路径要落在**窗口正中**。左右两条轨道等宽是这条性质的来源 ——
+      用 flex + `margin: auto` 也能"看起来居中"，但那是"两边内容刚好一样宽"的巧合：
+      库名一长、统计数字多一位，路径就会歪。中区是 2fr 而不是 auto，则是为了让一条
+      长路径走省略号而不是把右区的窗口按钮顶出窗口。
+    */
+    const bar = ruleBody(appCss, '.mn-titlebar')
+    expect(bar).toContain('display: grid')
+    expect(bar).toContain('grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr)')
+    // 纵向不写 align-items：三区撑满 34px，窗口按钮的 align-self: stretch 才成立
+    expect(bar).not.toContain('align-items')
+    expect(ownRuleBody(appCss, '.mn-titlebar__center')).toContain('justify-content: center')
+    expect(ownRuleBody(appCss, '.mn-titlebar__right')).toContain('justify-content: flex-end')
   })
 
   it('文件树显式允许收缩（contain: strict 让它没有固有高度）', () => {

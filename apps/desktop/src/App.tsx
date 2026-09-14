@@ -53,6 +53,8 @@ export function App() {
   const rootPath = info?.rootPath ?? null
   const relPath = useNoteStore((state) => state.doc?.relPath ?? null)
   const dirty = useNoteStore((state) => state.dirty)
+  // 标题栏中区的「保存中…」（与状态栏读同一个字段，各说各的场合）
+  const noteStatus = useNoteStore((state) => state.status)
   const saveCount = useNoteStore((state) => state.saveCount)
 
   const viewMode = useUiStore((state) => state.viewMode)
@@ -191,20 +193,48 @@ export function App() {
         会自动跳过 button/input/a 这类可点击元素，所以菜单与窗口按钮照常可用。
       */}
       <header className="mn-titlebar" data-tauri-drag-region="deep">
-        <AppMenu />
-        <div className="mn-titlebar__brand">
-          <Icon name="sparkle" size={15} />
-          <span>Mimenote</span>
+        {/* 左区 = "我在哪个库"：菜单、产品名、当前 Vault */}
+        <div className="mn-titlebar__left">
+          <AppMenu />
+          <div className="mn-titlebar__brand">
+            <Icon name="sparkle" size={15} />
+            <span>Mimenote</span>
+          </div>
+          <div className="mn-titlebar__vault" title={info.rootPath}>
+            {info.name}
+          </div>
         </div>
-        <div className="mn-titlebar__vault" title={info.rootPath}>
-          {info.name}
+
+        {/*
+          中区 = "我在哪一篇"：当前笔记的 Vault 内相对路径。
+
+          它曾经是编辑器面板内部的一行（`features/editor/MarkdownEditor.tsx` 的
+          `.mn-editor__path`，26px），于是「打开一篇笔记」会把下面所有内容整体顶下去 26px，
+          而阅读/图谱视图里它又整行消失。搬进标题栏之后顶部高度是恒定的 34px，
+          路径在三种视图里都在（ADR-0029）。
+
+          中区的宽度由 `.mn-titlebar` 的网格给定（左右两条等宽轨道 ⇒ 路径落在窗口正中），
+          因此长路径走省略号，而不是把右区的窗口按钮挤出屏幕。
+        */}
+        <div className="mn-titlebar__center">
+          {relPath !== null && (
+            <div className="mn-titlebar__path" title={relPath}>
+              <Icon name="pencil" size={13} />
+              <span className="mn-titlebar__path-text">{relPath}</span>
+              {noteStatus === 'saving' && <span className="mn-titlebar__status">保存中…</span>}
+            </div>
+          )}
         </div>
-        <div className="mn-titlebar__meta">
-          {info.noteCount} 篇笔记 · {info.entryCount} 条目 · 扫描 {formatDuration(info.scanMs)}
-          {info.truncated && ' · 已截断'}
+
+        {/* 右区 = "这个库有多大" + 出口动作：统计、导出、三个窗口按钮 */}
+        <div className="mn-titlebar__right">
+          <div className="mn-titlebar__meta">
+            {info.noteCount} 篇笔记 · {info.entryCount} 条目 · 扫描 {formatDuration(info.scanMs)}
+            {info.truncated && ' · 已截断'}
+          </div>
+          <ExportButton />
+          <WindowControls />
         </div>
-        <ExportButton />
-        <WindowControls />
       </header>
 
       {/*

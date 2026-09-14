@@ -96,32 +96,110 @@ kbd {
   overflow: hidden;
 }
 
+/*
+ * 标题栏 = 左 / 中 / 右三区（ADR-0029）。
+ *
+ * 为什么用 `1fr 2fr 1fr` 而不是 `flex` 加 `margin: auto`：中区要落在**窗口正中**
+ * （当前笔记路径，见下），而左右两区的内容宽度完全由数据决定（Vault 名长短、
+ * 统计数字位数）。两条等宽的 `1fr` 轨道让"居中"成为网格的性质，而不是
+ * "两边内容刚好一样宽"这个巧合 —— 窗口一缩、库名一长，flex 那种写法就会歪。
+ *
+ * 中区拿到 2fr 而不是 `auto`：`auto` 会被一条长路径撑开，把右区的窗口按钮挤出可视区；
+ * 给死一半宽度之后，长路径走省略号（完整路径在 title 提示里）。
+ *
+ * 纵向**刻意不写 `align-items`**（默认 stretch）：三区都撑满 34px，
+ * `.mn-window-controls` 靠 `align-self: stretch` 贴满整条高度才成立（见它自己的注释）。
+ */
 .mn-titlebar {
   flex: 0 0 auto;
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr);
+  padding: 0 12px;
   gap: 12px;
   height: 34px;
-  padding: 0 12px;
   border-bottom: 1px solid var(--mn-border);
   background: var(--mn-bg-elevated);
   user-select: none;
+}
+
+.mn-titlebar__left,
+.mn-titlebar__center,
+.mn-titlebar__right {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.mn-titlebar__left {
+  gap: 12px;
+}
+
+/* 中区：内容（路径）在**自己那一格里**居中，那一格又在窗口正中 ⇒ 路径居中 */
+.mn-titlebar__center {
+  justify-content: center;
+  overflow: hidden;
+}
+
+.mn-titlebar__right {
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+/* 当前笔记路径（中区唯一的内容）。它曾经在编辑器面板里，见 ADR-0029 */
+.mn-titlebar__path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--mn-fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.mn-titlebar__path-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 图标不参与压缩：路径再长，铅笔也该是完整的一个（该走省略号的是它旁边的文字） */
+.mn-titlebar__path > .mn-icon {
+  flex: 0 0 auto;
+}
+
+.mn-titlebar__status {
+  color: var(--mn-warning);
+  flex: 0 0 auto;
 }
 
 .mn-titlebar__brand {
   display: flex;
   align-items: center;
   gap: 6px;
+  /* 产品名永不压缩：窗口再窄，"这是什么应用"也该看得见，让别的让位 */
+  flex: 0 0 auto;
   font-weight: 600;
   color: var(--mn-accent);
 }
 
+/*
+ * Vault 名与统计都**允许被省略**（完整值分别在 title 提示与状态栏里）：
+ * 三区制之后左右两区各只有窗口的四分之一，长库名/多位数统计挤不下时
+ * 该走省略号，而不是把中区的路径或右区的窗口按钮顶出窗口。
+ */
 .mn-titlebar__vault {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
   color: var(--mn-fg);
   font-weight: 600;
 }
 
 .mn-titlebar__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
   color: var(--mn-fg-subtle);
   font-size: 12px;
 }
@@ -380,35 +458,17 @@ kbd {
 
 /* -------------------------------------------------------------- 编辑器 */
 
+/*
+ * 编辑器宿主（.mn-editor）。
+ *
+ * 它曾经有一条 26px 的「当前路径」工具栏（.mn-editor__path / .mn-editor__status）——
+ * 已整条搬到标题栏中区（ADR-0029），所以这里只剩"占位提示"与"编辑面板"两种形态。
+ */
 .mn-editor {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-}
-
-.mn-editor__path {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--mn-border);
-  color: var(--mn-fg-muted);
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-}
-
-.mn-editor__path > span:first-of-type {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.mn-editor__status {
-  margin-left: auto;
-  color: var(--mn-warning);
-  flex: 0 0 auto;
 }
 
 .mn-editor__surface {

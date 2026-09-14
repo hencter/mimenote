@@ -39,7 +39,6 @@ export function MarkdownEditor() {
 
   const relPath = useNoteStore((state) => state.doc?.relPath ?? null)
   const revision = useNoteStore((state) => state.doc?.revision ?? 0)
-  const status = useNoteStore((state) => state.status)
   const themeId = useUiStore((state) => state.themeId)
   // 只读订阅"Tab 宽度"：编辑器不改它，设置页改它，这里跟着重配置 Compartment
   const tabWidth = useSettingsStore((state) => state.tabWidth)
@@ -144,14 +143,9 @@ export function MarkdownEditor() {
           <p>从左侧选择一篇笔记，或按 <kbd>Ctrl</kbd>+<kbd>N</kbd> 新建</p>
         </div>
       ) : (
-        <>
-          <div className="mn-editor__path" title={relPath}>
-            <Icon name="pencil" size={13} />
-            <span>{relPath}</span>
-            {status === 'saving' && <span className="mn-editor__status">保存中…</span>}
-          </div>
-          <div className="mn-editor__surface" ref={attachSurface} />
-        </>
+        // 这里曾经还有一行「当前路径」的工具栏（26px）。它搬到了标题栏中区（ADR-0029）：
+        // 那一行只横跨中间一列、只在编辑视图里存在，打开/关闭笔记时会让下面所有内容上下跳 26px。
+        <div className="mn-editor__surface" ref={attachSurface} />
       )}
     </div>
   )

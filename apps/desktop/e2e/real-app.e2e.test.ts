@@ -295,14 +295,8 @@ async function openNoteInTree(page: Page, relPath: string): Promise<void> {
   await ensureTreeRow(page, relPath)
   await treeRow(page, relPath).click()
   await waitUntil(
-    async () => {
-      // 编辑视图有编辑器工具栏；阅读/图谱视图没有 → 用"树里这一行被选中"作为共同信号
-      if ((await page.locator('.mn-editor__path').count()) > 0) {
-        return ((await page.locator('.mn-editor__path').textContent()) ?? '').includes(relPath)
-      }
-      const rowClass = (await treeRow(page, relPath).getAttribute('class')) ?? ''
-      return rowClass.includes('mn-tree-row--selected')
-    },
+    // 标题栏中区的路径三种视图里都在（ADR-0029）→ 不必再退回"树里这一行被选中"那个间接信号
+    async () => ((await page.locator('.mn-titlebar__path').textContent()) ?? '').includes(relPath),
     15_000,
     `打开 ${relPath}`,
   )
@@ -459,7 +453,7 @@ describe.skipIf(!supported)('真实应用：链接索引（真实 wikilink 解�
     // 点反向链接 → 打开乙
     await app.page.locator('[data-backlink-from="笔记/乙.md"]').click()
     await waitUntil(
-      async () => ((await app.page.locator('.mn-editor__path').textContent()) ?? '').includes('笔记/乙.md'),
+      async () => ((await app.page.locator('.mn-titlebar__path').textContent()) ?? '').includes('笔记/乙.md'),
       15_000,
       '跳转到乙',
     )
@@ -482,7 +476,7 @@ describe.skipIf(!supported)('真实应用：链接索引（真实 wikilink 解�
     await app.page.locator('[data-outbound-target="丁"]').click()
     await waitUntil(() => Promise.resolve(existsSync(vault.absolute('笔记/丁.md'))), 15_000, '丁.md 被创建')
     await waitUntil(
-      async () => ((await app.page.locator('.mn-editor__path').textContent()) ?? '').includes('笔记/丁.md'),
+      async () => ((await app.page.locator('.mn-titlebar__path').textContent()) ?? '').includes('笔记/丁.md'),
       15_000,
       '创建后自动打开丁',
     )
@@ -834,7 +828,7 @@ describe.skipIf(!supported)('真实应用：标签与属性面板（真实 IPC�
     await app.page.locator('.mn-palette__input').press('Enter')
     await waitUntil(
       async () =>
-        ((await app.page.locator('.mn-editor__path').textContent()) ?? '').includes('项目/设计.md'),
+        ((await app.page.locator('.mn-titlebar__path').textContent()) ?? '').includes('项目/设计.md'),
       15_000,
       '回车打开命中的笔记',
     )
@@ -858,7 +852,7 @@ describe.skipIf(!supported)('真实应用：标签与属性面板（真实 IPC�
     await app.page.locator('.mn-tags [data-tag-note="项目/路线图.md"]').click()
     await waitUntil(
       async () =>
-        ((await app.page.locator('.mn-editor__path').textContent()) ?? '').includes('项目/路线图.md'),
+        ((await app.page.locator('.mn-titlebar__path').textContent()) ?? '').includes('项目/路线图.md'),
       15_000,
       '点击后打开了路线图',
     )
@@ -926,7 +920,7 @@ describe.skipIf(!supported)('真实应用：重命名与全库链接改写（真
     // 正在编辑的笔记原地跟到新路径（内容不变）
     await waitUntil(
       async () =>
-        ((await app.page.locator('.mn-editor__path').textContent()) ?? '').includes(NEW),
+        ((await app.page.locator('.mn-titlebar__path').textContent()) ?? '').includes(NEW),
       15_000,
       '编辑器切到新路径',
     )
@@ -1074,7 +1068,7 @@ describe.skipIf(!supported)('真实应用：搜索命中跳转（真实 FTS5）'
     )
 
     // 打开的是命中那一篇
-    expect(((await app.page.locator('.mn-editor__path').textContent()) ?? '').includes(NOTE)).toBe(
+    expect(((await app.page.locator('.mn-titlebar__path').textContent()) ?? '').includes(NOTE)).toBe(
       true,
     )
     // 跳转只是"看"：磁盘上一个字节都没变（没有为了定位往正文里插标记）
