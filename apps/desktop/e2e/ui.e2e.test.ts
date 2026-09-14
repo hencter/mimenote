@@ -1200,6 +1200,136 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.locator('.cm-content').click()
     await showEditView(page)
   })
+
+  it('大纲面板：按级别过滤 + 章节折叠（键盘可操作，当前章节高亮不漂移）', async () => {
+    // 本文件共用一个页面，Vault 由第一条用例打开；单独筛选用例跑时门闸还在，这里自己补上
+    // （整文件跑时这段是空操作），用例因此不依赖"前面刚好有人开过 Vault"。
+    if ((await page.locator('.mn-gate').count()) > 0) {
+      await page.getByText('打开文件夹作为 Vault').click()
+      await page.waitForSelector('.mn-tree-row', { state: 'visible' })
+    }
+
+    await openNoteInTree(page, '项目/大纲.md')
+
+    await page.locator('.cm-content').click()
+    await page.keyboard.press('Control+Shift+o')
+    await page.waitForSelector('.mn-outline', { state: 'visible' })
+    await waitUntil(
+      async () => (await page.locator('.mn-outline__item').count()) === 4,
+      10_000,
+      '大纲列出四个标题',
+    )
+    // 默认 = 不过滤：六级开关全亮，升级上来的用户看到的还是完整标题树
+    expect(await page.locator('.mn-outline__level[aria-pressed="true"]').count()).toBe(6)
+
+    // 当前章节的行号（用 evaluate 读：元素不存在时 locator().getAttribute() 会等满默认超时）
+    const currentLine = async (): Promise<number> =>
+      await page.evaluate(() => {
+        const node = document.querySelector('.mn-outline__item--current')
+        return node === null ? 0 : Number(node.getAttribute('data-outline-line') ?? 0)
+      })
+    const hiddenCurrentLine = async (): Promise<string | null> =>
+      await page.evaluate(
+        () =>
+          document.querySelector('[data-outline-hidden-current]')?.getAttribute(
+            'data-outline-hidden-current',
+          ) ?? null,
+      )
+
+    // —— 级别过滤：键盘（Enter）关掉 H3 ——
+    const level3 = page.locator('.mn-outline__level[data-outline-level="3"]')
+    await level3.focus()
+    await page.keyboard.press('Enter')
+    await waitUntil(
+      async () => (await page.locator('.mn-outline__item').count()) === 3,
+      5_000,
+      '过滤掉 H3 之后少一条',
+    )
+    expect(await page.locator('.mn-outline__item').allTextContents()).toEqual([
+      '大纲示例',
+      '第一节',
+      '第二节',
+    ])
+    expect(await level3.getAttribute('aria-pressed')).toBe('false')
+    // 计数补上分母：用户要知道"还有几条没显示"
+    expect(await page.locator('.mn-outline__count').textContent()).toBe('3/4')
+
+    // 过滤之后点一条：滚动/高亮仍落在**正确的那一节**上
+    // （序号按完整标题列表算；若按可见列表的下标算，这里会错位到「小节」上）
+    await showReadView(page)
+    await page.locator('.mn-outline__item[data-outline-line="15"]').click()
+    await waitUntil(
+      async () => (await page.locator('.mn-preview__body .mn-outline-flash').count()) === 1,
+      5_000,
+      '阅读视图里对应标题被高亮',
+    )
+    expect(await page.locator('.mn-preview__body .mn-outline-flash').textContent()).toBe('第二节')
+    await showEditView(page)
+
+    // 放回 H3（键盘）
+    await level3.focus()
+    await page.keyboard.press('Enter')
+    await waitUntil(
+      async () => (await page.locator('.mn-outline__item').count()) === 4,
+      5_000,
+      '还原 H3',
+    )
+
+    // —— 章节折叠：把光标放到「小节」（第 9 行，属于「第一节」），再把第一节收起来 ——
+    await page.locator('.mn-outline__item[data-outline-line="9"]').click()
+    await waitUntil(async () => (await currentLine()) === 9, 5_000, '当前章节跟着光标走')
+
+    const collapseFirst = page.locator('[data-outline-collapse="5"]')
+    await collapseFirst.focus()
+    await page.keyboard.press('Enter')
+    await waitUntil(
+      async () => (await page.locator('.mn-outline__item').count()) === 3,
+      5_000,
+      '收起第一节',
+    )
+    expect(await page.locator('.mn-outline__item').allTextContents()).toEqual([
+      '大纲示例',
+      '第一节',
+      '第二节',
+    ])
+    expect(await collapseFirst.getAttribute('aria-expanded')).toBe('false')
+    // 当前章节被藏起来时：不高亮到别的条目上，只如实交代它在第几行
+    expect(await currentLine()).toBe(0)
+    expect(await hiddenCurrentLine()).toBe('9')
+    // 三角留在原地：收起的章节必须还能再展开
+    expect(await collapseFirst.count()).toBe(1)
+
+    await collapseFirst.focus()
+    await page.keyboard.press('Enter')
+    await waitUntil(async () => (await currentLine()) === 9, 5_000, '展开后当前章节回到第 9 行')
+
+    // —— 过滤到一条不剩：给人话，而不是空白面板 ——
+    for (const level of [1, 2, 3, 4, 5, 6]) {
+      const button = page.locator(`.mn-outline__level[data-outline-level="${level}"]`)
+      await button.focus()
+      await page.keyboard.press('Enter')
+    }
+    await waitUntil(
+      async () =>
+        ((await page.locator('.mn-outline__empty').textContent()) ?? '').includes(
+          '当前过滤条件下没有标题',
+        ),
+      5_000,
+      '过滤后没有标题时给空态文案',
+    )
+    expect(await page.locator('.mn-outline__item').count()).toBe(0)
+
+    // 一键还原 + 收尾（面板收起、过滤回到默认），不让状态漏给别的用例
+    await page.locator('.mn-outline__reset').click()
+    await waitUntil(
+      async () => (await page.locator('.mn-outline__item').count()) === 4,
+      5_000,
+      '还原全部级别',
+    )
+    await page.locator('.cm-content').click()
+    await page.keyboard.press('Control+Shift+o')
+    await waitUntil(async () => (await page.locator('.mn-outline').count()) === 0, 5_000, '面板收起')
+  })
 })
 
 /**

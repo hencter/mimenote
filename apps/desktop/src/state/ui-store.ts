@@ -1,8 +1,10 @@
 /**
  * UI 偏好（视图模式、布局尺寸、主题、片段开关）。
  *
- * 全部持久化到 localStorage：这些是**跨 Vault 的用户偏好**，
+ * 全部持久化到 localStorage：这些是**用户偏好**，
  * 不写进 Vault 目录（保持用户的笔记文件夹干净）。
+ * 唯一的例外是大纲的级别过滤：它按 Vault 根分桶存（见 {@link OutlineLevelsByVault}），
+ * 因为"这个 Vault 想看到第几级标题"跟 Vault 的规模绑在一起，而不是跟人绑在一起。
  */
 
 import { create } from 'zustand'
@@ -38,6 +40,19 @@ function migrateViewMode(value: unknown): ViewMode | null {
  */
 export type PaletteMode = 'commands' | 'quickSwitch' | 'search'
 
+/**
+ * 大纲面板的级别过滤（只显示哪几级标题），**按 Vault 根存**。
+ *
+ * 为什么它不像其它偏好那样只存一份：过滤表达的是"这个 Vault 的笔记有多深"—— 几百篇的
+ * 大 Vault 往往只想看 H1/H2 的骨架，而另一台目录里那个小 Vault 的 H4 正是正文的组织方式。
+ * 混用一份会逼着用户每换一次 Vault 就重调一次（与标签列表同一个理由，见
+ * `state/tabs-store.ts` 的"为什么按 Vault 根持久化"）。
+ *
+ * 缺省（某个 Vault 没有这一项）= 全部级别都显示：**升级上来的老用户看到的大纲必须和
+ * 原来一模一样**，新能力只能是一排默认全亮的开关。
+ */
+export type OutlineLevelsByVault = Record<string, readonly number[]>
+
 export interface UiPreferences {
   viewMode: ViewMode
   sidebarVisible: boolean
@@ -49,6 +64,8 @@ export interface UiPreferences {
   linksPanelWidth: number
   /** 右侧大纲面板（当前笔记的标题树）。 */
   outlinePanelVisible: boolean
+  /** 大纲面板的级别过滤，按 Vault 根存（见 {@link OutlineLevelsByVault}）。 */
+  outlineLevelsByVault: OutlineLevelsByVault
 }
 
 const STORAGE_KEY = 'mimenote.ui.v1'
@@ -67,10 +84,29 @@ const DEFAULTS: UiPreferences = {
   linksPanelVisible: false,
   linksPanelWidth: 300,
   outlinePanelVisible: false,
+  outlineLevelsByVault: {},
 }
 
 function isPreferences(value: unknown): value is Partial<UiPreferences> {
   return typeof value === 'object' && value !== null
+}
+
+/**
+ * 校验持久化回来的级别过滤：只认"1–6 的整数数组"。
+ *
+ * 为什么连值的形状都要校验：这份数据会被用户手工改（或者被旧版本、别的分支写成另一种形状），
+ * 而它直接喂给渲染层的 `Set`。一道校验就能把"大纲里突然少了几条、且没有任何提示"挡在门外 ——
+ * 校验不过时整份退回空对象，也就是"全部显示"这个安全默认。
+ */
+function isOutlineLevelsByVault(value: unknown): value is OutlineLevelsByVault {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  return Object.values(value as Record<string, unknown>).every(
+    (levels) =>
+      Array.isArray(levels) &&
+      levels.every(
+        (level) => typeof level === 'number' && Number.isInteger(level) && level >= 1 && level <= 6,
+      ),
+  )
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -93,6 +129,9 @@ const initial: UiPreferences = {
     LINKS_PANEL_MAX,
   ),
   outlinePanelVisible: restored.outlinePanelVisible ?? DEFAULTS.outlinePanelVisible,
+  outlineLevelsByVault: isOutlineLevelsByVault(restored.outlineLevelsByVault)
+    ? restored.outlineLevelsByVault
+    : DEFAULTS.outlineLevelsByVault,
 }
 
 interface UiState extends UiPreferences {
@@ -123,6 +162,14 @@ interface UiState extends UiPreferences {
   setLinksPanelWidth: (width: number) => void
   /** 大纲面板（与标签面板一样是固定宽度，不需要拖拽分隔条）。 */
   toggleOutlinePanel: () => void
+  /**
+   * 记下某个 Vault 的大纲级别过滤。
+   *
+   * 值是"要显示的级别"（空数组 = 一级都不显示）。规范化（去重 / 升序 / 只留 1–6）由
+   * 调用方 `features/outline/outline-view.ts` 的纯函数负责 —— 那里是这条规则的唯一出处，
+   * 不在 store 里再抄一份口径。
+   */
+  setOutlineLevels: (vaultRoot: string, levels: readonly number[]) => void
 }
 
 function persist(state: UiState): void {
@@ -136,6 +183,7 @@ function persist(state: UiState): void {
     linksPanelVisible: state.linksPanelVisible,
     linksPanelWidth: state.linksPanelWidth,
     outlinePanelVisible: state.outlinePanelVisible,
+    outlineLevelsByVault: state.outlineLevelsByVault,
   } satisfies UiPreferences)
 }
 
@@ -204,6 +252,15 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   toggleOutlinePanel: () => {
     set((state) => ({ outlinePanelVisible: !state.outlinePanelVisible }))
+    persist(get())
+  },
+
+  setOutlineLevels: (vaultRoot, levels) => {
+    // 复制一份再存：调用方可能把模块级的 `ALL_HEADING_LEVELS` 常量递进来，
+    // 直接引用会让"以后谁改了这个常量"变成"某个 Vault 的偏好悄悄变了"
+    set((state) => ({
+      outlineLevelsByVault: { ...state.outlineLevelsByVault, [vaultRoot]: [...levels] },
+    }))
     persist(get())
   },
 }))

@@ -456,3 +456,372 @@ describe('大纲在阅读视图的滚动', () => {
     })
   })
 })
+
+/**
+ * 「按级别过滤」与「章节折叠」（规则在 `features/outline/outline-view.ts`，接线在本组件）。
+ *
+ * 这一层要守住的是**坐标**：过滤与折叠只决定"渲染哪几条"，高亮与跳转仍然按完整标题列表
+ * 的下标走 —— 否则"当前章节"会悄悄跳到相邻的条目上（这类错误在纯函数测试里看不出来，
+ * 只有把真实光标放进去才会现形）。
+ *
+ * 键盘可操作性这里只验证**语义**（原生按钮 + 可读名称 + 不嵌套在条目按钮里）：
+ * Enter/Space 触发按钮是浏览器的默认行为，jsdom 不模拟它，真按键由 UI 层 E2E 复核。
+ */
+describe('大纲面板：级别过滤与章节折叠', () => {
+  /**
+   * 级别过滤按 Vault 根存在 ui-store 里（模块级、跨用例共享），
+   * 每个用例都必须从"没过滤过"开始 —— 外层 beforeEach 只重置视图与面板开关。
+   */
+  beforeEach(() => {
+    useUiStore.setState({ outlineLevelsByVault: {} })
+  })
+
+  /** H1…H6 的级别开关。 */
+  function levelButton(level: number): HTMLElement {
+    const node = document.querySelector<HTMLElement>(
+      `.mn-outline__level[data-outline-level="${level}"]`,
+    )
+    if (node === null) throw new Error(`没有 H${level} 的过滤开关`)
+    return node
+  }
+
+  /** 某一行条目的折叠三角（没有可见子标题的条目不会渲染它）。 */
+  function collapseToggle(line: number): HTMLElement {
+    const node = document.querySelector<HTMLElement>(`[data-outline-collapse="${line}"]`)
+    if (node === null) throw new Error(`第 ${line} 行没有折叠三角`)
+    return node
+  }
+
+  async function openOutline(): Promise<void> {
+    await openVault()
+    await open('笔记/大纲.md')
+    await waitFor(() => {
+      expect(outlineTexts()).toEqual(['项目说明', '目标', '子目标', '结论'])
+    })
+  }
+
+  it('默认六级全亮（不过滤）：可见条目与从前的完整标题树一模一样', async () => {
+    render(<OutlinePanel />)
+    await openOutline()
+
+    for (const level of [1, 2, 3, 4, 5, 6]) {
+      expect(levelButton(level).getAttribute('aria-pressed')).toBe('true')
+    }
+    expect(document.querySelector('.mn-outline__count')?.textContent).toBe('4')
+    // 默认不过滤 = 每条都带缩进、都在原位置（"不改变现有用户的观感"）
+    expect(outlineItem(5).style.paddingLeft).toBe('20px')
+
+    await act(async () => {
+      fireEvent.click(levelButton(2))
+    })
+    await waitFor(() => {
+      expect(outlineTexts()).toEqual(['项目说明', '子目标'])
+    })
+    expect(levelButton(2).getAttribute('aria-pressed')).toBe('false')
+    // 计数补上分母：用户要知道"还有几条没显示"
+    expect(document.querySelector('.mn-outline__count')?.textContent).toBe('2/4')
+
+    await act(async () => {
+      fireEvent.click(levelButton(2))
+    })
+    await waitFor(() => {
+      expect(outlineTexts()).toHaveLength(4)
+    })
+    expect(document.querySelector('.mn-outline__count')?.textContent).toBe('4')
+  })
+
+  it('过滤选择按 Vault 根持久化，且不碰别的偏好', async () => {
+    render(<OutlinePanel />)
+    await openOutline()
+
+    await act(async () => {
+      fireEvent.click(levelButton(2))
+    })
+
+    expect(useUiStore.getState().outlineLevelsByVault[MOCK_VAULT_PATH]).toEqual([1, 3, 4, 5, 6])
+    const raw = window.localStorage.getItem('mimenote.ui.v1') ?? '{}'
+    const persisted: { outlineLevelsByVault: Record<string, number[]>; outlinePanelVisible: boolean } =
+      JSON.parse(raw)
+    expect(persisted.outlineLevelsByVault[MOCK_VAULT_PATH]).toEqual([1, 3, 4, 5, 6])
+    // 同一个 store 里别的字段语义不变（只是多了一个字段）
+    expect(persisted.outlinePanelVisible).toBe(false)
+  })
+
+  it('过滤之后高亮仍按完整列表算：不会跳到相邻的条目上', async () => {
+    render(<OutlinePanel />)
+    await openOutline()
+    await act(async () => {
+      fireEvent.click(levelButton(2))
+    })
+    await waitFor(() => {
+      expect(outlineTexts()).toEqual(['项目说明', '子目标'])
+    })
+
+    // 光标在第 12 行（正文里）→ 当前章节是第 10 行的「子目标」= **完整列表的第 3 条**
+    await act(async () => {
+      useCursorStore.getState().setLine(12)
+    })
+    await waitFor(() => {
+      const current = document.querySelectorAll('.mn-outline__item--current')
+      expect(current).toHaveLength(1)
+      expect(current[0]?.getAttribute('data-outline-line')).toBe('10')
+    })
+  })
+
+  it('当前章节被过滤掉时：不高亮到别的条目，只如实说明它在第几行', async () => {
+    render(<OutlinePanel />)
+    await openOutline()
+    await act(async () => {
+      fireEvent.click(levelButton(2))
+    })
+
+    // 光标在第 6 行 → 当前章节是第 5 行的「目标」（H2，此刻被过滤掉）
+    await act(async () => {
+      useCursorStore.getState().setLine(6)
+    })
+    await waitFor(() => {
+      expect(document.querySelectorAll('.mn-outline__item--current')).toHaveLength(0)
+      expect(
+        document
+          .querySelector('[data-outline-hidden-current]')
+          ?.getAttribute('data-outline-hidden-current'),
+      ).toBe('5')
+    })
+    expect(document.querySelector('.mn-outline__hidden')?.textContent).toContain('第 5 行')
+
+    // 把 H2 放回来：高亮立刻回到真正的当前章节上（方位一直没丢）
+    await act(async () => {
+      fireEvent.click(levelButton(2))
+    })
+    await waitFor(() => {
+      expect(document.querySelector('.mn-outline__item--current')?.getAttribute('data-outline-line')).toBe(
+        '5',
+      )
+    })
+  })
+
+  it('收起一条章节：子标题一起消失，三角留在原地可以再展开', async () => {
+    render(<OutlinePanel />)
+    await openOutline()
+
+    await act(async () => {
+      fireEvent.click(collapseToggle(5))
+    })
+    await waitFor(() => {
+      expect(outlineTexts()).toEqual(['项目说明', '目标', '结论'])
+    })
+    expect(collapseToggle(5).getAttribute('aria-expanded')).toBe('false')
+    expect(document.querySelector('.mn-outline__count')?.textContent).toBe('3/4')
+
+    await act(async () => {
+      fireEvent.click(collapseToggle(5))
+    })
+    await waitFor(() => {
+      expect(outlineTexts()).toEqual(['项目说明', '目标', '子目标', '结论'])
+    })
+    expect(collapseToggle(5).getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('当前章节被收起时也不丢方位：展开回来还是同一条', async () => {
+    render(<OutlinePanel />)
+    await openOutline()
+    await act(async () => {
+      useCursorStore.getState().setLine(12)
+    })
+    await waitFor(() => {
+      expect(document.querySelector('.mn-outline__item--current')?.getAttribute('data-outline-line')).toBe(
+        '10',
+      )
+    })
+
+    await act(async () => {
+      fireEvent.click(collapseToggle(5))
+    })
+    await waitFor(() => {
+      expect(outlineTexts()).toEqual(['项目说明', '目标', '结论'])
+      expect(document.querySelectorAll('.mn-outline__item--current')).toHaveLength(0)
+      expect(
+        document
+          .querySelector('[data-outline-hidden-current]')
+          ?.getAttribute('data-outline-hidden-current'),
+      ).toBe('10')
+    })
+
+    await act(async () => {
+      fireEvent.click(collapseToggle(5))
+    })
+    await waitFor(() => {
+      expect(document.querySelector('.mn-outline__item--current')?.getAttribute('data-outline-line')).toBe(
+        '10',
+      )
+    })
+  })
+
+  it('折叠刻意不持久化：把面板摘掉重挂（等价于下次打开）就是完整的树', async () => {
+    render(<OutlinePanel />)
+    await openOutline()
+    await act(async () => {
+      fireEvent.click(collapseToggle(5))
+    })
+    await waitFor(() => {
+      expect(outlineTexts()).toEqual(['项目说明', '目标', '结论'])
+    })
+
+    cleanup()
+    render(<OutlinePanel />)
+    await waitFor(() => {
+      expect(outlineTexts()).toEqual(['项目说明', '目标', '子目标', '结论'])
+    })
+    expect(window.localStorage.getItem('mimenote.ui.v1') ?? '').not.toContain('collapse')
+  })
+
+  it('一级都不剩时给一句人话，并能一键还原', async () => {
+    render(<OutlinePanel />)
+    await openOutline()
+
+    for (const level of [1, 2, 3, 4, 5, 6]) {
+      await act(async () => {
+        fireEvent.click(levelButton(level))
+      })
+    }
+    await waitFor(() => {
+      expect(outlineTexts()).toHaveLength(0)
+      expect(document.querySelector('.mn-outline__empty')?.textContent).toContain(
+        '当前过滤条件下没有标题',
+      )
+    })
+
+    await act(async () => {
+      fireEvent.click(document.querySelector<HTMLElement>('.mn-outline__reset') as HTMLElement)
+    })
+    await waitFor(() => {
+      expect(outlineTexts()).toHaveLength(4)
+      expect(document.querySelector('.mn-outline__empty')).toBeNull()
+    })
+  })
+
+  it('两个控件都是原生按钮，且三角不嵌套在条目按钮里（键盘与读屏都走得通）', async () => {
+    render(<OutlinePanel />)
+    await openOutline()
+
+    const toggle = collapseToggle(5)
+    const item = outlineItem(5)
+    // 按钮套按钮是非法结构：读屏与键盘都会乱，而且点三角会连带触发"跳转"
+    expect(item.contains(toggle)).toBe(false)
+    expect(item.parentElement).toBe(toggle.parentElement)
+    expect(toggle.tagName).toBe('BUTTON')
+    expect(toggle.getAttribute('type')).toBe('button')
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(toggle.getAttribute('aria-label')).toContain('目标')
+    // 原生按钮天然可被 Tab 聚焦、被 Enter/Space 触发（真浏览器里由 E2E 复核）
+    expect(toggle.tabIndex).toBe(0)
+    expect(levelButton(1).tagName).toBe('BUTTON')
+    expect(levelButton(1).tabIndex).toBe(0)
+    // 没有可见子标题的条目不给三角（按下去什么都不会发生的假控件）
+    expect(document.querySelector('[data-outline-collapse="16"]')).toBeNull()
+    // 条目的键盘行为没有被抢：条目本身仍是唯一的跳转入口，类名与行号口径不变
+    expect(item.getAttribute('data-outline-line')).toBe('5')
+  })
+
+  it('阅读视图里过滤与折叠同样生效，且序号仍按完整列表算', async () => {
+    render(
+      <>
+        <OutlinePanel />
+        <MarkdownPreview />
+      </>,
+    )
+    await openVault()
+    await open('笔记/大纲.md')
+    await act(async () => {
+      useUiStore.getState().setViewMode('read')
+    })
+    await waitFor(() => {
+      expect(document.querySelectorAll('.mn-preview__body h2').length).toBe(2)
+    })
+
+    // 关掉 H1：面板只剩三条，而它们仍然是完整列表里的第 2/3/4 条
+    await act(async () => {
+      fireEvent.click(levelButton(1))
+    })
+    await waitFor(() => {
+      expect(outlineTexts()).toEqual(['目标', '子目标', '结论'])
+    })
+
+    // 点最后一条 → 滚到预览里第 **4** 个标题（「结论」）。若按可见列表的下标算，
+    // 这里会滚到第 3 个「子目标」—— 这正是"序号必须按完整列表算"的现场。
+    await act(async () => {
+      fireEvent.click(outlineItem(16))
+    })
+    expect(scrollCalls).toEqual(['结论'])
+
+    // 收起「目标」：它的 H3 子标题从面板消失（阅读视图里折叠同样生效）
+    await act(async () => {
+      fireEvent.click(collapseToggle(5))
+    })
+    await waitFor(() => {
+      expect(outlineTexts()).toEqual(['目标', '结论'])
+    })
+
+    /*
+     * 阅读视图的"当前章节"跟着滚动位置走（序号来自 `visibleHeadingOrdinal`）。
+     * 让视口顶部停在第 3 个标题（`### 子目标`，第 10 行）—— 它此刻正被收起的「目标」藏着。
+     */
+    const scroller = document.querySelector<HTMLElement>('.mn-preview__scroller')
+    Object.defineProperty(scroller as HTMLElement, 'getBoundingClientRect', {
+      value: () => ({ top: 0 }) as DOMRect,
+    })
+    const headings = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '.mn-preview__body h1, .mn-preview__body h2, .mn-preview__body h3',
+      ),
+    )
+    headings.forEach((heading, index) => {
+      const top = index <= 2 ? -20 + index * 10 : 300
+      Object.defineProperty(heading, 'getBoundingClientRect', { value: () => ({ top }) as DOMRect })
+    })
+    await act(async () => {
+      scroller?.dispatchEvent(new Event('scroll'))
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
+    })
+    await waitFor(() => {
+      expect(document.querySelectorAll('.mn-outline__item--current')).toHaveLength(0)
+      expect(
+        document
+          .querySelector('[data-outline-hidden-current]')
+          ?.getAttribute('data-outline-hidden-current'),
+      ).toBe('10')
+    })
+
+    // 换成"被过滤掉"这条路径：先展开（三角在 H3 还显示时才存在），再把 H3 关掉
+    await act(async () => {
+      fireEvent.click(collapseToggle(5))
+    })
+    await waitFor(() => {
+      expect(outlineTexts()).toEqual(['目标', '子目标', '结论'])
+    })
+    await act(async () => {
+      fireEvent.click(levelButton(3))
+    })
+    await waitFor(() => {
+      expect(outlineTexts()).toEqual(['目标', '结论'])
+      expect(document.querySelectorAll('.mn-outline__item--current')).toHaveLength(0)
+      expect(
+        document
+          .querySelector('[data-outline-hidden-current]')
+          ?.getAttribute('data-outline-hidden-current'),
+      ).toBe('10')
+    })
+
+    // 全部还原：视图切回来时高亮就在原来的那一条上（面板是同一个实例，方位从未改变）
+    await act(async () => {
+      fireEvent.click(levelButton(1))
+      fireEvent.click(levelButton(3))
+    })
+    await waitFor(() => {
+      expect(outlineTexts()).toEqual(['项目说明', '目标', '子目标', '结论'])
+      expect(
+        document.querySelector('.mn-outline__item--current')?.getAttribute('data-outline-line'),
+      ).toBe('10')
+    })
+  })
+})

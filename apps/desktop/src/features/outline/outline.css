@@ -42,6 +42,68 @@
   line-height: 1.6;
 }
 
+/* 空态里的退路（"我一不小心把六级全关了"），比正文小一号，别喧宾夺主 */
+.mn-outline__reset {
+  margin-top: 8px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+/*
+ * 级别过滤条：六个等宽的紧凑开关。
+ *
+ * 等宽（`flex: 1`）而不是按文字宽度排：H1…H6 长得一样长，等宽让它们成为一排刻度盘，
+ * 一眼能看出"我在过滤哪几级"，而不是一堆长短不一的按钮。
+ */
+.mn-outline__levels {
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--mn-border);
+}
+
+.mn-outline__level {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 2px 0;
+  border: 1px solid var(--mn-border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--mn-fg-subtle);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.mn-outline__level:hover {
+  background: var(--mn-hover);
+  color: var(--mn-fg);
+}
+
+/* 亮着 = 这一级会显示。默认六级全亮（不过滤），与升级前的观感一致 */
+.mn-outline__level--on {
+  border-color: var(--mn-accent);
+  background: var(--mn-active);
+  color: var(--mn-fg);
+}
+
+.mn-outline__level:focus-visible,
+.mn-outline__toggle:focus-visible {
+  outline: 2px solid var(--mn-accent);
+  outline-offset: -1px;
+}
+
+/* 「当前章节没显示在列表里」的交代：一行小字，不抢条目的位置 */
+.mn-outline__hidden {
+  margin: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--mn-border);
+  color: var(--mn-fg-subtle);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .mn-outline__list {
   flex: 1 1 auto;
   min-height: 0;
@@ -49,9 +111,52 @@
   padding: 6px 0 10px;
 }
 
+/*
+ * 一行 = [折叠三角][标题按钮]。
+ *
+ * 为什么把三角拆成兄弟节点而不是塞进条目的按钮里：按钮套按钮是非法结构，
+ * 读屏与键盘都会乱；而且嵌套时点三角还会连带触发"跳转"。
+ * 代价是三角只能待在固定的一列里（缩进由条目自己的 padding 管），
+ * 于是深度不同的三角会排在同一条竖线上 —— 看起来像一个齐整的折叠槽位，
+ * 反而比"跟着文字走"更好扫。
+ */
+.mn-outline__row {
+  display: flex;
+  align-items: stretch;
+}
+
+.mn-outline__toggle {
+  flex: 0 0 14px;
+  width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--mn-fg-subtle);
+  cursor: pointer;
+  transition: transform 120ms ease;
+}
+
+/* 与文件树的三角同一个方向约定：展开时朝下（图标本身朝右） */
+.mn-outline__toggle--open {
+  transform: rotate(90deg);
+}
+
+.mn-outline__toggle:hover {
+  color: var(--mn-fg);
+}
+
+.mn-outline__toggle--placeholder {
+  visibility: hidden;
+}
+
 .mn-outline__item {
+  /* 原来是 `width: 100%`；放进 flex 行之后必须让出三角那一列 */
+  flex: 1 1 auto;
+  min-width: 0;
   display: block;
-  width: 100%;
   padding: 3px 10px;
   border: 0;
   background: transparent;
