@@ -21,6 +21,7 @@ import type { Page } from 'playwright-core'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import {
+  actUntil,
   createTempVault,
   delay,
   launchApp,
@@ -1133,9 +1134,12 @@ describe.skipIf(!supported)('真实应用：标签面板增删标签（真实磁
     // 输入框里回车提交（隐式的表单提交是浏览器行为，jsdom 里验不了）
     const input = app.page.getByLabel('添加标签')
     await input.fill('乙')
-    await input.press('Enter')
-
-    await waitForFileContent(vault, NOTE, (text) => text.includes('tags: [甲, 乙]'))
+    // `actUntil`：真实窗口偶尔会吃掉一次按键（证据与结论见它的文档注释），这里等**磁盘**生效
+    await actUntil(
+      () => input.press('Enter'),
+      async () => (await vault.read(NOTE)).includes('tags: [甲, 乙]'),
+      '标签写进磁盘',
+    )
     // 逐字比对：CRLF、行尾注释、未知键与正文都必须原样（只多了 `, 乙`）
     expect(await vault.read(NOTE)).toBe(AFTER)
 
@@ -1158,8 +1162,11 @@ describe.skipIf(!supported)('真实应用：标签面板增删标签（真实磁
     )
 
     // 再删掉：磁盘逐字节回到原样，面板上也消失
-    await app.page.locator('.mn-tags [data-tag-remove="乙"]').click()
-    await waitForFileContent(vault, NOTE, (text) => !text.includes('乙'))
+    await actUntil(
+      () => app.page.locator('.mn-tags [data-tag-remove="乙"]').click(),
+      async () => !(await vault.read(NOTE)).includes('乙'),
+      '标签从磁盘上消失',
+    )
     expect(await vault.read(NOTE)).toBe(BEFORE)
     await waitUntil(
       async () => (await app.page.locator('.mn-tags [data-tag="乙"]').count()) === 0,
@@ -1339,6 +1346,224 @@ describe.skipIf(!supported)('真实应用：标签重命名 / 合并（真实磁
       15_000,
       '编辑器文本与磁盘对齐',
     )
+  }, 120_000)
+})
+
+/**
+ * 标签**层级编辑**（挂到父标签下 / 提回顶层：全库改写，frontmatter 与正文行内一起改）。
+ *
+ * 为什么必须在真实应用这一层验：目标键由**宿主的** `tag_move_target` 算，而"父标签已被占用"
+ * 这一条只有拿着全库标签概览的宿主判得了（纯函数刻意不管）。Mock 与单测能验证界面按对了按钮、
+ * 拒绝文案有没有显示，只有真实宿主能回答"这个父标签算出来的目标键到底是哪个、写进磁盘的是不是它"。
+ * 逐字节比对才能证明"该改的改了、不该动的没动"（代码块里的 `#甲` 不是标签）。
+ */
+describe.skipIf(!supported)('真实应用：标签层级编辑（真实磁盘）', () => {
+  const MAIN = '层级.md'
+  const CHILD = 'notes/子标签.md'
+
+  /** CRLF + 行尾注释 + 未知键 + 正文行内标签 + 一个代码块（里面的 `#甲` 不是标签）。 */
+  const MAIN_BEFORE =
+    '---\r\ntitle: 层级示例\r\ntags: [甲, 别的]\r\ndraft: false # 未完成\r\n---\r\n# 标题\r\n\r\n正文 #甲 与 #别的。\r\n\r\n```\r\n#甲\r\n```\r\n'
+  const MAIN_AFTER = MAIN_BEFORE.replace('tags: [甲, 别的]', 'tags: [父/甲, 别的]').replace(
+    '正文 #甲 与',
+    '正文 #父/甲 与',
+  )
+  const CHILD_BEFORE = '# 子标签\r\n\r\n这里也有 #甲/子。\r\n'
+  const CHILD_AFTER = '# 子标签\r\n\r\n这里也有 #父/甲/子。\r\n'
+
+  let app: LaunchedApp
+  let vault: TempVault
+
+  beforeAll(async () => {
+    vault = await createTempVault({
+      [MAIN]: MAIN_BEFORE,
+      [CHILD]: CHILD_BEFORE,
+    })
+    app = await launchApp({ vaultPath: vault.path })
+    await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
+  }, 120_000)
+
+  afterAll(async () => {
+    if (app !== undefined) await app.close()
+    if (vault !== undefined) await vault.cleanup()
+  })
+
+  /**
+   * 打开标签面板，并等全库概览里出现某个键。
+   *
+   * **幂等**：`Ctrl+Shift+T` 是开关（面板开着时再按就收起了），而本组用例共用同一个窗口 ——
+   * 上一条用例结束时面板是开着的，无条件再按一次就会把它关掉，后面的等待只会超时。
+   */
+  async function openTagPanel(key: string): Promise<void> {
+    if ((await app.page.locator('.mn-tags').count()) === 0) {
+      await app.page.keyboard.press('Control+Shift+t')
+    }
+    await app.page.waitForSelector('.mn-tags', { state: 'visible', timeout: 10_000 })
+    await waitUntil(
+      async () => (await app.page.locator(`.mn-tags [data-tag-key="${key}"]`).count()) === 1,
+      15_000,
+      `全库标签概览里出现 ${key}`,
+    )
+  }
+
+  /**
+   * 关掉"移到…"对话框（结果阶段点「完成」，输入阶段点「取消」）。
+   *
+   * 为什么单独抽出来并且**每条用例都要调**：对话框是**模态遮罩**，留着它下一条用例
+   * 连文件树那一行都点不动 —— Playwright 会一直等"元素能接收指针事件"，最后报成一句
+   * 与真正原因无关的超时（第一次跑全量时正是这么失败的，单独跑那一组却看不出来）。
+   */
+  async function closeMoveDialog(): Promise<void> {
+    const done = app.page.locator('[data-tag-rename-done]')
+    if ((await done.count()) > 0) await done.click()
+    else await app.page.locator('[data-tag-rename-cancel]').click()
+    await app.page.waitForSelector('[data-tag-move-dialog]', { state: 'detached', timeout: 10_000 })
+  }
+
+  /**
+   * 做一次交互并等某个元素出现；没出现就原样再来一次（`actUntil` 的语义与理由见
+   * `support/harness.ts` 的文档注释：真实窗口偶尔会吃掉一次按键或点击）。
+   */
+  async function actUntilVisible(
+    action: () => Promise<void>,
+    selector: string,
+    what: string,
+  ): Promise<void> {
+    await actUntil(action, async () => (await app.page.locator(selector).count()) > 0, what)
+  }
+
+  it('挂到父标签下：预览说出"这会改 2 篇" → 确认 → 磁盘上连子标签一起挪', async () => {
+    await openNoteInTree(app.page, MAIN)
+    await openTagPanel('甲')
+
+    // 从全库概览那一行的 `⇥` 打开"移到…"对话框（本篇标签那一行没有这个入口）
+    await actUntilVisible(
+      () =>
+        app.page
+          .locator('.mn-tags li', { has: app.page.locator('[data-tag-key="甲"]') })
+          .locator('[data-tag-move-open="甲"]')
+          .click(),
+      '[data-tag-move-dialog]',
+      '「移到…」对话框打开',
+    )
+
+    const input = app.page.locator('[data-tag-rename-input]')
+    // 顶层标签的父标签初值是空的：留空 = 顶层，所以这里必须自己打一个
+    expect(await input.inputValue()).toBe('')
+    await input.fill('父')
+
+    // 先查询：这一步**不落盘**，但要说清会改几篇（`甲` 与 `甲/子` 各一篇）
+    await actUntilVisible(
+      () => input.press('Enter'),
+      '[data-tag-rename-preview]',
+      '预览出现',
+    )
+    const preview = (await app.page.locator('[data-tag-rename-preview]').textContent()) ?? ''
+    expect(preview).toContain('这会改 2 篇笔记')
+    expect(await vault.read(MAIN)).toBe(MAIN_BEFORE)
+    expect(await vault.read(CHILD)).toBe(CHILD_BEFORE)
+
+    await actUntilVisible(
+      () => app.page.locator('[data-tag-rename-confirm]').click(),
+      '[data-tag-rename-result]',
+      '结果面板出现',
+    )
+
+    await waitForFileContent(vault, MAIN, (text) => text.includes('tags: [父/甲, 别的]'))
+    // 逐字节比对：CRLF、行尾注释、未知键、代码块里的 `#甲` 都必须原样
+    expect(await vault.read(MAIN)).toBe(MAIN_AFTER)
+    expect(await vault.read(CHILD)).toBe(CHILD_AFTER)
+
+    const result = (await app.page.locator('[data-tag-rename-result]').textContent()) ?? ''
+    expect(result).toContain('改了 2 篇笔记')
+
+    // 关掉对话框，面板与全库概览跟着换成新键（索引增量同步，不需要重扫）
+    await closeMoveDialog()
+    await waitUntil(
+      async () => (await app.page.locator('.mn-tags [data-tag-key="父/甲"]').count()) === 1,
+      15_000,
+      '全库标签概览里出现 父/甲',
+    )
+    expect(await app.page.locator('.mn-tags [data-tag-key="父/甲/子"]').count()).toBe(1)
+    expect(await app.page.locator('.mn-tags [data-tag-key="甲"]').count()).toBe(0)
+    // 编辑器内存也必须对齐磁盘（否则下一次自动保存会把刚写下的标签覆盖掉）
+    await waitUntil(
+      async () =>
+        ((await app.page.locator('.cm-content').textContent()) ?? '').includes('正文 #父/甲 与 #别的。'),
+      15_000,
+      '编辑器文本与磁盘对齐',
+    )
+  }, 120_000)
+
+  it('提回顶层：留空即可（输入框里原本是它现在挂着的父标签）', async () => {
+    await openNoteInTree(app.page, MAIN)
+    await openTagPanel('父/甲/子')
+
+    await actUntilVisible(
+      () =>
+        app.page
+          .locator('.mn-tags li', { has: app.page.locator('[data-tag-key="父/甲/子"]') })
+          .locator('[data-tag-move-open="父/甲/子"]')
+          .click(),
+      '[data-tag-move-dialog]',
+      '「移到…」对话框打开',
+    )
+
+    const input = app.page.locator('[data-tag-rename-input]')
+    // 初值就是它现在挂着的位置 —— 用户要做的只是删掉它
+    expect(await input.inputValue()).toBe('父/甲')
+    await app.page.locator('[data-tag-move-top]').click()
+    expect(await input.inputValue()).toBe('')
+    await actUntilVisible(() => input.press('Enter'), '[data-tag-rename-preview]', '预览出现')
+    await actUntilVisible(
+      () => app.page.locator('[data-tag-rename-confirm]').click(),
+      '[data-tag-rename-result]',
+      '结果面板出现',
+    )
+
+    // 只换祖先不动名字：`父/甲/子` 提回顶层是 `子`（不是 `父/甲/子`）
+    await waitForFileContent(vault, CHILD, (text) => !text.includes('父/甲/子'))
+    expect(await vault.read(CHILD)).toBe('# 子标签\r\n\r\n这里也有 #子。\r\n')
+    expect(await app.page.locator('[data-tag-rename-result]').textContent()).toContain('改了 1 篇笔记')
+
+    // 收尾：关掉对话框。它是模态遮罩，**不收尾下一条用例连文件树都点不动**
+    // （Playwright 会一直等"元素可接收指针事件"，最后报成一句看不懂的超时）
+    await closeMoveDialog()
+  }, 120_000)
+
+  it('非法移动被宿主拒绝：磁盘一个字节都不变，理由是给用户看的人话', async () => {
+    await openNoteInTree(app.page, MAIN)
+    await openTagPanel('父/甲')
+
+    await actUntilVisible(
+      () =>
+        app.page
+          .locator('.mn-tags li', { has: app.page.locator('[data-tag-key="父/甲"]') })
+          .locator('[data-tag-move-open="父/甲"]')
+          .click(),
+      '[data-tag-move-dialog]',
+      '「移到…」对话框打开',
+    )
+
+    // 把父标签打成它自己的名字：宿主会拒绝（`tag_move_target`），对话框停在输入阶段
+    const input = app.page.locator('[data-tag-rename-input]')
+    await input.fill('父/甲')
+    // 等的是 toast：被拒绝时**根本没有预览阶段**
+    await actUntil(
+      () => input.press('Enter'),
+      async () =>
+        ((await app.page.locator('.mn-toasts').textContent()) ?? '').includes(
+          '不能把标签挂到它自己下面',
+        ),
+      '拒绝理由是给用户看的人话（不是"路径不合法"这种按错误码翻出来的话）',
+      15_000,
+    )
+    expect(await app.page.locator('[data-tag-rename-preview]').count()).toBe(0)
+    expect(await vault.read(MAIN)).toBe(MAIN_AFTER)
+    expect(await vault.read(CHILD)).toBe('# 子标签\r\n\r\n这里也有 #子。\r\n')
+
+    // 被拒绝时对话框停在输入阶段：`取消` 关掉它，别把模态留给下一条用例（或用户）
+    await closeMoveDialog()
   }, 120_000)
 })
 

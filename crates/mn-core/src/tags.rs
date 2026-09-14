@@ -209,6 +209,65 @@ fn clean_input(raw: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// 标签的层级编辑（把 `甲` 挂到 `父` 下面 / 从 `父/甲` 提回顶层）
+// ---------------------------------------------------------------------------
+
+/// 「把标签移到某个父标签下」算出来的目标**键**；算不出来就是一次非法移动，附带原因。
+///
+/// 为什么做成纯函数而不是在命令里拼字符串：层级编辑只有两种形态（挂到某个父标签下、
+/// 提回顶层），但**非法组合比合法组合多** —— 挂到自己下面、挂到自己的后代下面、已经在那里了、
+/// 父标签里写了空段。这些判定必须在写盘**之前**就拦住，而且要能脱离文件系统单测。
+///
+/// 规则（三条，都只与层级有关）：
+/// 1. **只换祖先，不动名字**：末段是这个标签自己的名字，始终保留 ——
+///    `父/甲` 提回顶层是 `甲`（不是 `父/甲`），`甲` 挂到 `母` 下是 `母/甲`；
+/// 2. `parent` 归一化后为空 = **提回顶层**；否则目标 = `父/末段`；
+/// 3. 目标与源相同 → 明确说"已经在那个父标签下面了"，而不是当作无操作静默成功。
+///
+/// 注意：这里**不检查**"目标键是否已经被别的标签占用" —— 那是"移动"与"合并"的分界，
+/// 只有拿着全库标签概览的调用方（宿主命令）才判得了，见 `commands.rs` 的 `tag_move`。
+pub fn tag_move_target(key: &str, parent: &str) -> Result<String, &'static str> {
+    let from_key = normalize_tag(key);
+    if from_key.is_empty() {
+        return Err("标签名称为空，无法调整层级");
+    }
+    let leaf = match from_key.rsplit_once('/') {
+        Some((_, leaf)) => leaf.to_string(),
+        None => from_key.clone(),
+    };
+
+    let cleaned_parent = clean_input(parent).unwrap_or_default();
+    // 首尾的 `/` 容忍（常见的输入滑手），**全是 `/` 就等同于"提回顶层"**
+    // （`#/甲` 这类写法在别处也是这个意思）；只有**中间的空段**才拒绝：
+    // `父//子` 归一化之后会变成 `父/子`，与用户看到的东西不是一回事，宁可不猜。
+    let trimmed_parent = cleaned_parent.trim_matches('/');
+    if !trimmed_parent.is_empty() && trimmed_parent.split('/').any(|segment| segment.is_empty()) {
+        return Err("父标签里不能有空的层级（`父//子`）");
+    }
+
+    let parent_key = normalize_tag(parent);
+    if parent_key == from_key {
+        return Err("不能把标签挂到它自己下面");
+    }
+    if parent_key
+        .strip_prefix(&from_key)
+        .is_some_and(|rest| rest.starts_with('/'))
+    {
+        return Err("不能把标签挂到它自己的子标签下面（会造出改不完的层级）");
+    }
+
+    let target = if parent_key.is_empty() {
+        leaf
+    } else {
+        format!("{parent_key}/{leaf}")
+    };
+    if target == from_key {
+        return Err("它已经在那个父标签下面了");
+    }
+    Ok(target)
+}
+
+// ---------------------------------------------------------------------------
 // 标签的重命名 / 合并
 // ---------------------------------------------------------------------------
 
@@ -718,6 +777,73 @@ mod tests {
 
     fn tags(text: &str) -> Vec<String> {
         extract_tags(text).into_iter().map(|t| t.tag).collect()
+    }
+
+    // -- 层级编辑（tag_move_target）---------------------------------------------
+
+    #[test]
+    fn move_target_nests_and_promotes_by_keeping_the_leaf() {
+        // 挂到某个父标签下：名字（末段）保留，只换祖先
+        assert_eq!(tag_move_target("甲", "父").unwrap(), "父/甲");
+        assert_eq!(tag_move_target("甲", "#父").unwrap(), "父/甲");
+        assert_eq!(tag_move_target("父/甲", "母").unwrap(), "母/甲");
+        // 深层标签挂到另一支下面：只换**祖先**（末段还是它自己）
+        assert_eq!(tag_move_target("父/甲/孙", "母").unwrap(), "母/孙");
+        // 提回顶层：parent 为空（或只有 `#`、空白、`/`）
+        assert_eq!(tag_move_target("父/甲", "").unwrap(), "甲");
+        assert_eq!(tag_move_target("父/甲", "  #  ").unwrap(), "甲");
+        assert_eq!(tag_move_target("父/甲/孙", "/").unwrap(), "孙");
+        // 本来就在顶层、又提到顶层 → 不是一个合法变化
+        assert_eq!(
+            tag_move_target("甲", "").unwrap_err(),
+            "它已经在那个父标签下面了"
+        );
+    }
+
+    #[test]
+    fn move_target_refuses_the_ways_that_would_break_the_hierarchy() {
+        // 挂到自己下面
+        assert_eq!(
+            tag_move_target("甲", "甲").unwrap_err(),
+            "不能把标签挂到它自己下面"
+        );
+        assert_eq!(
+            tag_move_target("甲", "#甲").unwrap_err(),
+            "不能把标签挂到它自己下面"
+        );
+        // 挂到自己的后代下面（会造出 `甲/…/甲` 这种改不完的层级）
+        assert!(tag_move_target("甲", "甲/子")
+            .unwrap_err()
+            .starts_with("不能把标签挂到它自己的子标签下面"));
+        assert!(tag_move_target("父/甲", "父/甲/孙").is_err());
+        // 父标签里有空段：归一化会悄悄吃掉它，宁可拒绝也不猜
+        assert_eq!(
+            tag_move_target("甲", "父//子").unwrap_err(),
+            "父标签里不能有空的层级（`父//子`）"
+        );
+        // 空的标签名没有层级可谈
+        assert_eq!(
+            tag_move_target("   ", "父").unwrap_err(),
+            "标签名称为空，无法调整层级"
+        );
+        assert_eq!(
+            tag_move_target("#", "父").unwrap_err(),
+            "标签名称为空，无法调整层级"
+        );
+        // 已经就在那个父标签下面（`父/甲` 挂到 `父` 下 = 什么都没变）
+        assert_eq!(
+            tag_move_target("父/甲", "父").unwrap_err(),
+            "它已经在那个父标签下面了"
+        );
+    }
+
+    #[test]
+    fn move_target_cleans_input_like_the_rename_path() {
+        // 大小写与 `#` 都按同一把尺子清理；目标键始终是小写形态
+        assert_eq!(tag_move_target("RUST", "工具链").unwrap(), "工具链/rust");
+        assert_eq!(tag_move_target("父/甲", " 母 ").unwrap(), "母/甲");
+        // 首尾的 `/` 容忍（常见输入滑手），中间的空段拒绝（见上一条测试）
+        assert_eq!(tag_move_target("甲", "/父/").unwrap(), "父/甲");
     }
 
     #[test]

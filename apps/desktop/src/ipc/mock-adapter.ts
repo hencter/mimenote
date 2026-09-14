@@ -1069,6 +1069,46 @@ function mockTagMapping(from: string, to: string, includeChildren: boolean): Moc
   return { fromKey, toDisplay, toKey: mockNormalizeTag(toDisplay), includeChildren }
 }
 
+/** 「把标签挂到某个父标签下」的判定结果（`mn_core::tag_move_target` 的镜像）。 */
+type MockTagMove = { ok: true; toKey: string } | { ok: false; reason: string }
+
+/**
+ * 「把标签移到某个父标签下」（`parent` 为空 = 提回**顶层**）算出来的目标键；
+ * 非法移动返回**给用户看的原因**。
+ *
+ * 拒绝理由逐字对齐 Rust 侧 —— 界面把宿主的那句话直接显示出来，两处要是措辞不同，
+ * 浏览器预览里看到的就不是真机上会看到的。规则只有三条：只换祖先不动名字、
+ * 空父标签 = 提回顶层、目标与源相同要明确拒绝（而不是静默当成功）。
+ */
+function mockTagMoveTarget(key: string, parent: string): MockTagMove {
+  const fromKey = mockNormalizeTag(key)
+  if (fromKey === '') return { ok: false, reason: '标签名称为空，无法调整层级' }
+  const segments = fromKey.split('/')
+  const leaf = segments[segments.length - 1] ?? fromKey
+
+  // 首尾的 `/` 容忍（常见输入滑手），只有**中间的空段**才拒绝：`父//子` 归一化之后
+  // 会变成 `父/子`，与用户看到的东西不是一回事，宁可不猜。
+  const trimmedParent = parent
+    .trim()
+    .replace(/^#+/, '')
+    .trim()
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+  if (trimmedParent.includes('//')) {
+    return { ok: false, reason: '父标签里不能有空的层级（`父//子`）' }
+  }
+
+  const parentKey = mockNormalizeTag(parent)
+  if (parentKey === fromKey) return { ok: false, reason: '不能把标签挂到它自己下面' }
+  if (parentKey.startsWith(`${fromKey}/`)) {
+    return { ok: false, reason: '不能把标签挂到它自己的子标签下面（会造出改不完的层级）' }
+  }
+
+  const toKey = parentKey === '' ? leaf : `${parentKey}/${leaf}`
+  if (toKey === fromKey) return { ok: false, reason: '它已经在那个父标签下面了' }
+  return { ok: true, toKey }
+}
+
 /** 取子标签里源标签那一段**之后**的原文；不是后代 → `null`。 */
 function mockDescendantSuffix(tag: string, fromKey: string): string | null {
   const depth = fromKey.split('/').length
@@ -1642,6 +1682,82 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
     if (writeLatencyMs > 0) await new Promise((resolve) => setTimeout(resolve, writeLatencyMs))
   }
 
+  /**
+   * 全库标签改写的**共用实现**：`tag_rename` 与 `tag_move` 只差"目标键怎么算出来"
+   * （前者直接用用户输入，后者由 `mockTagMoveTarget` 从父标签推），从"哪些笔记进了候选集"
+   * 到"逐篇汇报了什么"这一段必须是**同一份** —— 分开写两份，结果界面就会在两处慢慢漂移。
+   *
+   * 刻意**永远返回空的 `skipped`**：内存 Vault 不可能"被外部改动"或"写失败"，
+   * 编一个假的跳过项只会让浏览器预览里的汇报看起来更完整、实际更不可信。
+   * 那条路径由宿主单测（`tag_rename_skips_files_changed_outside_the_app` 等）与 UI 层用桩适配器写的用例覆盖。
+   */
+  const rewriteTagsAcrossVault = (
+    mapping: MockTagMapping,
+    fromDisplay: string,
+    dryRun: boolean,
+  ): TagRenameOutcome => {
+    const covers = (key: string): boolean =>
+      key === mapping.fromKey ||
+      (mapping.includeChildren && key.startsWith(`${mapping.fromKey}/`))
+
+    const edited: TagRenameFile[] = []
+    const skipped: TagRenameSkip[] = []
+    let unchanged = 0
+    let frontmatterEdits = 0
+    let inlineEdits = 0
+    let inlineRemoved = 0
+    let candidates = 0
+
+    for (const rel of [...files.keys()].sort()) {
+      if (!isMockMarkdown(rel)) continue
+      const note = files.get(rel)
+      if (note === undefined) continue
+      const keys = new Set(
+        mockExtractTags(note.text)
+          .map((tag) => mockNormalizeTag(tag.tag))
+          .filter((key) => key !== ''),
+      )
+      if (![...keys].some(covers)) continue
+      candidates += 1
+
+      const rewrite = mockRenameTags(note.text, mapping)
+      if (rewrite === null) {
+        unchanged += 1
+        continue
+      }
+      if (!dryRun) {
+        files.set(rel, { relPath: rel, text: rewrite.text })
+        mtimes.set(rel, touch())
+      }
+      frontmatterEdits += rewrite.frontmatterEdits
+      inlineEdits += rewrite.inlineEdits
+      inlineRemoved += rewrite.inlineRemoved
+      edited.push({
+        relPath: rel,
+        frontmatterEdits: rewrite.frontmatterEdits,
+        inlineEdits: rewrite.inlineEdits,
+        inlineRemoved: rewrite.inlineRemoved,
+      })
+    }
+
+    return {
+      from: mapping.fromKey,
+      to: mapping.toKey,
+      fromDisplay,
+      toDisplay: mapping.toDisplay,
+      includeChildren: mapping.includeChildren,
+      dryRun,
+      candidates,
+      edited,
+      skipped,
+      unchanged,
+      frontmatterEdits,
+      inlineEdits,
+      inlineRemoved,
+      elapsedMs: 1,
+    }
+  }
+
   return {
     kind: 'mock',
     dump: () => [...files.values()].map((n) => ({ ...n })),
@@ -2188,11 +2304,7 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
           // 标签改名/合并的 Mock 镜像：与真实宿主同一条纪律 —— 候选集来自"文本里的标签"，
           // 逐篇走 `mockRenameTags`（frontmatter 与正文一起改），逐篇如实汇报。
           // `dryRun` 只算不写，但判定与真跑完全一致（对话框那句"这会改 N 篇笔记"才可信）。
-          //
-          // 刻意**永远返回空的 `skipped`**：内存 Vault 不可能"被外部改动"或"写失败"，
-          // 编一个假的跳过项只会让浏览器预览里的汇报看起来更完整、实际更不可信。
-          // 那条路径由宿主单测（`tag_rename_skips_files_changed_outside_the_app` 等）
-          // 与 UI 层用桩适配器写的用例覆盖。
+          // 执行部分与 `tag_move` 共用 `rewriteTagsAcrossVault`（见那里的注释）。
           const from = String(a.from ?? '')
           const to = String(a.to ?? '')
           const includeChildren = a.includeChildren !== false
@@ -2200,66 +2312,40 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
           const mapping = mockTagMapping(from, to, includeChildren)
           if (mapping === null) fail('PATH_INVALID', '标签名称为空，无法改名')
 
-          const covers = (key: string): boolean =>
-            key === mapping.fromKey ||
-            (mapping.includeChildren && key.startsWith(`${mapping.fromKey}/`))
+          const payload = rewriteTagsAcrossVault(mapping, from, dryRun)
+          return payload as T
+        }
+        case 'tag_move': {
+          // 层级编辑的 Mock 镜像：目标键由 `mockTagMoveTarget` 算（与 Rust 的
+          // `tag_move_target` 同规则、同拒绝理由），随后**走的是与改名同一条执行路径** ——
+          // 宿主那边也是这样（`tag_move_in` 内部就是 `tag_rename_in`），
+          // 所以"会改 N 篇 / 改了哪几篇"的汇报形状与原命令完全一致，界面无需分支。
+          //
+          // "目标键已被别的标签占用"这个判定这里也照做：内存 Vault 里所有标签都是从文本现算的，
+          // 因此这条拒绝在浏览器预览里同样成立（不是宿主独有的分支）。
+          const key = String(a.key ?? '')
+          const parent = String(a.parent ?? '')
+          const includeChildren = a.includeChildren !== false
+          const dryRun = a.dryRun === true
 
-          const edited: TagRenameFile[] = []
-          const skipped: TagRenameSkip[] = []
-          let unchanged = 0
-          let frontmatterEdits = 0
-          let inlineEdits = 0
-          let inlineRemoved = 0
-          let candidates = 0
+          const move = mockTagMoveTarget(key, parent)
+          if (!move.ok) fail('PATH_INVALID', move.reason)
 
-          for (const rel of [...files.keys()].sort()) {
-            if (!isMockMarkdown(rel)) continue
-            const note = files.get(rel)
-            if (note === undefined) continue
-            const keys = new Set(
-              mockExtractTags(note.text)
-                .map((tag) => mockNormalizeTag(tag.tag))
-                .filter((key) => key !== ''),
-            )
-            if (![...keys].some(covers)) continue
-            candidates += 1
-
-            const rewrite = mockRenameTags(note.text, mapping)
-            if (rewrite === null) {
-              unchanged += 1
-              continue
-            }
-            if (!dryRun) {
-              files.set(rel, { relPath: rel, text: rewrite.text })
-              mtimes.set(rel, touch())
-            }
-            frontmatterEdits += rewrite.frontmatterEdits
-            inlineEdits += rewrite.inlineEdits
-            inlineRemoved += rewrite.inlineRemoved
-            edited.push({
-              relPath: rel,
-              frontmatterEdits: rewrite.frontmatterEdits,
-              inlineEdits: rewrite.inlineEdits,
-              inlineRemoved: rewrite.inlineRemoved,
-            })
+          const fromKey = mockNormalizeTag(key)
+          const taken = [...files.values()].some((note) =>
+            mockExtractTags(note.text).some((tag) => {
+              const existing = mockNormalizeTag(tag.tag)
+              return existing === move.toKey && existing !== fromKey
+            }),
+          )
+          if (taken) {
+            fail('PATH_INVALID', `「${move.toKey}」已经是一个标签了；要合并请用「重命名」`)
           }
 
-          const payload: TagRenameOutcome = {
-            from: mapping.fromKey,
-            to: mapping.toKey,
-            fromDisplay: from,
-            toDisplay: mapping.toDisplay,
-            includeChildren,
-            dryRun,
-            candidates,
-            edited,
-            skipped,
-            unchanged,
-            frontmatterEdits,
-            inlineEdits,
-            inlineRemoved,
-            elapsedMs: 1,
-          }
+          const mapping = mockTagMapping(key, move.toKey, includeChildren)
+          if (mapping === null) fail('PATH_INVALID', '标签名称为空，无法调整层级')
+
+          const payload = rewriteTagsAcrossVault(mapping, key, dryRun)
           return payload as T
         }
         case 'note_tags': {

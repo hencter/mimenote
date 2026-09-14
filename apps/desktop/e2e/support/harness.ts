@@ -245,3 +245,40 @@ export async function waitForFileContent(
   }
   throw new Error(`等待 ${relPath} 满足条件超时。最后一次内容：\n${last}`)
 }
+
+/**
+ * 做一次交互，等它生效；**没生效就再做一次**（最多两次）。
+ *
+ * 为什么需要这个：真实窗口是 WebView2，跑在真实的 Windows 桌面上，运行期间偶尔会被系统级的
+ * 焦点变化打扰 —— 焦点回到 `body` 之后，那一次按键/点击就进不到元素里。这里不是猜的，
+ * 是拿探针量出来的（一个用例连跑 8 次，约 3 次失败）：
+ *
+ * * 失败时输入框里**还留着刚打的字**、没有 toast、没有冲突横幅、磁盘一个字节没变；
+ * * 同一时刻的焦点轨迹是 `+INPUT → -INPUT`（元素没被替换、也没被别的东西抢走，就是回到了 body）；
+ * * **再按一次同样的键立刻成功**，并且重按之后输入框才被清空。
+ *
+ * 也就是说：丢掉的是**一次事件**，不是状态卡住，也不是产品侧的挂起。真实用户的手指不会被
+ * 另一个窗口同时抢走，所以这里只补一次重试 —— 断言一个字都不放宽（`expect` 仍在调用方）。
+ */
+export async function actUntil(
+  action: () => Promise<void>,
+  settled: () => Promise<boolean>,
+  what: string,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const waitSettled = async (budgetMs: number): Promise<boolean> => {
+    const deadline = Date.now() + budgetMs
+    while (Date.now() < deadline) {
+      if (await settled()) return true
+      await delay(150)
+    }
+    return false
+  }
+
+  await action()
+  if (await waitSettled(3_000)) return
+  // 第一次多半是被系统级焦点变化吃掉了：原样再来一次
+  await action()
+  if (await waitSettled(timeoutMs)) return
+  throw new Error(`等待超时（已重试一次）：${what}`)
+}

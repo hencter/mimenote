@@ -24,13 +24,24 @@ import { useEffect, useState } from 'react'
 import { editCurrentNoteTags, explainInlineTag, openNote } from '@/app/actions'
 import { Icon } from '@/components/Icon'
 import { frontmatterValueText, isFrontmatterEmpty } from '@/domain/frontmatter'
-import type { TagRef } from '@/ipc/types'
+import type { TagRef, TagSummary } from '@/ipc/types'
 import { useNoteStore } from '@/state/note-store'
 import { useTagsStore } from '@/state/tags-store'
 import { TagRenameDialog } from './TagRenameDialog'
 import { parseTagInput } from './tag-input'
 
 import './tags-panel.css'
+
+/**
+ * 「移到…」对话框里的父标签候选：全库键里**去掉它自己与它自己的后代**。
+ *
+ * 这两种移动宿主一定会拒绝（"不能挂到自己下面"、"会造出改不完的层级"），
+ * 所以不给建议 —— 但这只是 `datalist` 里的提示，**不是校验**：用户照样可以手打
+ * 一个还不存在的父标签（层级编辑的正常用法之一），判定始终在宿主那一次。
+ */
+function parentCandidates(summary: readonly TagSummary[], self: string): string[] {
+  return summary.map((item) => item.key).filter((key) => key !== self && !key.startsWith(`${self}/`))
+}
 
 export function TagsPanel() {
   const open = useTagsStore((state) => state.open)
@@ -58,6 +69,18 @@ export function TagsPanel() {
   const [renameTarget, setRenameTarget] = useState<{
     tag: string
     key: string | null
+    count: number | null
+  } | null>(null)
+  /**
+   * 正在被调整层级的那一条标签（`null` = 对话框没开）。
+   *
+   * 与 `renameTarget` 分开一个状态而不是加个 `mode` 字段：两者虽然共用同一个对话框组件，
+   * 但同时只能开一个，而"现在开的是哪一个"由**入口按钮**决定 —— 混在一个对象里就得在
+   * 每次 setState 时判断该不该切模式，反而更容易出现"点了移动却开了改名"。
+   */
+  const [moveTarget, setMoveTarget] = useState<{
+    tag: string
+    key: string
     count: number | null
   } | null>(null)
 
@@ -308,6 +331,22 @@ export function TagsPanel() {
                   >
                     ✎
                   </button>
+                  {/*
+                    层级编辑的入口只放在全库概览这一行上：层级是**标签全局的属性**，
+                    而本篇 chip 连归一化键都没有（同一篇里 `#项目` 与 `#项目/甲` 是两个标签，
+                    从 chip 出发看不出"它现在挂在哪儿"）。少一个入口换来的是一处说得清的位置。
+                  */}
+                  <button
+                    type="button"
+                    className="mn-tag__action"
+                    data-tag-move-open={item.key}
+                    aria-label={`调整标签 ${item.tag} 的层级`}
+                    title="移到…（挂到别的标签下面，或提回顶层）"
+                    disabled={busy}
+                    onClick={() => setMoveTarget({ tag: item.tag, key: item.key, count: item.count })}
+                  >
+                    ⇥
+                  </button>
                 </li>
               ))}
             </ul>
@@ -317,6 +356,11 @@ export function TagsPanel() {
             <p className="mn-tags__hint" data-tag-rename-hint>
               点标签旁的 <code>✎</code> 可以重命名它：<strong>全库</strong>改写，连正文里的{' '}
               <code>#标签</code> 一起改；输入一个已经存在的标签名就是把它<strong>合并</strong>过去。
+            </p>
+            <p className="mn-tags__hint" data-tag-move-hint>
+              <code>⇥</code> 是<strong>调整层级</strong>：把标签挂到另一个标签下面（<code>#甲</code>{' '}
+              → <code>#父/甲</code>）或提回顶层。<strong>只换位置、不动名字</strong> ——
+              要改名请用 <code>✎</code>。
             </p>
             <p className="mn-tags__hint">
               重命名会改动<strong>全库</strong>：对话框会先告诉你"这会改 N 篇笔记"，确认之后才写盘。
@@ -328,9 +372,20 @@ export function TagsPanel() {
       {renameTarget !== null && (
         <TagRenameDialog
           tag={renameTarget.tag}
-          key={renameTarget.key}
+          tagKey={renameTarget.key}
           count={renameTarget.count}
           onClose={() => setRenameTarget(null)}
+        />
+      )}
+
+      {moveTarget !== null && (
+        <TagRenameDialog
+          tag={moveTarget.tag}
+          tagKey={moveTarget.key}
+          count={moveTarget.count}
+          mode="move"
+          parentOptions={parentCandidates(summary, moveTarget.key)}
+          onClose={() => setMoveTarget(null)}
         />
       )}
     </aside>

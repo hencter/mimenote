@@ -139,10 +139,20 @@ export const useTagsStore = create<TagsState>((set, get) => ({
   },
 
   retargetActiveTag: (fromKey, toKey) => {
-    // 归一化比较由调用方保证（两侧都是宿主返回的键）；这里只处理"正展开着被改名的那个"
-    if (get().activeKey !== fromKey && get().activeRaw !== fromKey) return
-    set({ activeKey: toKey, activeRaw: toKey, activeNotes: [] })
-    void get().selectTag(toKey)
+    // 归一化比较由调用方保证（两侧都是宿主返回的键）
+    const current = get().activeKey ?? get().activeRaw
+    if (current === null) return
+    // 整条命中（`甲` → `父/甲`）**或**它是被移动标签的后代（`甲/子` → `父/甲/子`）：
+    // 后者在层级编辑之前几乎不会出现，而现在"移动一个父标签"正是最常见的用法 ——
+    // 不跟着挪，面板上展开的那一节就会停在一个已经不存在的键上。
+    const next = current === fromKey
+      ? toKey
+      : current.startsWith(`${fromKey}/`)
+        ? `${toKey}${current.slice(fromKey.length)}`
+        : null
+    if (next === null) return
+    set({ activeKey: next, activeRaw: next, activeNotes: [] })
+    void get().selectTag(next)
   },
 
   clear: () => {

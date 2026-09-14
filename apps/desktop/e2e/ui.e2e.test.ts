@@ -540,6 +540,91 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await waitUntil(async () => (await page.locator('.mn-tags').count()) === 0, 5_000, '面板收起')
   })
 
+  it('标签面板：层级编辑（挂到父标签下 → 提回顶层），概览与正文一起跟着换键', async () => {
+    // 目标键由宿主算（`tag_move_target`）这件事在真实二进制那一层另有专测；
+    // 这里验的是**真实浏览器里的交互链路**：入口在哪儿、初值是什么、
+    // 预览 → 确认之后概览与正文有没有真的换键。
+    await showEditView(page)
+    await openNoteInTree(page, '项目/设计.md')
+    // `Ctrl+Shift+T` 是**开关**，而本文件共用一个页面：先看它现在是不是开着的
+    if ((await page.locator('.mn-tags').count()) === 0) {
+      await page.keyboard.press('Control+Shift+t')
+    }
+    await page.waitForSelector('.mn-tags', { state: 'visible' })
+    await waitUntil(
+      async () => (await page.locator('.mn-tags [data-tag-key="项目"]').count()) === 1,
+      10_000,
+      '全库概览里出现 项目',
+    )
+
+    /** 打开某个键的"移到…"对话框（`⇥` 只在全库概览那一行上）。 */
+    const openMove = async (key: string): Promise<void> => {
+      await page
+        .locator('.mn-tags li', { has: page.locator(`[data-tag-key="${key}"]`) })
+        .locator(`[data-tag-move-open="${key}"]`)
+        .click()
+      await page.waitForSelector('[data-tag-move-dialog]', { state: 'visible' })
+    }
+
+    const input = page.locator('[data-tag-rename-input]')
+
+    // —— 挂到 `父` 下面 ——
+    await openMove('项目')
+    // 顶层标签的父标签是空的（留空 = 顶层），所以这里必须自己打一个
+    expect(await input.inputValue()).toBe('')
+    await input.fill('父')
+    await input.press('Enter')
+    await page.waitForSelector('[data-tag-rename-preview]', { state: 'visible' })
+    // `#项目` 出现在两篇笔记里（设计.md 的行内 + 标签示例.md 的 frontmatter 与行内）
+    expect(await page.locator('[data-tag-rename-preview]').textContent()).toContain('这会改 2 篇笔记')
+    await page.locator('[data-tag-rename-confirm]').click()
+    await page.waitForSelector('[data-tag-rename-result]', { state: 'visible' })
+    await page.locator('[data-tag-rename-done]').click()
+
+    await waitUntil(
+      async () => (await page.locator('.mn-tags [data-tag-key="父/项目"]').count()) === 1,
+      10_000,
+      '概览里换成 父/项目',
+    )
+    expect(await page.locator('.mn-tags [data-tag-key="项目"]').count()).toBe(0)
+    // 编辑器内存也必须对齐（否则下一次自动保存会把刚写下的标签覆盖掉）
+    await waitUntil(
+      async () => ((await page.locator('.cm-content').textContent()) ?? '').includes('#父/项目'),
+      10_000,
+      '正文行内标签跟着改成 父/项目',
+    )
+
+    // —— 提回顶层：把状态还给后面的用例，顺带覆盖"留空 = 顶层"这条路 ——
+    await openMove('父/项目')
+    // 初值就是它现在挂着的位置：用户要做的只是把它清掉
+    expect(await input.inputValue()).toBe('父')
+    await page.locator('[data-tag-move-top]').click()
+    expect(await input.inputValue()).toBe('')
+    await input.press('Enter')
+    await page.waitForSelector('[data-tag-rename-preview]', { state: 'visible' })
+    await page.locator('[data-tag-rename-confirm]').click()
+    await page.waitForSelector('[data-tag-rename-result]', { state: 'visible' })
+    await page.locator('[data-tag-rename-done]').click()
+
+    await waitUntil(
+      async () => (await page.locator('.mn-tags [data-tag-key="项目"]').count()) === 1,
+      10_000,
+      '提回顶层后又变回 项目',
+    )
+    expect(await page.locator('.mn-tags [data-tag-key="父/项目"]').count()).toBe(0)
+    await waitUntil(
+      async () => ((await page.locator('.cm-content').textContent()) ?? '').includes('#项目'),
+      10_000,
+      '正文行内标签回到 项目',
+    )
+
+    // 收尾：把面板关掉，状态还给后面的用例（同样是开关，先确认它开着）
+    if ((await page.locator('.mn-tags').count()) > 0) {
+      await page.keyboard.press('Control+Shift+t')
+    }
+    await waitUntil(async () => (await page.locator('.mn-tags').count()) === 0, 5_000, '面板收起')
+  })
+
   it('全文搜索：Ctrl+Shift+F → 输入 → 回车打开命中的笔记', async () => {
     await page.keyboard.press('Control+Shift+f')
     await page.waitForSelector('.mn-palette', { state: 'visible' })

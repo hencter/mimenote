@@ -233,6 +233,31 @@ export const ipc = {
     }),
 
   /**
+   * **层级编辑**：把 `key` 挂到 `parent` 之下，或（`parent` 为空）提回顶层。
+   *
+   * 为什么单独开一个命令而不是让前端自己拼 `to` 再调 {@link ipc.tagRename}：
+   * "移动"这条规则（末段保留、只换祖先、拒绝挂到自己/自己的后代、拒绝空段）
+   * 必须在**唯一一处**成立 —— 放到前端就等于把规则复制到每个会用到它的地方，
+   * 而宿主才是落盘前最后一道校验。实现上它就是 `tag_move_target` + 同一条重命名链路。
+   *
+   * - `parent` 是**归一化前后的父标签文本**（`父/子` 也可以），`''` = 顶层；
+   * - 目标标签已存在时**拒绝**并给出可执行的建议（要合并请用「重命名」）——
+   *   静默合并会让用户以为只是换了个位置；
+   * - `dryRun: true` 与真正执行走同一份候选集，只是不落盘（对话框先报"会改 N 篇"）。
+   */
+  tagMove: (
+    key: string,
+    parent: string,
+    options: { includeChildren?: boolean; dryRun?: boolean } = {},
+  ) =>
+    call<TagRenameOutcome>('tag_move', {
+      key,
+      parent,
+      includeChildren: options.includeChildren ?? true,
+      dryRun: options.dryRun ?? false,
+    }),
+
+  /**
    * 为本地图片换取**逐文件**读取授权（ADR-0007）。
    *
    * 传 Vault 相对路径，拿回磁盘绝对路径；返回里只含**通过 `path_guard` 校验**的条目

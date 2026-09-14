@@ -324,7 +324,7 @@ describe('如实汇报"没改的那些"', () => {
 
   it('对话框逐组说明"有 N 篇没改（为什么）—— 怎么办"', async () => {
     setIpcAdapter(adapterWithSkips({ ...skippedOutcome, dryRun: true }))
-    render(<TagRenameDialog tag="旧" key="旧" count={5} onClose={() => {}} />)
+    render(<TagRenameDialog tag="旧" tagKey="旧" count={5} onClose={() => {}} />)
     typeName('新')
     fireEvent.click(document.querySelector('[data-tag-rename-preview-button]') as HTMLElement)
     await waitFor(() => {

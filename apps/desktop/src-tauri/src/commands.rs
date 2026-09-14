@@ -1230,6 +1230,80 @@ pub async fn tag_rename(
     Ok(outcome)
 }
 
+/// **标签的层级编辑**：把 `甲` 挂到某个父标签下（`父/甲`），或提回顶层（`甲`）。
+///
+/// ## 为什么是一个独立命令，而不是让前端拼好新名字去调 `tag_rename`
+///
+/// 层级编辑只有两种形态，但**非法组合比合法组合多**：挂到自己下面、挂到自己的后代下面
+/// （会造出 `甲/…/甲` 这种改不完的层级）、父标签里写了空段、以及"已经在那里了"。
+/// 这些判定必须在写盘之前就拦住，而且要与写盘无关地单测 —— 所以规则在
+/// [`mn_core::tag_move_target`]（纯函数，3 条测试），这里只做三件事：
+///
+/// 1. 算出目标键，把非法移动翻成 [`Error::invalid`]（稳定错误码 `PATH_INVALID`，
+///    与重命名里"新名字为空"同一档）；
+/// 2. **目标键已被别的标签占用时拒绝**：那是"合并"，不是"移动"。用户点的是"移到…"，
+///    静默把它并掉会让人以为只是换了个位置，而实际丢了一个标签的独立性 ——
+///    错误信息直接把他引到「重命名」那条路上去；
+/// 3. 委托给 [`tag_rename_in`] —— **不新增第二套写路径**：同一把写锁、同一份
+///    `(mtime,size)` 对账、同一个 `write_atomic`、同一处索引增量同步、同一份跳过清单口径。
+///    出参因此就是 [`TagRenameOutcome`]：前端连"这会改 N 篇 / 哪几篇没改"的结果界面都能复用。
+///
+/// `include_children` 缺省 `true`：移动一个父标签时，它下面的子标签跟着走
+/// （`甲` → `母/甲` 时 `甲/子` → `母/甲/子`），与重命名的口径一致。
+#[tauri::command]
+pub async fn tag_move(
+    state: State<'_, Arc<AppState>>,
+    key: String,
+    parent: String,
+    include_children: Option<bool>,
+    dry_run: Option<bool>,
+) -> Result<TagRenameOutcome, IpcError> {
+    let app = Arc::clone(state.inner());
+    let outcome = run_blocking(move || {
+        tag_move_in(
+            &app,
+            &key,
+            &parent,
+            include_children.unwrap_or(true),
+            dry_run.unwrap_or(false),
+        )
+    })
+    .await?;
+    Ok(outcome)
+}
+
+/// [`tag_move`] 的主体（可单测）。
+fn tag_move_in(
+    state: &AppState,
+    key: &str,
+    parent: &str,
+    include_children: bool,
+    dry_run: bool,
+) -> mn_core::Result<TagRenameOutcome> {
+    if !state.is_open() {
+        return Err(Error::VaultNotSet);
+    }
+    let target =
+        mn_core::tag_move_target(key, parent).map_err(|reason| Error::invalid(key, reason))?;
+
+    // 目标键已经被别的标签占用 → 那是"合并"。只有拿着全库概览的这里判得了
+    // （纯函数刻意不管这件事，见 `tag_move_target` 的文档）。
+    let from_key = mn_core::normalize_tag(key);
+    if indexer::status(state).phase == indexer::IndexPhase::Ready {
+        let taken = indexer::tag_summary(state)
+            .into_iter()
+            .any(|summary| summary.key == target && summary.key != from_key);
+        if taken {
+            return Err(Error::invalid(
+                key,
+                format!("「{target}」已经是一个标签了；要合并请用「重命名」"),
+            ));
+        }
+    }
+
+    tag_rename_in(state, key, &target, include_children, dry_run)
+}
+
 // ---------------------------------------------------------------------------
 // 全文搜索
 // ---------------------------------------------------------------------------
@@ -4219,6 +4293,92 @@ mod tests {
             full.edges.len(),
         );
         (truncated, full)
+    }
+
+    // -- 标签的层级编辑（tag_move）---------------------------------------------
+
+    /// 层级编辑的契约：挂到父标签下、提回顶层、以及四种非法移动。
+    ///
+    /// 这一条同时钉住"复用了重命名那条写路径"：改完之后 frontmatter **与正文行内**都要变
+    /// （只改一处就等于没改），子标签要跟着走，而"目标键被占用"必须被拒（那是合并，不是移动）。
+    #[test]
+    fn tag_move_nests_promotes_and_refuses_invalid_moves() {
+        let (dir, state) = state_with(&[
+            // 刻意带 frontmatter：移动/重命名只会改**已有**的字段（不会凭空建区块，
+            // 那是"加标签"的 `set_tags_or_create` 才做的事），所以两种写法都要覆盖到
+            ("甲.md", "---\ntags: [甲]\n---\n\n正文 #甲 与 #甲/子\n"),
+            ("乙.md", "# 乙\n\n正文 #乙\n"),
+        ]);
+
+        // 挂到 `父` 下：frontmatter 与正文行内一起改，子标签跟着走
+        let outcome = tag_move_in(&state, "甲", "父", true, false).unwrap();
+        assert_eq!(outcome.from, "甲");
+        assert_eq!(outcome.to, "父/甲");
+        let moved = read_file(dir.path(), "甲.md");
+        assert!(
+            moved.contains("tags: [父/甲]"),
+            "frontmatter 也要改：{moved}"
+        );
+        assert!(moved.contains("#父/甲/子"), "子标签跟着走：{moved}");
+
+        // 提回顶层：`父/甲` → `甲`（末段保留），子标签同样跟着回来
+        let promoted = tag_move_in(&state, "父/甲", "", true, false).unwrap();
+        assert_eq!(promoted.to, "甲");
+        assert_eq!(
+            read_file(dir.path(), "甲.md"),
+            "---\ntags: [甲]\n---\n\n正文 #甲 与 #甲/子\n"
+        );
+
+        // 非法移动：挂到自己 / 挂到自己的后代 / 空标签 / 已经在那里
+        for (key, parent, reason) in [
+            ("甲", "甲", "不能把标签挂到它自己下面"),
+            (
+                "甲",
+                "甲/子",
+                "不能把标签挂到它自己的子标签下面（会造出改不完的层级）",
+            ),
+            ("   ", "父", "标签名称为空，无法调整层级"),
+            ("甲", "", "它已经在那个父标签下面了"),
+        ] {
+            let error = tag_move_in(&state, key, parent, true, false).unwrap_err();
+            assert_eq!(error.code(), mn_core::ErrorCode::PathInvalid);
+            assert!(error.to_string().contains(reason), "{key}: {error}");
+        }
+
+        // **目标键已被占用 = 合并**：拒绝，并把人引到「重命名」那条路（绝不静默并掉）
+        let (dir2, state2) =
+            state_with(&[("乙.md", "# 乙\n\n#乙\n"), ("丁.md", "# 丁\n\n#父/乙\n")]);
+        let error = tag_move_in(&state2, "乙", "父", true, false).unwrap_err();
+        assert_eq!(error.code(), mn_core::ErrorCode::PathInvalid);
+        assert!(error.to_string().contains("已经是一个标签了"), "{error}");
+        assert_eq!(
+            read_file(dir2.path(), "乙.md"),
+            "# 乙\n\n#乙\n",
+            "被拒时一个字节都不改"
+        );
+        // 同一篇同时有 `乙` 与 `父/乙` 时也一样（判据是"目标键存在"，与哪一篇无关）
+        assert_eq!(read_file(dir2.path(), "丁.md"), "# 丁\n\n#父/乙\n");
+    }
+
+    /// 预演（`dry_run`）只算不写：与真正执行时的候选集**同源**。
+    #[test]
+    fn tag_move_preview_does_not_touch_disk() {
+        let (dir, state) = state_with(&[("甲.md", "---\ntags: [甲]\n---\n\n正文 #甲\n")]);
+        let outcome = tag_move_in(&state, "甲", "父", true, true).unwrap();
+        assert!(outcome.dry_run);
+        assert_eq!(outcome.to, "父/甲");
+        assert_eq!(outcome.candidates, 1, "预演也要如实说出会影响几篇");
+        assert_eq!(
+            read_file(dir.path(), "甲.md"),
+            "---\ntags: [甲]\n---\n\n正文 #甲\n",
+            "预演不落盘"
+        );
+
+        // 预演之后再执行：候选集与结果一致（同一条判定）
+        let applied = tag_move_in(&state, "甲", "父", true, false).unwrap();
+        assert_eq!(applied.to, outcome.to);
+        assert_eq!(applied.candidates, outcome.candidates);
+        assert!(read_file(dir.path(), "甲.md").contains("tags: [父/甲]"));
     }
 
     // -- 标签组合过滤（tag_filter）---------------------------------------------

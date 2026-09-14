@@ -29,8 +29,8 @@ pub use links::{extract_links, LinkKind, LinkRef};
 pub use path_guard::VaultRoot;
 pub use scanner::{scan, EntryMeta, ScanOptions, ScanReport};
 pub use tags::{
-    apply_tag_edits, extract_tags, normalize_tag, rename_tags, TagRef, TagRename, TagRewrite,
-    TagSource,
+    apply_tag_edits, extract_tags, normalize_tag, rename_tags, tag_move_target, TagRef, TagRename,
+    TagRewrite, TagSource,
 };
 pub use text_stats::TextStats;
 pub use trash::TrashRecord;

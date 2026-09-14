@@ -427,6 +427,81 @@ export async function renameTag(
   }
 }
 
+/**
+ * **层级编辑**：把某个标签挂到一个父标签下（`甲` → `父/甲`），或提回顶层（`父/甲` → `甲`）。
+ *
+ * 与 [`renameTag`] 共用**同一条链路**（宿主侧 `tag_move` 内部就是 `tag_rename_in`），
+ * 因此这里的收尾逻辑逐条对应：先落盘 → 宿主改全库 → 当前笔记对齐 → 面板/概览/图谱跟上。
+ * 差别只有两处，都写在入参上：
+ *
+ * * `parent` 是**父标签**而不是新名字（空 = 提回顶层）；目标写法由宿主的
+ *   `tag_move_target` 算（"末段保留、只换祖先"这条规则只有一处）；
+ * * 非法移动（挂到自己/自己的后代/目标被占用）由宿主拒绝，错误信息直接说人话，
+ *   这里只负责把它翻成一条 toast —— **绝不静默并掉一个标签**（那是"合并"，
+ *   用户点的是"移到…"，得由他明确选择去用「重命名」）。
+ */
+export async function moveTag(
+  key: string,
+  parent: string,
+  options: { includeChildren?: boolean; dryRun?: boolean } = {},
+): Promise<TagRenameOutcome | null> {
+  const includeChildren = options.includeChildren ?? true
+  const dryRun = options.dryRun ?? false
+  const source = key.trim()
+  if (source === '') {
+    toast.warn('标签名为空', '请从面板里选一个标签再调整层级')
+    return null
+  }
+
+  const openRelPath = useNoteStore.getState().doc?.relPath ?? null
+
+  try {
+    if (!dryRun && hasUnsavedChanges()) {
+      const saved = await useNoteStore.getState().saveNow()
+      if (!saved && hasUnsavedChanges()) {
+        toast.error('已取消层级调整', '当前笔记有未保存的修改，请先解决保存冲突')
+        return null
+      }
+    }
+
+    const outcome = await ipc.tagMove(source, parent.trim(), { includeChildren, dryRun })
+    if (dryRun) return outcome
+
+    const edited = new Set(outcome.edited.map((file) => file.relPath))
+    if (changedAnything(outcome)) {
+      if (openRelPath !== null && edited.has(openRelPath) && !useNoteStore.getState().dirty) {
+        await useNoteStore.getState().reload({ silent: true })
+      }
+      useTagsStore.getState().retargetActiveTag(outcome.from, outcome.to)
+      await useTagsStore.getState().refreshFor(useNoteStore.getState().doc?.relPath ?? null)
+      if (useUiStore.getState().viewMode === 'graph') {
+        void refreshGraphData()
+      }
+      void useLinksStore.getState().refresh(useNoteStore.getState().doc?.relPath ?? null)
+    }
+
+    if (outcome.skipped.length > 0) {
+      const advice = groupSkips(outcome.skipped).map((group) => group.advice).join('；')
+      toast.warn('层级调整未全部完成', `${resultSentence(outcome)} —— ${advice}`)
+    } else if (outcome.edited.length > 0) {
+      toast.success('已调整标签层级', `${outcome.fromDisplay} → ${outcome.toDisplay}：${resultSentence(outcome)}`)
+    } else {
+      toast.info('没有变化', resultSentence(outcome))
+    }
+
+    return outcome
+  } catch (cause) {
+    // 宿主的拒绝理由本身就是给用户看的人话（"不能把标签挂到它自己下面"…），
+    // 因此**不能**走 `describeError` 那套按错误码映射的文案：那里 `PATH_INVALID`
+    // 会翻成"路径不合法或被拒绝（已阻止越界访问）"，把这句关键提示顶掉 ——
+    // 而"父标签打成了它自己的名字"恰恰是移动这条路上最常见的输入错误。
+    const error = MimenoteError.from(cause)
+    const reason = error.message.trim() === '' ? describeError(error, '调整标签层级失败') : error.message
+    toast.error(reason, '调整标签层级失败')
+    return null
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 重命名
 // ---------------------------------------------------------------------------

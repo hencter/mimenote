@@ -48,6 +48,8 @@ pub fn run() {
             // 候选集来自标签索引，逐篇走同一个原子写 + 同一处索引增量同步，
             // 且逐篇如实汇报"改了 / 跳过了（为什么）"（见 commands.rs 的 tag_rename 文档）
             commands::tag_rename,
+            // 层级编辑（把 `甲` 挂到 `父` 下 / 提回顶层）：内部复用 tag_rename 那条写路径
+            commands::tag_move,
             commands::note_create,
             commands::note_rename,
             // 跨目录移动（拖拽整理 / 「移动到…」）：与重命名共用同一条"换位置 + 改写全库链接"链路
