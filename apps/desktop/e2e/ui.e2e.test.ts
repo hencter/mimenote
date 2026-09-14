@@ -767,6 +767,57 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect((await row.getAttribute('title')) ?? '').toContain('项目/设计.md')
   })
 
+  it('callout：所见即所得与阅读视图的框内边距一致（编辑区里也有边距）', async () => {
+    /*
+      用户报的"callout 在编辑区域下没有边距，预览/阅读视图和实时编辑视图没法统一"。
+
+      判据是"**框的边缘**到框内第一段内容（图标）的距离"，两侧语义对等、可以直接比：
+      编辑器那边量的是行盒（`.cm-line`），阅读视图那边量的是块（`.mn-callout`）。
+      为什么不比框的总高度：一个按"行"排、一个按"块"排，行高与块间距本来就不一样 ——
+      能统一、也应该统一的正是内边距。（框**底**那一侧由 `tests/live-preview-callout.test.ts`
+      的跨文件契约用例钉着：编辑器的末行 padding = app.css 里 `.mn-callout` 的下内边距
+      + 末块的 margin-bottom。）
+    */
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/callout 示例.md')
+    await showEditView(page)
+
+    const editor = await page.evaluate(() => {
+      const glyph = document.querySelector('.mn-md-callout-glyph')
+      const line = glyph?.closest('.cm-line')
+      if (glyph === null || line === null || line === undefined) {
+        throw new Error('编辑区里没有 callout 的图标装饰')
+      }
+      // 只量**同一行内**的偏移：多个 callout 并存时，跨元素找"框"会张冠李戴
+      const box = line.getBoundingClientRect()
+      const icon = glyph.getBoundingClientRect()
+      return { left: icon.left - box.left, top: icon.top - box.top }
+    })
+
+    await page.locator('button[aria-label="阅读（渲染后）"]').click()
+    await page.waitForSelector('.mn-preview__body', { state: 'visible' })
+
+    const read = await page.evaluate(() => {
+      const box = document.querySelector('.mn-callout')
+      const icon = box?.querySelector('.mn-callout__icon')
+      if (box === null || icon === undefined || icon === null) {
+        throw new Error('阅读视图里没有 callout')
+      }
+      const outer = box.getBoundingClientRect()
+      const glyph = icon.getBoundingClientRect()
+      return { left: glyph.left - outer.left, top: glyph.top - outer.top }
+    })
+
+    /*
+      两处**已知**的小偏差，容差就是照它们给的（都记在 ADR-0022 的后续修订里）：
+      1. 左侧多约 4px：编辑器里 `> ` 的 `>` 被隐藏后**留下一个空格**（读起来就是 0.25em），
+         而阅读视图的标记整段被标题栏取代 —— 这是"引用标记的隐藏方式"的差，不是内边距的差；
+      2. 上下各差约半个行距：编辑器的行盒比文字本身高。
+    */
+    expect(Math.abs(editor.left - read.left)).toBeLessThanOrEqual(6)
+    expect(Math.abs(editor.top - read.top)).toBeLessThanOrEqual(6)
+    // 但**内边距必须真的存在**：没有它的时候这两个数会差到 15px 以上（用户报的就是那种样子）
+  })
   it('停靠区：文件树搬到最底部（键盘 Alt+3）、偏好落盘，再 Alt+1 搬回', async () => {
     /*
       "每个视图模块都能拖拽到任意区域占位"的键盘等价物：拖拽本身在单测里用合成事件钉着，

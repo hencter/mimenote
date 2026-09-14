@@ -13,6 +13,9 @@
  * 4. **装配层**：真的建 `EditorView`，点图标 → 文档里多出 `-`，正文随之收起。
  */
 
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 import { ensureSyntaxTree } from '@codemirror/language'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { EditorState } from '@codemirror/state'
@@ -26,7 +29,7 @@ import {
   readCallout,
   type LiveCallout,
 } from '@/features/editor/cm/live-preview/callout'
-import { MD } from '@/features/editor/cm/live-preview/theme'
+import { livePreviewThemeSpec, MD } from '@/features/editor/cm/live-preview/theme'
 import type { LivePreviewContext } from '@/features/editor/cm/live-preview/types'
 import { CalloutMarkerWidget } from '@/features/editor/cm/live-preview/widgets'
 import { createEditorExtensions } from '@/features/editor/cm/setup'
@@ -212,6 +215,70 @@ describe('读出标记的位置与内容', () => {
 // 装饰层
 // ---------------------------------------------------------------------------
 
+describe('框的边距与阅读视图对齐（"两个视图统一"的判据，用户报过"编辑区里没有边距"）', () => {
+  /**
+   * 直接从磁盘读 app.css（与 `tests/app-shell.test.tsx` 同一个理由与同一套候选路径：
+   * vitest 的工作目录既可能是 `apps/desktop`，也可能是仓库根）。
+   */
+  function readAppCss(): string {
+    const candidates = [
+      resolve(process.cwd(), 'src/styles/app.css'),
+      resolve(process.cwd(), 'apps/desktop/src/styles/app.css'),
+    ]
+    for (const candidate of candidates) {
+      try {
+        return readFileSync(candidate, 'utf8')
+      } catch {
+        // 换下一个候选路径
+      }
+    }
+    throw new Error(`找不到 app.css（尝试过：${candidates.join('、')}）`)
+  }
+
+  /** 取某条规则的声明块。 */
+  function ruleBody(css: string, selector: string): string {
+    const start = css.indexOf(`\n${selector} {`)
+    if (start === -1) throw new Error(`样式表里找不到规则：${selector}`)
+    return css.slice(start, css.indexOf('}', start))
+  }
+
+  /** 声明块里某个属性值里的第一个 px 数字（简写取第一个分量）。 */
+  function px(body: string, property: string): number {
+    const matched = new RegExp(`${property}:\\s*([\\d.]+)px`, 'u').exec(body)
+    if (matched === null) throw new Error(`声明块里找不到 ${property} 的 px 值：${body}`)
+    return Number(matched[1])
+  }
+
+  it('首行/末行的内边距 = 阅读视图那张框的内边距（是加法关系，不是两边各抄一串数字）', () => {
+    /*
+      阅读视图的框是**块**：`.mn-callout { padding: 6px 14px 2px }` + 标题的 `margin: 4px 0`
+      + `.mn-callout > *:last-child { margin-bottom: 8px }`。
+      编辑器里一行是一个 `.cm-line`，**垂直 margin 会折叠出去**（见 theme.ts 表格那段），
+      所以"框的内边距 + 标题的上下留白"只能全部由首行/末行的 `padding` 承担。
+      这条用例把两边的**来源**钉在一起：谁改了一边而没有改另一边，红。
+    */
+    const css = readAppCss()
+    const box = ruleBody(css, '.mn-callout')
+    const title = ruleBody(css, '.mn-callout__title')
+    const lastChild = ruleBody(css, '.mn-callout > *:last-child')
+
+    const boxTop = px(box, 'padding')
+    const boxX = Number(/padding:\s*[\d.]+px\s+([\d.]+)px/u.exec(box)?.[1] ?? Number.NaN)
+    const boxBottom = Number(/padding:\s*[\d.]+px\s+[\d.]+px\s+([\d.]+)px/u.exec(box)?.[1] ?? Number.NaN)
+    const titleTop = px(title, 'margin')
+    const lastChildBottom = px(lastChild, 'margin-bottom')
+
+    const base = livePreviewThemeSpec['.cm-line.mn-md-callout']
+    const first = livePreviewThemeSpec['.cm-line.mn-md-callout--first']
+    const last = livePreviewThemeSpec['.cm-line.mn-md-callout--last']
+    expect(base?.paddingLeft).toBe(`${boxX}px`)
+    expect(base?.paddingRight).toBe(`${boxX}px`)
+    expect(first?.paddingTop).toBe(`${boxTop + titleTop}px`)
+    expect(first?.paddingBottom).toBe(`${titleTop}px`)
+    expect(last?.paddingBottom).toBe(`${boxBottom + lastChildBottom}px`)
+  })
+})
+
 describe('装饰：行类名与图标', () => {
   // 光标放在块**外**（第三行）：标记行与正文行都进入"渲染态"
   const doc = '> [!note] 标题\n> 正文\n\n之后'
@@ -234,6 +301,30 @@ describe('装饰：行类名与图标', () => {
     expect(second).toContain(MD.calloutLast)
     expect(second).not.toContain(MD.quote)
     expect(second).not.toContain(MD.calloutFirst)
+  })
+
+  it('光杆标题：那一行同时是首行与末行（框要闭合，不能只有上半截）', () => {
+    const solo = '> [!note] 只有标题\n\n之后'
+    const state = stateOf(solo, solo.indexOf('之后'))
+    const classes = lineClasses(decosOf(state), 0).join(' ')
+
+    expect(classes).toContain(MD.calloutFirst)
+    expect(classes).toContain(MD.calloutLast)
+  })
+
+  it('收起时**标记行就是框的底边**：藏起来的正文行不再带 last', () => {
+    // 收起用的是"零高行"（`font-size: 0`），行元素还在，padding 照样参与布局 ——
+    // 把圆角与下内边距留在一条看不见的行上，收起的提示框底下会多出一条空白。
+    const folded = '> [!tip]- 收起\n> 正文一\n> 正文二\n\n之后'
+    const state = stateOf(folded, folded.indexOf('之后'))
+    const items = decosOf(state)
+
+    const marker = lineClasses(items, 0).join(' ')
+    expect(marker).toContain(MD.calloutFirst)
+    expect(marker).toContain(MD.calloutLast)
+
+    const collapsedBody = lineClasses(items, state.doc.line(2).from).join(' ')
+    expect(collapsedBody).not.toContain(MD.calloutLast)
   })
 
   it('标记被换成图标 widget，标题仍是**真文字**（加粗上色，不是 HTML）', () => {

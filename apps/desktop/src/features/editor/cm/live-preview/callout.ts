@@ -85,8 +85,14 @@ export function readCallout(lineText: string, lineFrom: number): LiveCallout | n
   }
 }
 
-/** 一行在 callout 里的位置（首行 / 末行 / 中间）：圆角与上下留白靠它。 */
-export type CalloutLinePosition = 'first' | 'middle' | 'last'
+/**
+ * 一行在 callout 里的位置（首行 / 中间 / 末行 / **只剩这一行**）：圆角与上下留白靠它。
+ *
+ * `only` 用在两种形态上：正文还没写的"光杆标题"（`> [!note] 标题`），以及**被折叠收起**的
+ * callout（正文那些行零高藏起来，框的底边其实是标记行）。少了它，框的下半截圆角与下内边距
+ * 会挂在一条看不见的行上 —— 收起的提示框底下会留出一条空白。
+ */
+export type CalloutLinePosition = 'first' | 'middle' | 'last' | 'only'
 
 /**
  * callout 行的类名。
@@ -106,8 +112,9 @@ export function calloutLineClass(
 ): string {
   const classes = [MD.callout, `${MD.callout}--${callout.type}`, `${MD.calloutAccent}${callout.type}`]
   if (depth > 1) classes.push(MD.calloutNested)
-  if (position === 'first') classes.push(MD.calloutFirst)
-  if (position === 'last') classes.push(MD.calloutLast)
+  // `only` 同时是首行与末行：两类名都挂上，CSS 里两边的属性互不冲突（一边管顶、一边管底）
+  if (position === 'first' || position === 'only') classes.push(MD.calloutFirst)
+  if (position === 'last' || position === 'only') classes.push(MD.calloutLast)
   return classes.join(' ')
 }
 

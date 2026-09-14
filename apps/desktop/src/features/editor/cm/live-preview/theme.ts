@@ -153,21 +153,33 @@ export const livePreviewThemeSpec: { [selector: string]: { [property: string]: s
     background: 'var(--mn-bg-elevated)',
     // 引用行是淡色的；callout 的正文是正常正文
     color: 'var(--mn-fg)',
-    paddingLeft: '10px',
-    paddingRight: '10px',
+    // 14px 与阅读视图的 `.mn-callout { padding: 6px 14px 2px }` 逐字一致
+    paddingLeft: '14px',
+    paddingRight: '14px',
   },
   /* 嵌套：多一个类名（而**不是**靠样式表顺序）压过上面那条 paddingLeft —— 两条规则特异性相同，
      谁赢取决于生成的样式表里的先后，那种"偶尔生效"的样式是最难查的一类 bug */
   '.cm-line.mn-md-callout.mn-md-callout--nested': { paddingLeft: '30px' },
+  /*
+   * 上下内边距是**加法**，对齐阅读视图那张框：
+   * `.mn-callout { padding: 6px 14px 2px }` + `.mn-callout__title { margin: 4px 0 }`
+   * + `.mn-callout > *:last-child { margin-bottom: 8px }` ⇒ 顶 6+4=10、底 2+8=10。
+   *
+   * 这里曾经是 3px/3px —— 用户看到的"编辑区里没有边距、和阅读视图对不上"就是它：
+   * 行元素不能有 `margin`（`.cm-line` 的垂直 margin 会折叠出去，见本文件表格那一段），
+   * 所以"框的内边距"只能由首行/末行的 `padding` 承担。
+   */
   '.cm-line.mn-md-callout--first': {
     borderTopRightRadius: '6px',
     borderTopLeftRadius: '6px',
-    paddingTop: '3px',
+    paddingTop: '10px',
+    // 标题那一行的下边距（阅读视图里由 `.mn-callout__title` 的 margin-bottom 给）
+    paddingBottom: '4px',
   },
   '.cm-line.mn-md-callout--last': {
     borderBottomRightRadius: '6px',
     borderBottomLeftRadius: '6px',
-    paddingBottom: '3px',
+    paddingBottom: '10px',
   },
   '.mn-md-callout-title': {
     fontWeight: '600',

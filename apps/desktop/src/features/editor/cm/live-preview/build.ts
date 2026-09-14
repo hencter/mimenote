@@ -389,7 +389,22 @@ function emitBlockquote(build: Build, entry: Collected): void {
   const callout = readCallout(markerLine.text, markerLine.from)
   if (callout === null) return
 
-  build.callouts.set(first, { callout, position: 'first' })
+  /*
+   * 折叠（`[!note]-`）：正文行整行收起，直到光标（或选区）进入这一块。
+   * 逐行挂零高类名，而不是"一个跨行的 replace" —— 后者在 ViewPlugin 里被直接禁止
+   * （跨换行的替换装饰会抛 "Decorations that replace line breaks may not be specified via plugins"），
+   * 与表格藏源码是同一个约束、同一个解法（见 emitTable 的第 3 条）。
+   *
+   * `collapsed` 要在挂位置之前算出来：收起时**标记行就是框的底边**（正文那些行零高藏起来，
+   * 把圆角与下内边距挂在它们身上等于看不见），所以它是 `only` 而不是 `first`。
+   */
+  const collapsed = callout.fold === '-' && !selectionTouches(build.state, markerLine.from, lastLine.to)
+
+  // 只有标记行时也是 `only`（光杆标题的提示框同样需要一个封闭的框）
+  build.callouts.set(first, {
+    callout,
+    position: collapsed || first === last ? 'only' : 'first',
+  })
   for (const number of lines) {
     if (number === first) continue
     // 内层 callout 后写、覆盖外层：一行上只能有一条左边框，显示**最内层**的那个框
@@ -397,11 +412,7 @@ function emitBlockquote(build: Build, entry: Collected): void {
     build.callouts.set(number, { callout, position: number === last ? 'last' : 'middle' })
   }
 
-  // 折叠（`[!note]-`）：正文行整行收起，直到光标（或选区）进入这一块。
-  // 逐行挂零高类名，而不是"一个跨行的 replace" —— 后者在 ViewPlugin 里被直接禁止
-  // （跨换行的替换装饰会抛 "Decorations that replace line breaks may not be specified via plugins"），
-  // 与表格藏源码是同一个约束、同一个解法（见 emitTable 的第 3 条）。
-  if (callout.fold === '-' && !selectionTouches(build.state, markerLine.from, lastLine.to)) {
+  if (collapsed) {
     for (const number of lines) {
       if (number === first) continue
       const line = doc.line(number)
