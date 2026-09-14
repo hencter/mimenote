@@ -823,6 +823,27 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       '光标落到第二节那一行',
     )
 
+    // 「当前章节」高亮：跳转本身就把光标放进了那一节，因此高亮必须已经在它上面
+    await waitUntil(
+      async () =>
+        (await page.locator('.mn-outline__item--current').getAttribute('data-outline-line')) === '15',
+      5_000,
+      '当前章节跟着光标走',
+    )
+    expect(await page.locator('.mn-outline__item--current').getAttribute('aria-current')).toBe(
+      'location',
+    )
+
+    // 把光标挪到标题**下面的正文**里（第 17 行）：仍属于那一节（`<=` 语义），不是"没高亮"
+    await page.locator('.cm-content').click()
+    await page.keyboard.press('Control+End')
+    await waitUntil(
+      async () =>
+        (await page.locator('.mn-outline__item--current').getAttribute('data-outline-line')) === '15',
+      5_000,
+      '光标在正文里时仍高亮上面那一节',
+    )
+
     // 阅读视图里点标题是"滚过去并高亮"（预览没有光标）
     await page.locator('button[aria-label="阅读（渲染后）"]').click()
     await page.waitForSelector('.mn-preview__body', { state: 'visible' })
@@ -833,6 +854,8 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       '阅读视图里对应标题被高亮',
     )
     expect(await page.locator('.mn-preview__body .mn-outline-flash').textContent()).toBe('第一节')
+    // 阅读视图里没有光标 ⇒ 刻意不高亮"当前章节"（不猜读到哪一节）
+    expect(await page.locator('.mn-outline__item--current').count()).toBe(0)
 
     // 再按一次收起面板
     await page.locator('button[aria-label="编辑（所见即所得）"]').click()
