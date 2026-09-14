@@ -14,29 +14,18 @@
  * 而不是内部实现细节（用了哪个变量、哪一层 memo），换实现不该让这些用例变红。
  */
 
-import {
-  act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import {
-  afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import {
-  App } from '@/App'
-import {
-  openNote } from '@/app/actions'
-import {
-  registerBuiltinCommands, GRAPH_COMMAND_IDS } from '@/app/builtin-commands'
-import {
-  commands } from '@/app/commands'
-import {
-  useGlobalKeymap } from '@/app/keymap'
-import {
-  compareEntries } from '@/domain/tree'
-import {
-  isMarkdown } from '@/domain/paths'
-import {
-  GraphCanvas } from '@/features/graph/GraphCanvas'
-import {
-  GraphEdges } from '@/features/graph/GraphEdges'
+import { App } from '@/App'
+import { openNote } from '@/app/actions'
+import { registerBuiltinCommands, GRAPH_COMMAND_IDS } from '@/app/builtin-commands'
+import { commands } from '@/app/commands'
+import { useGlobalKeymap } from '@/app/keymap'
+import { compareEntries } from '@/domain/tree'
+import { isMarkdown } from '@/domain/paths'
+import { GraphCanvas } from '@/features/graph/GraphCanvas'
+import { GraphEdges } from '@/features/graph/GraphEdges'
 import type { PaintContext } from '@/features/graph/canvas/paint'
 import {
   CARD_GAP,
@@ -68,10 +57,8 @@ import {
   type Point,
   type Rect,
 } from '@/features/graph/layout'
-import {
-  makeEntry, setIpcAdapter, type IpcAdapter } from '@/ipc/client'
-import {
-  createMockAdapter } from '@/ipc/mock-adapter'
+import { makeEntry, setIpcAdapter, type IpcAdapter } from '@/ipc/client'
+import { createMockAdapter } from '@/ipc/mock-adapter'
 import type { GraphData, GraphEdge, GraphNode } from '@/ipc/types'
 import {
   DEFAULT_EGO_DEPTH,
@@ -85,14 +72,10 @@ import {
   useGraphStore,
 } from '@/state/graph-store'
 import { forcePreset } from '@/features/graph/force-presets'
-import {
-  useLinksStore } from '@/state/links-store'
-import {
-  useNoteStore } from '@/state/note-store'
-import {
-  useUiStore } from '@/state/ui-store'
-import {
-  useVaultStore } from '@/state/vault-store'
+import { useLinksStore } from '@/state/links-store'
+import { useNoteStore } from '@/state/note-store'
+import { useUiStore } from '@/state/ui-store'
+import { useVaultStore } from '@/state/vault-store'
 
 const VAULT_ROOT = 'C:\\MockVault'
 
