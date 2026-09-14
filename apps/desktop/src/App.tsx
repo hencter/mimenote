@@ -30,9 +30,8 @@ import { TrashDialog } from '@/features/trash/TrashDialog'
 import { WindowControls } from '@/features/window/WindowControls'
 import { ExportDialog } from '@/features/export/ExportDialog'
 import { GraphCanvas } from '@/features/graph/GraphCanvas'
-import { LinksPanel } from '@/features/links/LinksPanel'
+import { DockHost, useVisibleDockModules } from '@/features/dock/DockHost'
 import { ImageLightbox } from '@/features/lightbox/ImageLightbox'
-import { OutlinePanel } from '@/features/outline/OutlinePanel'
 import { PaletteHost } from '@/features/palette/PaletteHost'
 import { MarkdownPreview } from '@/features/preview/MarkdownPreview'
 import { SettingsDialog } from '@/features/settings/SettingsDialog'
@@ -40,14 +39,10 @@ import { ConflictBanner } from '@/features/status/ConflictBanner'
 import { StatusBar } from '@/features/status/StatusBar'
 import { useWindowTitle } from '@/features/status/window-title'
 import { TabBar } from '@/features/tabs/TabBar'
-import { TagsPanel } from '@/features/tags/TagsPanel'
-import { FileTree } from '@/features/vault/FileTree'
-import { TreeToolbar } from '@/features/vault/TreeToolbar'
 import { VaultGate } from '@/features/vault/VaultGate'
 import { formatDuration } from '@/domain/format'
 import { subscribeIndexStatus, useLinksStore } from '@/state/links-store'
 import { flushAutosave, hasUnsavedChanges, useNoteStore } from '@/state/note-store'
-import { useTagsStore } from '@/state/tags-store'
 import { useUiStore } from '@/state/ui-store'
 import { subscribeVaultChanges, useVaultStore } from '@/state/vault-store'
 import { applyTheme, getTheme } from '@/theme/apply'
@@ -60,17 +55,21 @@ export function App() {
   const dirty = useNoteStore((state) => state.dirty)
   const saveCount = useNoteStore((state) => state.saveCount)
 
-  const sidebarVisible = useUiStore((state) => state.sidebarVisible)
-  const sidebarWidth = useUiStore((state) => state.sidebarWidth)
   const viewMode = useUiStore((state) => state.viewMode)
   const themeId = useUiStore((state) => state.themeId)
   const snippetsEnabled = useUiStore((state) => state.snippetsEnabled)
-  const linksPanelVisible = useUiStore((state) => state.linksPanelVisible)
-  const linksPanelWidth = useUiStore((state) => state.linksPanelWidth)
-  const outlinePanelVisible = useUiStore((state) => state.outlinePanelVisible)
-  const tagsPanelVisible = useTagsStore((state) => state.open)
   const setSidebarWidth = useUiStore((state) => state.setSidebarWidth)
   const setLinksPanelWidth = useUiStore((state) => state.setLinksPanelWidth)
+  const setBottomDockHeight = useUiStore((state) => state.setBottomDockHeight)
+
+  /*
+    每一区里**可见**的模块：分隔条要据此决定要不要渲染（见下面 `mn-body` 那段注释）。
+    可见性仍归各自的开关管（`Ctrl+B` / `Ctrl+Shift+L` / `Ctrl+Shift+T` / `Ctrl+Shift+O`），
+    停靠模型只管"它开在哪个区"—— 两件事分开，快捷键与拖拽各改各的，不会互相覆盖。
+  */
+  const leftModules = useVisibleDockModules('left')
+  const rightModules = useVisibleDockModules('right')
+  const bottomModules = useVisibleDockModules('bottom')
 
   const mainRef = useRef<HTMLElement | null>(null)
 
@@ -208,69 +207,76 @@ export function App() {
         <WindowControls />
       </header>
 
+      {/*
+        标签栏在**窗口顶部**、横跨全宽（在标题栏之下、侧栏之上）：
+        它是"我开着哪几篇笔记"的全局信息，属于窗口而不是某一块面板 ——
+        挂在 `.mn-main` 里时，它会跟着主区域一起被侧栏挤窄（用户要的就是这一点改变）。
+      */}
+      <TabBar />
+
       <ConflictBanner />
 
+      {/*
+        主体 = 左停靠区 | 主区域（+ 底部停靠区） | 右停靠区。
+        每块视图模块（文件树 / 链接 / 标签 / 大纲）都能被拖到任意一个区里
+        （见 `features/dock/`），所以这里不再按"某个面板固定在左、某个固定在右"来排布。
+        分隔条只在对应停靠区**有可见模块**时渲染 —— 否则会画出一条拖不动任何东西的线。
+      */}
       <div className="mn-body">
-        {sidebarVisible && (
-          <>
-            <aside className="mn-sidebar" style={{ width: sidebarWidth }}>
-              <TreeToolbar />
-              <FileTree />
-            </aside>
-            <Splitter
-              ariaLabel="调整侧栏宽度"
-              onDrag={(event) => setSidebarWidth(event.clientX)}
-              onNudge={(delta) => setSidebarWidth(useUiStore.getState().sidebarWidth + delta)}
-            />
-          </>
+        <DockHost side="left" />
+        {leftModules.length > 0 && (
+          <Splitter
+            ariaLabel="调整侧栏宽度"
+            onDrag={(event) => setSidebarWidth(event.clientX)}
+            onNudge={(delta) => setSidebarWidth(useUiStore.getState().sidebarWidth + delta)}
+          />
         )}
 
-        {/* 主区域只有三种形态：所见即所得编辑 / 只读预览 / 知识图谱。
-            "分栏（编辑 + 预览并排）"已移除 —— 编辑器本身就是所见即所得的（ADR-0009）。 */}
-        <main className="mn-main" ref={mainRef}>
-          {/* 标签栏必须是 `.mn-main` 的**第一个子节点**：`tabs.css` 用
-              `.mn-main:has(> .mn-tabs)` 条件地把主区域改成列方向（没有标签时逐像素不变，
-              所以"主体吃掉剩余高度"的布局契约与 E2E 断言都不受影响）。 */}
-          <TabBar />
-          {viewMode === 'edit' && (
-            <section className="mn-pane mn-pane--editor" style={editorStyle}>
-              <MarkdownEditor />
-            </section>
-          )}
+        {/* 中间那一列：主区域在上、底部停靠区在下（列方向，主区域永远吃满剩余高度） */}
+        <div className="mn-center">
+          {/* 主区域只有三种形态：所见即所得编辑 / 只读预览 / 知识图谱。
+              "分栏（编辑 + 预览并排）"已移除 —— 编辑器本身就是所见即所得的（ADR-0009）。 */}
+          <main className="mn-main" ref={mainRef}>
+            {viewMode === 'edit' && (
+              <section className="mn-pane mn-pane--editor" style={editorStyle}>
+                <MarkdownEditor />
+              </section>
+            )}
 
-          {viewMode === 'read' && (
-            <section className="mn-pane" style={previewStyle}>
-              <MarkdownPreview />
-            </section>
-          )}
+            {viewMode === 'read' && (
+              <section className="mn-pane" style={previewStyle}>
+                <MarkdownPreview />
+              </section>
+            )}
 
-          {viewMode === 'graph' && (
-            <section className="mn-pane mn-pane--graph" style={previewStyle}>
-              <GraphCanvas />
-            </section>
-          )}
-        </main>
+            {viewMode === 'graph' && (
+              <section className="mn-pane mn-pane--graph" style={previewStyle}>
+                <GraphCanvas />
+              </section>
+            )}
+          </main>
 
-        {linksPanelVisible && (
-          <>
+          {bottomModules.length > 0 && (
             <Splitter
-              ariaLabel="调整链接面板宽度"
-              onDrag={(event) => setLinksPanelWidth(window.innerWidth - event.clientX)}
+              orientation="horizontal"
+              ariaLabel="调整底部停靠区高度"
+              onDrag={(event) => setBottomDockHeight(window.innerHeight - event.clientY)}
               onNudge={(delta) =>
-                setLinksPanelWidth(useUiStore.getState().linksPanelWidth - delta)
+                setBottomDockHeight(useUiStore.getState().bottomDockHeight - delta)
               }
             />
-            <div className="mn-links-host" style={{ width: linksPanelWidth }}>
-              <LinksPanel />
-            </div>
-          </>
+          )}
+          <DockHost side="bottom" />
+        </div>
+
+        {rightModules.length > 0 && (
+          <Splitter
+            ariaLabel="调整右侧面板宽度"
+            onDrag={(event) => setLinksPanelWidth(window.innerWidth - event.clientX)}
+            onNudge={(delta) => setLinksPanelWidth(useUiStore.getState().linksPanelWidth - delta)}
+          />
         )}
-
-        {/* 标签面板：宽度由自己的样式固定（内容窄，不需要拖拽分隔条） */}
-        {tagsPanelVisible && <TagsPanel />}
-
-        {/* 大纲面板：同上（固定宽度），放在最右侧 —— 它描述的是"主区域里这篇笔记的结构" */}
-        {outlinePanelVisible && <OutlinePanel />}
+        <DockHost side="right" />
       </div>
 
       <StatusBar />

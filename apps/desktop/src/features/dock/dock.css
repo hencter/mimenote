@@ -1,0 +1,203 @@
+/*
+ * 停靠区与模块壳的样式。
+ *
+ * 布局契约（与 `app.css` 顶部那条"外壳是列方向 flex"的约定配套）：
+ * - 左/右停靠区是**列方向**（模块上下排），底部停靠区是**行方向**（模块左右排）；
+ * - 每个模块 `flex: 1 1 0` + `min-height: 0`：同侧多个模块平分高度，
+ *   单个模块时吃满整区 —— 于是"默认只开文件树"的观感与从前逐像素一致；
+ * - 模块内容层（`.mn-dock__body`）只做一件事：把面板自己的固定宽度改成"填满这一区"
+ *   （标签 268px / 大纲 232px 是它们当初作为独立侧栏时的宽度，换到别的区就得听区的话）。
+ *
+ * 颜色一律走主题令牌；左停靠区沿用 `--mn-bg-sidebar` 与右边框（与从前 `.mn-sidebar` 一致）。
+ */
+
+.mn-dock {
+  display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.mn-dock--left,
+.mn-dock--right {
+  flex-direction: column;
+  border-right: 1px solid var(--mn-border);
+  background: var(--mn-bg-sidebar);
+}
+
+/* 右侧停靠区在窗口的右边：分隔线要在**左边**（它是"主区域与右栏"之间的那条线） */
+.mn-dock--right {
+  border-right: none;
+  border-left: 1px solid var(--mn-border);
+}
+
+.mn-dock--bottom {
+  flex-direction: row;
+  border-top: 1px solid var(--mn-border);
+  background: var(--mn-bg-elevated);
+}
+
+/* 一块模块：标题头 + 内容。同侧多个时平分空间，`min-height` 保证每个都还看得见东西 */
+.mn-dock__module {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 96px;
+  overflow: hidden;
+}
+
+/* 模块之间画一条线：两块面板上下贴着而不分家时，用户会以为它们是同一块 */
+.mn-dock__module + .mn-dock__module {
+  border-top: 1px solid var(--mn-border);
+}
+
+.mn-dock--bottom .mn-dock__module + .mn-dock__module {
+  border-top: none;
+  border-left: 1px solid var(--mn-border);
+}
+
+/*
+ * 标题头 = 拖动手柄 + 菜单按钮（见 DockHost 的说明）。
+ * `cursor: grab` 与 `user-select: none`：按住拖动时不该顺手把标题选中成蓝色文本。
+ */
+.mn-dock__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 4px 0 8px;
+  border-bottom: 1px solid var(--mn-border);
+  color: var(--mn-fg-muted);
+  font-family: var(--mn-font-ui);
+  font-size: 11px;
+  cursor: grab;
+  user-select: none;
+}
+
+.mn-dock__header:hover {
+  color: var(--mn-fg);
+  background: var(--mn-hover);
+}
+
+.mn-dock__header:focus-visible {
+  outline-offset: -2px;
+}
+
+.mn-dock__header:active {
+  cursor: grabbing;
+}
+
+.mn-dock__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.mn-dock__hide {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--mn-radius);
+  background: transparent;
+  color: var(--mn-fg-subtle);
+  cursor: pointer;
+  /* 平时隐形但**仍可聚焦/可点**（用 opacity 而不是 display，键盘 Tab 顺序不受影响） */
+  opacity: 0;
+}
+
+.mn-dock__header:hover .mn-dock__hide,
+.mn-dock__header:focus-within .mn-dock__hide {
+  opacity: 1;
+}
+
+.mn-dock__hide:hover {
+  background: var(--mn-active);
+  color: var(--mn-fg);
+}
+
+.mn-dock__body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/*
+ * 面板的固定宽度在这里被"填满这一区"取代（见文件头）。
+ * 选择器写成两段（`.mn-dock .mn-dock__body > *`）是为了**不依赖样式加载顺序**：
+ * 标签/大纲面板的 `.mn-tags { width: 268px }` 与它同权重，谁先加载就成了谁的天下。
+ */
+.mn-dock .mn-dock__body > * {
+  width: 100%;
+  min-width: 0;
+}
+
+/* 这三块面板的内容要吃掉整块高度（文件树那一支自己声明了 flex，不受影响） */
+.mn-dock .mn-dock__body > .mn-tags,
+.mn-dock .mn-dock__body > .mn-outline,
+.mn-dock .mn-dock__body > .mn-links {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 拖拽落点指示线：竖排时是一条横线，横排时是一条竖线 */
+.mn-dock__drop-line {
+  flex: 0 0 auto;
+  background: var(--mn-accent);
+  pointer-events: none;
+}
+
+.mn-dock--left .mn-dock__drop-line,
+.mn-dock--right .mn-dock__drop-line {
+  height: 2px;
+}
+
+.mn-dock--bottom .mn-dock__drop-line {
+  width: 2px;
+  align-self: stretch;
+}
+
+/*
+ * 空区的"轨道"：只在**拖动进行中**出现（见 DockHost 的文件头）。
+ * 虚线边框 + 中间一行字，明确说"这里能放"；尺寸取该区的常态尺寸，但底部压成一条窄带 ——
+ * 拖动时它只是落点，不该真的占掉 bottomDockHeight 那么多高度把主区域挤没。
+ */
+.mn-dock--rail {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--mn-accent);
+  color: var(--mn-accent);
+  font-family: var(--mn-font-ui);
+  font-size: 11px;
+}
+
+.mn-dock--left.mn-dock--rail,
+.mn-dock--right.mn-dock--rail {
+  width: 56px;
+}
+
+.mn-dock--bottom.mn-dock--rail {
+  height: 56px;
+}
+
+.mn-dock__rail-label {
+  writing-mode: vertical-rl;
+  user-select: none;
+}
+
+.mn-dock--bottom .mn-dock__rail-label {
+  writing-mode: horizontal-tb;
+}

@@ -99,6 +99,10 @@ interface TabsState {
   cycle: (step: 1 | -1) => Promise<boolean>
   /** 关闭某个标签：有未保存内容先二次确认；关的是当前标签则激活相邻项。 */
   closeTab: (relPath: string) => Promise<void>
+  /** 关闭除它之外的标签（标签右键菜单）。 */
+  closeOthers: (relPath: string) => Promise<void>
+  /** 关闭全部标签（标签右键菜单）。 */
+  closeAll: () => Promise<void>
   /** 关闭当前标签（`Mod+W`）。 */
   closeCurrent: () => Promise<void>
 }
@@ -394,5 +398,27 @@ export const useTabsStore = create<TabsState>((_set, get) => ({
     const relPath = useNoteStore.getState().doc?.relPath ?? get().active
     if (relPath === null) return
     await get().closeTab(relPath)
+  },
+
+  /**
+   * 关闭除 `relPath` 之外的标签（标签右键菜单的「关闭其他」）。
+   *
+   * 逐个走 `closeTab`，不做"一次性 commit 剩下的那些"：未保存确认、光标位置记忆、
+   * 关掉当前标签之后接续哪一个 —— 全都在那一条路径里。代价是 N 次状态写入，
+   * 而 N 是标签数（几十），可以忽略；换来的是"三条关闭路径的行为完全一致"。
+   */
+  closeOthers: async (relPath) => {
+    for (const path of [...get().tabs]) {
+      if (path === relPath) continue
+      await get().closeTab(path)
+    }
+    // 保留下来的那个如果不是当前文档（它本来就不是活动标签时），把它切回来 ——
+    // 用户右键的是"这一个"，关完其他之后理应看到它
+    if (useNoteStore.getState().doc?.relPath !== relPath) await get().activate(relPath)
+  },
+
+  /** 关闭全部标签（右键菜单的「关闭全部」）。同样逐个走 `closeTab`（理由见上）。 */
+  closeAll: async () => {
+    for (const path of [...get().tabs]) await get().closeTab(path)
   },
 }))

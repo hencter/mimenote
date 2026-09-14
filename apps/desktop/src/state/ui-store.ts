@@ -10,6 +10,15 @@
 import { create } from 'zustand'
 
 import { DEFAULT_THEME_ID, getTheme, nextThemeId } from '@/theme/apply'
+import { DEFAULT_TREE_SORT, isTreeSort, type TreeSort } from '@/domain/tree'
+import {
+  DEFAULT_DOCK_LAYOUT,
+  isDockLayout,
+  moveDockModule,
+  type DockLayout,
+  type DockModuleId,
+  type DockSide,
+} from '@/features/dock/dock-layout'
 import { loadJson, saveJson } from './persist'
 
 /**
@@ -66,6 +75,23 @@ export interface UiPreferences {
   outlinePanelVisible: boolean
   /** 大纲面板的级别过滤，按 Vault 根存（见 {@link OutlineLevelsByVault}）。 */
   outlineLevelsByVault: OutlineLevelsByVault
+  /**
+   * 文件树的排序（依据 / 方向 / 目录是否在前）。
+   *
+   * 只存配置、不存排好的顺序：树由 `vault-store` 用这份配置重建（判据只有
+   * `domain/tree.ts` 一份），配置变了由 vault-store 订阅触发重排。
+   */
+  treeSort: TreeSort
+  /**
+   * 视图模块的停靠位置（左 / 右 / 底部三个区 + 每区内的顺序）。
+   *
+   * 只存"位置"，**不存**可见性 —— 每块面板开着没开着仍由各自既有开关决定
+   * （`sidebarVisible` / `linksPanelVisible` / `outlinePanelVisible` / tags-store 的 `open`），
+   * 四条切换快捷键因此一字不用改（见 `features/dock/dock-layout.ts` 的说明）。
+   */
+  dockLayout: DockLayout
+  /** 底部停靠区的高度（px，**按用户偏好存**：它与侧栏宽度同一性质）。 */
+  bottomDockHeight: number
 }
 
 const STORAGE_KEY = 'mimenote.ui.v1'
@@ -74,6 +100,9 @@ export const SIDEBAR_MIN = 180
 export const SIDEBAR_MAX = 560
 export const LINKS_PANEL_MIN = 200
 export const LINKS_PANEL_MAX = 520
+/** 底部停靠区的高度范围：比 120 矮就放不下任何面板的内容，比 640 高就不像"停靠"了。 */
+export const BOTTOM_DOCK_MIN = 120
+export const BOTTOM_DOCK_MAX = 640
 
 const DEFAULTS: UiPreferences = {
   viewMode: 'edit',
@@ -85,6 +114,9 @@ const DEFAULTS: UiPreferences = {
   linksPanelWidth: 300,
   outlinePanelVisible: false,
   outlineLevelsByVault: {},
+  treeSort: DEFAULT_TREE_SORT,
+  dockLayout: DEFAULT_DOCK_LAYOUT,
+  bottomDockHeight: 220,
 }
 
 function isPreferences(value: unknown): value is Partial<UiPreferences> {
@@ -132,6 +164,15 @@ const initial: UiPreferences = {
   outlineLevelsByVault: isOutlineLevelsByVault(restored.outlineLevelsByVault)
     ? restored.outlineLevelsByVault
     : DEFAULTS.outlineLevelsByVault,
+  // 逐字段校验的形状守卫在 domain/tree.ts（判据唯一真源）：坏数据整份退回默认
+  treeSort: isTreeSort(restored.treeSort) ? restored.treeSort : DEFAULTS.treeSort,
+  // 停靠模型有一条不变式（每个模块恰好出现一次），坏数据整份退回默认 —— 见 dock-layout.ts 的文件头
+  dockLayout: isDockLayout(restored.dockLayout) ? restored.dockLayout : DEFAULT_DOCK_LAYOUT,
+  bottomDockHeight: clamp(
+    restored.bottomDockHeight ?? DEFAULTS.bottomDockHeight,
+    BOTTOM_DOCK_MIN,
+    BOTTOM_DOCK_MAX,
+  ),
 }
 
 interface UiState extends UiPreferences {
@@ -172,6 +213,24 @@ interface UiState extends UiPreferences {
   setOutlineLevels: (vaultRoot: string, levels: readonly number[]) => void
 
   /**
+   * 更新文件树排序（部分合并：菜单一次只翻一个字段）。
+   *
+   * 只负责存偏好；**重排不在这里做** —— `vault-store` 订阅了这个字段，
+   * 变化时用同一份 `makeEntryComparator` 判据重建树（见那边的模块级订阅）。
+   */
+  setTreeSort: (patch: Partial<TreeSort>) => void
+
+  /**
+   * 把一个视图模块搬到某个停靠区的第 `index` 位（`index` 缺省 = 追加到末尾）。
+   *
+   * 拖拽与键盘等价物（`Alt+1/2/3`、`Alt+方向键`）都走这一个动作：落点计算在
+   * `features/dock/dock-layout.ts`（纯函数），这里只负责落盘。
+   */
+  moveDockModule: (id: DockModuleId, side: DockSide, index?: number) => void
+  /** 底部停靠区高度（夹在 `BOTTOM_DOCK_MIN..MAX`）。 */
+  setBottomDockHeight: (height: number) => void
+
+  /**
    * 回收站对话框是否打开。
    *
    * 与 `paletteMode` 同一类**瞬时状态**：刻意不进 `persist()` 的白名单 ——
@@ -193,6 +252,9 @@ function persist(state: UiState): void {
     linksPanelWidth: state.linksPanelWidth,
     outlinePanelVisible: state.outlinePanelVisible,
     outlineLevelsByVault: state.outlineLevelsByVault,
+    treeSort: state.treeSort,
+    dockLayout: state.dockLayout,
+    bottomDockHeight: state.bottomDockHeight,
   } satisfies UiPreferences)
 }
 
@@ -277,6 +339,38 @@ export const useUiStore = create<UiState>((set, get) => ({
     set((state) => ({
       outlineLevelsByVault: { ...state.outlineLevelsByVault, [vaultRoot]: [...levels] },
     }))
+    persist(get())
+  },
+
+  setTreeSort: (patch) => {
+    // 部分合并后仍然过一次形状校验：补丁可能携带错误类型（类型系统之外的调用方），
+    // 写进 store 的必须是一份合法配置；无实际变化时不动状态（免得触发无谓的重排）
+    const current = get().treeSort
+    const next = { ...current, ...patch }
+    if (!isTreeSort(next)) return
+    if (
+      next.by === current.by &&
+      next.direction === current.direction &&
+      next.foldersFirst === current.foldersFirst
+    ) {
+      return
+    }
+    set({ treeSort: next })
+    persist(get())
+  },
+
+  moveDockModule: (id, side, index) => {
+    const next = moveDockModule(get().dockLayout, id, side, index)
+    // 没动就不写 state / 不落盘：拖动过程中 `drop` 可能落在原地（那不该产生一次写盘）
+    if (next === get().dockLayout) return
+    set({ dockLayout: next })
+    persist(get())
+  },
+
+  setBottomDockHeight: (height) => {
+    const next = clamp(height, BOTTOM_DOCK_MIN, BOTTOM_DOCK_MAX)
+    if (next === get().bottomDockHeight) return
+    set({ bottomDockHeight: next })
     persist(get())
   },
 }))

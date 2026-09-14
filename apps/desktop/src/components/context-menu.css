@@ -1,0 +1,68 @@
+/*
+ * 右键菜单的样式。
+ *
+ * `position: fixed` + 行内 `left/top`：坐标由调用方给的**屏幕坐标**决定，
+ * 且它必须能盖在任何容器（含滚动容器与 `overflow: hidden` 的面板）之上 ——
+ * 用 absolute 挂在某个面板里，菜单会被那个面板的 `overflow` 裁掉半截。
+ *
+ * 颜色一律走主题令牌；层级取 40：高于面板与浮窗（图谱浮窗是 6 一档），
+ * 低于对话框与 toast（那些是 100+ 的模态层，见各自文件）。
+ */
+
+.mn-context-menu {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  max-width: 280px;
+  padding: 4px;
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg-elevated);
+  box-shadow: var(--mn-shadow);
+  font-family: var(--mn-font-ui);
+  font-size: var(--mn-font-size-ui);
+  /* 菜单自己不需要焦点环：焦点进来是为了键盘走位，画一圈环只会让人以为"要按 Tab 才能用" */
+  outline: none;
+}
+
+.mn-context-menu__item {
+  display: block;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--mn-fg);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.mn-context-menu__item:hover:not(:disabled),
+.mn-context-menu__item:focus-visible {
+  background: var(--mn-hover);
+}
+
+/* 置灰的项仍然占位：菜单的"形状"要稳定，点了不该动的项出现在别的地方更让人困惑 */
+.mn-context-menu__item:disabled {
+  color: var(--mn-fg-subtle);
+  cursor: default;
+}
+
+/* 危险动作（删除到回收站等）：只说"这一项危险"，不用底色喊——菜单整体是低调的 */
+.mn-context-menu__item--danger:not(:disabled) {
+  color: var(--mn-danger);
+}
+
+/* 分组线：`separatorBefore` 的项上方画一条，把"打开/移动"与"删除"这样的事分开 */
+.mn-context-menu__item--separated {
+  margin-top: 4px;
+  border-top: 1px solid var(--mn-border);
+  padding-top: 6px;
+  border-radius: 0 0 4px 4px;
+}

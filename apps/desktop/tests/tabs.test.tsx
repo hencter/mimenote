@@ -577,11 +577,19 @@ describe('DOM / 可访问性契约', () => {
 describe('布局与样式契约（E2E 的高度断言不能因此变化）', () => {
   const tabsCss = readTabsCss()
 
-  it('标签栏只在主区域里把主区域改成列方向（不碰 .mn-body / 侧栏 / 右侧面板）', () => {
-    // 条件规则：没有标签（不渲染 .mn-tabs）时主区域仍是行方向 → 布局逐像素不变
-    expect(tabsCss).toContain('.mn-main:has(> .mn-tabs)')
-    expect(tabsCss).toContain('flex-direction: column')
-    // 不改公共样式表里的类（这里不该出现 .mn-body/.mn-sidebar 的规则）
+  it('标签栏不再动主区域的布局方向（它已经搬到窗口顶部）', () => {
+    /*
+      这条契约**改过一次**，原因要写下来免得后人以为测试写错了：
+      标签栏原来挂在 `.mn-main` 里，靠 `.mn-main:has(> .mn-tabs)` 把主区域改成列方向。
+      搬到窗口顶部（挂在 `.mn-app` 上、横跨全宽）之后，它不再需要动主区域 ——
+      于是那条 `:has` 规则删掉了，主区域重新是一个纯行方向的 pane 容器。
+      这一条现在钉的是**删除**：规则不该再回来（它一旦回来，主区域会在有标签时变成列方向，
+      而"标签是第一行、pane 是第二行"的旧形态正是这次要改掉的东西）。
+    */
+    // 断言的是"规则不存在"，不是"这段文字不存在"：样式注释里仍然会提到旧写法
+    // （那是给后人看的来龙去脉），带 `{` 的正则才不会把注释也算成违规
+    expect(tabsCss).not.toMatch(/\.mn-main:has\(> \.mn-tabs\)\s*\{/)
+    // 仍然不改公共样式表里的类（这里不该出现 .mn-body/.mn-sidebar 的规则）
     expect(tabsCss).not.toContain('.mn-body {')
     expect(tabsCss).not.toContain('.mn-sidebar {')
   })
@@ -666,19 +674,19 @@ describe('光标位置记忆（可选增强，行为通过注入的适配器验�
 /**
  * 接线形态 + 真实编辑器。
  *
- * 这一组用**真实 CodeMirror**（而不是直接 `setText`）跑，并复刻 `App.tsx` 里主区域的结构
- * （`<main class="mn-main">` 的第一个子节点是 `<TabBar />`）—— 它同时是接线说明书：
- * 挂错父容器（例如挂到 `.mn-body` 之外）会让这里的结构与真实应用不一致。
+ * 这一组用**真实 CodeMirror**（而不是直接 `setText`）跑，并复刻 `App.tsx` 的结构 ——
+ * 它同时是接线说明书：标签栏现在挂在 **`.mn-app`** 上（标题栏之下、`.mn-body` 之上），
+ * 因此横跨整个窗口宽度；挂错父容器（例如又挂回 `.mn-main` 里）会让这里的结构与真实应用不一致。
  */
 describe('接线形态与真实编辑器', () => {
-  /** 与 App.tsx 里的主区域一致：标签栏是 `.mn-main` 的第一个子节点。 */
+  /** 与 App.tsx 一致：标签栏是 `.mn-app` 的直接子节点，`.mn-body` 里是主区域。 */
   function Shell() {
     useGlobalKeymap()
     return (
       <div className="mn-app">
+        <TabBar />
         <div className="mn-body">
           <main className="mn-main">
-            <TabBar />
             <section className="mn-pane mn-pane--editor" style={{ flex: '1 1 auto' }}>
               <MarkdownEditor />
             </section>
@@ -700,11 +708,14 @@ describe('接线形态与真实编辑器', () => {
   it('标签栏与编辑器共存：编辑器里改动 → 切标签 → 内容真的落盘', async () => {
     render(<Shell />)
     await openVault()
-    expect(document.querySelector('.mn-main > .mn-tabs')).toBeNull()
+    // 没有标签时窗口顶部只有标题栏（这里没有标题栏，于是 `.mn-app` 里一个标签栏都没有）
+    expect(document.querySelector('.mn-app > .mn-tabs')).toBeNull()
 
     await open('README.md')
     await open('项目/设计.md')
-    expect(document.querySelector('.mn-main > .mn-tabs')).not.toBeNull()
+    expect(document.querySelector('.mn-app > .mn-tabs')).not.toBeNull()
+    // 标签栏**不在**主区域里了：主区域仍然是纯 pane 容器（行方向，不需要为标签让出一行）
+    expect(document.querySelector('.mn-main > .mn-tabs')).toBeNull()
     expect(document.querySelectorAll('.mn-main > .mn-pane')).toHaveLength(1)
 
     const view = currentView()

@@ -702,11 +702,14 @@ kbd {
   cursor: default;
 }
 
-/* 已完成：文字**变暗**。
-   刻意**不用** `text-decoration: line-through` —— 删除线在 Markdown 里已经是 `~~` 的含义，
-   借用它会让"我删掉了这句话"和"我做完了这件事"在视觉上分不出来。 */
+/* 已完成：文字变暗 + **删除线**。
+   这里曾经有过"不用删除线"的决定（怕与 `~~删除线~~` 语法撞观感），但用户明确要求
+   已完成任务要划线 —— 两者并存时，任务项还有复选框这个额外信号，分得开。
+   删除线写在 `li` 上只会划到文字：复选框是原生 `<input>`（替换元素，没有文字可被划），
+   所以不需要为它单开一条豁免规则。 */
 .mn-preview__body li.mn-task-item--done {
   color: var(--mn-fg-muted);
+  text-decoration: line-through;
 }
 
 .mn-image-placeholder {
@@ -1123,9 +1126,19 @@ kbd {
 
 /* ------------------------------------------------------ 链接面板（M2） */
 
-.mn-links-host {
+/*
+ * 中间那一列：主区域在上、底部停靠区在下。
+ *
+ * 为什么值得多一个包装元素：底部停靠区是**行方向**的一块，而 `.mn-body` 也是行方向
+ * （左 | 中 | 右）—— 把底部区直接挂进 `.mn-body` 会变成"第四列"。
+ * `.mn-center` 是列方向容器：主区域 `flex: 1 1 auto` 照旧吃掉剩余高度，
+ * 底部区不显示时（默认状态）这一层与没有它完全等价。
+ */
+.mn-center {
   display: flex;
-  flex: 0 0 auto;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
 }
 

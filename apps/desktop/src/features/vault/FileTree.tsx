@@ -35,8 +35,11 @@
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { createNoteHere, deleteSelected, moveEntry, openNote, renameSelected } from '@/app/actions'
+import { commands } from '@/app/commands'
 import { REVEAL_ROW_EVENT } from '@/app/dom-events'
+import { ContextMenu, type ContextMenuItem } from '@/components/ContextMenu'
 import { Icon } from '@/components/Icon'
+import { copyText } from '@/domain/clipboard'
 import {
   canDrag,
   dragPayloadOf,
@@ -452,6 +455,71 @@ export function FileTree() {
     [activateRow, clearTagFilter, expanded, rows, select, selected, tagView.active, toggleExpanded],
   )
 
+  /**
+   * 右键菜单：`null` = 没打开。
+   *
+   * 菜单项**直接执行既有命令**（`note.new` / `note.rename` / `note.move` / `note.delete` /
+   * `tree.expandAll` …），而不是在这里重写一遍动作 —— 命令表是"这些动作到底做什么"的唯一事实来源，
+   * 右键只是它的又一个入口（与 F2/F6/Delete、工具栏按钮完全同一条链路）。
+   * 需要"针对哪一行"的命令先 `select(relPath)`：命令读的就是 store 里的选中项。
+   */
+  const [menu, setMenu] = useState<{ row: FlatRow; x: number; y: number } | null>(null)
+
+  const openRowMenu = useCallback(
+    (row: FlatRow, event: React.MouseEvent<HTMLDivElement>): void => {
+      event.preventDefault()
+      // 右键即选中：菜单上的动作都作用于这一行，而选中态是它唯一的载体
+      select(row.node.entry.relPath)
+      setMenu({ row, x: event.clientX, y: event.clientY })
+    },
+    [select],
+  )
+
+  const menuItemsFor = useCallback((row: FlatRow): ContextMenuItem[] => {
+    const entry = row.node.entry
+    const markdown = isMarkdown(entry.relPath)
+    const run = (id: string) => () => void commands.execute(id)
+    const items: ContextMenuItem[] = [
+      {
+        id: 'open',
+        label: entry.isDir ? (expanded.has(entry.relPath) ? '折叠' : '展开') : '打开',
+        disabled: !entry.isDir && !markdown,
+        onSelect: () => activateRow(row),
+      },
+      { id: 'new', label: '在这里新建笔记', onSelect: run('note.new') },
+      { id: 'rename', label: '重命名…', onSelect: run('note.rename'), separatorBefore: true },
+      { id: 'move', label: '移动到文件夹…', onSelect: run('note.move') },
+      {
+        id: 'reveal',
+        label: '在文件树中定位',
+        onSelect: () => {
+          select(entry.relPath)
+          revealRow(entry.relPath)
+        },
+      },
+      {
+        id: 'copy-path',
+        label: '复制相对路径',
+        // 失败时 `copyText` 自己弹 toast（剪贴板权限被拒的场合），这里不假装成功
+        onSelect: () => void copyText(entry.relPath),
+      },
+    ]
+    if (entry.isDir) {
+      items.push(
+        { id: 'expand-all', label: '展开全部目录', onSelect: run('tree.expandAll'), separatorBefore: true },
+        { id: 'collapse-all', label: '折叠全部目录', onSelect: run('tree.collapseAll') },
+      )
+    }
+    items.push({
+      id: 'delete',
+      label: '删除到回收站…',
+      danger: true,
+      separatorBefore: true,
+      onSelect: run('note.delete'),
+    })
+    return items
+  }, [activateRow, expanded, select])
+
   if (rows.length === 0) {
     /*
      * 空态必须回答"为什么空"。标签过滤是**收窄**视图，用户看不到笔记时第一反应是
@@ -552,6 +620,7 @@ export function FileTree() {
                 key={row.node.entry.relPath}
                 row={row}
                 onActivate={activateRow}
+                onContextMenu={openRowMenu}
                 onDragStart={handleDragStart}
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
@@ -571,6 +640,15 @@ export function FileTree() {
           而"谁能请求重命名/移动"的信息（选中行、F2/F6）本来就属于文件树。 */}
       <RenameDialog />
       <MoveDialog />
+      {menu !== null && (
+        <ContextMenu
+          items={menuItemsFor(menu.row)}
+          x={menu.x}
+          y={menu.y}
+          ariaLabel={`${menu.row.node.entry.name} 的操作菜单`}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </>
   )
 }
@@ -585,6 +663,8 @@ type RowDropState = 'none' | 'valid' | 'invalid'
 interface RowProps {
   row: FlatRow
   onActivate: (row: FlatRow) => void
+  /** 右键：菜单由**父组件**持有（一行一份状态会让虚拟列表里几十行各挂一个菜单） */
+  onContextMenu: (row: FlatRow, event: React.MouseEvent<HTMLDivElement>) => void
   onDragStart: (row: FlatRow, event: React.DragEvent<HTMLDivElement>) => void
   onDragOver: (row: FlatRow, event: React.DragEvent<HTMLDivElement>) => void
   onDrop: (row: FlatRow, event: React.DragEvent<HTMLDivElement>) => void
@@ -602,6 +682,7 @@ interface RowProps {
 const FileTreeRow = memo(function FileTreeRow({
   row,
   onActivate,
+  onContextMenu,
   onDragStart,
   onDragOver,
   onDrop,
@@ -651,6 +732,7 @@ const FileTreeRow = memo(function FileTreeRow({
       style={{ paddingLeft: `${6 + row.depth * 14}px`, height: ROW_HEIGHT }}
       title={`${relPath}${entry.isDir ? '' : ` · ${formatBytes(entry.sizeBytes)}`}`}
       onClick={() => onActivate(row)}
+      onContextMenu={(event) => onContextMenu(row, event)}
       // 笔记与文件夹都可拖（见上面的 `draggable`）；目录行仍然是**合法的落点**
       draggable={draggable}
       onDragStart={(event) => onDragStart(row, event)}

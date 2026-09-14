@@ -32,16 +32,32 @@ async function waitUntil(check: () => Promise<boolean>, timeoutMs: number, what:
 /** 读取关键区域的实际布局。 */
 function readLayout(page: Page) {
   return page.evaluate(() => {
+    const box = (element: HTMLElement) => {
+      const rect = element.getBoundingClientRect()
+      return { top: rect.top, bottom: rect.bottom, height: rect.height, width: rect.width }
+    }
     const rectOf = (selector: string) => {
       const element = document.querySelector<HTMLElement>(selector)
       if (element === null) throw new Error(`缺少元素：${selector}`)
-      const rect = element.getBoundingClientRect()
-      return { top: rect.top, bottom: rect.bottom, height: rect.height, width: rect.width }
+      return box(element)
+    }
+    /**
+     * 标签栏是**可选**的：没有打开的笔记时整条不渲染（组件返回 null）。
+     * 用"高度 0 的空盒子"表示"没有它"，于是"主体吃满剩余高度"这条契约
+     * 在有标签与没标签时是**同一条算式**（这正是 ADR-0026 把标签栏放到窗口顶部后
+     * 需要更新这条断言的原因：它现在夹在标题栏与主体之间）。
+     */
+    const optionalRect = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector)
+      return element === null
+        ? { top: 0, bottom: 0, height: 0, width: 0 }
+        : box(element)
     }
     return {
       innerHeight: window.innerHeight,
       innerWidth: window.innerWidth,
       titlebar: rectOf('.mn-titlebar'),
+      tabs: optionalRect('.mn-tabs'),
       body: rectOf('.mn-body'),
       statusbar: rectOf('.mn-statusbar'),
       sidebar: rectOf('.mn-sidebar'),
@@ -632,7 +648,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
   it('未选中任何笔记时布局即铺满窗口（回归：不需要先选笔记）', async () => {
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.tabs.height - layout.statusbar.height
 
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
@@ -643,6 +659,200 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(await page.locator('.cm-content').count()).toBe(0)
   })
 
+  it('标签栏移到窗口顶部：横跨全宽，且位于侧栏之上', async () => {
+    /*
+      用户的要求是"标签页移动到顶部"。原来它挂在 `.mn-main` 里（主区域顶部、被侧栏挤窄），
+      现在挂在 `.mn-app` 上：标题栏之下、`.mn-body` 之上，横跨整个窗口宽度。
+    */
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/设计.md')
+    await page.waitForSelector('.mn-app > .mn-tabs', { state: 'visible' })
+    // 主区域里不再有它（那条 `:has(> .mn-tabs)` 条件规则已经删掉）
+    expect(await page.locator('.mn-main > .mn-tabs').count()).toBe(0)
+
+    const box = await page.evaluate(() => {
+      const tabs = document.querySelector('.mn-tabs')?.getBoundingClientRect()
+      const sidebar = document.querySelector('.mn-sidebar')?.getBoundingClientRect()
+      return {
+        left: tabs?.left ?? -1,
+        width: tabs?.width ?? -1,
+        bottom: tabs?.bottom ?? -1,
+        sidebarTop: sidebar?.top ?? -1,
+        innerWidth: window.innerWidth,
+      }
+    })
+    expect(box.left).toBe(0)
+    expect(box.width).toBeGreaterThan(box.innerWidth - 2)
+    // 侧栏在它**下面**（不是并排）：这正是"横跨全宽"的判据
+    expect(box.sidebarTop).toBeGreaterThanOrEqual(box.bottom - 1)
+  })
+
+  it('停靠区：文件树搬到最底部（键盘 Alt+3）、偏好落盘，再 Alt+1 搬回', async () => {
+    /*
+      "每个视图模块都能拖拽到任意区域占位"的键盘等价物：拖拽本身在单测里用合成事件钉着，
+      这里走 Alt+数字那条路 —— 它更能在真实浏览器里稳定复现，而且**同样**经过
+      `moveDockModule` 与落盘。
+    */
+    await ensureVaultOpen(page)
+    const header = page.locator('[data-dock-module-header="tree"]')
+    await header.waitFor({ state: 'visible' })
+    await header.focus()
+    await page.keyboard.press('Alt+3')
+
+    await waitUntil(
+      async () => (await page.locator('[data-dock="bottom"] [data-dock-module="tree"]').count()) === 1,
+      5_000,
+      '文件树被搬到最底部',
+    )
+    // 左区空了 ⇒ 整块左停靠区不渲染（`.mn-sidebar` 随之消失）
+    expect(await page.locator('.mn-sidebar').count()).toBe(0)
+
+    const stored = await page.evaluate(() => localStorage.getItem('mimenote.ui.v1'))
+    expect((JSON.parse(stored ?? '{}') as { dockLayout?: { bottom?: string[] } }).dockLayout?.bottom).toEqual([
+      'tree',
+    ])
+
+    // 搬回左侧（收尾：后面的用例还要用左侧的文件树）
+    const moved = page.locator('[data-dock-module-header="tree"]')
+    await moved.focus()
+    await page.keyboard.press('Alt+1')
+    await waitUntil(
+      async () => (await page.locator('.mn-sidebar [data-dock-module="tree"]').count()) === 1,
+      5_000,
+      '文件树搬回左侧',
+    )
+
+    // 宽度：左停靠区仍然跟着侧栏宽度（拖分隔条能改它）
+    const width = await page
+      .locator('.mn-sidebar')
+      .evaluate((element) => element.getBoundingClientRect().width)
+    expect(width).toBeGreaterThan(100)
+  })
+
+  it('模块右键菜单：文件树行、标签页各有一套，Esc 关掉', async () => {
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/设计.md')
+    await openNoteInTree(page, 'README.md')
+
+    // 文件树行：右键 → 菜单（打开/新建/重命名/移动/定位/复制路径/删除）
+    await treeRow(page, '项目/设计.md').click({ button: 'right' })
+    const menu = page.locator('.mn-context-menu')
+    await menu.waitFor({ state: 'visible' })
+    expect(await page.locator('[data-menu-item="rename"]').count()).toBe(1)
+    expect(await page.locator('[data-menu-item="delete"]').count()).toBe(1)
+    // 右键即选中：菜单里的动作作用于这一行
+    await waitUntil(
+      async () =>
+        (await treeRow(page, '项目/设计.md').getAttribute('class'))?.includes(
+          'mn-tree-row--selected',
+        ) === true,
+      5_000,
+      '右键选中了那一行',
+    )
+    await page.keyboard.press('Escape')
+    await waitUntil(async () => (await menu.count()) === 0, 5_000, 'Esc 关掉菜单')
+
+    // 标签页：右键 → 关闭其他
+    await page.locator('.mn-tabs__tab[data-tab-path="项目/设计.md"]').click({ button: 'right' })
+    await page.locator('[data-menu-item="close-others"]').waitFor({ state: 'visible' })
+    await page.locator('[data-menu-item="close-others"]').click()
+    await waitUntil(async () => (await page.locator('.mn-tabs__tab').count()) === 1, 10_000, '只剩一个标签')
+    expect(await page.locator('.mn-tabs__tab--active').getAttribute('data-tab-path')).toBe(
+      '项目/设计.md',
+    )
+  })
+
+  it('文件树排序可配置：菜单里选「修改时间」→ 顺序变化、偏好落盘，再换回来', async () => {
+    await ensureVaultOpen(page)
+    const orderOf = async (): Promise<string[]> =>
+      await page
+        .locator('.mn-tree-row')
+        .evaluateAll((rows) => rows.map((row) => row.getAttribute('data-rel-path') ?? ''))
+    const before = await orderOf()
+    expect(before.length).toBeGreaterThan(3)
+
+    await page.locator('button[aria-label="文件树排序"]').click()
+    // ⚠️ 用**方向**而不是"修改时间"来证明重排：Mock Vault 里所有条目的 `mtimeMs` 相同
+    // （按修改时间排等于没排），拿它当证据会得到一条永远超时的用例。
+    // 判据本身（各 by/direction 组合）由 `tests/tree.test.ts` / `tests/dock*` 钉着，
+    // 这里只需要证明"偏好 → 数据层重排 → DOM 顺序"整条链路通。
+    await page.getByRole('menuitemradio', { name: '降序' }).click()
+
+    await waitUntil(
+      async () => JSON.stringify(await orderOf()) !== JSON.stringify(before),
+      5_000,
+      '排序真的变了（不是只改了一个偏好字段）',
+    )
+    const stored = await page.evaluate(() => localStorage.getItem('mimenote.ui.v1'))
+    expect((JSON.parse(stored ?? '{}') as { treeSort?: { direction?: string } }).treeSort?.direction).toBe(
+      'desc',
+    )
+
+    // 收尾：换回升序（后面的用例依赖自然序），顺带证明菜单不自动关闭（点第二下仍然有效）
+    await page.getByRole('menuitemradio', { name: '升序' }).click()
+    await waitUntil(
+      async () => JSON.stringify(await orderOf()) === JSON.stringify(before),
+      5_000,
+      '换回名称升序',
+    )
+    await page.keyboard.press('Escape')
+  })
+
+  it('图谱：仅标题卡片、全文档、卡片右键菜单', async () => {
+    /*
+      三条这一轮新增的图谱能力，端到端各点一次：
+        · 「仅标题」= 卡片只剩标题行（高度真的变矮）；
+        · 「全文」= 不截断那一档（落盘里记下 `full: true`）；
+        · 卡片右键 = 画布自己命中出来的菜单（卡片在 canvas 上，没有 DOM 可右键）。
+    */
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/设计.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    await ensureGraphFocusMode(page)
+    await waitUntil(async () => (await graphCardCount(page)) >= 3, 10_000, '关系图画出圆心与它的邻居')
+
+    const before = await settledCenterCardHeight(page)
+    await page.locator('[data-graph-action="toggle-title-only"]').click()
+    const titleOnly = await settledCenterCardHeight(page, before)
+    expect(titleOnly).toBeLessThan(before)
+    // 没有正文就没有"从链接引出"的引线
+    expect(await page.locator('path.mn-graph-edge--lead').count()).toBe(0)
+    await page.locator('[data-graph-action="toggle-title-only"]').click()
+    await settledCenterCardHeight(page, titleOnly)
+
+    // 全文档：选中圆心卡片 → 点「全文」
+    await clickGraphCenterCard(page)
+    await waitUntil(
+      async () => (await page.locator('[data-card-height="full"]').count()) === 1,
+      5_000,
+      '选中卡片后出现高度档',
+    )
+    await page.locator('[data-card-height="full"]').click()
+    await waitUntil(
+      async () =>
+        ((await page.evaluate(() => localStorage.getItem('mimenote.graph.sizes.v1'))) ?? '').includes(
+          '"full":true',
+        ),
+      5_000,
+      '「全文」落盘',
+    )
+
+    // 卡片右键：圆心那一张正好以世界原点为中心，于是"世界原点的屏幕位置"就是它
+    // （与 `clickGraphCenterCard` 同一套换算，只是按下的是右键）
+    const transform = await settledGraphTransform(page)
+    const origin = await graphBoxOrigin(page)
+    await page.mouse.click(origin.x + transform.x, origin.y + transform.y, { button: 'right' })
+    const menu = page.locator('.mn-context-menu')
+    await menu.waitFor({ state: 'visible' })
+    expect(await page.locator('[data-menu-item="floating"]').count()).toBe(1)
+    expect(await page.locator('[data-menu-item="unpin"]').count()).toBe(1)
+    await page.keyboard.press('Escape')
+
+    // 收尾：恢复自动尺寸并回到编辑视图
+    await page.locator('[data-graph-action="reset-card-size"]').click()
+    await showEditView(page)
+  })
   it('打开笔记后布局不变（编辑/阅读是"填充"，不是"撑开"）', async () => {
     const before = await readLayout(page)
 
@@ -740,7 +950,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     )
 
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.tabs.height - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
     expect(Math.abs(layout.sidebar.height - layout.body.height)).toBeLessThanOrEqual(1)
@@ -800,7 +1010,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     )
 
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.tabs.height - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
   })
@@ -858,7 +1068,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     )
 
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.tabs.height - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
   })
@@ -1102,7 +1312,15 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     // 视图与跳数是持久化偏好（`mimenote.graph.prefs.v1`），一旦有别的用例先改过它们，
     // "默认 1 跳"就不再成立 —— 所以把"还没有任何偏好"这个前提显式断言出来，
     // 而不是默默依赖用例顺序（换个顺序时失败信息要能直接说明原因）。
-    expect(await page.evaluate(() => localStorage.getItem('mimenote.graph.prefs.v1'))).toBeNull()
+    //
+    // 判据是"没有偏好，**或者**偏好正好是默认值"：上面新增的用例（仅标题 / 全文档）
+    // 会落盘同一份偏好，落的就是 `mode: focus` + `depth: 1` 这些默认值 ——
+    // 那与"从没写过"对这条用例是同一件事（缺省读回来也是这些数）。
+    const prefsRaw = await readGraphPrefs(page)
+    if (prefsRaw !== null) {
+      expect(prefsRaw['mode']).toBe('focus')
+      expect(prefsRaw['depth']).toBe(1)
+    }
 
     // 圆心 = 当前打开的笔记，所以先钉住文档（不先打开，圆心就是上一条用例留下的偶然状态）
     await openNoteInTree(page, '项目/路线图.md')
@@ -1152,7 +1370,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.waitForSelector('.cm-content', { state: 'visible' })
   })
 
-  it('知识图谱：卡片画在 canvas 上，点圆心卡片就地预览、点空白处关掉预览', async () => {
+  it('知识图谱：卡片画在 canvas 上，点圆心卡片选中它、浮窗读全文、点空白取消选中', async () => {
     await openNoteInTree(page, '项目/设计.md')
     await page.keyboard.press('Control+g')
     await page.waitForSelector('.mn-graph', { state: 'visible' })
@@ -1166,31 +1384,50 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await waitUntil(async () => (await graphCardCount(page)) >= 3, 10_000, '关系图画出圆心与它的邻居')
     expect(await canvasInkRatio(page)).toBeGreaterThan(0.02)
 
-    // 单击卡片 → 就地预览正文。卡片是**几何命中**（世界坐标矩形 + 4px 屏幕宽容度），
-    // 所以这里按 `屏幕 = 世界 × scale + offset` 反算：世界原点就是圆心那张卡片的中心。
+    // 单击卡片 → **选中**（ADR-0025 起不再有侧边预览面板：卡片正面就是完整正文）。
+    // 卡片是**几何命中**（世界坐标矩形 + 4px 屏幕宽容度），所以这里按
+    // `屏幕 = 世界 × scale + offset` 反算：世界原点就是圆心那张卡片的中心。
     await clickGraphCenterCard(page)
-    await page.waitForSelector('.mn-graph-preview', { state: 'visible' })
-    expect(await page.locator('.mn-graph-preview').getAttribute('aria-label')).toBe('预览 设计')
     await waitUntil(
-      async () => ((await page.locator('.mn-graph-preview').textContent()) ?? '').includes('文件层'),
+      async () => (await page.locator('.mn-graph').getAttribute('data-graph-selected')) === '项目/设计.md',
       10_000,
-      '预览里出现笔记正文',
+      '单击卡片选中了圆心那一篇',
     )
 
-    // Esc 关掉预览（命令表里的 `graph.closePreview`）
+    // "点一下就能读全文"这条能力交给了浮窗（卡片上的正文是 canvas 像素，选不中也点不动链接）
+    await page.locator('[data-graph-action="open-floating"]').click()
+    const pane = page.locator('.mn-float-note')
+    await pane.waitFor({ state: 'visible' })
+    await waitUntil(
+      async () => ((await pane.locator('.mn-float-note__article').textContent()) ?? '').includes('文件层'),
+      10_000,
+      '浮窗里出现笔记正文',
+    )
+    // Esc 先关浮窗、再取消选中（`graph.closePreview` 的两层语义）
     await page.locator('.mn-graph').press('Escape')
-    await waitUntil(async () => (await page.locator('.mn-graph-preview').count()) === 0, 5_000, 'Esc 关掉预览')
+    await waitUntil(async () => (await page.locator('.mn-float-note').count()) === 0, 5_000, 'Esc 关掉浮窗')
+    expect(await page.locator('.mn-graph').getAttribute('data-graph-selected')).toBe('项目/设计.md')
+    await page.locator('.mn-graph').press('Escape')
+    await waitUntil(
+      async () => (await page.locator('.mn-graph').getAttribute('data-graph-selected')) === '',
+      5_000,
+      '再按一次 Esc 取消选中',
+    )
 
-    // 再点一次卡片，改在**空白处**单击：画布上"单击空白 = 关掉预览"与"空白拖动 = 平移"
+    // 再点一次卡片，改在**空白处**单击：画布上"单击空白 = 取消选中"与"空白拖动 = 平移"
     // 共用同一套指针状态，是这次 canvas 化必须自己实现的那部分交互
     await clickGraphCenterCard(page)
-    await page.waitForSelector('.mn-graph-preview', { state: 'visible' })
+    await waitUntil(
+      async () => (await page.locator('.mn-graph').getAttribute('data-graph-selected')) !== '',
+      10_000,
+      '再次选中',
+    )
     const blank = await findBlankCanvasPoint(page)
     await page.mouse.click(blank.x, blank.y)
     await waitUntil(
-      async () => (await page.locator('.mn-graph-preview').count()) === 0,
+      async () => (await page.locator('.mn-graph').getAttribute('data-graph-selected')) === '',
       5_000,
-      '点空白处关掉预览',
+      '点空白处取消选中',
     )
 
     // 回到编辑视图（后续用例与"默认视图"保持一致）
@@ -1219,11 +1456,10 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.locator('.mn-graph__find-input').fill('设计')
     await page.waitForSelector('[data-find-path="项目/设计.md"]', { state: 'visible' })
     await page.locator('[data-find-path="项目/设计.md"]').click()
-    await page.waitForSelector('.mn-graph-preview', { state: 'visible' })
     await waitUntil(
-      async () => ((await page.locator('.mn-graph-preview').textContent()) ?? '').includes('文件层'),
+      async () => (await page.locator('.mn-graph').getAttribute('data-graph-selected')) === '项目/设计.md',
       10_000,
-      '预览里出现笔记正文',
+      '定位并选中了那一篇',
     )
 
     // 入链虚线 / 出链实线：设计.md 既有入链（路线图 → 设计）也有出链（设计 → 路线图/细节）
@@ -1235,9 +1471,13 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(highlighted.some((name) => name.includes('mn-graph-edge--dashed'))).toBe(true)
     expect(highlighted.some((name) => !name.includes('mn-graph-edge--dashed'))).toBe(true)
 
-    // Esc 关掉预览
+    // Esc 取消选中
     await page.locator('.mn-graph').press('Escape')
-    await waitUntil(async () => (await page.locator('.mn-graph-preview').count()) === 0, 5_000, '预览关闭')
+    await waitUntil(
+      async () => (await page.locator('.mn-graph').getAttribute('data-graph-selected')) === '',
+      5_000,
+      '取消选中',
+    )
 
     // 文件夹可以收起：收起后容器变成紧凑的"文件夹卡片"，里面的卡片不再画在画布上
     const folder = page.locator('.mn-graph-folder[data-folder="项目"]')
@@ -1363,8 +1603,11 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
     // 没有任何选中项时，方向键选中卡片数组里的**第一张** —— 圆心那一张（`layoutEgo` 先放圆心）
     await page.keyboard.press('ArrowRight')
-    await page.waitForSelector('.mn-graph-preview', { state: 'visible' })
-    expect(await page.locator('.mn-graph-preview').getAttribute('aria-label')).toBe('预览 设计')
+    await waitUntil(
+      async () => (await page.locator('.mn-graph').getAttribute('data-graph-selected')) === '项目/设计.md',
+      10_000,
+      '方向键先选中圆心那一张',
+    )
 
     // 再按一次：从圆心出发，同一方向上最近的**另一张**卡片接过选中项。圆心自己会被跳过
     // （判据是"前进方向上的投影 > 0"），所以换到的一定是另一篇 —— 证明方向键在**移动**选中项，
@@ -1373,13 +1616,12 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.keyboard.press('ArrowRight')
     await waitUntil(
       async () => {
-        const label = await page.locator('.mn-graph-preview').getAttribute('aria-label')
-        return label !== null && label !== '预览 设计'
+        const selected = await page.locator('.mn-graph').getAttribute('data-graph-selected')
+        return selected !== null && selected !== '' && selected !== '项目/设计.md'
       },
       10_000,
       '方向键把选中项换到另一张卡片',
     )
-    expect(await page.locator('.mn-graph-preview').getAttribute('aria-label')).toMatch(/^预览 .+/)
 
     // 回到编辑视图
     await page.locator('button[aria-label="编辑（所见即所得）"]').click()
@@ -1708,10 +1950,11 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.waitForSelector('.cm-content', { state: 'visible' })
   })
 
-  it('知识图谱：选中卡片 → 浮窗可拖可缩放，Esc 只关浮窗（停靠预览不动）', async () => {
+  it('知识图谱：选中卡片 → 浮窗可拖可缩放，Esc 只关浮窗（选中留着）', async () => {
     // 为什么值得端到端测：浮动面板是**受控**组件（位置与大小全部来自 store，拖动时按帧写回），
     // 于是"写回真的发生了"只有指针真动过才看得出来 —— 单测里模拟一次拖动等于自己把答案喂给自己。
-    // 这条用例还钉住 Esc 的语义（ADR-0023 改的那一条）：先关**最上面那个浮窗**，停靠预览留着。
+    // 这条用例还钉住 Esc 的语义（ADR-0023 定的那一层，ADR-0025 之后第二层从"关停靠预览"
+    // 变成了"取消选中"）：先关**最上面那个浮窗**，选中留着。
     await ensureVaultOpen(page)
     await openNoteInTree(page, '项目/设计.md')
     await page.keyboard.press('Control+g')
@@ -1721,7 +1964,11 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
     // 选中圆心那张卡片（几何命中：圆心在世界原点），HUD 上才会多出「浮窗打开」那一行
     await clickGraphCenterCard(page)
-    await page.waitForSelector('.mn-graph-preview', { state: 'visible' })
+    await waitUntil(
+      async () => (await page.locator('.mn-graph').getAttribute('data-graph-selected')) === '项目/设计.md',
+      10_000,
+      '选中圆心那一篇',
+    )
     await page.locator('[data-graph-action="open-floating"]').click()
 
     const pane = page.locator('.mn-float-note')
@@ -1772,14 +2019,18 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     const resized = await readBox()
     expect(resized.height).toBeGreaterThan(afterDrag.height + 20)
 
-    // —— Esc：关掉最上面那个浮窗，而**停靠预览还在** ——
+    // —— Esc：关掉最上面那个浮窗，而**选中还在** ——
     await page.keyboard.press('Escape')
     await waitUntil(async () => (await page.locator('.mn-float-note').count()) === 0, 10_000, 'Esc 关掉浮窗')
-    expect(await page.locator('.mn-graph-preview').count()).toBe(1)
+    expect(await page.locator('.mn-graph').getAttribute('data-graph-selected')).toBe('项目/设计.md')
 
-    // 收尾：关掉停靠预览并回到编辑视图，别让后面的用例一进来就挂着一篇预览
+    // 收尾：再按一次 Esc 取消选中并回到编辑视图，别让后面的用例一进来就挂着一个选中项
     await page.locator('.mn-graph').press('Escape')
-    await waitUntil(async () => (await page.locator('.mn-graph-preview').count()) === 0, 5_000, '停靠预览关闭')
+    await waitUntil(
+      async () => (await page.locator('.mn-graph').getAttribute('data-graph-selected')) === '',
+      5_000,
+      '取消选中',
+    )
     await page.locator('button[aria-label="编辑（所见即所得）"]').click()
     await page.waitForSelector('.cm-content', { state: 'visible' })
   })
@@ -2023,11 +2274,11 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
     // 标签栏在主区域内部：主体/侧栏/状态栏的高度契约不受影响
     const after = await readLayout(page)
-    const expectedBody = after.innerHeight - after.titlebar.height - after.statusbar.height
+    const expectedBody = after.innerHeight - after.titlebar.height - after.tabs.height - after.statusbar.height
     expect(Math.abs(after.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(after.statusbar.bottom - after.innerHeight)).toBeLessThanOrEqual(1)
     expect(Math.abs(after.sidebar.height - after.body.height)).toBeLessThanOrEqual(1)
-    expect(await page.locator('.mn-main > .mn-tabs').count()).toBe(1)
+    expect(await page.locator('.mn-app > .mn-tabs').count()).toBe(1)
 
     // 关闭当前标签 → 剩一个，且不会崩
     await page.locator('.mn-tabs__tab--active .mn-tabs__close').click()
@@ -2177,7 +2428,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
     // 布局不变式仍然成立
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.tabs.height - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
 
@@ -2427,11 +2678,11 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
     // 4) 拖拽/移动不能破坏布局契约（标签栏仍在主区域里、主区域高度不变）
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.tabs.height - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
     expect(Math.abs(layout.sidebar.height - layout.body.height)).toBeLessThanOrEqual(1)
-    expect(await page.locator('.mn-main > .mn-tabs').count()).toBe(1)
+    expect(await page.locator('.mn-app > .mn-tabs').count()).toBe(1)
 
     // 5) 收尾：拖回 项目/，让 Vault 与用例开始时一致（后面的用例与手工验收都看到干净状态）
     await ensureTreeRow(page, '日记/设计.md')
@@ -2520,9 +2771,9 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
     // 5) 布局契约不受影响（标签栏仍在主区域里）
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.tabs.height - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
-    expect(await page.locator('.mn-main > .mn-tabs').count()).toBe(1)
+    expect(await page.locator('.mn-app > .mn-tabs').count()).toBe(1)
 
     // 6) 恢复原来的名字（让后续用例与手工验收看到与初始一致的 Vault）
     await ensureTreeRow(page, '工程')

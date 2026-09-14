@@ -11,19 +11,27 @@
  * 它同时是"标签页与 note-store/vault-store 对账"的装配点（{@link installTabsSync}）——
  * 挂载即安装、卸载即撤销（副作用可逆）。
  *
- * 布局：根节点是 `flex: 0 0 auto` 的一行，**期望的父容器是 `.mn-main`**（主区域），
- * 挂在 `.mn-main` 的第一个子节点上；`tabs.css` 里的 `.mn-main:has(> .mn-tabs)` 规则
- * 只在这一行真的存在时把主区域改成列方向，因此"没有标签"时布局与从前完全一致
- * （文件树、右侧面板、`.mn-body` 的高度契约都不受影响）。
+ * 布局：根节点是 `flex: 0 0 auto` 的一行，挂在 **`.mn-app`** 上（标题栏之下、`.mn-body` 之上），
+ * 因此横跨整个窗口宽度 —— 标签是"这个窗口开着哪几篇笔记"的全局信息，不该被侧栏挤窄。
+ * 它曾经挂在 `.mn-main` 里并靠 `:has(> .mn-tabs)` 把主区域改成列方向；移到窗口顶部之后
+ * 那条规则已删（见 `tabs.css` 的文件头）。
+ *
+ * 右键一个标签会打开操作菜单（关闭 / 关闭其他 / 关闭全部 / 在文件树中定位）——
+ * 关闭走的是 store 里的同一批动作（`closeTab` / `closeOthers` / `closeAll`），
+ * 未保存确认与光标记忆因此与 `Ctrl+W`、`×` 完全一致。
  */
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 
+import { REVEAL_ROW_EVENT } from '@/app/dom-events'
+import { ContextMenu, type ContextMenuItem } from '@/components/ContextMenu'
 import { Icon } from '@/components/Icon'
 import { basename } from '@/domain/paths'
 import { useNoteStore } from '@/state/note-store'
 import { installTabsSync, setCaretMemory, useTabsStore } from '@/state/tabs-store'
+import { useUiStore } from '@/state/ui-store'
+import { useVaultStore } from '@/state/vault-store'
 
 import { clearCaretMemory, editorCaretMemory } from './caret-memory'
 import './tabs.css'
@@ -48,6 +56,8 @@ export function TabBar() {
   const conflicted = useNoteStore((state) => state.conflict !== null)
 
   const stripRef = useRef<HTMLDivElement | null>(null)
+  /** 标签右键菜单（`null` = 没打开）。位置与目标都在这里，`TabBar` 自己持有。 */
+  const [menu, setMenu] = useState<{ relPath: string; x: number; y: number } | null>(null)
 
   useEffect(() => {
     // 安装对账（note-store 新打开的笔记 → 补进列表；换 Vault → 清空并恢复）
@@ -110,6 +120,42 @@ export function TabBar() {
     void closeTab(relPath)
   }
 
+  /**
+   * 「在文件树中定位」：把那一行选中并滚进视野。
+   *
+   * 文件树可能正被收起（`Ctrl+B`）或已经被拖到别的停靠区 —— 所以先确保它可见，
+   * 再走既有的"选中 + 逐个展开祖先"链路（`vault-store` 的 `select` / `revealPath`），
+   * 最后发一条滚动事件（文件树是虚拟列表，滚动到某一行是它自己的知识）。
+   */
+  const revealInTree = (relPath: string): void => {
+    if (!useUiStore.getState().sidebarVisible) useUiStore.getState().toggleSidebar()
+    const vault = useVaultStore.getState()
+    vault.revealPath(relPath)
+    vault.select(relPath)
+    window.dispatchEvent(new CustomEvent(REVEAL_ROW_EVENT, { detail: { relPath } }))
+  }
+
+  const menuItems = (relPath: string): ContextMenuItem[] => [
+    { id: 'close', label: '关闭', onSelect: () => void closeTab(relPath) },
+    {
+      id: 'close-others',
+      label: '关闭其他',
+      disabled: tabs.length <= 1,
+      onSelect: () => void useTabsStore.getState().closeOthers(relPath),
+    },
+    {
+      id: 'close-all',
+      label: '关闭全部',
+      onSelect: () => void useTabsStore.getState().closeAll(),
+    },
+    {
+      id: 'reveal',
+      label: '在文件树中定位',
+      separatorBefore: true,
+      onSelect: () => revealInTree(relPath),
+    },
+  ]
+
   return (
     <div className="mn-tabs" role="tablist" aria-label="打开的笔记" ref={stripRef}>
       {tabs.map((relPath, index) => {
@@ -138,6 +184,10 @@ export function TabBar() {
             onClick={() => void activate(relPath)}
             onKeyDown={(event) => onKeyDown(event, index, relPath)}
             onAuxClick={(event) => onAuxClick(event, relPath)}
+            onContextMenu={(event) => {
+              event.preventDefault()
+              setMenu({ relPath, x: event.clientX, y: event.clientY })
+            }}
             // 中键默认会触发自动滚动，先挡掉
             onMouseDown={(event) => {
               if (event.button === 1) event.preventDefault()
@@ -169,6 +219,15 @@ export function TabBar() {
           </div>
         )
       })}
+      {menu !== null && (
+        <ContextMenu
+          items={menuItems(menu.relPath)}
+          x={menu.x}
+          y={menu.y}
+          ariaLabel={`${basename(menu.relPath)} 标签的操作菜单`}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </div>
   )
 }
