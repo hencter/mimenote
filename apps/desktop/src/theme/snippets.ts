@@ -46,3 +46,19 @@ export function activeSnippetNames(): string[] {
     (element) => element.getAttribute(SNIPPET_ATTR) ?? '',
   )
 }
+
+/**
+ * 当前生效片段的**内容**（导出静态站点时把它们一并带走）。
+ *
+ * 为什么从 DOM 里读而不是再调一次 `snippets_list`：DOM 里的就是**此刻真正生效的**那一份 ——
+ * 片段开关关掉之后它们根本不在；再查一次 IPC 会得到"磁盘上有什么"，与用户看到的样式可能不一致。
+ * 导出件要复现的是用户眼前的样子，不是磁盘上的潜在状态（与 `readExportTokens` 从计算样式
+ * 取主题令牌同一条理由）。
+ */
+export function collectSnippetCss(): Array<{ name: string; content: string }> {
+  if (typeof document === 'undefined') return []
+  return Array.from(document.querySelectorAll(`style[${SNIPPET_ATTR}]`)).map((element) => ({
+    name: element.getAttribute(SNIPPET_ATTR) ?? 'snippet',
+    content: element.textContent ?? '',
+  }))
+}

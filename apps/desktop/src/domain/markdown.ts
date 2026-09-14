@@ -33,6 +33,28 @@ const WIKILINK_HREF = '#mn-wikilink'
 const NON_IMAGE_EMBED_TITLE = '嵌入非图片目标，按链接显示'
 
 /**
+ * `![[目标]]` → `<a>` 之外的**另一种出口**：整库导出静态站点时，链接要指向另一份 HTML。
+ *
+ * 由 `env.resolveWikilink` 提供：返回 href 就按它渲染 `<a>`，返回 `null` 表示这个目标**不存在**
+ * （悬空链接）—— 那时渲染成不可点的 `<span>`，而不是一个点下去什么都不会发生的 `<a href="#mn-wikilink">`。
+ *
+ * 为什么做成 env 钩子而不是让导出侧去改渲染出来的 HTML 字符串：改写 HTML 要对"我们自己生成的
+ * 属性顺序"做正则，那是把一份契约偷偷埋进字符串里；钩子让"链接指向哪"只有一处判断，
+ * 而**规则本身**（谁能解析到谁）依然只有链接索引那一份 —— 这里拿到的已经是解析结果。
+ */
+export type WikilinkResolver = (target: string, anchor: string | null) => string | null
+
+function resolveWikilinkHref(
+  env: Record<string, unknown>,
+  target: string,
+  anchor: string | null,
+): { href: string | null; resolved: boolean } {
+  const resolver = (env as { resolveWikilink?: WikilinkResolver }).resolveWikilink
+  if (typeof resolver !== 'function') return { href: WIKILINK_HREF, resolved: false }
+  return { href: resolver(target, anchor), resolved: true }
+}
+
+/**
  * wikilink → `<a>` 的 HTML（`[[…]]` 与 `![[…]]` 共用）。
  *
  * 为什么嵌入非图片目标要复用这一段：`![[另一篇笔记]]` 的**下游行为**必须与 `[[另一篇笔记]]`
@@ -43,19 +65,34 @@ const NON_IMAGE_EMBED_TITLE = '嵌入非图片目标，按链接显示'
  * 悬空 → "还不存在，点击创建"），直接写在 `<a>` 上的说明会被覆盖；包一层内层元素后，
  * 鼠标停在内层文本上读到的是"嵌入非图片目标，按链接显示"，停在别处才是跳转提示。
  */
-function wikilinkAnchorHtml(inner: string, embed: boolean): string {
+function wikilinkAnchorHtml(
+  inner: string,
+  embed: boolean,
+  env: Record<string, unknown> = {},
+): string {
   const parts = splitWikilink(inner)
   const display = escapeHtml(wikilinkDisplayText(parts))
   const body = embed
     ? `<span class="mn-wikilink__embed" title="${NON_IMAGE_EMBED_TITLE}">${display}</span>`
     : display
-  return (
-    `<a class="mn-wikilink" href="${WIKILINK_HREF}"` +
+  const { href, resolved } = resolveWikilinkHref(env, parts.target, parts.anchor ?? null)
+  const data =
     ` data-target="${escapeHtml(parts.target)}"` +
     ` data-anchor="${escapeHtml(parts.anchor ?? '')}"` +
-    (embed ? ` data-mn-embed="non-image" title="${NON_IMAGE_EMBED_TITLE}"` : '') +
-    `>${body}</a>`
-  )
+    (embed ? ` data-mn-embed="non-image" title="${NON_IMAGE_EMBED_TITLE}"` : '')
+
+  // 悬空（解析器明确说"没有这个目标"）：渲染成不可点的文字，并把原因写在 title 上。
+  // **只有**解析器在场时才这么做 —— 应用内的预览没有这个钩子，它靠索引异步补类名与跳转行为。
+  if (resolved && href === null) {
+    return (
+      `<span class="mn-wikilink mn-wikilink--dangling"` +
+      ` data-target="${escapeHtml(parts.target)}"` +
+      ` title="还不存在的笔记：${escapeHtml(parts.target)}"` +
+      `>${body}</span>`
+    )
+  }
+
+  return `<a class="mn-wikilink" href="${escapeHtml(href ?? WIKILINK_HREF)}"${data}>${body}</a>`
 }
 
 /**
@@ -77,7 +114,7 @@ md.inline.ruler.before('link', 'mn_wikilink', (state, silent) => {
 
   if (!silent) {
     const token = state.push('html_inline', '', 0)
-    token.content = wikilinkAnchorHtml(inner, false)
+    token.content = wikilinkAnchorHtml(inner, false, state.env as Record<string, unknown>)
   }
   state.pos = end + 2
   return true
@@ -126,7 +163,7 @@ md.inline.ruler.before('mn_wikilink', 'mn_embed', (state, silent) => {
       token.children = []
     } else {
       const token = state.push('html_inline', '', 0)
-      token.content = wikilinkAnchorHtml(inner, true)
+      token.content = wikilinkAnchorHtml(inner, true, state.env as Record<string, unknown>)
     }
   }
   state.pos = end + 2
@@ -164,6 +201,21 @@ function isOnlyImageContent(tokens: readonly { type: string; content: string }[]
  * 不该假设上游永远正确；不匹配就退回占位元素，绝不让可疑 URL 进到 `<img src>`。
  */
 const SAFE_IMAGE_URL = /^(?:https?:\/\/|asset:\/\/|blob:|data:image\/)/i
+
+/**
+ * **不带 scheme** 的相对地址也放行（`assets/附件/图.png`、`../图.png`）。
+ *
+ * 为什么必须放行：整库导出的静态站点把图片**复制**进 `assets/`，页面里引的是相对路径 ——
+ * 那是"这份目录拷到任何地方都能看"的唯一写法（内嵌 `data:` 会让同一张图在几千个页面里各存一份，
+ * 见 ADR-0019）。安全上没有放松：这里拒绝任何 scheme（含 `javascript:`）与协议相对地址（`//host/x`），
+ * 相对地址在浏览器里只可能解析到同一个目录树内，执行不了脚本。
+ */
+const RELATIVE_IMAGE_URL = /^(?!\s*\/\/)[^\\:?#]*$/i
+
+/** 渲染层认可的图片地址：白名单 scheme，或"没有 scheme 的相对地址"。 */
+function isSafeImageUrl(url: string): boolean {
+  return SAFE_IMAGE_URL.test(url) || RELATIVE_IMAGE_URL.test(url)
+}
 
 /**
  * 图片解析结果。
@@ -206,7 +258,7 @@ md.renderer.rules.image = (tokens, idx, _options, env, _self) => {
   if (resolution.kind === 'unauthorized') {
     return imagePlaceholderHtml(src, alt, resolution.rel)
   }
-  if (!SAFE_IMAGE_URL.test(resolution.url)) return imagePlaceholderHtml(src, alt)
+  if (!isSafeImageUrl(resolution.url)) return imagePlaceholderHtml(src, alt)
 
   // 图注：优先 alt（`![[图.png|图注]]` 的别名就走这里），没有 alt 才退到 title。
   // 写了尺寸标记时**不出图注** —— 那时的 alt 是我们补的文件名（为了无障碍），
@@ -314,8 +366,46 @@ export function sanitizeHtml(html: string): string {
   return DOMPurify.sanitize(html, PURIFY_CONFIG)
 }
 
-/** 渲染 Markdown 为**已净化**的 HTML。`env` 会原样传给 markdown-it 规则（例如 `resolveImage`）。 */
+/**
+ * 标题锚点 id：`env.headingIds === true` 时给每个标题一个 `id`，让 `[[某篇#小节]]` 真的能跳。
+ *
+ * 为什么默认关：应用内的阅读视图**不需要**它（标题跳转走的是 `outline-scroll.ts` 按元素定位），
+ * 而给每个标题塞一个 id 会让"渲染结果"多出一批与应用无关的属性；静态站点则需要它 ——
+ * 否则那些带锚点的链接点下去只会停在页面顶部，看起来像"链接坏了"。
+ *
+ * id 取标题的**纯文本**（浏览器会把 `#%E5%B0%8F%E8%8A%82` 解码后再去对 id，所以无需在这里编码），
+ * 同名标题按出现顺序追加 `-1`/`-2`（首个不带后缀）—— 与 Obsidian 的口径一致，
+ * 也因此"重复标题的链接落到第一处"是可预期的。
+ */
+function installHeadingIds(env: Record<string, unknown>): void {
+  const counted = new Map<string, number>()
+  env['mn-heading-ids'] = counted
+}
+
+md.renderer.rules.heading_open = (tokens, idx, options, env, self) => {
+  const counted = (env as Record<string, unknown>)['mn-heading-ids']
+  if (counted instanceof Map) {
+    const inline = tokens[idx + 1]
+    const text = (inline?.content ?? '').trim()
+    if (text !== '') {
+      const seen = (counted.get(text) as number | undefined) ?? 0
+      counted.set(text, seen + 1)
+      const token = tokens[idx]
+      if (token !== undefined) token.attrSet('id', seen === 0 ? text : `${text}-${seen}`)
+    }
+  }
+  return self.renderToken(tokens, idx, options)
+}
+
+/**
+ * 渲染 Markdown 为**已净化**的 HTML。
+ *
+ * `env` 会原样传给 markdown-it 规则，除了三个我们自己认的钩子之外（它们都不影响应用内的渲染）：
+ * `resolveImage`（图片能不能显示，ADR-0007）、`resolveWikilink`（链接指向哪个 URL，整库导出用）、
+ * `headingIds`（要不要给标题生成锚点 id，整库导出用）。
+ */
 export function renderMarkdown(source: string, env: Record<string, unknown> = {}): string {
+  if (env['headingIds'] === true) installHeadingIds(env)
   return sanitizeHtml(md.render(source, env))
 }
 

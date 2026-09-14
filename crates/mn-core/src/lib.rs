@@ -16,6 +16,7 @@ pub mod frontmatter;
 pub mod links;
 pub mod path_guard;
 pub mod scanner;
+pub mod site;
 pub mod tags;
 pub mod text_stats;
 pub mod trash;
@@ -28,6 +29,11 @@ pub use frontmatter::{
 pub use links::{extract_links, LinkKind, LinkRef};
 pub use path_guard::VaultRoot;
 pub use scanner::{scan, EntryMeta, ScanOptions, ScanReport};
+pub use site::{
+    document_stem, encode_anchor, encode_url_path, encode_url_segment, is_markdown_note,
+    page_rel_path_for, relative_href, reserve_page_paths, site_rel_dir, PageRename, SITE_ASSET_DIR,
+    SITE_CSS_FILE, SITE_INDEX_FILE, SITE_MARKER_FILE,
+};
 pub use tags::{
     apply_tag_edits, extract_tags, normalize_tag, rename_tags, tag_move_target, TagRef, TagRename,
     TagRewrite, TagSource,

@@ -21,10 +21,16 @@ import type {
   NoteContent,
   NoteLinks,
   NoteTags,
+  NotesBatch,
   RenameOutcome,
   RestoreSummary,
   SearchResult,
   SetTagsOutcome,
+  SiteAssetInput,
+  SiteAssetOutcome,
+  SiteFile,
+  SitePlan,
+  SiteWriteOutcome,
   SnippetFile,
   TagFilterResult,
   TagNotes,
@@ -299,6 +305,48 @@ export const ipc = {
    */
   exportWriteHtml: (path: string, html: string) =>
     call<ExportWriteOutcome>('export_write_html', { path, html }),
+
+  /**
+   * **整库导出的计划**（ADR-0019）：谁指向谁、每篇落在哪个 URL、有哪些悬空链接。
+   *
+   * 只读、不碰文件，且**只回一次**（4 千篇笔记的计划是几 MB 的 JSON，逐篇问会是几千次往返）。
+   * 传了 `outputDir` 就顺带做目标目录预检并回带上次导出的标记内容（`previous`）——
+   * 前端据此在开始写之前就把"这个目录能不能用""上次写过哪些文件"说清楚。
+   *
+   * 链接索引还没就绪时返回 `INDEX_NOT_READY`，而不是一个空计划：空的计划会被理解成
+   * "这个 Vault 里没有链接"，那是**错的**信息。
+   */
+  sitePlan: (outputDir: string | null = null) =>
+    call<SitePlan>('export_site_plan', { outputDir }),
+
+  /**
+   * 批量读原文（整库导出用）。
+   *
+   * 存在的理由只有一条：4 千篇笔记逐篇 `note_read` 是 4 千次往返，而导出本身要读的
+   * 正好是全部笔记。单篇失败**不影响整批**，进 `skipped` 并如实汇报（与 `tag_rename` 同一口径）。
+   */
+  notesReadBatch: (relPaths: readonly string[]) =>
+    call<NotesBatch>('notes_read_batch', { relPaths: [...relPaths] }),
+
+  /**
+   * 把一批站点文件写进用户选定的输出目录。
+   *
+   * **批内按数组顺序写** —— 前端依赖这一点把 `index.html` 与标记文件留到最后：
+   * 中途取消或断电时，目录里不会出现任何"自称导出完成"的东西。
+   * 扩展名被收窄成 `.html` / `.css` / `.json`（与 `export_write_html` 同一条思路），
+   * 且每个路径都要逐段校验（`..`、盘符、ADS、保留设备名全部拒绝）。
+   */
+  siteWritePages: (outputDir: string, files: readonly SiteFile[]) =>
+    call<SiteWriteOutcome>('export_site_write_pages', { outputDir, files: [...files] }),
+
+  /**
+   * 把图片复制进站点的 `assets/`（**复制而不是内嵌 `data:`**）。
+   *
+   * 单个自包含 HTML 必须内嵌（ADR-0011），但静态站是一个目录：同一张图在几千个页面里
+   * 各存一份 base64 既浪费又没法被浏览器缓存。字节只在宿主里搬，不经过 IPC。
+   */
+  siteCopyAssets: (outputDir: string, assets: readonly SiteAssetInput[]) =>
+    call<SiteAssetOutcome>('export_site_copy_assets', { outputDir, assets: [...assets] }),
 
   /**
    * 全文搜索（宿主侧 SQLite FTS5 索引）。

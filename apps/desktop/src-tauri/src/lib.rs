@@ -15,6 +15,7 @@ pub mod error;
 pub mod export;
 pub mod indexer;
 pub mod logging;
+pub mod site_export;
 pub mod startup;
 pub mod state;
 pub mod watcher;
@@ -40,6 +41,9 @@ pub fn run() {
             commands::vault_snapshot,
             commands::vault_close,
             commands::note_read,
+            // 整库导出要拿全库正文去渲染，一次一篇会变成几千次往返（上限 64 篇 / 次，
+            // 单篇失败只进 `skipped`）—— 见 commands.rs 的 notes_read_batch 文档
+            commands::notes_read_batch,
             commands::note_write,
             // 标签面板的写入口：与 note_write 同一把写锁 + 同一份 mtime 令牌 + 同一个原子写，
             // 只多一步"在区块里按最小 diff 改 tags"（见 commands.rs 的 note_set_tags 文档）
@@ -82,6 +86,13 @@ pub fn run() {
             // 只接受图片扩展名、只写 Vault 之内，见 `attachments.rs` 与 ADR-0013）
             attachments::attachment_save,
             export::export_write_html,
+            // 整库导出静态站点：宿主出计划（索引驱动的链接解析 + URL 分配）、前端渲染正文、
+            // 宿主批量落盘。三条命令**全部**在这里做输出目录校验（必须在 Vault 之外、
+            // 只认自己写的标记文件、逐段路径校验、绝不写到输出目录之外）——
+            // 策略与理由见 `site_export.rs` 的模块文档
+            site_export::export_site_plan,
+            site_export::export_site_write_pages,
+            site_export::export_site_copy_assets,
             commands::snippets_list,
             commands::startup_vault,
             commands::version_info,

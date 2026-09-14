@@ -401,6 +401,139 @@ export interface ExportWriteOutcome {
   writtenInMs: number
 }
 
+// ---------------------------------------------------------------------------
+// 整库导出静态站点（ADR-0019）
+//
+// 形状的由来：Markdown→HTML 的**唯一一份**渲染管线在前端（`domain/markdown.ts`），
+// 链接解析的**唯一一份**规则在链接索引（`mn-index`）。因此整库导出天然是三段：
+// **宿主出计划**（谁指向谁、每篇落在哪个 URL）→ **前端渲染** → **宿主批量落盘**。
+// 这一组类型就是那三段之间唯一的契约。
+// ---------------------------------------------------------------------------
+
+/**
+ * 一份笔记在站点里的位置（`mn_index::site::SitePage`）。
+ *
+ * `urlPath` 是**已编码**的站内路径（CJK 与 `#` 都会变成百分号编码），而 `pagePath` 是
+ * 磁盘上的真实相对路径（保留原文件名）—— 两者故意分开：磁盘上要能直接双击打开，
+ * href 里要能安全地放进 `<a href>`。
+ */
+export interface SitePage {
+  /** 源笔记的 Vault 相对路径。 */
+  relPath: string
+  /** 站内相对路径（`项目/设计.html`）。 */
+  pagePath: string
+  /** 编码后的站内路径（`%E9%A1%B9%E7%9B%AE/%E8%AE%BE%E8%AE%A1.html`）。 */
+  urlPath: string
+  /** 页面标题（frontmatter `title` 优先，其次文件名主干 —— 与图谱卡片同口径）。 */
+  title: string
+  /** 该篇的标签（去重后按归一化键排序，值是首次出现的写法）。 */
+  tags: string[]
+  /** 出链（按正文出现顺序）。 */
+  links: SiteLink[]
+  /** 指向本篇的来源笔记（相对路径，已排序）—— 页面底部的反向链接用它。 */
+  backlinks: string[]
+}
+
+/**
+ * 页面里的一条 wikilink 解析结果（`mn_index::site::SiteLink`）。
+ *
+ * `target` 与前端渲染出的 `data-target` **逐字一致**，前端据此查表把 `href` 贴上去 ——
+ * 于是"链接怎么解析"这条规则只有索引那一份，前端不复制。
+ */
+export interface SiteLink {
+  /** 原文里写的目标（`[[目标|别名#锚点]]` 里取 `目标` 那一段）。 */
+  target: string
+  anchor: string | null
+  /** 相对本页的 href（已编码、含片段）；`null` = 悬空链接（目标还不存在）。 */
+  href: string | null
+  /** 显示文本（别名优先）。 */
+  display: string
+}
+
+/** 页面被改名（同名笔记映射到同一个 `.html` 时，只有一份能占住原名）。 */
+export interface SiteRename {
+  relPath: string
+  pagePath: string
+}
+
+/** 计划统计（进度与结果摘要都用它）。 */
+export interface SiteStats {
+  notes: number
+  pages: number
+  links: number
+  /** 悬空链接条数（指向不存在的笔记）。 */
+  dangling: number
+  assets: number
+  renamed: SiteRename[]
+}
+
+/** 目标目录里**我们上次写的**标记文件内容（`mimenote-export.json`）。 */
+export interface SitePreviousExport {
+  exportedAtMs: number
+  files: string[]
+  vaultName: string
+}
+
+/** 整库导出计划（`mn_index::site::SitePlan`）。 */
+export interface SitePlan {
+  vaultName: string
+  /** 传了输出目录时回显它（规范化后的绝对路径）；没传 = `null`。 */
+  outputDir: string | null
+  /** 目标目录里已有的上次导出（按它的文件清单算"这次没写、上次写过"的残留）。 */
+  previous: SitePreviousExport | null
+  pages: SitePage[]
+  stats: SiteStats
+  /** 计划里用到的图片（Vault 相对路径）——**只作为提示**，真正的清单来自前端渲染时的收集。 */
+  assets: string[]
+}
+
+/** 一次批量操作里被跳过的一项（与 `TagRenameSkip` 同一套"如实汇报"口径）。 */
+export interface SiteSkip {
+  relPath: string
+  /**
+   * 原因：`not-found` / `unreadable` / `not-utf8` / `too-large` /
+   * `unsupported-type` / `path-escape`。
+   */
+  reason: string
+  message: string
+}
+
+/** 批量读原文的结果（`mimenote_lib::commands::NotesBatch`）。 */
+export interface NotesBatch {
+  items: NoteContent[]
+  skipped: SiteSkip[]
+}
+
+/** 要写进站点的一个文件。 */
+export interface SiteFile {
+  /** 站内相对路径（`index.html`、`assets/site.css`、`mimenote-export.json`）。 */
+  relPath: string
+  text: string
+}
+
+/** 站点文件落盘结果。 */
+export interface SiteWriteOutcome {
+  outputDir: string
+  files: number
+  bytes: number
+  writtenInMs: number
+  /** 本次新建的目录（站内相对路径，自浅到深）。 */
+  createdDirs: string[]
+}
+
+/** 要复制进站点的一张图。 */
+export interface SiteAssetInput {
+  vaultRelPath: string
+}
+
+/** 图片复制结果。 */
+export interface SiteAssetOutcome {
+  copied: number
+  bytes: number
+  createdDirs: string[]
+  skipped: SiteSkip[]
+}
+
 /** 一条搜索命中（`mimenote_lib::commands::SearchHit`）。 */
 export interface SearchHit {
   relPath: string
@@ -525,6 +658,13 @@ export type ErrorCode =
   | 'NOT_UTF8'
   /** 附件类型/载荷不被接受（非图片扩展名、空载荷、非法 base64）—— 宿主 `attachments.rs` 新增。 */
   | 'UNSUPPORTED_MEDIA'
+  /**
+   * 链接索引还没就绪（正在构建）—— 整库导出（ADR-0019）新增。
+   *
+   * 为什么不借 `IO`：`describeError` 会把 `IO` 翻成"磁盘读写失败"，而真实情况是
+   * "索引还在构建，等一下就好"。那句话比不说还糟：用户会去查磁盘。
+   */
+  | 'INDEX_NOT_READY'
   /** 宿主内部错误（面板/painc/适配器未初始化等）。 */
   | 'INTERNAL'
   /** 用户取消（例如关闭了文件夹选择框）。 */
@@ -546,6 +686,7 @@ const KNOWN_CODES: ReadonlySet<string> = new Set<ErrorCode>([
   'IO',
   'NOT_UTF8',
   'UNSUPPORTED_MEDIA',
+  'INDEX_NOT_READY',
   'INTERNAL',
   'CANCELLED',
 ])
@@ -642,9 +783,31 @@ export function describeError(error: MimenoteError, context?: string): string {
       return `${prefix}只接受图片附件（png / jpg / jpeg / gif / webp / avif / bmp / svg / ico）：${error.message}`
     case 'CANCELLED':
       return `${prefix}已取消`
+    case 'INDEX_NOT_READY':
+      // 宿主已经在 message 里写清了进度（"索引正在构建 3000/4267"），这里只补一句"要做什么"
+      return `${prefix}链接索引还在构建，稍等一下再试${error.message.trim() === '' ? '' : `：${error.message}`}`
     case 'IO':
       return `${prefix}磁盘读写失败：${error.message}`
     default:
       return `${prefix}${error.message}`
   }
+}
+
+/**
+ * 面向用户的文案，但**优先用宿主自己写的那句话**（拿不到才退回 {@link describeError}）。
+ *
+ * 为什么需要它：`describeError` 是按错误码翻译的，遇到 `PATH_INVALID` 会统一翻成
+ * "路径不合法或被拒绝（已阻止越界访问）"—— 那句话对"文件树里拖拽越界"是对的，但对
+ * **有具体业务理由**的拒绝就是错的：整库导出把输出目录选在 Vault 里、把标签挂到它自己下面，
+ * 宿主写的都是"为什么不行、该怎么做"（"输出目录不能放在 Vault 里面：…"），
+ * 一翻译就只剩"路径不合法"，用户完全不知道该怎么办。
+ *
+ * 判定规则只有一条：**宿主的 message 非空就用它**（宿主的错误信息本来就是写给用户看的中文；
+ * 真正面向开发者的细节在 `detail` 里）。空 message 才说明这是"合成"出来的错误，
+ * 那时按错误码翻译更靠谱。
+ */
+export function describeHostReason(error: MimenoteError, context?: string): string {
+  const message = error.message.trim()
+  if (message !== '') return context === undefined ? message : `${context}：${message}`
+  return describeError(error, context)
 }

@@ -83,18 +83,7 @@ impl VaultRoot {
 
     /// 解析一个**准备写入**的相对路径（允许末段尚不存在，但父目录必须已存在且安全）。
     pub fn resolve_for_write(&self, rel: &str) -> Result<PathBuf> {
-        let segments = validate_relative_path(rel)?;
-        let mut candidate = self.root.clone();
-        for seg in &segments {
-            candidate.push(seg);
-        }
-        // 词法检查：joined 必须仍在 root 之内。
-        if !candidate.starts_with(&self.root) {
-            return Err(Error::PathEscape(rel.to_string()));
-        }
-        // 符号链接检查：逐级确认没有跳出 root。
-        ensure_no_escape(&self.root, &candidate)?;
-        Ok(candidate)
+        resolve_under(&self.root, rel)
     }
 
     /// 面向用户展示的、相对根的显示路径（统一 `/` 分隔）。
@@ -111,6 +100,34 @@ impl VaultRoot {
         }
         Some(out)
     }
+}
+
+/// 把一个**任意根目录**加相对路径解析成绝对路径（词法检查 + 逐级符号链接检查）。
+///
+/// 为什么不只服务 [`VaultRoot`]：Vault 之外还有第二个"用户可以指定根、我们往里写文件"的场景
+/// —— 整库导出的输出目录（`site_export.rs`）。那里的威胁模型与 Vault 一模一样：
+/// 输出目录可能是同步盘里的一个目录，里面可能预先躺着一个指向外部的符号链接
+/// （`link` → `..\..\evil`），而宿主随后要往里写上千个文件。
+/// 与其在导出那侧再写一份"检查 `..`、检查盘符、检查保留名、检查符号链接"，不如把
+/// [`VaultRoot::resolve_for_write`] 的整套判定提出来复用 —— 两份实现的漂移方向是
+/// 单向的（总有一份先被修补），而漏掉的那一份就是一条任意写入路径。
+///
+/// 返回的路径保证：在 `root` 之内、各段合法、**沿途已有的符号链接都没有逃出 `root`**。
+/// 末段或更深的层级可以尚不存在（那正是"准备写入"的含义）。
+pub fn resolve_under(root: &Path, rel: &str) -> Result<PathBuf> {
+    let segments = validate_relative_path(rel)?;
+    let mut candidate = root.to_path_buf();
+    for segment in &segments {
+        candidate.push(segment);
+    }
+    // 词法检查：拼出来的路径必须仍在 root 之内。
+    if !candidate.starts_with(root) {
+        return Err(Error::PathEscape(rel.to_string()));
+    }
+    // 符号链接检查：逐级确认没有跳出 root。注意这一步**必须在 `create_dir_all` 之前**跑，
+    // 反过来（先建目录再检查）等于让一个预先存在的符号链接决定落点。
+    ensure_no_escape(root, &candidate)?;
+    Ok(candidate)
 }
 
 /// 校验相对路径并返回其各段。
@@ -434,5 +451,82 @@ mod tests {
 
         let err = root.resolve_existing("link.md").unwrap_err();
         assert_eq!(err.code(), ErrorCode::PathEscape);
+    }
+
+    /// [`resolve_under`] 把上面那一整套判定搬到了"任意根"上，规则必须一模一样。
+    #[test]
+    fn resolve_under_reuses_the_same_rules_for_any_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        let resolved = resolve_under(&root, "导出/站点/index.html").unwrap();
+        assert!(resolved.starts_with(&root));
+        assert!(!resolved.exists(), "准备写入的路径允许还不存在");
+
+        for bad in [
+            "",
+            "../外面.html",
+            "a/../../外面.html",
+            "/绝对.html",
+            r"C:\Windows\x.html",
+            r"\\server\share\x.html",
+            "a:b.html",
+            "con.html",
+            "link/nul",
+            "x.",
+            "x ",
+            "a//b.html",
+        ] {
+            assert_eq!(
+                resolve_under(&root, bad).unwrap_err().code(),
+                ErrorCode::PathInvalid,
+                "应拒绝：{bad:?}"
+            );
+        }
+    }
+
+    /// 导出目录里**预先躺着**的符号链接同样要拦住：与 Vault 里的逃逸是同一个威胁，
+    /// 只是根换了一个（见 [`resolve_under`] 的文档）。
+    #[test]
+    fn resolve_under_rejects_a_symlink_that_escapes_any_root() {
+        let outer = tempfile::tempdir().unwrap();
+        let inner = tempfile::tempdir().unwrap();
+        fs::create_dir_all(outer.path().join("evil")).unwrap();
+        let root = inner.path().canonicalize().unwrap();
+
+        let link = inner.path().join("link");
+        if !make_dir_link(&outer.path().join("evil"), &link) {
+            eprintln!("跳过：当前环境既建不了符号链接也建不了联接（Windows 需要开发者模式）");
+            return;
+        }
+
+        let err = resolve_under(&root, "link/x.html").unwrap_err();
+        assert_eq!(err.code(), ErrorCode::PathEscape);
+    }
+
+    /// 建一个指向 `target` 的目录链接，成功返回 `true`。
+    ///
+    /// 先试真符号链接；失败时在 Windows 上退回**联接**（`mklink /J`，不需要任何特权，
+    /// 但对 `symlink_metadata` 同样是重解析点）。这条回退让"逃逸的链接"这条判定在
+    /// 没有开发者模式的机器上也能真跑一遍，而不是被静默跳过。
+    fn make_dir_link(target: &Path, link: &Path) -> bool {
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(target, link).is_ok() {
+                true
+            } else {
+                std::process::Command::new("cmd")
+                    .args(["/C", "mklink", "/J"])
+                    .arg(link)
+                    .arg(target)
+                    .output()
+                    .map(|output| output.status.success())
+                    .unwrap_or(false)
+            }
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link).is_ok()
+        }
     }
 }

@@ -26,6 +26,7 @@ import type {
   NoteContent,
   NoteLinks,
   NoteTags,
+  NotesBatch,
   RenameLinkUpdate,
   RenameOutcome,
   ResolvedLink,
@@ -33,6 +34,13 @@ import type {
   SearchHit,
   SearchResult,
   SetTagsOutcome,
+  SiteAssetInput,
+  SiteAssetOutcome,
+  SiteFile,
+  SitePage,
+  SitePlan,
+  SiteSkip,
+  SiteWriteOutcome,
   TagFilterResult,
   TagNotes,
   TagRef,
@@ -57,6 +65,7 @@ import {
   uniqueAttachmentName,
 } from '@/domain/attachments'
 import { isImageAssetTarget } from '@/domain/assets'
+import { assignPagePaths, encodeUrlPath, siteRelativeHref } from '@/domain/site-paths'
 import { normalizeLinkTarget, splitWikilink, wikilinkDisplayText } from '@/domain/links'
 import { basename, extensionOf, joinRel, parentOf } from '@/domain/paths'
 
@@ -1486,6 +1495,14 @@ const MOCK_IMAGE_MIMES: Readonly<Record<string, string>> = {
 /** 导出文件扩展名白名单（与宿主 `ALLOWED_EXPORT_EXTENSIONS` 一致）。 */
 const MOCK_EXPORT_EXTENSIONS: readonly string[] = ['html', 'htm']
 
+/**
+ * 站点文件的扩展名白名单（与宿主 `site_export.rs` 的 `ALLOWED_SITE_EXTENSIONS` 一致）。
+ *
+ * 与单篇导出的区别：整库导出还要写一份共享样式表与一个标记文件，所以多了 `.css` / `.json`；
+ * 但仍然**不含 `.md`** —— 这条命令是"往一个目录里写很多文件"，白名单就是它的能力边界。
+ */
+const MOCK_SITE_FILE_EXTENSIONS: readonly string[] = ['html', 'css', 'json']
+
 /** 导出大小上限（与宿主 `MAX_EXPORT_BYTES` 一致）。 */
 const MOCK_MAX_EXPORT_BYTES = 32 * 1024 * 1024
 
@@ -1531,6 +1548,67 @@ function mockDecodeBase64(encoded: string): Uint8Array | null {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Mock 的整库导出（`mn_core::site` + `mn_index::site` 的简化镜像）
+//
+// ⚠️ 权威实现永远在 Rust 侧（`crates/mn-core/src/site.rs` 的页面命名与 URL 编码、
+// `crates/mn-index/src/site.rs` 的链接解析、`src-tauri/src/site_export.rs` 的落盘策略）。
+// 这里镜像到"能在浏览器里把整条导出链路跑通"为止：
+//
+// * **路径与 URL 算术直接复用前端那一份**（`domain/site-paths.ts`）—— Mock 与真实导出走的是
+//   同一段纯函数，因此这里不可能出现"Mock 的 href 与真机不一样"这种最阴的假绿；
+// * 链接用与 `note_links` **同一个** `createMockResolver`，因此"计划里的 href"与
+//   "反向链接面板里的解析结果"必然一致（两份规则漂移是这一层最该防的事）；
+// * **落盘只记账**（没有真实文件系统）：`export_site_write_pages` / `export_site_copy_assets`
+//   把写过的路径记下来供测试断言，返回与真机同形的结果。浏览器预览模式下前端本来就会
+//   在"没有系统目录选择框"这一步停下来并如实说明，不会假装写出去了。
+// ---------------------------------------------------------------------------
+
+/** 计划里的最小页面形状（出参在 `export_site_plan` 分支里补上标题、标签与统计）。 */
+interface MockSitePage {
+  relPath: string
+  pagePath: string
+  urlPath: string
+  links: Array<{ target: string; anchor: string | null; href: string | null; display: string }>
+  backlinks: string[]
+}
+
+function buildMockSitePlan(files: Map<string, MockNote>): MockSitePage[] {
+  const resolver = createMockResolver(files)
+  const notes = [...files.keys()].filter((rel) => isMockMarkdown(rel)).sort()
+  const { pageOf } = assignPagePaths(notes)
+
+  return notes.flatMap((rel) => {
+    const pagePath = pageOf.get(rel)
+    if (pagePath === undefined) return []
+    const note = files.get(rel)
+    const links = (note === undefined ? [] : mockExtractLinks(note.text)).map((link) => {
+      const resolved = resolver(rel, link.rawTarget)
+      const targetPage = resolved.path === null ? undefined : pageOf.get(resolved.path)
+      return {
+        target: link.rawTarget,
+        anchor: link.anchor,
+        href:
+          targetPage === undefined
+            ? null
+            : siteRelativeHref(pagePath, targetPage, link.anchor ?? null),
+        display: wikilinkDisplayText({
+          target: link.rawTarget,
+          alias: link.alias,
+          anchor: link.anchor,
+        }),
+      }
+    })
+    const backlinks = notes.filter((from) => {
+      if (from === rel) return false
+      const other = files.get(from)
+      if (other === undefined) return false
+      return mockExtractLinks(other.text).some((link) => resolver(from, link.rawTarget).path === rel)
+    })
+    return [{ relPath: rel, pagePath, urlPath: encodeUrlPath(pagePath), links, backlinks }]
+  })
+}
+
 export interface MockAdapter extends IpcAdapter {
   /** 模拟外部程序修改文件（用于手工验证冲突横幅）。 */
   simulateExternalEdit(relPath: string, text: string): void
@@ -1553,6 +1631,14 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
   const removedTexts = new Map<string, string>()
   /** 被删/被恢复时"曾经存在过的目录"：Mock 用了扁平的文件表，目录需要单独记一笔。 */
   const trashDirs = new Set<string>()
+  /**
+   * 整库导出"写出去"的站点文件（站内相对路径 → 内容）。
+   *
+   * Mock 没有真实文件系统，但测试要能断言"这次导出到底写了哪些页面、`index.html` 排在第几个"，
+   * 所以在这里记账。浏览器预览模式下前端根本走不到这一步（没有系统目录选择框），
+   * 这个表只服务于测试与"契约保持完整"。
+   */
+  const siteFiles = new Map<string, string>()
   /** 台账里的记录现在还算不算"东西还在"（模拟用户在文件管理器里清过回收站）。 */
   const goneFromTrash = new Set<string>()
   const presentInTrash = (record: TrashRecord): boolean => !goneFromTrash.has(record.id)
@@ -2624,6 +2710,165 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
             mtimes.set(item.relPath, touch())
             return { relPath: item.relPath, sizeBytes: item.bytes.length }
           })
+          return payload as T
+        }
+        case 'export_site_plan': {
+          // 整库导出的计划（ADR-0019 的 Mock 镜像）：页面表、每页的出链 href（相对本页）、
+          // 反向链接、标签与统计。刻意**不去动文件系统**：目标目录的预检在真宿主里做
+          // （那里才有真实路径），这里只在给了一个明显落在 Mock Vault 里面的目录时拒绝 ——
+          // 这条判定是整库导出最重要的一条安全规则，浏览器预览里也要能看见它生效。
+          const rawDir = a.outputDir === null || a.outputDir === undefined ? null : String(a.outputDir)
+          if (rawDir !== null) {
+            const normalized = rawDir.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase()
+            const vault = MOCK_VAULT_PATH.replaceAll('\\', '/').toLowerCase()
+            if (normalized === vault || normalized.startsWith(`${vault}/`)) {
+              fail(
+                'PATH_INVALID',
+                `输出目录不能放在 Vault 里面（${rawDir}）：导出会写出上千个文件，而 Vault 里的任何改动都会触发重扫，同步盘还会把整站上传一遍`,
+              )
+            }
+          }
+
+          const built = buildMockSitePlan(files)
+          // 标题与标签的口径**必须与图谱卡片一致**（frontmatter `title` 优先，其次文件名主干；
+          // 标签按归一化键去重后按字典序排、值是首次出现的写法）—— 这里刻意照抄 `graph_data`
+          // 分支的那两行推导，两处不一致的话"页面标题"和"卡片标题"会各说各话。
+          const titleOf = (rel: string): string => {
+            const note = files.get(rel)
+            const frontmatter = note === undefined ? null : mockParseFrontmatter(note.text)
+            const titleField = frontmatter?.fields.find((field) => field.key === 'title')
+            return titleField !== undefined && titleField.value.kind === 'scalar'
+              ? titleField.value.value
+              : (rel.split('/').pop() ?? rel).replace(/\.(md|markdown)$/i, '')
+          }
+          const tagKeysOf = (rel: string): string[] => {
+            const note = files.get(rel)
+            const byKey = new Map<string, string>()
+            for (const tag of note === undefined ? [] : mockExtractTags(note.text)) {
+              const key = mockNormalizeTag(tag.tag)
+              if (key !== '' && !byKey.has(key)) byKey.set(key, tag.tag)
+            }
+            return [...byKey.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, raw]) => raw)
+          }
+          const pages: SitePage[] = built.map((page) => ({
+            ...page,
+            title: titleOf(page.relPath),
+            tags: tagKeysOf(page.relPath),
+          }))
+          const payload: SitePlan = {
+            vaultName: MOCK_VAULT_PATH.split('\\').pop() ?? 'MockVault',
+            outputDir: rawDir,
+            previous: null,
+            pages,
+            stats: {
+              notes: pages.length,
+              pages: pages.length,
+              links: pages.reduce((sum, page) => sum + page.links.length, 0),
+              dangling: pages.reduce(
+                (sum, page) => sum + page.links.filter((link) => link.href === null).length,
+                0,
+              ),
+              assets: 0,
+              renamed: [],
+            },
+            assets: [],
+          }
+          return payload as T
+        }
+        case 'notes_read_batch': {
+          // 批量读的 Mock 镜像：单篇失败**不整批失败**（与宿主同一口径），
+          // 因此这里逐条 try 并如实记进 skipped，而不是一遇到坏路径就整批抛。
+          const requested = Array.isArray(a.relPaths) ? a.relPaths.map((item) => String(item)) : []
+          if (requested.length > 64) {
+            fail('PATH_INVALID', `一次最多读 64 篇（本次 ${requested.length} 篇）`)
+          }
+          const items: NoteContent[] = []
+          const skipped: SiteSkip[] = []
+          for (const rel of requested) {
+            const note = files.get(rel)
+            if (note === undefined) {
+              skipped.push({ relPath: rel, reason: 'not-found', message: '笔记不存在' })
+              continue
+            }
+            items.push({
+              relPath: rel,
+              text: note.text,
+              sizeBytes: new TextEncoder().encode(note.text).length,
+              mtimeMs: mtimeOf(rel),
+            })
+          }
+          const payload: NotesBatch = { items, skipped }
+          return payload as T
+        }
+        case 'export_site_write_pages': {
+          // 站点落盘的 Mock 镜像：**只记账**（浏览器里没有真实文件系统）。
+          // 白名单与路径校验照样做：`ui.e2e` 跑在这个适配器上，"Mock 说成功、真实宿主却拒绝"
+          // 是最难查的一类假绿（与 `attachment_save` / `export_write_html` 两个分支同一约定）。
+          const rawDir = String(a.outputDir ?? '')
+          if (rawDir.trim() === '') fail('PATH_INVALID', '输出目录为空')
+          const requested = Array.isArray(a.files) ? a.files : []
+          if (requested.length > 256) {
+            fail('TOO_LARGE', `一批最多写 256 个文件（本次 ${requested.length} 个）`)
+          }
+          const createdDirs = new Set<string>()
+          let bytes = 0
+          for (const raw of requested) {
+            const entry = (raw ?? {}) as Partial<SiteFile>
+            const rel = String(entry.relPath ?? '')
+            validate(rel)
+            const ext = mockExtensionOf(rel)
+            if (!MOCK_SITE_FILE_EXTENSIONS.includes(ext)) {
+              fail('PATH_INVALID', `站点文件只允许写 ${MOCK_SITE_FILE_EXTENSIONS.map((item) => `.${item}`).join(' / ')}（收到 .${ext || '无扩展名'}）`)
+            }
+            const text = String(entry.text ?? '')
+            bytes += new TextEncoder().encode(text).length
+            siteFiles.set(rel, text)
+            const dir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : ''
+            if (dir !== '') createdDirs.add(dir)
+          }
+          const payload: SiteWriteOutcome = {
+            outputDir: rawDir,
+            files: requested.length,
+            bytes,
+            writtenInMs: 1,
+            createdDirs: [...createdDirs].sort(),
+          }
+          return payload as T
+        }
+        case 'export_site_copy_assets': {
+          const rawDir = String(a.outputDir ?? '')
+          if (rawDir.trim() === '') fail('PATH_INVALID', '输出目录为空')
+          const requested = Array.isArray(a.assets) ? a.assets : []
+          if (requested.length > 512) {
+            fail('TOO_LARGE', `一次最多复制 512 张图片（本次 ${requested.length} 张）`)
+          }
+          const skipped: SiteSkip[] = []
+          const createdDirs = new Set<string>()
+          let copied = 0
+          let bytes = 0
+          for (const raw of requested) {
+            const entry = (raw ?? {}) as Partial<SiteAssetInput>
+            const rel = String(entry.vaultRelPath ?? '')
+            const ext = mockExtensionOf(rel)
+            if (MOCK_IMAGE_MIMES[ext] === undefined) {
+              skipped.push({ relPath: rel, reason: 'unsupported-type', message: '不是 Vault 支持的图片类型' })
+              continue
+            }
+            if (!files.has(rel) && !binaries.has(rel)) {
+              skipped.push({ relPath: rel, reason: 'not-found', message: '图片不存在' })
+              continue
+            }
+            copied += 1
+            bytes += binaries.get(rel)?.length ?? new TextEncoder().encode(files.get(rel)?.text ?? '').length
+            siteFiles.set(`assets/${rel}`, '（Mock：图片字节已在宿主侧复制）')
+            createdDirs.add('assets')
+          }
+          const payload: SiteAssetOutcome = {
+            copied,
+            bytes,
+            createdDirs: [...createdDirs].sort(),
+            skipped,
+          }
           return payload as T
         }
         case 'export_write_html': {

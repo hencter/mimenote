@@ -522,6 +522,100 @@ pub async fn note_read(
     })
 }
 
+/// 一次批量读取的结果（契约 `NotesBatch`）。
+///
+/// 为什么要有"批量"而不是让前端循环调 [`note_read`]：整库导出要把**每一篇笔记**的正文拿到
+/// 前端去渲染（几千次 IPC 往返是不可接受的开销，而且每次往返都要重新取一次 Vault 锁）。
+/// 出参是 `NoteContent`（与 [`note_read`] 同一个类型），前端不需要第二套正文模型。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotesBatch {
+    /// 读成功的笔记（按请求顺序）。
+    pub items: Vec<NoteContent>,
+    /// 读失败的笔记 + 原因（按请求顺序）。**单篇失败不整批失败**：
+    /// 导出 4267 篇时不能因为一篇被删/非 UTF-8 就让另外 4266 篇白跑。
+    pub skipped: Vec<crate::site_export::SiteSkip>,
+}
+
+/// 单批最多读几篇。
+///
+/// 上限的意义与其它批量命令一致：让**一次 IPC 的报文体积**有硬边界。一篇笔记渲染前是纯文本，
+/// 64 篇在正常笔记上不到 1 MB，而 4267 篇一次性发过来是几十 MB —— 那已经是一次内存事故。
+/// 超限返回 `PATH_INVALID`（与"路径不合法"同码：请求本身的形状不对，而不是某一篇读不到）。
+const MAX_BATCH_NOTES: usize = 64;
+
+/// 批量读取笔记原文（整库导出用；口径与 [`note_read`] 逐字相同）。
+///
+/// 逐篇独立失败：每篇各自的处境（已被删、非 UTF-8、超过读取上限、权限不足）都不该影响别人。
+/// 入参超过 [`MAX_BATCH_NOTES`] 条 → `PATH_INVALID`；空数组返回空结果（**不报错**）。
+#[tauri::command]
+pub async fn notes_read_batch(
+    state: State<'_, Arc<AppState>>,
+    rel_paths: Vec<String>,
+) -> Result<NotesBatch, IpcError> {
+    check_batch_size(rel_paths.len())?;
+    if rel_paths.is_empty() {
+        return Ok(NotesBatch {
+            items: Vec::new(),
+            skipped: Vec::new(),
+        });
+    }
+
+    let root = state.vault_root()?;
+    run_blocking(move || Ok(read_notes_batch(&root, &rel_paths))).await
+}
+
+/// 批量读取的数量上限校验（与 Tauri 无关，可单测）。
+fn check_batch_size(count: usize) -> Result<(), IpcError> {
+    if count > MAX_BATCH_NOTES {
+        return Err(Error::invalid(
+            format!("{count} 篇"),
+            format!("一次最多批量读取 {MAX_BATCH_NOTES} 篇笔记"),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// [`notes_read_batch`] 的主体（与 Tauri 无关，可单测）。
+fn read_notes_batch(root: &VaultRoot, rel_paths: &[String]) -> NotesBatch {
+    let mut items = Vec::with_capacity(rel_paths.len());
+    let mut skipped = Vec::new();
+
+    for rel in rel_paths {
+        match read_note_for_export(root, rel) {
+            Ok(content) => items.push(content),
+            Err(error) => skipped.push(crate::site_export::SiteSkip::new(
+                rel,
+                crate::site_export::SiteSkipReason::from_read_error(&error),
+                error.to_string(),
+            )),
+        }
+    }
+
+    NotesBatch { items, skipped }
+}
+
+/// 读一篇笔记的原文 + 条目表要的形状。
+///
+/// 与 [`note_read`] 是**同一套口径**（同一个 `resolve_existing`、同一个 `MAX_READ_BYTES`、
+/// 同一个"是目录就拒绝"、同一个 mtime 令牌）。没有把 `note_read` 改造成调用它，是为了
+/// 不给那条既有路径引入任何行为变化（`note_read` 是编辑器每次打开笔记都要走的路径）。
+fn read_note_for_export(root: &VaultRoot, rel: &str) -> mn_core::Result<NoteContent> {
+    let path = root.resolve_existing(rel)?;
+    let meta = std::fs::metadata(&path).map_err(|e| Error::io(&path, e))?;
+    if meta.is_dir() {
+        return Err(Error::IsDirectory(rel.to_string()));
+    }
+    let text = read_text(&path, MAX_READ_BYTES)?;
+    Ok(NoteContent {
+        rel_path: rel.to_string(),
+        text,
+        size_bytes: meta.len(),
+        mtime_ms: mn_core::atomic::mtime_ms(&meta).unwrap_or(0),
+    })
+}
+
 /// 保存笔记：mtime 令牌校验 → 原子写 → 增量更新缓存。
 ///
 /// `force = true` 表示用户在冲突横幅里明确选择了「覆盖保存」。
@@ -1217,7 +1311,9 @@ pub async fn tag_rename(
     dry_run: Option<bool>,
 ) -> Result<TagRenameOutcome, IpcError> {
     let app = Arc::clone(state.inner());
-    let outcome = run_blocking(move || {
+    // 这里不能再用 `run_blocking`（它要求主体返回 `mn_core::Result`）：主体要回报
+    // `INDEX_NOT_READY`（宿主侧才有的码），因此直接走 `spawn_blocking`（ADR-0003 的口径不变）
+    tauri::async_runtime::spawn_blocking(move || {
         tag_rename_in(
             &app,
             &from,
@@ -1226,8 +1322,8 @@ pub async fn tag_rename(
             dry_run.unwrap_or(false),
         )
     })
-    .await?;
-    Ok(outcome)
+    .await
+    .map_err(|error| IpcError::internal(format!("标签改名任务失败：{error}")))?
 }
 
 /// **标签的层级编辑**：把 `甲` 挂到某个父标签下（`父/甲`），或提回顶层（`甲`）。
@@ -1259,7 +1355,8 @@ pub async fn tag_move(
     dry_run: Option<bool>,
 ) -> Result<TagRenameOutcome, IpcError> {
     let app = Arc::clone(state.inner());
-    let outcome = run_blocking(move || {
+    // 与 `tag_rename` 同因：主体会回报 `INDEX_NOT_READY`，所以直接走 `spawn_blocking`
+    tauri::async_runtime::spawn_blocking(move || {
         tag_move_in(
             &app,
             &key,
@@ -1268,8 +1365,8 @@ pub async fn tag_move(
             dry_run.unwrap_or(false),
         )
     })
-    .await?;
-    Ok(outcome)
+    .await
+    .map_err(|error| IpcError::internal(format!("标签移动任务失败：{error}")))?
 }
 
 /// [`tag_move`] 的主体（可单测）。
@@ -1279,9 +1376,9 @@ fn tag_move_in(
     parent: &str,
     include_children: bool,
     dry_run: bool,
-) -> mn_core::Result<TagRenameOutcome> {
+) -> Result<TagRenameOutcome, IpcError> {
     if !state.is_open() {
-        return Err(Error::VaultNotSet);
+        return Err(Error::VaultNotSet.into());
     }
     let target =
         mn_core::tag_move_target(key, parent).map_err(|reason| Error::invalid(key, reason))?;
@@ -1297,7 +1394,8 @@ fn tag_move_in(
             return Err(Error::invalid(
                 key,
                 format!("「{target}」已经是一个标签了；要合并请用「重命名」"),
-            ));
+            )
+            .into());
         }
     }
 
@@ -1934,29 +2032,32 @@ fn tag_notes_in(state: &AppState, key: &str) -> mn_core::Result<TagNotes> {
 /// 4. **一篇一汇报**：写失败只记进 `skipped`，继续下一篇（用户重试即可，重试幂等）；
 /// 5. **索引与条目表同步**：写入成功的每一篇都走 `indexer::update_note`
 ///    （标签/搜索/图谱同一处增量更新，ADR-0006 影响一节），条目表在循环之后一次性更新。
+///
+/// 返回值是 [`IpcError`] 而不是 `mn_core::Error`：这一条路径上有一个错误码只有宿主层才有
+/// （`INDEX_NOT_READY`，见 `error.rs`）。索引没就绪时从前借 `IO` 上报，而前端会把 `IO`
+/// 翻成"磁盘读写失败：…" —— 用户于是去查磁盘，而正确的动作是"稍后重试"。
+/// 错误码是**跨 IPC 的稳定契约**，不该用一个意思相反的词去凑。
 fn tag_rename_in(
     state: &AppState,
     from: &str,
     to: &str,
     include_children: bool,
     dry_run: bool,
-) -> mn_core::Result<TagRenameOutcome> {
+) -> Result<TagRenameOutcome, IpcError> {
     let started = Instant::now();
 
     if !state.is_open() {
-        return Err(Error::VaultNotSet);
+        return Err(Error::VaultNotSet.into());
     }
     let Some(mapping) = mn_core::TagRename::new(from, to, include_children) else {
-        return Err(Error::invalid(from, "标签名称为空，无法改名"));
+        return Err(Error::invalid(from, "标签名称为空，无法改名").into());
     };
 
     // 候选集依赖索引：索引没建好时返回 0 篇会被理解成"这个标签不存在"，
     // 那是**错的信息**。索引是缓存、随时会就绪，让用户等一下比给他一个假答案好。
+    // 错误码用 `INDEX_NOT_READY` 而不是 `IO`：见本函数的文档注释。
     if indexer::status(state).phase != indexer::IndexPhase::Ready {
-        return Err(Error::io(
-            ".mimenote/cache/search.db",
-            std::io::Error::other("标签索引正在构建，请稍后重试"),
-        ));
+        return Err(IpcError::index_not_ready("标签索引正在构建，请稍后重试"));
     }
 
     let root = state.vault_root()?;
@@ -3722,28 +3823,26 @@ mod tests {
             assert_eq!(
                 tag_rename_in(&state, from, to, true, false)
                     .unwrap_err()
-                    .code(),
-                mn_core::ErrorCode::PathInvalid,
+                    .code,
+                mn_core::ErrorCode::PathInvalid.as_str(),
                 "应当拒绝：{from:?} → {to:?}"
             );
         }
 
-        // 索引还在构建：明确报错，而不是回答"改了 0 篇"（那是一句假答案）
+        // 索引还在构建：明确报错，而不是回答"改了 0 篇"（那是一句假答案）。
+        // 错误码是宿主侧新增的 `INDEX_NOT_READY`（从前借 `IO`，见 `tag_rename_in` 的文档）
         state.set_index_status(indexer::IndexStatus::default());
         let building = tag_rename_in(&state, "旧", "新", true, false).unwrap_err();
-        assert_eq!(building.code(), mn_core::ErrorCode::Io);
-        assert!(
-            building.to_string().contains("正在构建"),
-            "实际：{building}"
-        );
+        assert_eq!(building.code, "INDEX_NOT_READY");
+        assert!(building.message.contains("正在构建"), "实际：{building}");
 
         // Vault 未打开
         let closed = AppState::default();
         assert_eq!(
             tag_rename_in(&closed, "旧", "新", true, false)
                 .unwrap_err()
-                .code(),
-            mn_core::ErrorCode::VaultNotSet
+                .code,
+            mn_core::ErrorCode::VaultNotSet.as_str()
         );
     }
 
@@ -4341,16 +4440,16 @@ mod tests {
             ("甲", "", "它已经在那个父标签下面了"),
         ] {
             let error = tag_move_in(&state, key, parent, true, false).unwrap_err();
-            assert_eq!(error.code(), mn_core::ErrorCode::PathInvalid);
-            assert!(error.to_string().contains(reason), "{key}: {error}");
+            assert_eq!(error.code, mn_core::ErrorCode::PathInvalid.as_str());
+            assert!(error.message.contains(reason), "{key}: {error}");
         }
 
         // **目标键已被占用 = 合并**：拒绝，并把人引到「重命名」那条路（绝不静默并掉）
         let (dir2, state2) =
             state_with(&[("乙.md", "# 乙\n\n#乙\n"), ("丁.md", "# 丁\n\n#父/乙\n")]);
         let error = tag_move_in(&state2, "乙", "父", true, false).unwrap_err();
-        assert_eq!(error.code(), mn_core::ErrorCode::PathInvalid);
-        assert!(error.to_string().contains("已经是一个标签了"), "{error}");
+        assert_eq!(error.code, mn_core::ErrorCode::PathInvalid.as_str());
+        assert!(error.message.contains("已经是一个标签了"), "{error}");
         assert_eq!(
             read_file(dir2.path(), "乙.md"),
             "# 乙\n\n#乙\n",
@@ -4568,5 +4667,93 @@ mod tests {
                 .code(),
             mn_core::ErrorCode::NotFound
         );
+    }
+
+    // -- 批量读取（整库导出的入口）----------------------------------------------
+
+    #[test]
+    fn notes_read_batch_reports_skips_with_reasons() {
+        let (dir, state) = state_with(&[("甲.md", "# 甲\n正文\n"), ("乙.md", "乙\n")]);
+        // 非 UTF-8 的那一篇（`read_text` 会拒）
+        std::fs::write(dir.path().join("坏.md"), [0xff, 0xfe, 0x00]).unwrap();
+        // 目录：路径存在，但不是笔记
+        std::fs::create_dir_all(dir.path().join("目录.md")).unwrap();
+
+        let batch = read_notes_batch(
+            &state.vault_root().unwrap(),
+            &[
+                "甲.md".to_string(),
+                "不存在.md".to_string(),
+                "坏.md".to_string(),
+                "目录.md".to_string(),
+                "乙.md".to_string(),
+            ],
+        );
+
+        // 单篇失败不影响别人：前面的成功项照样在 `items` 里，顺序保持
+        assert_eq!(
+            batch
+                .items
+                .iter()
+                .map(|item| item.rel_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["甲.md", "乙.md"]
+        );
+        assert_eq!(batch.items[0].text, "# 甲\n正文\n");
+        assert_eq!(batch.items[0].size_bytes, "# 甲\n正文\n".len() as u64);
+        assert!(
+            batch.items[0].mtime_ms > 0,
+            "版本令牌要一起带回来（与 note_read 同一口径）"
+        );
+
+        // 四个原因值就是前端分支的依据，逐条钉住
+        assert_eq!(
+            batch
+                .skipped
+                .iter()
+                .map(|skip| skip.reason)
+                .collect::<Vec<_>>(),
+            vec![
+                crate::site_export::SiteSkipReason::NotFound,
+                crate::site_export::SiteSkipReason::NotUtf8,
+                crate::site_export::SiteSkipReason::Unreadable,
+            ]
+        );
+        let json = serde_json::to_string(&NotesBatch {
+            items: Vec::new(),
+            skipped: batch.skipped.clone(),
+        })
+        .unwrap();
+        for reason in ["\"not-found\"", "\"not-utf8\"", "\"unreadable\""] {
+            assert!(json.contains(reason), "缺少 {reason}：{json}");
+        }
+        assert!(json.contains("\"skipped\""), "实际：{json}");
+
+        // 空数组不是错误（前端第一次调用可能还没有清单）
+        let empty = read_notes_batch(&state.vault_root().unwrap(), &[]);
+        assert!(empty.items.is_empty() && empty.skipped.is_empty());
+    }
+
+    #[test]
+    fn notes_read_batch_rejects_oversized_batches() {
+        let (_dir, _state) = state_with(&[("甲.md", "正文\n")]);
+
+        // 超过 64 篇 → PATH_INVALID（请求的形状不对，而不是某一篇读不到）。
+        // 这条上限的意义是让一次 IPC 的报文体积有硬边界
+        assert_eq!(MAX_BATCH_NOTES, 64);
+        let too_many: Vec<String> = (0..MAX_BATCH_NOTES + 1)
+            .map(|index| format!("笔记{index}.md"))
+            .collect();
+        let error = check_batch_size(too_many.len()).unwrap_err();
+        assert_eq!(error.code, "PATH_INVALID");
+        assert!(
+            error.message.contains("64"),
+            "说明要写清上限：{}",
+            error.message
+        );
+
+        // 边界：正好 64 篇放行（由命令函数自己判，这里直接验判定函数）
+        assert!(check_batch_size(MAX_BATCH_NOTES).is_ok());
+        assert!(check_batch_size(0).is_ok());
     }
 }

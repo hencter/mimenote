@@ -22,6 +22,7 @@ pub mod dir_move;
 pub mod graph;
 pub mod rename;
 pub mod search;
+pub mod site;
 pub mod tags;
 
 use std::collections::{HashMap, HashSet};
@@ -38,6 +39,9 @@ use mn_core::tags::TagRef;
 
 pub use graph::{GraphData, GraphEdge, GraphNode};
 pub use search::{IndexStore, NoteIndexData, SearchIndex};
+pub use site::{
+    SiteLink, SiteMarker, SitePage, SitePlan, SitePreviousExport, SiteStats, SITE_TOOL_ID,
+};
 use tags::{TagIndex, TagSummary};
 
 /// 单篇笔记参与索引的大小上限（超过则跳过，避免大文件拖慢构建）。
@@ -403,6 +407,30 @@ impl LinkIndex {
 
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
+    }
+
+    /// 某篇笔记的出链（已按索引规则解析，**按文档内顺序**）；未收录 → 空。
+    ///
+    /// 与 [`Self::note_links`] 的差别只有两点，但都很重要：
+    ///
+    /// * 只需要 `&self` —— 它**不重建反链缓存**（那是一次全库解析），因此可以在只读借用下
+    ///   被调用（站点计划就是这样遍历全库的：每篇都要出链，但反链由计划自己顺手算）；
+    /// * 不带反链，也不报告 `unresolved_count`（要那个数的人自己数 `href.is_none()`）。
+    ///
+    /// 解析规则与 [`Self::note_links`] **完全同源**（同一个 `resolve_link`），
+    /// 绝不在这里另写一份"看起来等价"的匹配：导出的站点里一条链接悬空、而应用里那条
+    /// 链接是好的，是用户最难理解的一类不一致。
+    pub fn outbound_of(&self, rel_path: &str) -> Vec<ResolvedLink> {
+        let rel = rel_path.replace('\\', "/");
+        self.files
+            .get(&rel)
+            .map(|links| {
+                links
+                    .iter()
+                    .map(|link| self.resolve_link(&rel, link))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// 查询某篇笔记的出链与反向链接。
@@ -795,12 +823,13 @@ pub fn remap_prefix(rel_path: &str, old_dir: &str, new_dir: &str) -> Option<Stri
 }
 
 /// 文件名主干：`a/b/Note.md` → `Note`。
+///
+/// 实现已经**提升到 `mn_core::site::document_stem`**：导出要拿它当页面标题、
+/// 图谱要拿它当没有 frontmatter `title` 时的节点标题，两条路必须是同一把尺子。
+/// 这个私有壳子保留下来只为不动既有调用点（`by_stem` 的建键、`graph` 的标题兜底），
+/// 它**不含任何判定** —— 规则只有一份，在这里转发是刻意的（见 `document_stem` 的文档）。
 fn stem_of(rel_path: &str) -> Option<String> {
-    let name = rel_path.rsplit('/').next()?;
-    match name.rfind('.') {
-        Some(0) | None => Some(name.to_string()),
-        Some(index) => Some(name[..index].to_string()),
-    }
+    mn_core::site::document_stem(rel_path)
 }
 
 /// 取 frontmatter 的 `title`（供图谱做展示标题）。

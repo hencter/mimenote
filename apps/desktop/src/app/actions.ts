@@ -10,7 +10,7 @@ import { basename, isMarkdown, parentOf } from '@/domain/paths'
 import { jumpToLineWhenReady } from '@/features/editor/line-jump'
 import { changedAnything, groupSkips, resultSentence } from '@/features/tags/tag-rename'
 import { currentAdapterKind, ipc } from '@/ipc/client'
-import { MimenoteError, describeError } from '@/ipc/types'
+import { MimenoteError, describeError, describeHostReason } from '@/ipc/types'
 import type { RenameOutcome, TagRenameOutcome } from '@/ipc/types'
 import { useConfirmStore } from '@/state/confirm-store'
 import { refreshGraphData } from '@/state/graph-store'
@@ -495,9 +495,7 @@ export async function moveTag(
     // 因此**不能**走 `describeError` 那套按错误码映射的文案：那里 `PATH_INVALID`
     // 会翻成"路径不合法或被拒绝（已阻止越界访问）"，把这句关键提示顶掉 ——
     // 而"父标签打成了它自己的名字"恰恰是移动这条路上最常见的输入错误。
-    const error = MimenoteError.from(cause)
-    const reason = error.message.trim() === '' ? describeError(error, '调整标签层级失败') : error.message
-    toast.error(reason, '调整标签层级失败')
+    toast.error(describeHostReason(MimenoteError.from(cause), '调整标签层级失败'))
     return null
   }
 }

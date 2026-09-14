@@ -311,6 +311,25 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
       requestExportKind('print')
     },
   },
+  {
+    // 与上两条的区别是**对象**不同：前两条导出"当前这一篇"，这条导出整个 Vault。
+    // 所以它的前置条件是"打开了 Vault"（不需要打开笔记），索引没建好时也不该让它跑 ——
+    // 那句判断落在对话框里（它会置灰并说明原因），命令层只负责把请求送到。
+    //
+    // 快捷键刻意**不用 `Mod+Shift+E`**：那个键位早就归了文件树的过滤框（`tree.focusFilter`，
+    // 当年把 `Ctrl+Shift+F` 让给全文搜索时换过去的），抢回来会让"想过滤文件树"的人打开导出。
+    // 取 `Mod+Alt+S`：S = site，与 `Mod+Shift+S`（自包含 HTML）成对，且 `Mod+Alt+*` 这一族
+    // 已经是"次一级动作"的既有位置（`Mod+Alt+R/W/T/A/L/F`）。
+    id: 'export.site',
+    title: '整个 Vault 导出为静态站点…',
+    category: '导出',
+    keybinding: 'Mod+Alt+S',
+    when: hasVault,
+    unavailableReason: '需要先打开一个 Vault',
+    run: () => {
+      requestExportKind('site')
+    },
+  },
 
   {
     id: 'view.cycleMode',

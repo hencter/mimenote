@@ -811,6 +811,35 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(await page.locator('.mn-palette').count()).toBe(0)
   })
 
+  it('整库导出静态站点：浏览器预览模式没有系统目录选择框，如实说明而不是假装写出去了', async () => {
+    // 这一层能验的是"降级路径"：Mock 适配器有完整的计划（页面表、链接、反链），
+    // 但浏览器里没有 `dialog:allow-open`，`pickDirectory` 返回 null —— 于是导出必须在**选目录**
+    // 这一步就停下并说清原因。真实落盘由 `real-app.e2e.test.ts` 用真实二进制 + 真实磁盘覆盖。
+    await openNoteInTree(page, '项目/设计.md')
+    await page.locator('.mn-export-launch').click()
+    await page.waitForSelector('.mn-dialog--export', { state: 'visible' })
+
+    // 三个选项都在同一张对话框里（单篇 HTML / 打印 / 整库站点），第三个在 Mock 里是**可用**的
+    expect(await page.locator('.mn-export__choice').count()).toBe(3)
+    const site = page.locator('[data-export-site]')
+    await waitUntil(async () => !(await site.isDisabled()), 10_000, '整库导出选项可用（Mock 的索引是 ready）')
+    await site.click()
+
+    await waitUntil(
+      async () =>
+        (await page.locator('.mn-toasts').count()) > 0 &&
+        ((await page.locator('.mn-toasts').textContent()) ?? '').includes('浏览器预览模式无法写出文件'),
+      10_000,
+      '说清"这里写不了文件"以及该去哪儿',
+    )
+    // 对话框自己收起（没有停在"正在导出…"），也没有任何东西被写出去
+    await waitUntil(
+      async () => (await page.locator('.mn-dialog--export').count()) === 0,
+      5_000,
+      '导出对话框收起',
+    )
+  })
+
   it('快速切换：Ctrl+P 只列笔记、回车打开、Esc 关闭且不改动', async () => {
     await page.keyboard.press('Control+p')
     await page.waitForSelector('.mn-palette', { state: 'visible' })

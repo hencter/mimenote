@@ -16,10 +16,16 @@ export function requestExport(): void {
   window.dispatchEvent(new CustomEvent(EXPORT_REQUEST_EVENT))
 }
 
-/** 请求**直接**执行某一种导出（命令面板里的 `export.html` / `export.pdf` 走这条路）。 */
+/** 请求**直接**执行某一种导出（命令面板里的 `export.html` / `export.pdf` / `export.site` 走这条路）。 */
 export const EXPORT_RUN_EVENT = 'mimenote:export-run'
 
-export type ExportKind = 'html' | 'print'
+/**
+ * 三种导出。
+ *
+ * `site` 与前两种的区别不是"多一个选项"而是**对象不同**：前两种导出的是"当前打开的这一篇"，
+ * 整库导出导出的是整个 Vault（因此它不需要打开笔记，反而需要一个完整的链接索引）。
+ */
+export type ExportKind = 'html' | 'print' | 'site'
 
 export function requestExportKind(kind: ExportKind): void {
   window.dispatchEvent(new CustomEvent<ExportKind>(EXPORT_RUN_EVENT, { detail: kind }))

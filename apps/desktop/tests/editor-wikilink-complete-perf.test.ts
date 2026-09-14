@@ -105,14 +105,23 @@ describe(`1 万条笔记下的实测（${NOTE_COUNT} 条 / ${DIR_COUNT} 个目�
   }
 
   it('空查询走的是"预排序 + 分桶"，不是"白排一万条"', () => {
-    // 同一份索引、同一个空查询：连做 200 次仍然只有微秒级
-    // （若空查询退化成"对 1 万条排序"，这里会立刻涨到每次 3~6ms）
-    const started = performance.now()
-    for (let round = 0; round < 200; round += 1) {
-      filterWikilinkCandidates(index, '', options)
+    // 同一份索引、同一个空查询：连做若干组仍然只有微秒级
+    // （若空查询退化成"对 1 万条排序"，每次会涨到 3~6ms，最小值也跟着涨）。
+    //
+    // 判据取**最快的那一组**而不是总体平均：机器忙只会让某一次更慢、不会让它更快，
+    // 所以最小值对负载免疫，而"每次都得排序"这种**结构**退化会把最小值一起抬上去。
+    // 分组（每组 20 次）再取组内均值，则是为了让 JIT/GC 的单次抖动不直接决定结果 ——
+    // 之前直接拿"200 次的平均"跟 2ms 比，在跑着 cargo 的机器上会以 2.07ms 假红。
+    let best = Number.POSITIVE_INFINITY
+    for (let group = 0; group < 20; group += 1) {
+      const started = performance.now()
+      for (let round = 0; round < 20; round += 1) {
+        filterWikilinkCandidates(index, '', options)
+      }
+      const perCall = (performance.now() - started) / 20
+      if (perCall < best) best = perCall
     }
-    const perCall = (performance.now() - started) / 200
-    console.info(`[wiki-complete] 空查询连续 200 次：每次 ${ms(perCall)}`)
-    expect(perCall).toBeLessThan(2)
+    console.info(`[wiki-complete] 空查询 20 次 × 20 组：最快一组每次 ${ms(best)}`)
+    expect(best).toBeLessThan(2)
   })
 })
