@@ -844,7 +844,9 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   setMode: (mode) => {
     const current = get()
     if (current.mode === mode) return
-    saveJson(PREFS_KEY, { mode, depth: current.depth } satisfies StoredPrefs)
+    // 落盘时**带上其余偏好**（`prefsOf`）：只写 `{mode, depth}` 会把用户调好的张力、预设、
+    // 两个开关从 localStorage 里抹掉 —— 内存里还在，但重启就回到默认值（真实踩过）
+    saveJson(PREFS_KEY, prefsOf({ ...current, mode }))
     // 换视图 = 换一套布局，视角与选中都属于上一个上下文：清掉"已适应过"的记账，
     // 让新视图自己适应一次（否则从全库切到某篇笔记的关系图时，镜头可能停在空地上）。
     // 包围盒也要清：它属于上一个视图的几何，留着会让"适应窗口"对着一幅已经不存在的图算。
@@ -855,7 +857,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     const next = clampEgoDepth(depth)
     const current = get()
     if (current.depth === next) return
-    saveJson(PREFS_KEY, { mode: current.mode, depth: next } satisfies StoredPrefs)
+    saveJson(PREFS_KEY, prefsOf({ ...current, depth: next }))
     // 深度变了 = 环的半径全变了：保留平移缩放没有意义（用户是在"要看得更远"），
     // 因此清掉适应记账，由组件在新的布局上重新适应一次。
     // 至于"要重新拉数据"：`loadEgo` 会拿 `ego.depth` 跟当前 `depth` 比，因此它自己

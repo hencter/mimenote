@@ -120,6 +120,31 @@ describe('张力与浮动态的偏好', () => {
     expect(prefs()['forcePreset']).toBe('airy')
     expect(prefs()['floating']).toBe(false)
   })
+
+  it('换视图 / 改跳数**不会**把别的偏好从落盘里抹掉（真实踩过的回归）', () => {
+    /*
+      为什么单独一条：`setMode` / `setDepth` 曾经只写 `{mode, depth}` 进 localStorage，
+      于是"调好张力与预设 → 随手改一次深度 → 重启"之后，张力与预设悄悄回到默认值
+      （内存里还在，所以当场看不出来）。现在它们全部经 `prefsOf` 落盘。
+    */
+    useGraphStore.getState().setTension(0.75)
+    useGraphStore.getState().setForcePreset('floating')
+    useGraphStore.getState().setEdgeFromLink(false)
+
+    // 改跳数（会落盘）之后的偏好必须一个不少
+    useGraphStore.getState().setDepth(3)
+    expect(prefs()).toMatchObject({
+      mode: 'focus',
+      depth: 3,
+      tension: 0.75,
+      forcePreset: 'floating',
+      edgeFromLink: false,
+    })
+
+    // 换视图同理
+    useGraphStore.getState().setMode('vault')
+    expect(prefs()).toMatchObject({ mode: 'vault', depth: 3, tension: 0.75, forcePreset: 'floating' })
+  })
 })
 
 describe('卡片尺寸', () => {

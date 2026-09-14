@@ -1922,8 +1922,11 @@ describe('知识图谱画布', () => {
     })
     expect(cardCount()).toBe(3)
 
-    // 深度是"我怎么看图"的偏好：写进 localStorage，跨挂载/跨会话都还在
-    expect(JSON.parse(window.localStorage.getItem(PREFS_KEY) ?? '{}')).toEqual({
+    // 深度是"我怎么看图"的偏好：写进 localStorage，跨挂载/跨会话都还在。
+    // 用 `toMatchObject` 而不是逐字相等：偏好里还有张力/预设/两个开关（ADR-0023 之后
+    // 每次落盘都会带上它们），逐字断言会让"以后再加一个偏好"和"别的偏好没被抹掉"这两件事
+    // 混在一起 —— 后者另有专门用例（`graph-view-prefs` 里那条回归）。
+    expect(JSON.parse(window.localStorage.getItem(PREFS_KEY) ?? '{}')).toMatchObject({
       mode: 'focus',
       depth: 2,
     })

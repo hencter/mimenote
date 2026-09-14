@@ -375,6 +375,170 @@ async function resetGraphDepthToOne(page: Page): Promise<void> {
   throw new Error('跳数没有回到 1（深度按钮没生效？）')
 }
 
+// ---------------------------------------------------------------------------
+// ADR-0023（浮动态 / 从链接引出 / 可调卡片 / 浮窗）用到的断言工具
+//
+// 这一轮新增的能力多出两件"屏幕上看不见的事实"，它们都没有 DOM 节点可查：
+//
+// 1. **正文里那段 `[[链接]]` 在哪**：引线的起点来自 canvas 的排版结果（逐 run 量字），
+//    只能通过"画出来的两段 path"间接断言；
+// 2. **力场算完之后卡片到底在哪**：位置不再等于环坐标（力导向会把它挪走、用户还能按住它），
+//    所以宿主把**圆心那张卡片的当前世界矩形**写在 `data-graph-root-rect` 上 ——
+//    "精确点到圆心卡片"和"拖它的缩放手柄"都从这一个数出发，而不是去猜屏幕上哪儿有张卡片。
+// ---------------------------------------------------------------------------
+
+/** 默认张力（与 `graph-store.ts` 的 `DEFAULT_TENSION` 同一个数）：用例收尾时要把它拨回去。 */
+const DEFAULT_GRAPH_TENSION = 0.35
+
+/** 读宿主上的一个字符串属性（缺失就报错：调用方拿它当事实用，静默变成空串最糟）。 */
+async function graphText(page: Page, name: string): Promise<string> {
+  const raw = await page.locator('.mn-graph').getAttribute(name)
+  if (raw === null) throw new Error(`图谱属性 ${name} 不存在`)
+  return raw
+}
+
+/**
+ * 圆心那张卡片**当前**的世界矩形（`data-graph-root-rect`，宿主已取整）。
+ *
+ * "精确点到它"与"拖它右下角的手柄"都必须用这个数：圆心卡片的位置虽然被力场固定在原点，
+ * 但它的**尺寸**会因为用户拉宽而变（ADR-0023），而手柄在卡片内部右下角 —— 尺寸错了就点不中。
+ */
+async function graphRootRect(
+  page: Page,
+): Promise<{ x: number; y: number; width: number; height: number }> {
+  const raw = await graphText(page, 'data-graph-root-rect')
+  const values = raw.split(',').map((part) => Number(part))
+  const [x = Number.NaN, y = Number.NaN, width = Number.NaN, height = Number.NaN] = values
+  if (values.length !== 4 || [x, y, width, height].some((value) => !Number.isFinite(value))) {
+    throw new Error(`图谱属性 data-graph-root-rect 读不出矩形：${raw}`)
+  }
+  return { x, y, width, height }
+}
+
+/**
+ * 世界坐标 → 页面坐标（`屏幕 = 世界 × scale + offset`，再加宿主左上角）。
+ *
+ * 与 `GraphCanvas` 里 `toWorld` 的口径逐字对应（那边是反过来的那一半）。
+ */
+function graphScreenPoint(
+  origin: { x: number; y: number },
+  transform: { scale: number; x: number; y: number },
+  world: { x: number; y: number },
+): { x: number; y: number } {
+  return {
+    x: origin.x + world.x * transform.scale + transform.x,
+    y: origin.y + world.y * transform.scale + transform.y,
+  }
+}
+
+/**
+ * 这个页面坐标会不会被"不参与画布指针"的那一层盖住（HUD / 停靠预览 / 浮窗）。
+ *
+ * 为什么点名这件事：它们都带 `data-mn-graph-nopan`，落在它们身上的按下**不会**进入画布的
+ * 指针状态机（`GraphCanvas.handlePointerDown` 的第一条就是把这些筛出去）。手柄若被盖住，
+ * 拖动会静默失效，失败信息只剩"卡片没变宽"，离原因很远 —— 所以这里把前置条件断言出来。
+ */
+function graphPointBlocked(page: Page, point: { x: number; y: number }): Promise<boolean> {
+  return page.evaluate(({ x, y }) => {
+    const element = document.elementFromPoint(x, y)
+    return element === null ? false : element.closest('[data-mn-graph-nopan]') !== null
+  }, point)
+}
+
+/** 读图谱的持久化偏好（`mimenote.graph.prefs.v1`）；从没写过时返回 `null`。 */
+function readGraphPrefs(page: Page): Promise<Record<string, unknown> | null> {
+  return page.evaluate(() => {
+    const raw = localStorage.getItem('mimenote.graph.prefs.v1')
+    return raw === null ? null : (JSON.parse(raw) as Record<string, unknown>)
+  })
+}
+
+/**
+ * 当前张力（`data-graph-tension`）。
+ *
+ * ⚠️ 这个属性写在**滑块自己**身上（它是那一个控件的状态），不是宿主 `.mn-graph` 上 ——
+ * 与 `data-graph-mode` / `data-graph-root-rect` 那一批"整块画布的事实"不在同一层。
+ */
+async function graphTension(page: Page): Promise<number> {
+  const raw = await page.locator('.mn-graph__slider[aria-label="连线张力"]').getAttribute('data-graph-tension')
+  const value = raw === null ? Number.NaN : Number(raw)
+  if (!Number.isFinite(value)) throw new Error(`张力滑块读不到 data-graph-tension：${String(raw)}`)
+  return value
+}
+
+/**
+ * 把「连线张力」滑块设到某个值（张力是这一轮唯一一个**连续量**旋钮，HUD 上没有胶囊可按）。
+ *
+ * 为什么要绕开 `element.value = x`：滑块是**受控**组件，React 在元素实例上挂了自己的
+ * `value` 描述符（用来判断"这次输入到底变没变"）。直接赋值会被它判成"没变"，
+ * `onChange` 根本不触发 —— 于是用例会"改了个寂寞"却仍然通过后面的存在性断言。
+ * 用原型上的原生 setter 改值再手写 `input` 事件，才是 React 认的那种用户输入。
+ */
+async function setGraphTension(page: Page, tension: number): Promise<void> {
+  await page.locator('.mn-graph__slider[aria-label="连线张力"]').evaluate((element, value) => {
+    if (!(element instanceof HTMLInputElement)) throw new Error('张力滑块不是 input')
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    if (setter === undefined) throw new Error('拿不到 input.value 的原生 setter')
+    setter.call(element, String(value))
+    element.dispatchEvent(new Event('input', { bubbles: true }))
+    element.dispatchEvent(new Event('change', { bubbles: true }))
+  }, tension)
+  await waitUntil(
+    async () => Math.abs((await graphTension(page)) - tension) < 1e-9,
+    10_000,
+    `张力滑块设成 ${tension}`,
+  )
+}
+
+/**
+ * 一条**卡片外**的边（`path.mn-graph-edge` 且不是 `--lead`）：它的 `d` 与 tooltip。
+ *
+ * 只取**真的是张力曲线**的那一条（`d` 里有三次贝塞尔的 `C`）：两端重合的自环会退化成直线
+ * （`tensionPath` 的退化分支），那种路径量不出"鼓出多少"。刻意不做等待 —— 读的是"此刻屏幕上的
+ * 那条线"，调用方自己包轮询（它随时可能因为漂浮而变）。
+ */
+async function readSpanEdge(page: Page): Promise<{ d: string; title: string }> {
+  const found = await page
+    .locator('path.mn-graph-edge:not(.mn-graph-edge--lead)')
+    .evaluateAll((nodes) =>
+      nodes
+        .map((node) => ({
+          d: node.getAttribute('d') ?? '',
+          title: node.querySelector('title')?.textContent ?? '',
+        }))
+        .filter((item) => item.d.includes('C')),
+    )
+  const first = found[0]
+  if (first === undefined) throw new Error('画布上没有一条卡片外的张力曲线（全是直线？）')
+  return first
+}
+
+/**
+ * 从一条卡片外的边路径（`M 起点 C 控制点1, 控制点2 终点`）里量出"张力鼓出多少"。
+ *
+ * 返回的是**相对量**：第一个控制点到弦（起点→终点那条直线）的距离 ÷ 弦长。
+ * 为什么用相对量而不是绝对坐标：
+ * - 卡片随时在漂浮、镜头会因为换预设而重新适应 —— 绝对坐标每次都不同，断言不了任何东西；
+ * - 而 `tensionPath` 的定义是"控制点沿弦的垂直方向偏移 `tension × 弦长 × 0.25`"，
+ *   所以这个比值**就是** `tension ÷ 4`，与位置、缩放、DPR 全都无关。
+ * 于是"滑块真的改变了连线几何"可以被逐字断言，而不是"d 字符串变了"（漂浮时它每次都变）。
+ */
+function spanTensionRatio(d: string): number {
+  const values = (d.match(/-?\d+(?:\.\d+)?(?:e[-+]?\d+)?/giu) ?? []).map((part) => Number(part))
+  const [x0 = Number.NaN, y0 = Number.NaN, c1x = Number.NaN, c1y = Number.NaN, , , x1 = Number.NaN, y1 = Number.NaN] =
+    values
+  if (values.length < 8 || [x0, y0, c1x, c1y, x1, y1].some((value) => !Number.isFinite(value))) {
+    throw new Error(`这条边的 d 不是"起点 + 一个控制点 + 终点"的三段式：${d}`)
+  }
+  const dx = x1 - x0
+  const dy = y1 - y0
+  const chord = Math.hypot(dx, dy)
+  if (!(chord > 0)) return 0
+  // 点到弦所在直线的距离 = |(控制点 − 起点) × (终点 − 起点)| ÷ 弦长（二维叉积）；再除以弦长得到比值
+  const cross = (c1x - x0) * dy - (c1y - y0) * dx
+  return Math.abs(cross) / (chord * chord)
+}
+
 describe('UI 层（Edge + dist + Mock Vault）', () => {
   let server: StaticServer
   let browser: Browser
@@ -1211,6 +1375,325 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect((await page.locator('[data-graph-depth-value]').textContent()) ?? '').toContain('3')
     // 关系图仍然是默认视图（同一份偏好里的 `mode`）
     expect(await page.locator('.mn-graph').getAttribute('data-graph-mode')).toBe('focus')
+
+    // 回到编辑视图（后续用例与"默认视图"保持一致）
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+  })
+
+  it('知识图谱：连线从正文里的 [[链接]] 引出（关掉之后引线消失、边仍在）', async () => {
+    // 为什么值得端到端测：ADR-0023 要的是"线从对应的 wiki link 处引出"，也就是一条边由**两段**
+    // 组成 —— 卡片里从那段文字拉出的虚线引线（起点还有一个圆点）+ 卡片外的实线/张力曲线。
+    // 引线的起点是 canvas 排版的结果（要按同一套字体逐 run 量字才落得准），"那段字排在第几行、
+    // 从第几列开始"只有真的排过版才知道：单测能喂一份假排版，这里跑的才是**真实正文 + 真实量字
+    // + 真实 SVG**。而"关掉开关之后引线消失、边仍在"是同一件事的另一面（老行为必须还在）。
+    await ensureVaultOpen(page)
+    // 设计.md 的正文里正好有两处：`参考 [[路线图]] 与 [[细节]]`
+    await openNoteInTree(page, '项目/设计.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    await ensureGraphFocusMode(page)
+    await waitUntil(async () => (await graphCardCount(page)) >= 3, 10_000, '关系图画出圆心与它的邻居')
+
+    const lead = page.locator('path.mn-graph-edge--lead')
+    const span = page.locator('path.mn-graph-edge:not(.mn-graph-edge--lead)')
+    await waitUntil(async () => (await lead.count()) > 0, 10_000, '出现卡片内的虚线引线')
+    await waitUntil(async () => (await span.count()) >= 2, 10_000, '卡片外的实线照旧存在')
+
+    // 引线必须是**可画的**线段（起点 → 卡片边界上的出点）：`d` 里出现 NaN 时浏览器会把整条
+    // 路径丢掉，而那正是"线凭空消失"的表现（`link-edge.ts` 的 `num` 就是为这件事写的）
+    const leadPaths = await lead.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('d') ?? ''))
+    expect(leadPaths.length).toBeGreaterThanOrEqual(1)
+    for (const d of leadPaths) {
+      expect(d).toMatch(/^M \S+ \S+ L \S+ \S+$/u)
+      const numbers = d
+        .split(/[ML\s]+/u)
+        .filter((token) => token !== '')
+        .map((token) => Number(token))
+      expect(numbers).toHaveLength(4)
+      expect(numbers.every((value) => Number.isFinite(value))).toBe(true)
+    }
+    // 起点那个小圆点：没有它，"线从哪句话出来"只是虚线的一个端点
+    expect(await page.locator('circle.mn-graph-edge-lead-dot').count()).toBeGreaterThanOrEqual(1)
+    // tooltip 说出它是从**哪段文字**引出的 —— 这才叫"锚到了 link 上"，而不只是"多了条虚线"
+    const onTitles = await lead.locator('title').allTextContents()
+    expect(onTitles.some((text) => text.includes('从正文里的 [['))).toBe(true)
+
+    // 关掉「从链接引出」：引线整段消失（`leadPath` 为空 ⇒ 连 `<path>` 都不渲染），
+    // 而卡片外的边一条不少 —— 降级不是"少画一条边"，只是换一种起笔方式
+    const spanBefore = await span.count()
+    await page.locator('[data-graph-action="toggle-edge-from-link"]').click()
+    await waitUntil(async () => (await lead.count()) === 0, 10_000, '关掉之后引线消失')
+    expect(await page.locator('circle.mn-graph-edge-lead-dot').count()).toBe(0)
+    expect(await span.count()).toBe(spanBefore)
+    // 降级要**说清楚**：这时的 tooltip 必须承认"正文里没找到对应的链接写法，从卡片边缘出发"
+    const offTitles = await span.locator('title').allTextContents()
+    expect(offTitles).toHaveLength(spanBefore)
+    expect(offTitles.every((text) => text.includes('从卡片边缘出发'))).toBe(true)
+    expect(
+      await page.locator('[data-graph-action="toggle-edge-from-link"]').getAttribute('aria-pressed'),
+    ).toBe('false')
+
+    // 再点回来：默认是**开**的，把它还给后面的用例（顺带覆盖"开关是双向的"）
+    await page.locator('[data-graph-action="toggle-edge-from-link"]').click()
+    await waitUntil(async () => (await lead.count()) === leadPaths.length, 10_000, '引线回来')
+    expect(
+      await page.locator('[data-graph-action="toggle-edge-from-link"]').getAttribute('aria-pressed'),
+    ).toBe('true')
+
+    // 回到编辑视图（后续用例与"默认视图"保持一致）
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+  })
+
+  it('知识图谱：张力滑块真的改变连线几何（并落进 localStorage），用完拨回默认值', async () => {
+    // 为什么值得端到端测：张力是这一轮新增的**唯一一个连续量**旋钮，而它作用在一条 SVG 路径的
+    // 控制点上 —— "滑块的值变了"和"曲线真的弯了"是两件事。这里量的不是"`d` 变了"（开着漂浮时
+    // 它每一帧都在变，那种断言等于没测），而是**相对量**：控制点到弦的距离 ÷ 弦长，按
+    // `tensionPath` 的定义它就等于 `tension ÷ 4`，与卡片漂到哪、镜头缩到多大全都无关。
+    // 顺带钉住"这个旋钮会落盘"（偏好与几何都跟着走，才算真的接通了）。
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/设计.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    await ensureGraphFocusMode(page)
+    // 跳数是持久化偏好：先拨回 1，让这条用例的起点与上一条留下什么无关
+    await resetGraphDepthToOne(page)
+    const span = page.locator('path.mn-graph-edge:not(.mn-graph-edge--lead)')
+    await waitUntil(async () => (await span.count()) > 0, 10_000, '画布上有卡片外的边')
+
+    /** 等到连线的鼓出比变成期望值，再返回它（比对一条还在变的曲线只能"等到"）。 */
+    const ratioAt = async (expected: number): Promise<number> => {
+      await waitUntil(
+        async () => Math.abs(spanTensionRatio((await readSpanEdge(page)).d) - expected) < 1e-6,
+        10_000,
+        `连线的鼓出比变成 ${expected}`,
+      )
+      return spanTensionRatio((await readSpanEdge(page)).d)
+    }
+
+    // 起点自足：张力同样是持久化偏好（整个文件共用一个页面），先把它拨回默认值
+    await setGraphTension(page, DEFAULT_GRAPH_TENSION)
+    const before = await ratioAt(DEFAULT_GRAPH_TENSION * 0.25)
+    expect(before).toBeCloseTo(DEFAULT_GRAPH_TENSION * 0.25, 6)
+    expect(await graphTension(page)).toBeCloseTo(DEFAULT_GRAPH_TENSION, 6)
+
+    // 拉到最右（= 1）：控制点离弦 `弦长的 1/4`，比默认的 0.0875 明显更弯
+    await setGraphTension(page, 1)
+    const after = await ratioAt(0.25)
+    expect(after).toBeCloseTo(0.25, 6)
+    expect(after).toBeGreaterThan(before * 2)
+    // 偏好跟着落盘（刷新之后回来还是它）
+    expect((await readGraphPrefs(page))?.tension).toBe(1)
+
+    // 收尾：拨回默认值，别让后面的用例继承一条绷紧的曲线
+    await setGraphTension(page, DEFAULT_GRAPH_TENSION)
+    expect((await readGraphPrefs(page))?.tension).toBe(DEFAULT_GRAPH_TENSION)
+
+    // 回到编辑视图（后续用例与"默认视图"保持一致）
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+  })
+
+  it('知识图谱：拖卡片右下角的手柄把卡片拉宽（拉宽是拉宽，不是拖动卡片）', async () => {
+    // 为什么值得端到端测：卡片尺寸牵动三件事 —— 手柄的命中判定（它在卡片**内部**右下角，
+    // 不先判它就会退化成"拖动卡片"）、store 里的尺寸偏好（要落盘）、以及环半径的重算
+    // （卡片变宽 ⇒ `layout-ego` 的弧长公式给出更大的环）。这三件事只在真实指针 + 真实
+    // canvas 排版下连得起来，而"到底有没有变宽"只有一个可靠依据：宿主报出来的
+    // `data-graph-root-rect`（圆心卡片的**当前**世界矩形）。
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/设计.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    await ensureGraphFocusMode(page)
+    await resetGraphDepthToOne(page)
+    // 起点自足：先把尺寸还给自动（幂等 —— 本来就是自动时这次点击不改任何数）
+    await page.locator('[data-graph-action="reset-card-size"]').click()
+
+    const before = await graphRootRect(page)
+    expect(before.width).toBeGreaterThan(0)
+    // 关系图里拖**卡片本体** = 把它按住（`pins`）。起点必须是 0 张，后面才谈得上"拖手柄没有
+    // 把它按住"这件事
+    expect(await graphNumber(page, 'data-graph-pinned')).toBe(0)
+
+    // 手柄在卡片内部的右下角（`paint.ts` 的 `CARD_RESIZE_HANDLE` = 14 世界像素），取它的中心
+    const handle = { x: before.x + before.width - 7, y: before.y + before.height - 7 }
+    const point = graphScreenPoint(await graphBoxOrigin(page), await settledGraphTransform(page), handle)
+    // 前置条件：这个点必须真的落在画布上（被 HUD / 预览面板盖住的话，按下根本不进画布状态机，
+    // 失败信息只会是"卡片没变宽"，离原因很远）
+    expect(await graphPointBlocked(page, point)).toBe(false)
+
+    await page.mouse.move(point.x, point.y)
+    await page.mouse.down()
+    await page.mouse.move(point.x + 120, point.y, { steps: 12 })
+    await page.mouse.up()
+
+    await waitUntil(async () => (await graphRootRect(page)).width > before.width + 20, 10_000, '卡片被拉宽')
+    const after = await graphRootRect(page)
+    expect(after.width).toBeGreaterThan(before.width + 20)
+    // ⚠️ 只断言宽度，**不**断言位置：环半径由卡片尺寸算出来（`layout-ego`），拉宽之后整幅图会
+    // 重排，位置本来就是"会变的那一个"。反过来，"被按住"则必须是 0：手柄落在卡片内部，
+    // 先判手柄正是为了不让拉宽变成"拖动卡片"（焦点视图里拖动 = 按住）
+    expect(await graphNumber(page, 'data-graph-pinned')).toBe(0)
+
+    // 收尾：「重置卡片」把尺寸还给自动，别让后面的用例继承一张被拉宽的卡片
+    await page.locator('[data-graph-action="reset-card-size"]').click()
+    await waitUntil(async () => (await graphRootRect(page)).width === before.width, 10_000, '重置回自动尺寸')
+
+    // 回到编辑视图（后续用例与"默认视图"保持一致）
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+  })
+
+  it('知识图谱：选中卡片 → 浮窗可拖可缩放，Esc 只关浮窗（停靠预览不动）', async () => {
+    // 为什么值得端到端测：浮动面板是**受控**组件（位置与大小全部来自 store，拖动时按帧写回），
+    // 于是"写回真的发生了"只有指针真动过才看得出来 —— 单测里模拟一次拖动等于自己把答案喂给自己。
+    // 这条用例还钉住 Esc 的语义（ADR-0023 改的那一条）：先关**最上面那个浮窗**，停靠预览留着。
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/设计.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    await ensureGraphFocusMode(page)
+    await waitUntil(async () => (await graphCardCount(page)) >= 3, 10_000, '关系图画出圆心与它的邻居')
+
+    // 选中圆心那张卡片（几何命中：圆心在世界原点），HUD 上才会多出「浮窗打开」那一行
+    await clickGraphCenterCard(page)
+    await page.waitForSelector('.mn-graph-preview', { state: 'visible' })
+    await page.locator('[data-graph-action="open-floating"]').click()
+
+    const pane = page.locator('.mn-float-note')
+    await pane.waitFor({ state: 'visible' })
+    expect(await pane.getAttribute('role')).toBe('dialog')
+    // 浮起来的是**这一篇**（而不是随便一个浮窗）：aria-label 里带着标题与路径
+    expect((await pane.getAttribute('aria-label')) ?? '').toContain('项目/设计.md')
+    // 正文照常渲染（与停靠预览同一条链路）
+    await waitUntil(
+      async () => ((await pane.locator('.mn-float-note__article').textContent()) ?? '').includes('文件层'),
+      10_000,
+      '浮窗里出现笔记正文',
+    )
+
+    const readBox = async (): Promise<{ x: number; y: number; width: number; height: number }> => {
+      const box = await pane.boundingBox()
+      if (box === null) throw new Error('浮窗没有布局盒（不可见？）')
+      return box
+    }
+
+    // —— 拖标题栏：位置由 store 写回，所以"拖动生效"的证据就是界面上的 left/top 变了 ——
+    const beforeDrag = await readBox()
+    const header = await page.locator('.mn-float-note__header').boundingBox()
+    if (header === null) throw new Error('浮窗标题栏没有布局盒')
+    await page.mouse.move(header.x + header.width / 2, header.y + header.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(header.x + header.width / 2 - 100, header.y + header.height / 2 - 40, {
+      steps: 10,
+    })
+    await page.mouse.up()
+    await waitUntil(async () => (await readBox()).x < beforeDrag.x - 40, 10_000, '浮窗被拖到左边')
+    const afterDrag = await readBox()
+    expect(afterDrag.y).toBeLessThan(beforeDrag.y - 20)
+    // 拖标题栏**只**改位置：大小一个像素都不动（两种手势共用一套指针状态，别串了）
+    expect(Math.abs(afterDrag.width - beforeDrag.width)).toBeLessThanOrEqual(1)
+    expect(Math.abs(afterDrag.height - beforeDrag.height)).toBeLessThanOrEqual(1)
+
+    // —— 拖右下角把手：受控组件同样按帧写回，"尺寸变大"就是它唯一可见的证据 ——
+    const handle = await page.locator('[data-float-resize]').boundingBox()
+    if (handle === null) throw new Error('浮窗的缩放手柄没有布局盒')
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(handle.x + handle.width / 2 + 60, handle.y + handle.height / 2 + 80, {
+      steps: 10,
+    })
+    await page.mouse.up()
+    await waitUntil(async () => (await readBox()).width > afterDrag.width + 20, 10_000, '浮窗被拉宽')
+    const resized = await readBox()
+    expect(resized.height).toBeGreaterThan(afterDrag.height + 20)
+
+    // —— Esc：关掉最上面那个浮窗，而**停靠预览还在** ——
+    await page.keyboard.press('Escape')
+    await waitUntil(async () => (await page.locator('.mn-float-note').count()) === 0, 10_000, 'Esc 关掉浮窗')
+    expect(await page.locator('.mn-graph-preview').count()).toBe(1)
+
+    // 收尾：关掉停靠预览并回到编辑视图，别让后面的用例一进来就挂着一篇预览
+    await page.locator('.mn-graph').press('Escape')
+    await waitUntil(async () => (await page.locator('.mn-graph-preview').count()) === 0, 5_000, '停靠预览关闭')
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+  })
+
+  it('知识图谱：力导向预设点一下就换档（高亮、偏好与镜头重算三处一起变）', async () => {
+    // 为什么值得端到端测：预设不是样式开关，它是**力场的输入**（张力/斥力/向心力/阻尼的一套数字）。
+    // 端到端能钉住三件事同时成立：胶囊的高亮、落盘的偏好、以及力场真的按新参数重建过一次 ——
+    // 后者表现为整幅图重新落定、镜头跟着重新"适应窗口"（缩放因此变了）。
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/设计.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    await ensureGraphFocusMode(page)
+
+    // 起点自足：预设是持久化偏好，而本文件里**只有这一条**用例改它、并且会改回去。
+    // 从没写过这份偏好时 `readPrefs` 给出的缺省就是 balanced，所以两种起点都该看到 balanced
+    // —— 这里把"应该是什么"显式断言出来，而不是默默依赖执行顺序。
+    expect((await readGraphPrefs(page))?.forcePreset ?? 'balanced').toBe('balanced')
+    const balanced = page.locator('[data-force-preset="balanced"]')
+    const activePreset = () =>
+      page.locator('.mn-graph__chip--active[data-force-preset]').getAttribute('data-force-preset')
+    expect(await activePreset()).toBe('balanced')
+    expect(await balanced.getAttribute('aria-pressed')).toBe('true')
+
+    const zoomBefore = await graphNumber(page, 'data-graph-scale')
+    await page.locator('[data-force-preset="spacious"]').click()
+    await waitUntil(async () => (await activePreset()) === 'spacious', 10_000, '「舒展」成为当前预设')
+    expect(await balanced.getAttribute('aria-pressed')).toBe('false')
+    expect((await readGraphPrefs(page))?.forcePreset).toBe('spacious')
+    // 新参数 ⇒ 新一轮落定 ⇒ 新的包围盒 ⇒ 镜头重新适应一次：缩放不再等于原来那个数
+    await waitUntil(
+      async () => (await graphNumber(page, 'data-graph-scale')) !== zoomBefore,
+      10_000,
+      '镜头按新的布局重新适应',
+    )
+
+    // 点回「均衡」：高亮、偏好、镜头全都回来（力场是确定性的：同一份参数 + 同一个种子 ⇒ 同一份布局）
+    await page.locator('[data-force-preset="balanced"]').click()
+    await waitUntil(async () => (await activePreset()) === 'balanced', 10_000, '切回「均衡」')
+    expect((await readGraphPrefs(page))?.forcePreset).toBe('balanced')
+    await waitUntil(
+      async () => Math.abs((await graphNumber(page, 'data-graph-scale')) - zoomBefore) < 1e-6,
+      10_000,
+      '镜头回到「均衡」那一档的缩放',
+    )
+
+    // 回到编辑视图（后续用例与"默认视图"保持一致）
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+  })
+
+  it('知识图谱：「漂浮」开关的按下状态与落盘偏好始终一致（开→关→开）', async () => {
+    // 为什么值得端到端测：`floating` 是一个**纯偏好**开关 —— 它的可见后果是"力场要不要一直推进"，
+    // 而那件事在有限的等待里断不了（力场收敛之后即使开着也不动，断言"在动"会假红）。
+    // 所以这里钉的是另一半、也是刷新之后用户唯一看得到的那一半：
+    // **界面上的按下状态与落盘偏好必须始终一致**（缺任何一半，开关都会在骗人）。
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/设计.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    await ensureGraphFocusMode(page)
+    // 跳数是持久化偏好：先拨回 1，别让这条用例画出一幅比需要更大的图
+    await resetGraphDepthToOne(page)
+
+    const chip = page.locator('[data-graph-action="toggle-floating"]')
+    // 默认**开**（`readPrefs` 里的缺省就是 true，本文件没有别的用例碰过它）
+    expect(await chip.getAttribute('aria-pressed')).toBe('true')
+    expect(((await chip.getAttribute('class')) ?? '').includes('mn-graph__chip--active')).toBe(true)
+
+    await chip.click()
+    await waitUntil(async () => (await chip.getAttribute('aria-pressed')) === 'false', 5_000, '关掉漂浮')
+    expect((await readGraphPrefs(page))?.floating).toBe(false)
+    expect(((await chip.getAttribute('class')) ?? '').includes('mn-graph__chip--active')).toBe(false)
+
+    await chip.click()
+    await waitUntil(async () => (await chip.getAttribute('aria-pressed')) === 'true', 5_000, '再打开漂浮')
+    expect((await readGraphPrefs(page))?.floating).toBe(true)
 
     // 回到编辑视图（后续用例与"默认视图"保持一致）
     await page.locator('button[aria-label="编辑（所见即所得）"]').click()
