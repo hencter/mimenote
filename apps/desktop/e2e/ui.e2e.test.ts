@@ -11,6 +11,7 @@
  * 运行：`pnpm --filter @mimenote/desktop build && pnpm test:e2e:ui`
  */
 
+import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { chromium, type Browser, type Page } from 'playwright-core'
@@ -838,6 +839,24 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       5_000,
       '导出对话框收起',
     )
+  })
+
+  it('大文档阅读视图：小文档走同步路径，界面上"走了哪条路"是可断言的', async () => {
+    // 为什么把这条痕迹做进 DOM（而不是只写日志）：Worker 是否被创建、结果有没有被采信，
+    // 在 Playwright 这一层很难直接观察（jsdom 里根本没有 `Worker`，E2E 里也不好断言线程行为）。
+    // 于是预览自己把"这一屏是同步渲染的、还是 worker 送回来的"写在 `data-mn-render` 上 ——
+    // 断言一个事实，而不是推断。门槛以下不建 Worker 也是行为的一部分（构造 Worker 比重渲染一个
+    // 小文档更贵），这里用演示 Vault 里的小笔记把它钉住。
+    await openNoteInTree(page, '项目/设计.md')
+    await showReadView(page)
+    await waitUntil(
+      async () => (await page.locator('[data-mn-render]').count()) > 0,
+      10_000,
+      '预览标出了自己走的哪条渲染路径',
+    )
+    expect(await page.locator('[data-mn-render]').first().getAttribute('data-mn-render')).toBe('sync')
+    // 正文照常渲染（走哪条路都不该影响结果）
+    expect((await page.locator('.mn-preview__body').textContent()) ?? '').toContain('设计')
   })
 
   it('快速切换：Ctrl+P 只列笔记、回车打开、Esc 关闭且不改动', async () => {
@@ -1836,6 +1855,65 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       expect(cell.scrollWidth).toBeLessThanOrEqual(cell.clientWidth + 1)
     }
     expect(cells[1]?.clientHeight ?? 0).toBeGreaterThan(40)
+  })
+
+  it('生产 CSP 下 worker 产物能加载并回包（Worker 的"只有装进应用才会炸"那一类边界）', async () => {
+    // 这条用例存在的理由：真实 WebView 里有一条 CSP（`tauri.conf.json` 的 `app.security.csp`），
+    // 而 UI 层 E2E 的静态服务器现在**也带上同一条**（见 `support/static-server.ts`）——
+    // 于是"worker 产物能不能被同源加载"这件事可以在秒级的这一层验，而不是等到发布前。
+    // 用打包出来的**真产物**（`dist/assets/render.worker-*.js`），走我们的真协议。
+    const workerFile = readdirSync(join(packageRoot(), 'dist', 'assets')).find((name) =>
+      name.startsWith('render.worker-'),
+    )
+    expect(workerFile, 'dist 里应当有打包出来的 render.worker 产物').toBeDefined()
+
+    const reply = await page.evaluate(async (file) => {
+      try {
+        const worker = new Worker(new URL(`/assets/${file}`, location.href), { type: 'module' })
+        const outcome = await new Promise<string>((resolve) => {
+          const timer = setTimeout(() => resolve('timeout'), 8_000)
+          worker.onmessage = (event: MessageEvent) => {
+            clearTimeout(timer)
+            resolve(`message:${JSON.stringify(event.data).slice(0, 80)}`)
+          }
+          worker.onerror = (event: ErrorEvent) => {
+            clearTimeout(timer)
+            resolve(`error:${String(event.message ?? event)}`)
+          }
+          worker.postMessage({ requestId: 1, docKey: '探针', body: '# 探针\n\n一段。\n' })
+        })
+        worker.terminate()
+        return outcome
+      } catch (error) {
+        return `throw:${String(error)}`
+      }
+    }, workerFile)
+
+    expect(reply.startsWith('message:'), `worker 应当能加载并回包，实际：${reply}`).toBe(true)
+    expect(reply).toContain('探针')
+  })
+
+  it('大文档阅读视图：门槛以下不建 Worker（小笔记走同步路径，界面上说得出来）', async () => {
+    // 为什么把这条痕迹做进 DOM（而不是只写日志）：Worker 是否被创建、结果有没有被采信，
+    // 在 Playwright 这一层很难直接观察，jsdom 里更是连 `Worker` 都没有（只能用假对象测协议）。
+    // 于是预览自己把"这一屏是同步渲染的、还是 worker 送回来的"写在 `data-mn-render` 上 ——
+    // 断言一个事实，而不是推断。这里钉的是**门槛生效**：演示 Vault 里的笔记都远小于 1 MiB，
+    // 为它们开线程只会让每次编辑多一次异步往返。
+    //
+    // "超过门槛时真的开了 Worker"那一条放在 `real-app.e2e.test.ts`：真机才有真 Vault，
+    // 测试进程可以直接写一篇 >1 MiB 的笔记进去（在 Mock Vault 里塞一篇 1 MB 的笔记会拖慢
+    // 整个前端测试套件 —— 每建一个 Mock 适配器都要扫它一遍）。
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/设计.md')
+    await showReadView(page)
+    await waitUntil(
+      async () => (await page.locator('[data-mn-render]').count()) > 0,
+      10_000,
+      '预览标出了自己走的哪条渲染路径',
+    )
+    expect(await page.locator('[data-mn-render]').first().getAttribute('data-mn-render')).toBe('sync')
+    // 正文照常渲染（走哪条路都不该影响结果）
+    expect((await page.locator('.mn-preview__body').textContent()) ?? '').toContain('设计')
   })
 })
 

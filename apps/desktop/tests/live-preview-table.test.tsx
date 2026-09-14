@@ -83,7 +83,19 @@ function decosOf(
   // 语法树解析有**时间预算**：机器忙（例如并行跑别的测试文件）时 `syntaxTree(state)` 可能只解析了
   // 一部分，表格节点根本还没进树 —— 那样用例的结果就取决于"这台机器当时有多忙"。
   // 这里先把它逼到完整；真实编辑器里视图本来就会把视口解析完再算装饰。
-  if (state.doc.length > 0) ensureSyntaxTree(state, state.doc.length, 10_000)
+  //
+  // 为什么要**循环**而不是调一次：`ensureSyntaxTree` 在预算内没解析完会返回 `null`，
+  // 而它每次都从上一次的位置继续 —— 所以再喊几次就能推进（实测全量套件并行时有约 10% 的概率
+  // 单次不够）。全都失败时必须**明确报错**：早先这里直接往下走，结果是
+  // "Cannot read properties of undefined (reading 'value')" 这种看不懂的报错，
+  // 排查的人会先去怀疑装饰逻辑，而真正的原因只是"树还没解析完"。
+  if (state.doc.length > 0) {
+    let parsed = ensureSyntaxTree(state, state.doc.length, 10_000)
+    for (let attempt = 0; parsed === null && attempt < 5; attempt += 1) {
+      parsed = ensureSyntaxTree(state, state.doc.length, 10_000)
+    }
+    if (parsed === null) throw new Error('语法树在预算内没有解析完，本用例无法继续')
+  }
   const set = buildLivePreviewDecorations(state, context, visible)
   const items: Deco[] = []
   set.between(0, state.doc.length, (from, to, value: Decoration) => {

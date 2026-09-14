@@ -1568,6 +1568,100 @@ describe.skipIf(!supported)('真实应用：标签层级编辑（真实磁盘）
 })
 
 /**
+ * 大文档阅读视图：**Worker 到底有没有被开起来**（真实二进制 + 真实 WebView2）。
+ *
+ * 为什么只有这一层能回答：
+ * - jsdom 里**没有** `Worker`，单元测试只能用假对象验协议与状态机，证不了"真的换了一条线程"；
+ * - Worker 能不能起来还取决于 **Vite 把 `render.worker.ts` 单独打包后的产物**能不能被浏览器加载、
+ *   以及宿主 CSP 允不允许同源 worker（`tauri.conf.json` 里没有 `worker-src`，回退链落在
+ *   `script-src 'self'` 上）—— 这两件事都只有在真实 WebView 里跑一遍才知道。
+ *
+ * 为什么要写一篇 >1 MiB 的笔记：门槛就是 1 MiB（依据是 `preview-worker.ts` 里的实测占比），
+ * 不越过它永远走同步路径，这条用例会变成假绿。测试进程直接往临时 Vault 里写文件 ——
+ * 这也是这一层比 UI 层更适合验它的原因（UI 层的 Mock Vault 在页面内存里，塞一篇 1 MB 的笔记
+ * 会让**每个**前端测试文件都要扫它一遍）。
+ */
+describe.skipIf(!supported)('真实应用：大文档阅读视图的 Worker（真实磁盘）', () => {
+  const BIG = '大文档.md'
+
+  /**
+   * 约 1.28 M **字符**的正文（门槛按字符数算：1 MiB = 1048576）。
+   *
+   * 注意别按"字节数"直觉估：JS 字符串里中文也是 1 个 code unit，这里每个 block 恰好 32 个 ——
+   * 40000 × 32 = 1280000。这个算式写在这里是有原因的：第一版写了 31000（≈99 万，**低于门槛**），
+   * 于是用例一直在验同步路径，看起来像"Worker 起不来"。
+   */
+  const BIG_TEXT = `# 大文档\n\n${'用于测量的占位正文内容，含 **强调** 与 [[另一篇]]。\n\n'.repeat(40_000)}`
+
+  let app: LaunchedApp
+  let vault: TempVault
+
+  beforeAll(async () => {
+    vault = await createTempVault({
+      [BIG]: BIG_TEXT,
+      '另一篇.md': '# 另一篇\n\n被大文档指过来的一篇。\n',
+    })
+    app = await launchApp({ vaultPath: vault.path })
+    await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
+  }, 120_000)
+
+  afterAll(async () => {
+    if (app !== undefined) await app.close()
+    if (vault !== undefined) await vault.cleanup()
+  })
+
+  it('超过门槛时走 Worker：界面上标出来，页面里也真的有一个 worker 实例', async () => {
+    await openNoteInTree(app.page, BIG)
+
+    /*
+     * 切到阅读视图这一步**不能**用 `showReadView`：它等的是 `.mn-preview__body` **可见**，
+     * 而走 Worker 时那份 HTML 要一个来回之后才到 —— 期间 `<article>` 是空的（没有高度，
+     * Playwright 判定为 hidden）。这不是缺陷，是这条路径的固有形态：宁可先空着，
+     * 也不为了"看起来有东西"而在主线程同步渲染一遍（那正是要避免的几百毫秒阻塞）。
+     */
+    await app.page.locator('button[aria-label="阅读（渲染后）"]').click()
+    await app.page.waitForSelector('.mn-preview', { state: 'visible', timeout: 30_000 })
+
+    // 1) 应用自己说走了哪条路（`data-mn-render` 是这一轮专门为"可断言"加的）
+    await waitUntil(
+      async () => (await app.page.locator('[data-mn-render="worker"]').count()) > 0,
+      60_000,
+      '预览走了 Worker 路径',
+    )
+
+    // 2) 真的是另一条线程：CDP 能看到这个页面下挂着一个 dedicated worker。
+    //    若 Vite 的 worker 产物或 CSP 有问题，`createPreviewRenderChannel` 会构造失败并
+    //    永久回退同步路径 —— 那时 1) 就会超时，所以这一条是"额外确认"，不是唯一凭据。
+    await waitUntil(async () => app.page.workers().length > 0, 30_000, 'WebView 里存在 worker 实例')
+
+    // 3) 结果与同步路径一致：正文渲染出来了（Worker 只搬解析，净化与落地仍在主线程）
+    await waitUntil(
+      async () =>
+        ((await app.page.locator('.mn-preview__body').textContent()) ?? '').includes(
+          '用于测量的占位正文内容',
+        ),
+      90_000,
+      '大文档渲染出来了',
+    )
+  }, 180_000)
+
+  it('小笔记仍然走同步路径（门槛生效：不为几 KB 的正文开线程）', async () => {
+    await openNoteInTree(app.page, '另一篇.md')
+    await showReadView(app.page)
+
+    await waitUntil(
+      async () => (await app.page.locator('[data-mn-render]').count()) > 0,
+      30_000,
+      '预览标出了渲染路径',
+    )
+    expect(
+      await app.page.locator('[data-mn-render]').first().getAttribute('data-mn-render'),
+    ).toBe('sync')
+    expect((await app.page.locator('.mn-preview__body').textContent()) ?? '').toContain('被大文档指过来')
+  }, 120_000)
+})
+
+/**
  * 回收站：从"删掉"到"拿回来"的完整闭环（真实二进制 + 真实磁盘）。
  *
  * 为什么要在这一层验：恢复要同时动**文件**（搬回原位置）、**台账**（删掉那条记录）、
