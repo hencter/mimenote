@@ -47,7 +47,7 @@ import { subscribeIndexStatus, useLinksStore } from '@/state/links-store'
 import { flushAutosave, hasUnsavedChanges, useNoteStore } from '@/state/note-store'
 import { useTagsStore } from '@/state/tags-store'
 import { useUiStore } from '@/state/ui-store'
-import { useVaultStore } from '@/state/vault-store'
+import { subscribeVaultChanges, useVaultStore } from '@/state/vault-store'
 import { applyTheme, getTheme } from '@/theme/apply'
 import { unloadSnippets } from '@/theme/snippets'
 
@@ -104,6 +104,10 @@ export function App() {
 
   // 链接索引：订阅宿主的进度事件（浏览器预览模式下自动降级）
   useEffect(() => subscribeIndexStatus(), [])
+
+  // 外部改动（资源管理器 / 别的编辑器 / 同步盘）：订阅宿主的事件，
+  // 收到后重扫条目表并让当前笔记跟随磁盘（ADR-0016）。浏览器预览模式下自动降级。
+  useEffect(() => subscribeVaultChanges(), [])
 
   // 打开笔记 → 拉取它的出链与反向链接
   useEffect(() => {

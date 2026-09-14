@@ -10,13 +10,14 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockWriteGuard, Weak};
 
 use mn_core::scanner::{EntryMeta, ScanOptions, ScanReport};
 use mn_core::{Error, Result, VaultRoot};
 use mn_index::{LinkIndex, SearchIndex};
 
 use crate::indexer::IndexStatus;
+use crate::watcher::{EventSink, WatcherHandle};
 
 /// 全文搜索索引在"找不到原因"时用的路径标签（错误信息里给用户看的位置）。
 const SEARCH_LABEL: &str = ".mimenote/cache/search.db";
@@ -190,6 +191,18 @@ pub struct AppState {
     index_cancel: Mutex<Option<Arc<AtomicBool>>>,
     /// 构建互斥量：同一时刻只允许一轮索引构建在跑（理由见 [`AppState::build_guard`]）。
     build_lock: Mutex<()>,
+    /// 正在监听外部改动的 watcher（换 Vault / 关闭 Vault 时停掉，见 ADR-0016）。
+    watcher: Mutex<Option<WatcherHandle>>,
+    /// 事件出口（生产环境是 Tauri 的 `AppHandle`；测试里是一个 channel）。
+    sink: Mutex<Option<Arc<dyn EventSink>>>,
+    /// 自身的弱引用。
+    ///
+    /// 为什么需要它：Vault 的换/关发生在 [`AppState::set_vault`] / [`AppState::clear_vault`]，
+    /// 它们只有 `&self`，而 watcher 的去抖线程要长期持有会话状态（去查条目表判断
+    /// "这条事件是不是我们自己写的"）。宿主启动时（`lib.rs` 的 setup）把 `Arc` 降级成 `Weak`
+    /// 存进来，换 Vault 时再 upgrade 出来。
+    /// 用 `Weak` 而不是 `Arc`：监听线程不该让会话状态永远活着。
+    weak_self: Mutex<Weak<AppState>>,
 }
 
 impl AppState {
@@ -264,9 +277,19 @@ impl AppState {
     }
 
     /// 替换当前 Vault。
+    ///
+    /// **watcher 的生命周期挂在这里**：这是"当前 Vault 换了一个"的唯一入口
+    /// （打开新 Vault 与重扫都会走到它），换根 = 停旧监听 + 起新监听；
+    /// 同一个根（重扫）则原样保留 —— 重启监听会留下一个"事件无人接收"的窗口。
     pub fn set_vault(&self, ctx: VaultCtx) {
-        let mut guard = self.vault.write().unwrap_or_else(|e| e.into_inner());
-        *guard = Some(ctx);
+        let root = ctx.root.clone();
+        {
+            let mut guard = self.vault.write().unwrap_or_else(|e| e.into_inner());
+            *guard = Some(ctx);
+            // ⚠️ 必须先放锁再同步 watcher：`sync_watcher` 可能 join 去抖线程，
+            // 而那个线程会去读 `vault`（`is_news`），持着写锁 join 就是自锁死。
+        }
+        self.sync_watcher(&root);
     }
 
     /// 增量更新当前 Vault。
@@ -279,8 +302,88 @@ impl AppState {
 
     /// 关闭 Vault。
     pub fn clear_vault(&self) {
+        // 先停监听（它读的是"当前 Vault"的条目表），再清上下文
+        self.stop_watcher();
         let mut guard = self.vault.write().unwrap_or_else(|e| e.into_inner());
         *guard = None;
+    }
+
+    // -- 外部改动监听（ADR-0016）------------------------------------------------
+
+    /// 接线宿主运行时：事件出口 + 自身的弱引用（`lib.rs` 的 `setup` 调用一次）。
+    pub fn attach_runtime(&self, sink: Arc<dyn EventSink>, weak_self: Weak<AppState>) {
+        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
+        *self.weak_self.lock().unwrap_or_else(|e| e.into_inner()) = weak_self;
+    }
+
+    /// 当前是否正在监听外部改动（排障与测试用；界面上可见的是行为本身与日志）。
+    pub fn is_watching(&self) -> bool {
+        self.watcher
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
+    /// 停掉监听（幂等）。
+    pub fn stop_watcher(&self) {
+        let mut guard = self.watcher.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(mut handle) = guard.take() {
+            if !handle.stop() {
+                // 监听线程异常退出：监听已经不可信，但应用照常可用（手动重扫仍在）
+                log::warn!("文件监听线程异常退出（外部改动将不再自动同步）");
+            }
+        }
+    }
+
+    /// 测试用：停掉监听并如实报告线程是否正常收尾。
+    #[cfg(test)]
+    pub fn stop_watcher_for_test(&self) -> bool {
+        let mut guard = self.watcher.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.take() {
+            Some(mut handle) => handle.stop(),
+            None => true,
+        }
+    }
+
+    /// 让监听与当前 Vault 对齐（换根就换监听，同根保持原样）。
+    ///
+    /// 失败一律降级：没有监听时用户仍可手动重扫（`Ctrl+Alt+R`），
+    /// 绝不能因为"监听起不来"就让打开 Vault 失败。
+    fn sync_watcher(&self, root: &VaultRoot) {
+        let mut guard = self.watcher.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = guard.as_ref() {
+            if existing.root() == root.path() {
+                return;
+            }
+        }
+        if let Some(mut old) = guard.take() {
+            let clean = old.stop();
+            log::debug!("已停掉旧 Vault 的文件监听（线程正常收尾：{clean}）");
+        }
+
+        let sink = self.sink.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let Some(sink) = sink else {
+            // 没有事件出口（单测 / 非 Tauri 宿主）：功能优雅缺席，不报错
+            log::debug!("未接线事件出口，跳过文件监听");
+            return;
+        };
+        let Some(state) = self
+            .weak_self
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .upgrade()
+        else {
+            log::debug!("会话状态已释放，跳过文件监听");
+            return;
+        };
+
+        match crate::watcher::start(root, state, sink) {
+            Ok(handle) => *guard = Some(handle),
+            Err(error) => log::warn!(
+                "无法监听 Vault 外部改动（{}）：外部修改需要手动重扫（Ctrl+Alt+R）",
+                error
+            ),
+        }
     }
 
     /// 取写锁：保证"校验 mtime → 原子写"是临界区，避免并发写互相覆盖。
@@ -498,5 +601,23 @@ mod tests {
         assert_eq!(state.startup_vault(), Some("C:/vault"));
         // 启动参数不等于"已打开 Vault"
         assert!(!state.is_open());
+    }
+
+    #[test]
+    fn the_watcher_needs_an_event_sink_and_degrades_without_one() {
+        // 单测（以及任何没有 Tauri 事件出口的宿主）在 `set_vault` 时不该去起监听：
+        // 功能优雅缺席，而不是报错 —— 手动重扫那条路始终有效。
+        let state = AppState::default();
+        let dir = tempfile::tempdir().unwrap();
+        let root = VaultRoot::open(dir.path()).unwrap();
+        let report = mn_core::scanner::scan(root.path(), &ScanOptions::default()).unwrap();
+
+        state.set_vault(VaultCtx::new(root, ScanOptions::default(), report));
+        assert!(!state.is_watching(), "没有事件出口时不启动监听");
+
+        // 关库是幂等的：没有监听时也不该 panic
+        state.clear_vault();
+        state.clear_vault();
+        assert!(!state.is_watching());
     }
 }

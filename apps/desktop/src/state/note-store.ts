@@ -64,8 +64,20 @@ interface NoteState {
    * 用户就会同时面对两种互相矛盾的提示（而其中一套很可能是错的）。
    */
   noteExternalChange: (currentMtimeMs: number) => void
+  /**
+   * 外部改动落在**当前这篇**时的取舍（由 `vault-store` 收到宿主事件后调用，见 ADR-0016）。
+   *
+   * 两条分支与保存冲突是**同一套语义**：
+   * * 没有未保存内容 → 从磁盘重新加载（一条不打扰的提示：状态栏之外只多一次 toast）；
+   * * 有未保存内容 → 进入冲突态（复用 [`noteExternalChange`](#noteExternalChange)），
+   *   等用户在横幅里决定 —— **绝不**自动覆盖，也绝不静默丢弃。
+   *
+   * 为什么决策必须放在这里：冲突态、自动保存流水线、`revision` 的整篇替换都绑在这个 store 上，
+   * 让调用方自己去 `set` 状态等于把一台状态机拆成两半。
+   */
+  applyExternalChange: (change: { currentMtimeMs: number; removed?: boolean }) => Promise<void>
   resolveConflict: (choice: 'overwrite' | 'reload') => Promise<void>
-  reload: () => Promise<void>
+  reload: (options?: { silent?: boolean }) => Promise<void>
   /**
    * 改名后把当前文档**原地换到新路径**。
    *
@@ -291,6 +303,35 @@ export const useNoteStore = create<NoteState>((set, get) => ({
     })
   },
 
+  applyExternalChange: async ({ currentMtimeMs, removed = false }) => {
+    const state = get()
+    const doc = state.doc
+    if (doc === null) return
+
+    // 待写的防抖保存先取消：它带着的是"看到磁盘新版本之前"的文本
+    cancelAutosave()
+
+    if (state.dirty || state.conflict !== null) {
+      // 有未保存内容（或已经处于冲突态）→ 只进冲突态，一个字节都不写：
+      // 与保存时撞上外部改动完全同一套语义，交给横幅里的用户决定
+      get().noteExternalChange(currentMtimeMs)
+      return
+    }
+
+    if (removed) {
+      // 磁盘上这篇已经不在了（被删掉或改名搬走）。编辑器里留着最后一次读到的内容，
+      // 但不假装"重新加载成功"——后台标签会被 `tabs-store` 按条目表剪掉。
+      toast.warn('磁盘上的这篇笔记已被删除或移动', doc.relPath)
+      return
+    }
+
+    await get().reload({ silent: true })
+    // 重载失败（例如刚被删掉）时 `reload` 自己已经给了错误提示，不在这里再补一条
+    if (get().status === 'ready') {
+      toast.info('已在磁盘上更新，已重新加载', doc.relPath)
+    }
+  },
+
   resolveConflict: async (choice) => {
     if (choice === 'overwrite') {
       await get().saveNow({ force: true })
@@ -299,7 +340,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
     }
   },
 
-  reload: async () => {
+  reload: async ({ silent = false } = {}) => {
     const doc = get().doc
     if (doc === null) return
     const started = nowMs()
@@ -325,7 +366,8 @@ export const useNoteStore = create<NoteState>((set, get) => ({
         conflict: null,
         loadMs: Math.round(nowMs() - started),
       })
-      toast.info('已从磁盘重新加载', doc.relPath)
+      // `silent`：外部改动触发的那次重载由调用方给一条更贴切的提示（ADR-0016）
+      if (!silent) toast.info('已从磁盘重新加载', doc.relPath)
     } catch (cause) {
       const error = MimenoteError.from(cause)
       set({ status: 'error', error })

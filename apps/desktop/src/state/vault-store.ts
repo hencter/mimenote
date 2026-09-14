@@ -12,11 +12,32 @@ import { extensionOf, parentOf } from '@/domain/paths'
 import { ipc } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
 import type { EntryMeta, NoteContent, RenameOutcome, TrashRecord, VaultInfo, VaultSnapshot } from '@/ipc/types'
+import { useNoteStore } from './note-store'
 import { loadJson, loadString, saveJson, saveString } from './persist'
 import { toast } from './toast-store'
 
 const LAST_VAULT_KEY = 'mimenote.vault.last'
 const EXPANDED_KEY = 'mimenote.vault.expanded.v1'
+
+/** 宿主推送"Vault 被外部改动"的事件名（与 `src-tauri/src/watcher.rs` 保持一致）。 */
+export const VAULT_CHANGED_EVENT = 'mn://vault-changed'
+
+/**
+ * 宿主推来的外部改动（`watcher.rs` 的 `VaultChanged` 手工镜像，字段名不可偏离）。
+ *
+ * `paths` 只用于日志与排障：**判断"当前笔记要不要重载"用的是重扫回来的 mtime**，
+ * 而不是这张表 —— 路径超过上限时会被截断，而 mtime 比对在任何规模下都成立。
+ */
+export interface VaultChanged {
+  /** 这次合并里被判为外部改动的相对路径（字典序，最多 256 条）。 */
+  paths: string[]
+  /** 是否有路径因为上限被截掉。 */
+  truncated: boolean
+  /** 去抖窗口里一共收到多少条事件路径（含重复）。 */
+  changes: number
+  /** 宿主判定时刻（毫秒时间戳）。 */
+  detectedAtMs: number
+}
 
 export type VaultStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -35,6 +56,13 @@ interface VaultState {
   openVault: (path: string) => Promise<boolean>
   restoreLastVault: () => Promise<void>
   rescan: () => Promise<void>
+  /**
+   * 宿主报告"Vault 在应用之外被改动了"（ADR-0016）：静默重扫条目表 → 让当前笔记跟随磁盘。
+   *
+   * 为什么不复用 `rescan`：那是用户按 `Ctrl+Alt+R` 的路径，会弹"已重扫 N 条目"的成功提示；
+   * 而外部改动是**背景事件**（同步盘可能每分钟都在落文件），每次都弹提示等于噪音。
+   */
+  applyExternalChange: (payload: VaultChanged) => Promise<void>
   closeVault: () => Promise<void>
 
   toggleExpanded: (relPath: string) => void
@@ -184,17 +212,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     const started = nowMs()
     try {
       const snapshot = await ipc.vaultSnapshot()
-      const selected = get().selected
-      const stillExists =
-        selected === null || snapshot.entries.some((entry) => entry.relPath === selected)
-      set({
-        status: 'ready',
-        info: infoFromSnapshot(snapshot),
-        entries: snapshot.entries,
-        tree: buildTree(snapshot.entries),
-        selected: stillExists ? selected : null,
-        error: null,
-      })
+      set(snapshotPatch(snapshot, get().selected))
       toast.success(
         `已重扫：${snapshot.entries.length} 条目`,
         `耗时 ${snapshot.scanMs}ms（含扫描与构建树 ${Math.round(nowMs() - started)}ms）`,
@@ -203,6 +221,36 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       const error = MimenoteError.from(cause)
       set({ error })
       toast.error(describeError(error, '重扫失败'))
+    }
+  },
+
+  applyExternalChange: async (payload) => {
+    const info = get().info
+    if (info === null) return
+    // 打开/重扫正在进行时不掺和：那两次会把条目表整体换掉，这里再叠一次只会打架
+    if (get().status === 'loading') return
+
+    const seq = ++externalSeq
+    const started = nowMs()
+    try {
+      // 走宿主既有的重扫命令：条目表刷新 + **后台**重建索引（可取消，不阻塞 UI）
+      const snapshot = await ipc.vaultSnapshot()
+      if (seq !== externalSeq) return // 已被更新的一轮取代
+      set(snapshotPatch(snapshot, get().selected))
+      console.info(
+        `[vault] 外部改动：${payload.changes} 条事件路径${
+          payload.truncated ? '（路径表已截断）' : ''
+        } → 重扫 ${snapshot.entries.length} 条目（扫描 ${snapshot.scanMs}ms，端到端 ${Math.round(
+          nowMs() - started,
+        )}ms）`,
+      )
+      await followDiskForOpenNote(snapshot.entries)
+    } catch (cause) {
+      // 外部改动触发的重扫失败（最常见：Vault 目录被搬走/删掉）。不打断编辑，
+      // 但也不能装作没发生 —— 给一条提示，用户至少知道"界面现在可能不是磁盘的样子"
+      const error = MimenoteError.from(cause)
+      console.warn('[vault] 外部改动后重扫失败：', error)
+      toast.warn('外部改动后重扫失败', describeError(error, 'Vault 可能已被移动或删除'))
     }
   },
 
@@ -472,4 +520,88 @@ function withAncestorDirs(
 
 function nowMs(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now()
+}
+
+// -- 外部改动（ADR-0016）-------------------------------------------------------
+
+/**
+ * 外部改动重扫的请求序号：同步盘的风暴被宿主去抖合并过，但"手工重扫 + 外部改动"
+ * 仍可能并发，过期的那一份快照必须丢掉 —— 否则界面会回退到一棵旧树。
+ */
+let externalSeq = 0
+
+/**
+ * 把一份新快照装进 store（手工重扫与外部改动共用同一段收尾）。
+ *
+ * 选中项若已不在条目表里就清掉：保留一个指向不存在路径的选中项，会让文件树的主区域
+ * 显示空白，而用户完全不知道为什么。
+ */
+function snapshotPatch(snapshot: VaultSnapshot, selected: string | null): Partial<VaultState> {
+  const stillExists =
+    selected === null || snapshot.entries.some((entry) => entry.relPath === selected)
+  return {
+    status: 'ready',
+    info: infoFromSnapshot(snapshot),
+    entries: snapshot.entries,
+    tree: buildTree(snapshot.entries),
+    selected: stillExists ? selected : null,
+    error: null,
+  }
+}
+
+/**
+ * 当前打开的笔记若在磁盘上变了，交给 `note-store` 决定"重载"还是"进冲突"。
+ *
+ * 判据是**重扫回来的 mtime 与文档的版本令牌**（而不是宿主事件里的路径表）：
+ * 路径表有上限、会被截断，而 mtime 比对在任何规模下都成立，也天然覆盖了
+ * "同一次风暴里既有别的文件、也有当前笔记"的情况。
+ */
+async function followDiskForOpenNote(entries: readonly EntryMeta[]): Promise<void> {
+  const note = useNoteStore.getState()
+  const doc = note.doc
+  if (doc === null) return
+
+  const entry = entries.find((candidate) => candidate.relPath === doc.relPath)
+  if (entry === undefined) {
+    // 条目表里没有它：磁盘上被删掉或改名搬走了
+    await note.applyExternalChange({ currentMtimeMs: 0, removed: true })
+    return
+  }
+  if (entry.mtimeMs === doc.baseMtimeMs) return // 没变（我们自己写的那种也落在这一档）
+
+  await note.applyExternalChange({ currentMtimeMs: entry.mtimeMs ?? 0 })
+}
+
+/**
+ * 订阅"Vault 被外部改动"事件（`App` 挂载时调用一次，返回取消订阅函数）。
+ *
+ * 与 `subscribeIndexStatus` 同一个姿态：浏览器预览模式（没有 Tauri 事件系统）下静默降级 ——
+ * 功能优雅缺席，界面不报错也不算坏。
+ */
+export function subscribeVaultChanges(): () => void {
+  let disposed = false
+  let unlisten: (() => void) | null = null
+
+  void (async () => {
+    try {
+      const { listen } = await import('@tauri-apps/api/event')
+      const stop = await listen<VaultChanged>(VAULT_CHANGED_EVENT, (event) => {
+        void useVaultStore.getState().applyExternalChange(event.payload)
+      })
+      if (disposed) {
+        stop()
+        return
+      }
+      unlisten = stop
+    } catch (cause) {
+      // 浏览器预览模式（没有 Tauri 事件系统）会走到这里，属预期降级
+      console.debug('[vault] 订阅外部改动事件失败（外部改动将需要手动重扫）：', cause)
+    }
+  })()
+
+  return () => {
+    disposed = true
+    unlisten?.()
+    unlisten = null
+  }
 }

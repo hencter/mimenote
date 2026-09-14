@@ -1171,3 +1171,72 @@ describe.skipIf(!supported)('真实应用：标签面板增删标签（真实磁
   }, 90_000)
 })
 
+/**
+ * 外部改动自动同步（ADR-0016）：**从测试进程**直接改磁盘，不按任何重扫快捷键。
+ *
+ * 这一层能抓到单测抓不到的东西：真实的 `ReadDirectoryChangesW` 事件、真实的去抖与过滤
+ * （"自己写的文件不能算外部改动"）、真实的重扫与索引重建、以及 WebView 里界面真的跟着变。
+ * 用例起点自足（自己开 Vault、自己打开笔记），超时给到 15 s —— 宿主侧静默期 500ms、
+ * 机器忙时事件投递也可能慢，卡在 2-3 s 会变成偶发失败。
+ */
+describe.skipIf(!supported)('真实应用：外部改动自动同步（ADR-0016）', () => {
+  const WATCHED = 'notes/被监听的.md'
+
+  let app: LaunchedApp
+  let vault: TempVault
+
+  beforeAll(async () => {
+    vault = await createTempVault({
+      'README.md': '# 欢迎\n\n这是临时 Vault 的首页。\n',
+      [WATCHED]: '# 初始标题\n\n这一行由测试进程创建。\n',
+    })
+    app = await launchApp({ vaultPath: vault.path })
+    await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
+  }, 120_000)
+
+  afterAll(async () => {
+    if (app !== undefined) await app.close()
+    if (vault !== undefined) await vault.cleanup()
+  })
+
+  it('在应用之外新建的文件几秒内出现在文件树里（不按任何重扫快捷键）', async () => {
+    await openNoteInTree(app.page, WATCHED)
+    expect(await treeRow(app.page, '外部新建的笔记.md').count()).toBe(0)
+
+    // 测试进程直接往 Vault 里写一个新文件 —— 应用完全不知道这件事
+    await vault.write('外部新建的笔记.md', '# 外部新建\n')
+
+    await waitUntil(
+      async () => (await treeRow(app.page, '外部新建的笔记.md').count()) > 0,
+      15_000,
+      '文件树里出现外部新建的文件',
+    )
+  }, 60_000)
+
+  it('当前笔记被外部改动且没有未保存修改 → 自动重新加载，且不覆盖磁盘', async () => {
+    await openNoteInTree(app.page, WATCHED)
+    await waitUntil(
+      async () =>
+        ((await app.page.locator('.cm-content').textContent()) ?? '').includes('这一行由测试进程创建'),
+      15_000,
+      '编辑器先载入初始内容',
+    )
+
+    // 外部改写当前打开的这篇（模拟"别的设备改好、同步盘落下来了"）
+    await vault.write(WATCHED, '# 外部改过的标题\n\n这一行由测试进程写进磁盘。\n')
+
+    await waitUntil(
+      async () =>
+        ((await app.page.locator('.cm-content').textContent()) ?? '').includes(
+          '这一行由测试进程写进磁盘',
+        ),
+      15_000,
+      '编辑器自动重载了磁盘上的新内容',
+    )
+    // 没有未保存修改 → 不应该有任何自动保存把外部内容写回旧文本
+    expect(await vault.read(WATCHED)).toContain('这一行由测试进程写进磁盘')
+
+    // 顶部不该出现冲突横幅（那是有未保存修改时才该走的那条路）
+    expect(await app.page.locator('.mn-conflict').count()).toBe(0)
+  }, 60_000)
+})

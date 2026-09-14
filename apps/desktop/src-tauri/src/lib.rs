@@ -17,8 +17,11 @@ pub mod indexer;
 pub mod logging;
 pub mod startup;
 pub mod state;
+pub mod watcher;
 
 use std::sync::Arc;
+
+use tauri::Manager;
 
 use state::AppState;
 
@@ -83,6 +86,14 @@ pub fn run() {
                 log::info!("日志文件：{}", path.display());
             }
             startup_vault.log();
+            // 外部改动监听（ADR-0016）需要两样东西才能起步：一个把事件推给前端的出口，
+            // 以及会话状态自己的弱引用（换 Vault 发生在 `set_vault`，那里只有 `&self`）。
+            // 两者都只能在这里拿到，所以接线放在 setup。
+            let state = app.state::<Arc<AppState>>();
+            state.attach_runtime(
+                Arc::new(watcher::TauriSink::new(app.handle().clone())),
+                Arc::downgrade(state.inner()),
+            );
             log::debug!("窗口已创建，等待前端请求 vault_open");
             Ok(())
         })

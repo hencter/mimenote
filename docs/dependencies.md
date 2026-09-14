@@ -48,6 +48,24 @@
 | `rusqlite` 0.37（`bundled`） | MIT（`libsqlite3-sys` 0.35 同为 MIT；SQLite 本体为 public domain） | 全文搜索：FTS5 倒排索引 + `MATCH` + `bm25()` 排序 | 见下方说明 |
 | `libsqlite3-sys` 0.35（rusqlite 传递依赖） | MIT | rusqlite 的 FFI 与 `bundled` 构建脚本（编进 SQLite，FTS5 已启用） | 由 `bundled` 引入，不单独使用 |
 | `hashlink` 0.10 / `fallible-iterator` 0.3 / `fallible-streaming-iterator` 0.1 | MIT OR Apache-2.0 / MIT-Apache-2.0 | rusqlite 的语句缓存与行迭代 | 由 rusqlite 引入的传递依赖，无直接使用 |
+| `notify` 8.2（+ `notify-types` 2，传递依赖） | CC0-1.0 | 文件监听：把 Vault 的外部改动（资源管理器 / 别的编辑器 / 同步盘把别的设备的改动落下来）变成事件（ADR-0016） | 见下方说明 |
+
+### 为什么引入 `notify`，而不是轮询或自己写平台 FFI
+
+"外部改了文件 → 文件树与索引跟着变"必须知道**磁盘什么时候变了**。可选方案就三条：
+
+| 方案 | 为什么不选 |
+| --- | --- |
+| 定时轮询（自己写：每隔几秒扫一遍全库取 mtime） | 1 万文件的一趟扫描是 **143ms**（`scanner` 的既有基准），每秒一次就是常态十几个百分点的 CPU；拉长到分钟级又失去意义，而且窗口内的"改了又改回去"看不见 |
+| 自己调 `ReadDirectoryChangesW` + `inotify` + `kqueue` | 三套 FFI、三套缓冲区/溢出/重命名语义（Windows 上改名是两个独立事件、缓冲区溢出会丢事件），等于自己维护一个 `notify` |
+| **`notify`** | 这就是该问题的成熟实现；**只加在宿主 crate**（`mn-core` / `mn-index` 是纯库，索引是可重建的派生数据，不能被平台相关的 IO 机制绑住） |
+
+许可证 **CC0-1.0**（公共领域献让），无传染性；本平台上只引入 `notify-types` 一个自有传递依赖
+（`inotify` / `kqueue` / `fsevent-sys` 是别的平台的实现，不参与 Windows 构建）。
+
+已知边界（完整版见 ADR-0016 的代价表）：网络盘/UNC 路径的通知完整性由对端决定（部分 NAS 不发通知），
+此时退化为"等下一次手工重扫"而不报错；缓冲区溢出会丢事件（`notify` 记 warn），丢的那一次由下一次重扫补齐 ——
+因此**监听是加速器，不是唯一真相来源**。
 
 ### 为什么引入 SQLite/FTS5，而不是自己在内存里做搜索
 
@@ -66,7 +84,6 @@ SQLite 的 FTS5 是这几件事的成熟实现，且它带来的缓存是**纯�
 **刻意没有引入**：
 
 - `tokio` 直接依赖：Tauri 已内置 `tauri::async_runtime`（`spawn_blocking` 够用）。
-- `notify`（文件监听）：M2 与 SQLite 索引一起引入，避免现在引入"没有消费者的事件流"。
 - `walkdir` / `ignore`：扫描逻辑需要精确的越界/符号链接/忽略规则控制，自己实现（`scanner.rs`，约 120 行）比适配通用库更直接，且已有测试覆盖。
 - `trash` crate：M1 使用 Vault 内 `.mimenote/trash` 台账（跨平台行为一致、可被 Git 忽略），M2 再评估是否对接系统回收站。
 

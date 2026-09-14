@@ -19,6 +19,9 @@ thiserror = "2"
 tempfile = "3"
 log = "0.4"
 env_logger = "0.11"
+# 文件监听（ADR-0016）：**只给宿主 crate**用 —— `mn-core`/`mn-index` 是纯库，
+# 监听是"会话级的外部世界信号"，属于宿主职责，不能污染可重建的索引层。
+notify = "8"
 
 [profile.release]
 codegen-units = 1

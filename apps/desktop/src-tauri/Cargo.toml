@@ -24,6 +24,8 @@ env_logger = { workspace = true }
 # 而是打开 Vault 时按实际目录动态注入（用户选的任意目录，静态 scope 覆盖不到）
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
+# 文件监听：Windows 上走 ReadDirectoryChangesW（理由与替代方案见 ADR-0016）
+notify = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
