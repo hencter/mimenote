@@ -1357,7 +1357,9 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
     const stored = await page.evaluate(() => localStorage.getItem('mimenote.graph.prefs.v1'))
     expect(stored).not.toBeNull()
-    expect(JSON.parse(stored ?? '{}')).toEqual({ mode: 'focus', depth: 3 })
+    // `toMatchObject` 而不是逐字相等：落盘里还有张力/预设/两个开关（ADR-0023 之后每次落盘都带着它们）。
+    // "跳数真的写进去了"与"别的偏好没被顺手抹掉"是两件事，后者另有单独一条用例守着。
+    expect(JSON.parse(stored ?? '{}')).toMatchObject({ mode: 'focus', depth: 3 })
 
     await page.reload()
     // 刷新之后应用会从 localStorage 恢复上次打开的 Vault（`mimenote.vault.last`），

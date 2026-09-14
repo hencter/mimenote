@@ -100,7 +100,9 @@ describe('跳数归一化与偏好持久化', () => {
     useGraphStore.getState().setDepth(3)
     useGraphStore.getState().setMode('vault')
 
-    expect(JSON.parse(window.localStorage.getItem(PREFS_KEY) ?? '{}')).toEqual({
+    // `toMatchObject` 而不是逐字相等：落盘里还有张力/预设/两个开关（ADR-0023 之后每次落盘
+    // 都带着它们，见 `prefsOf`）—— 那条"别的偏好不会被抹掉"另有回归用例守着。
+    expect(JSON.parse(window.localStorage.getItem(PREFS_KEY) ?? '{}')).toMatchObject({
       mode: 'vault',
       depth: 3,
     })
