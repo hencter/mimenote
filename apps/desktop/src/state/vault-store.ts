@@ -51,6 +51,14 @@ interface VaultState {
   /** 重命名成功后就地替换条目（不重扫；改名不改变条目数量）。 */
   registerRenamedNote: (outcome: RenameOutcome) => void
   /**
+   * **目录搬迁**成功后就地替换整棵子树的条目（不重扫）。
+   *
+   * 为什么不能用 `registerRenamedNote`：那个函数只换**一条**（单篇改名/移动），而目录搬迁
+   * 会让子树里每一篇的路径都变 —— 只换目录那一条，前端文件树会空一片（磁盘上它们好好的）。
+   * 展开状态也要跟着换前缀，否则搬迁后原来展开的目录全被折叠（`expanded` 里存的是旧路径）。
+   */
+  registerRelocatedDirectory: (outcome: RenameOutcome) => void
+  /**
    * 附件落盘后就地插入条目（粘贴/拖入图片，见 ADR-0013）。
    *
    * 为什么不做一次 `rescan`：条目表是"打开 Vault 时扫一次"的快照，重扫在 1 万笔记下是
@@ -314,8 +322,48 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     set({ entries, tree: buildTree(entries), selected: selectedAfter, info: nextInfo })
   },
 
-  registerAttachment: (file) => {
-    const parent = parentOf(file.relPath)
+  registerRelocatedDirectory: (outcome) => {
+    const { oldRelPath, newRelPath } = outcome
+    const remap = (relPath: string): string =>
+      relPath === oldRelPath
+        ? newRelPath
+        : relPath.startsWith(`${oldRelPath}/`)
+          ? `${newRelPath}${relPath.slice(oldRelPath.length)}`
+          : relPath
+
+    const entries = get().entries.map((entry) => {
+      const relPath = remap(entry.relPath)
+      return relPath === entry.relPath ? entry : { ...entry, relPath, name: relPath.split('/').pop() ?? relPath }
+    })
+    // 目录搬到一个**刚创建**的目录里时，祖先链上可能缺条目（条目表是"打开 Vault 时扫一次"
+    // 的快照）。缺了它 `domain/tree` 会把子树提升成根节点 —— 表现是"目录跑到了最外层"。
+    const { entries: withAncestors, added } = withAncestorDirs(entries, newRelPath)
+
+    // 展开状态跟着换前缀：不然搬迁后原来展开的目录全被折叠（`expanded` 里存的是旧路径）
+    const expanded = new Set<string>()
+    for (const dir of get().expanded) expanded.add(remap(dir))
+
+    const selected = get().selected
+    const selectedAfter = selected === null ? null : remap(selected)
+    const info = get().info
+    const nextInfo =
+      info === null
+        ? null
+        : added === 0
+          ? info
+          : { ...info, entryCount: withAncestors.length, folderCount: info.folderCount + added }
+
+    set({
+      entries: withAncestors,
+      tree: buildTree(withAncestors),
+      expanded,
+      selected: selectedAfter,
+      info: nextInfo,
+    })
+    persistExpanded(info?.rootPath ?? '', expanded)
+  },
+
+  registerAttachment: (file) => {    const parent = parentOf(file.relPath)
     const ext = extensionOf(file.relPath)
     const entry: EntryMeta = {
       relPath: file.relPath,

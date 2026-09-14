@@ -143,6 +143,50 @@ pub fn move_targets(
     Ok(RenameTargets { old_rel, new_rel })
 }
 
+/// 校验**目录**改名的入参并算出新旧相对路径。
+///
+/// 与 [`rename_targets`] 的差别只有"没有扩展名"这一条：目录名就是最终名字，不做主干/扩展名的
+/// 拆分（`v1.2` 是一个合法的目录名，不能被切成 `v1` 再拼回 `.2`）。
+/// 名字里的路径分隔符同样一律拒绝（与单篇改名同一口径）—— **换目录请用目标目录参数**
+/// （`dir_move`）：允许 `子/新名` 会让"改名"偷偷变成"移动"，而改名与移动的链接改写规则不同。
+pub fn dir_rename_targets(old_rel_path: &str, new_name: &str) -> Result<RenameTargets> {
+    let old_rel = old_rel_path.trim().replace('\\', "/");
+    validate_relative_path(&old_rel)?;
+
+    let name = title_stem(new_name)?;
+    let (dir, _) = split_dir(&old_rel);
+    let new_rel = join_rel(dir, name);
+    validate_relative_path(&new_rel)?;
+
+    Ok(RenameTargets { old_rel, new_rel })
+}
+
+/// 校验**目录**移动的入参并算出新旧相对路径。
+///
+/// * `target_parent_rel` 是目标父目录（空串 = Vault 根；反斜杠与首尾 `/` 都容忍），
+///   可以还不存在 —— "移动到新建目录"是键盘路径下的正常需求，创建由搬迁本体负责；
+/// * `new_name` 为 `None` 时沿用原目录名（拖拽就是这种情况：只换父目录）；
+/// * **"搬进自己/自己的后代"由调用方（`dir_move`）拒绝**：这里只做语法校验，
+///   因为这条判断需要的是"新旧路径的包含关系"，属于搬迁语义而不是路径语法。
+pub fn dir_move_targets(
+    old_rel_path: &str,
+    target_parent_rel: &str,
+    new_name: Option<&str>,
+) -> Result<RenameTargets> {
+    let old_rel = old_rel_path.trim().replace('\\', "/");
+    validate_relative_path(&old_rel)?;
+
+    let parent = normalize_dir(target_parent_rel)?;
+    let new_name = match new_name {
+        Some(name) => title_stem(name)?.to_string(),
+        None => file_name_of(&old_rel).to_string(),
+    };
+    let new_rel = join_rel(&parent, &new_name);
+    validate_relative_path(&new_rel)?;
+
+    Ok(RenameTargets { old_rel, new_rel })
+}
+
 /// 把用户输入的新文件名校验成**主干**（不含扩展名）。
 fn title_stem(new_title: &str) -> Result<&str> {
     if new_title != new_title.trim() {
@@ -473,7 +517,7 @@ struct PlannedRewrite {
 }
 
 /// "新目标怎么写"的全部描述（归拢成一处，避免到处传六个参数）。
-struct TargetStyle<'a> {
+pub(crate) struct TargetStyle<'a> {
     /// 新目标相对路径（去扩展名）—— 路径形式的链接用它做相对路径换算。
     new_rel_no_ext: &'a str,
     /// 新文件名主干。
@@ -486,6 +530,40 @@ struct TargetStyle<'a> {
     /// 同一条 `[[乙]]` 可能落到**另一篇**同名笔记上 —— 那是静默的错误指向，
     /// 比"链接文本变长"严重得多。同目录改名没有这个问题，保持最小 diff。
     always_relative: bool,
+}
+
+/// 目录搬迁与单篇搬迁必须用**同一套**目标写法规则。
+///
+/// 抽成一个构造函数而不是各写一遍：`always_relative` 之外的三个字段都由"新相对路径"决定，
+/// 两处各算一次的话，迟早会在"扩展名怎么取"（`v1.2.md` 的主干是 `v1.2` 而不是 `v1`）上分家，
+/// 而那种漂移表现为"移动之后一部分链接变了样、一部分没变"。
+pub(crate) fn target_style(new_rel: &str, always_relative: bool) -> TargetStyle<'_> {
+    let name = file_name_of(new_rel);
+    TargetStyle {
+        new_rel_no_ext: strip_extension(new_rel),
+        new_stem: strip_extension(name),
+        new_ext: extension_of(name),
+        always_relative,
+    }
+}
+
+/// 目录搬迁与单篇搬迁共用的"一条链接要改成什么"。
+pub(crate) fn new_target_for(
+    raw_target: &str,
+    line: &str,
+    span: &LinkSpan,
+    new_dir: &str,
+    style: &TargetStyle<'_>,
+) -> String {
+    let mut target = if style.always_relative || normalize_target(raw_target).contains('/') {
+        relative_posix(new_dir, style.new_rel_no_ext)
+    } else {
+        style.new_stem.to_string()
+    };
+    if !is_wiki_syntax(line, span) && has_note_extension(raw_target) && !style.new_ext.is_empty() {
+        target.push_str(style.new_ext);
+    }
+    target
 }
 
 /// 一条链接的改写"坐标系"（见 [`plan_rewrites`] 的构造处）。
@@ -521,12 +599,7 @@ fn plan_rewrites(
 ) -> Vec<PlannedRewrite> {
     // 主干取的是**新文件名去掉末尾 `.md`/`.markdown`**，而不是 `stem_of`（后者在最后一个
     // 点处切分，会把 `v1.2.md` 的主干算成 `v1`）。
-    let style = TargetStyle {
-        new_rel_no_ext: strip_extension(new_rel),
-        new_stem: strip_extension(file_name_of(new_rel)),
-        new_ext: extension_of(file_name_of(new_rel)),
-        always_relative,
-    };
+    let style = target_style(new_rel, always_relative);
 
     // 候选集两部分：指向被搬走那篇的笔记（索引知道是谁），以及**被搬走的那篇自身**。
     // 后者必须显式加进来：它正文里的相对路径链接（图片、PDF、同级笔记）在索引里根本
@@ -759,24 +832,8 @@ fn relocated_relative_target(
 /// * 原目标不含 `/`（裸名）且不是移动 → 只用**新文件名主干**；
 /// * 原目标显式写了 `.md` / `.markdown`（且是 Markdown 形式）→ 保留扩展名写法；
 /// * `[[x]]` 形式不加扩展名（`[[x.md]]` 不是惯例）。
-fn new_target_for(
-    raw_target: &str,
-    line: &str,
-    span: &LinkSpan,
-    new_dir: &str,
-    style: &TargetStyle<'_>,
-) -> String {
-    let mut target = if style.always_relative || normalize_target(raw_target).contains('/') {
-        relative_posix(new_dir, style.new_rel_no_ext)
-    } else {
-        style.new_stem.to_string()
-    };
-    if !is_wiki_syntax(line, span) && has_note_extension(raw_target) && !style.new_ext.is_empty() {
-        target.push_str(style.new_ext);
-    }
-    target
-}
-
+///
+/// 实现见 [`new_target_for`]（与目录搬迁共用一份）。
 /// 替换目标文本并**回读校验**：换完之后，这个位置上必须还是一条目标恰好等于
 /// `new_target` 的链接。
 ///

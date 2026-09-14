@@ -18,6 +18,7 @@
 //! * 知识图谱（见 [`graph`]）**不新增数据**：它是这份链接索引 + 标签索引的一个只读投影，
 //!   顺手记下的 frontmatter `title` 让"节点标题"也不必再读文件。
 
+pub mod dir_move;
 pub mod graph;
 pub mod rename;
 pub mod search;
@@ -316,13 +317,41 @@ impl LinkIndex {
     }
 
     /// 列出某个目录下的所有后代笔记（删除目录时用）。
+    ///
+    /// 判定用 [`path_inside`]（段感知）：朴素的 `starts_with` 会把 `归档2/甲.md` 也算成
+    /// `归档` 的后代 —— 那种错在"移动/删除目录"上会**动错文件**。
     pub fn paths_under(&self, prefix: &str) -> Vec<String> {
-        let prefix = prefix.replace('\\', "/");
-        self.files
+        let dir = prefix.replace('\\', "/");
+        let mut out: Vec<String> = self
+            .files
             .keys()
-            .filter(|path| path.starts_with(&prefix))
+            .filter(|path| path_inside(path, &dir))
             .cloned()
-            .collect()
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// 全部已索引笔记的相对路径（字典序）。
+    ///
+    /// 目录搬迁要用它算出"谁指向子树里某一篇"：候选集是**全部出链目标落在子树前缀内**的文件，
+    /// 逐个 `referrers_of` 会退化成 O(笔记数 × 子树篇数)（1000 篇目录 ⇒ 千万级比较），
+    /// 而这里一趟线性遍历就够了（与 `referrers_of` 用的是同一套解析规则）。
+    pub fn paths(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.files.keys().cloned().collect();
+        out.sort();
+        out
+    }
+
+    /// 一篇笔记的**原始出链目标**（按文档内顺序）；未收录 → 空。
+    ///
+    /// 目录搬迁要判断"这篇里有没有链接指向被搬走的子树"，只需原始目标 + [`Self::resolve`]，
+    /// 不需要构造 [`ResolvedLink`]（那要克隆别名/锚点等字段，1 万笔记下是白花的分配）。
+    pub fn raw_targets(&self, rel_path: &str) -> Vec<&str> {
+        self.files
+            .get(&rel_path.replace('\\', "/"))
+            .map(|links| links.iter().map(|link| link.raw_target.as_str()).collect())
+            .unwrap_or_default()
     }
 
     /// 已索引的笔记数。
@@ -509,10 +538,19 @@ impl LinkIndex {
         }
 
         if key.contains('/') {
-            // 先按"相对当前文件所在目录"找（Markdown 链接的常见写法），再按"相对 Vault 根"找
+            // 先按"相对当前文件所在目录"找（Markdown 链接的常见写法），再按"相对 Vault 根"找。
+            //
+            // 候选必须**折叠 `..`**：名字/目录搬迁会把链接改写成 `../目标` 形态
+            //（`别的/引用.md` 里的 `[[../工程/乙]]`），而 by_path 的键是规范路径 ——
+            // 不折叠就永远查不到，于是"搬迁之后链接全部悬空"。语义上折叠也是对的：
+            // `别的/../工程/乙` 指的就是 `工程/乙`（与 `mn_core::links::join_relative` 同一口径）。
             let from_dir = parent_of(&from_rel.replace('\\', "/"));
-            let candidates = [join_relative(&from_dir, &key), join_relative("", &key)];
-            for candidate in candidates.into_iter().flatten() {
+            let candidates: Vec<String> = [join_relative(&from_dir, &key), join_relative("", &key)]
+                .into_iter()
+                .flatten()
+                .map(|candidate| fold_dots(&candidate))
+                .collect();
+            for candidate in candidates {
                 if let Some(real) = self.by_path.get(&candidate) {
                     return (Some(real.clone()), false);
                 }
@@ -637,6 +675,58 @@ fn parent_of(rel_path: &str) -> String {
         Some(index) => rel_path[..index].to_string(),
         None => String::new(),
     }
+}
+
+/// 折叠路径里的 `.` 与 `..`（`别的/../工程/乙` → `工程/乙`）。
+///
+/// 为什么必须有：搬迁（改名/移动）会把链接改写成 `../目标` 形态，而 `by_path` 的键是规范路径。
+/// 不折叠的话那些链接永远解析不到 —— 表现是"搬完之后全库的链接都悬空了"。
+fn fold_dots(rel: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for segment in rel.split('/') {
+        match segment {
+            "" | "." => continue,
+            // 越出 Vault 根（`..` 多于层级）时保留原样：它本来就在 Vault 之外，解析不到才是对的
+            ".." => {
+                if out.pop().is_none() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out.join("/")
+}
+
+/// `rel_path` 是否**在目录 `dir` 之内**（段感知；`dir` 为空串 = Vault 根，即"任何路径都在内"）。///
+/// 为什么不能直接用 `starts_with`：`归档2/甲.md` 以 `归档` 开头却不是它的后代。
+/// 目录搬迁与目录删除都靠这条判定决定"动谁"，判错就是动错文件。
+pub fn path_inside(rel_path: &str, dir: &str) -> bool {
+    // 尾随 `/` 一律容忍：调用方既有传 `去掉我` 的，也有传 `去掉我/` 的
+    let dir = dir.trim_end_matches('/');
+    if dir.is_empty() {
+        return true;
+    }
+    rel_path
+        .strip_prefix(dir)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// 把 `rel_path`（必须已在 `old_dir` 之内）映射到 `new_dir` 下的对应位置。
+///
+/// `rename.rs` 与 `dir_move.rs` 都要做这一步（把"旧前缀下的路径"换成"新前缀下的路径"），
+/// 各写一遍就会在"目录名本身含分隔符的边界"上分家。
+pub fn remap_prefix(rel_path: &str, old_dir: &str, new_dir: &str) -> Option<String> {
+    let rest = if old_dir.is_empty() {
+        rel_path
+    } else {
+        rel_path.strip_prefix(old_dir)?.strip_prefix('/')?
+    };
+    Some(if new_dir.is_empty() {
+        rest.to_string()
+    } else {
+        format!("{new_dir}/{rest}")
+    })
 }
 
 /// 文件名主干：`a/b/Note.md` → `Note`。

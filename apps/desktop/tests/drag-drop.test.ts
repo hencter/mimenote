@@ -41,24 +41,31 @@ function fakeDataTransfer(): DataTransfer {
 }
 
 describe('哪些条目可以拖动', () => {
-  it('只有 Markdown 笔记可以拖（目录拖动明确推迟）', () => {
+  it('笔记与文件夹都可以拖（附件仍然不行）', () => {
     expect(canDrag(makeEntry({ relPath: '项目/设计.md' }))).toBe(true)
     expect(canDrag(makeEntry({ relPath: '项目/笔记.markdown' }))).toBe(true)
-    expect(canDrag(makeEntry({ relPath: '项目', isDir: true }))).toBe(false)
+    // 目录拖动：连同整棵子树的搬迁已经交付（`dir_move`）
+    expect(canDrag(makeEntry({ relPath: '项目', isDir: true }))).toBe(true)
+    // 附件（图片/`.txt`）不行：索引里没有它的条目，搬它不会带来任何链接改写
     expect(canDrag(makeEntry({ relPath: '附件/说明.txt' }))).toBe(false)
     expect(canDrag(null)).toBe(false)
     expect(canDrag(undefined)).toBe(false)
   })
 
-  it('载荷只带 Vault 相对路径', () => {
+  it('载荷带 Vault 相对路径 + 类型（笔记 / 文件夹）', () => {
     expect(dragPayloadOf(makeEntry({ relPath: '项目/设计.md' }))).toEqual({
       relPath: '项目/设计.md',
+      kind: 'note',
+    })
+    expect(dragPayloadOf(makeEntry({ relPath: '项目', isDir: true }))).toEqual({
+      relPath: '项目',
+      kind: 'folder',
     })
   })
 })
 
 describe('落点计算', () => {
-  const dragged = { relPath: '项目/设计.md' }
+  const dragged = { relPath: '项目/设计.md', kind: 'note' as const }
 
   it('拖到文件夹上 → 移到那个文件夹', () => {
     const target = dropTargetFor(makeEntry({ relPath: '日记', isDir: true }), dragged)
@@ -120,15 +127,74 @@ describe('落点计算', () => {
   })
 })
 
+describe('文件夹拖动：自己的后代是无效落点', () => {
+  const folder = { relPath: '项目', kind: 'folder' as const }
+
+  it('拖到别的文件夹：合法（整棵子树搬过去）', () => {
+    const target = dropTargetFor(makeEntry({ relPath: '归档', isDir: true }), folder)
+    expect(target.valid).toBe(true)
+    expect(target.parentRel).toBe('归档')
+  })
+
+  it('拖到自己身上：无效，并说明"不能移到自己里面"', () => {
+    const target = dropTargetFor(makeEntry({ relPath: '项目', isDir: true }), folder)
+    expect(target.valid).toBe(false)
+    expect(target.parentRel).toBeNull()
+    expect(target.dataState).toBe('invalid')
+    expect(target.reason).toContain('自己里面')
+  })
+
+  it('拖到自己的后代上（深一层也算）：无效，并说明是子目录', () => {
+    for (const descendant of ['项目/子', '项目/子/更深/最深']) {
+      const target = dropTargetFor(makeEntry({ relPath: descendant, isDir: true }), folder)
+      expect(target.valid).toBe(false)
+      expect(target.reason).toContain('子目录')
+    }
+    // 拖到自己后代里的**笔记**上（落点是它所在的目录）同样无效
+    const viaNote = dropTargetFor(makeEntry({ relPath: '项目/子/细节.md' }), folder)
+    expect(viaNote.valid).toBe(false)
+    expect(viaNote.reason).toContain('子目录')
+  })
+
+  it('段感知：`项目2` 不是 `项目` 的后代（同前缀的兄弟目录仍然合法）', () => {
+    const sibling = dropTargetFor(makeEntry({ relPath: '项目2', isDir: true }), folder)
+    expect(sibling.valid).toBe(true)
+    expect(sibling.parentRel).toBe('项目2')
+  })
+
+  it('拖到空白区域（= Vault 根）：本来就在根目录 → 无效（没变化）', () => {
+    const target = dropTargetFor(null, folder)
+    expect(target.valid).toBe(false)
+    expect(target.reason).toContain('已经')
+  })
+
+  it('笔记拖到自己所在目录仍然是"没变化"（与文件夹判定互不干扰）', () => {
+    const note = { relPath: '项目/设计.md', kind: 'note' as const }
+    expect(dropTargetFor(makeEntry({ relPath: '项目', isDir: true }), note).valid).toBe(false)
+    // 文件夹的那条守卫**不会**误伤笔记：`项目/设计.md` 拖到 `项目/子` 上是合法的
+    expect(dropTargetFor(makeEntry({ relPath: '项目/子', isDir: true }), note).valid).toBe(true)
+  })
+})
+
 describe('拖拽载荷的过手与校验', () => {
-  it('写进 dataTransfer 并能读回来', () => {
+  it('写进 dataTransfer 并能读回来（`kind` 前缀让外部拖拽也能区分文件夹）', () => {
     const dt = fakeDataTransfer()
-    writeDragPayload(dt, { relPath: '项目/设计.md' })
-    expect(dt.getData(DRAG_MIME)).toBe('项目/设计.md')
-    // 外部程序（编辑器/文件管理器）只认 text/plain
+    writeDragPayload(dt, { relPath: '项目/设计.md', kind: 'note' })
+    // 内部读的是"类型:路径"，外部程序认的 text/plain 仍然是裸相对路径
+    expect(dt.getData(DRAG_MIME)).toBe('note:项目/设计.md')
     expect(dt.getData('text/plain')).toBe('项目/设计.md')
     expect(dt.effectAllowed).toBe('move')
-    expect(readDragPayload(dt)).toEqual({ relPath: '项目/设计.md' })
+    expect(readDragPayload(dt)).toEqual({ relPath: '项目/设计.md', kind: 'note' })
+
+    const folder = fakeDataTransfer()
+    writeDragPayload(folder, { relPath: '项目', kind: 'folder' })
+    expect(readDragPayload(folder)).toEqual({ relPath: '项目', kind: 'folder' })
+  })
+
+  it('没有 `kind` 前缀的老格式载荷按笔记处理（不会因此变成非法）', () => {
+    const dt = fakeDataTransfer()
+    dt.setData(DRAG_MIME, '项目/设计.md')
+    expect(readDragPayload(dt)).toEqual({ relPath: '项目/设计.md', kind: 'note' })
   })
 
   it('外部拖进来的普通文本不会被当成"本 Vault 的笔记"', () => {

@@ -345,13 +345,17 @@ export interface RenameLinkUpdate {
 /**
  * 重命名 / 移动结果（`mimenote_lib::commands::RenameOutcome`）。
  *
- * `note_rename` 与 `note_move` **共用**这一种形状：两者在宿主里是同一条链路
- * （换位置 + 改写全库链接 + 增量同步索引），前端因此只需一套状态收尾。
+ * `note_rename` / `note_move` / `dir_rename` / `dir_move` **共用**这一种形状：四者在宿主里是
+ * 同一条链路（换位置 + 改写全库链接 + 增量同步索引），前端因此只需一套状态收尾。
+ *
+ * 目录搬迁（`dirRename` / `dirMove`）时 `oldRelPath` / `newRelPath` 是**目录**路径，
+ * `newMtimeMs` 恒为 `0` —— 目录不是版本令牌的载体（ADR-0004 的令牌是**文件** mtime），
+ * 前端对目录作用域的搬迁只换路径、不重设令牌。
  */
 export interface RenameOutcome {
   oldRelPath: string
   newRelPath: string
-  /** 改名后磁盘上的 mtime（新的版本令牌）。 */
+  /** 改名后磁盘上的 mtime（新的版本令牌）；目录搬迁时为 0。 */
   newMtimeMs: number
   /** 被改写了链接的文件（按 relPath 排序）。 */
   updatedLinks: RenameLinkUpdate[]

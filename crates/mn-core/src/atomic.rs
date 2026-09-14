@@ -76,12 +76,68 @@ pub fn move_file(from: &Path, to: &Path) -> Result<MoveMethod> {
     }
 }
 
+/// 把**整棵目录树**从 `from` 搬到 `to`：优先一次原子 `rename`，跨卷时退回"复制 + 删源"。
+///
+/// 为什么目录整体 `rename` 而不是"逐文件搬"：同卷内它是一个系统调用（与子树大小无关），
+/// 而且**整体成败**——绝不会出现"搬了一半"的中间态。逐文件搬会把这两条同时丢掉：
+/// 1000 篇目录要 1000 次系统调用，且中途失败就留下一个"半棵子树"。
+///
+/// 跨卷（Vault 里有指向另一个卷的联接目录）时 `rename` 必然失败，退回递归复制 + 删源：
+/// 那条路**没有原子性**（中途崩溃会留下"源和目标各半份"），因此只在必然失败时才走，
+/// 与 [`move_file`] 的取舍一致；删源失败时把刚复制的目标撤掉再报错，宁可"什么都没发生"。
+pub fn move_dir(from: &Path, to: &Path) -> Result<MoveMethod> {
+    match fs::rename(from, to) {
+        Ok(()) => Ok(MoveMethod::Rename),
+        Err(error) if is_cross_device(&error) && !to.exists() => copy_dir_then_remove(from, to),
+        Err(error) => Err(Error::io(to, error)),
+    }
+}
+
 /// `rename` 是否属于"这个文件系统根本不支持跨位置改名"那一类。
 fn is_cross_device(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
         std::io::ErrorKind::CrossesDevices | std::io::ErrorKind::Unsupported
     )
+}
+
+/// 递归复制整棵目录树（回退路径）。成功返回 [`MoveMethod::CopyAndDelete`]。
+///
+/// 用 `read_dir` 的 `file_type()` 而不是逐路径 `symlink_metadata`：后者在 Windows 上每个
+/// 文件都要重新打开句柄（1 万文件实测 14 倍代价，见 architecture.md §6）。符号链接按**链接本身**
+/// 复制而不跟随 —— 跟随会把 Vault 之外的内容也搬进来，且可能成环。
+fn copy_dir_then_remove(from: &Path, to: &Path) -> Result<MoveMethod> {
+    copy_dir(from, to)?;
+    if let Err(error) = fs::remove_dir_all(from) {
+        if let Err(cleanup) = fs::remove_dir_all(to) {
+            return Err(Error::Io {
+                path: to.to_string_lossy().into_owned(),
+                source: std::io::Error::new(
+                    cleanup.kind(),
+                    format!("复制后删除源目录失败（{error}），且无法撤销副本（{cleanup}）"),
+                ),
+            });
+        }
+        return Err(Error::io(from, error));
+    }
+    Ok(MoveMethod::CopyAndDelete)
+}
+
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    fs::create_dir_all(to).map_err(|e| Error::io(to, e))?;
+    let entries = fs::read_dir(from).map_err(|e| Error::io(from, e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| Error::io(from, e))?;
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        let file_type = entry.file_type().map_err(|e| Error::io(&source, e))?;
+        if file_type.is_dir() {
+            copy_dir(&source, &target)?;
+        } else {
+            fs::copy(&source, &target).map_err(|e| Error::io(&target, e))?;
+        }
+    }
+    Ok(())
 }
 
 /// 复制 + 删源（回退路径）。成功返回 [`MoveMethod::CopyAndDelete`]。
@@ -287,6 +343,69 @@ mod tests {
 
         assert!(copy_then_remove(&from, &to).is_err());
         assert_eq!(fs::read_to_string(&from).unwrap(), "内容");
+    }
+
+    #[test]
+    fn moves_a_whole_directory_tree_in_one_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("项目");
+        fs::create_dir_all(from.join("子/更深")).unwrap();
+        fs::create_dir_all(from.join("空目录")).unwrap();
+        fs::write(from.join("甲.md"), "# 甲\n").unwrap();
+        fs::write(from.join("子").join("乙.md"), "# 乙\n").unwrap();
+        fs::write(from.join("子/更深").join("图.png"), [0xff, 0x00, 0xfe]).unwrap();
+
+        let to = dir.path().join("归档").join("项目");
+        fs::create_dir_all(dir.path().join("归档")).unwrap();
+        assert_eq!(move_dir(&from, &to).unwrap(), MoveMethod::Rename);
+
+        assert!(!from.exists(), "源目录必须整体消失");
+        assert_eq!(fs::read_to_string(to.join("甲.md")).unwrap(), "# 甲\n");
+        assert_eq!(fs::read_to_string(to.join("子/乙.md")).unwrap(), "# 乙\n");
+        assert_eq!(
+            fs::read(to.join("子/更深").join("图.png")).unwrap(),
+            vec![0xff, 0x00, 0xfe],
+            "非 UTF-8 的附件也要逐字节搬过去"
+        );
+        assert!(to.join("空目录").is_dir(), "空目录同样是树的一部分");
+    }
+
+    #[test]
+    fn move_dir_reports_an_io_error_instead_of_merging_into_an_existing_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("项目");
+        fs::create_dir_all(&from).unwrap();
+        fs::write(from.join("甲.md"), "# 甲\n").unwrap();
+        // 目标已经是个目录：Windows 上 `rename` 到已存在的目录是失败（不是合并），
+        // 这一条把"绝不覆盖/绝不合并"钉在原子层上
+        let to = dir.path().join("归档");
+        fs::create_dir_all(&to).unwrap();
+        fs::write(to.join("别人的.md"), "# 别人的\n").unwrap();
+
+        assert!(move_dir(&from, &to).is_err());
+        assert!(from.join("甲.md").exists(), "失败时源必须原样留着");
+        assert_eq!(
+            fs::read_to_string(to.join("别人的.md")).unwrap(),
+            "# 别人的\n"
+        );
+    }
+
+    #[test]
+    fn copy_dir_fallback_reproduces_the_whole_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("项目");
+        fs::create_dir_all(from.join("子")).unwrap();
+        fs::write(from.join("甲.md"), "# 甲\n").unwrap();
+        fs::write(from.join("子").join("乙.md"), "# 乙\n").unwrap();
+        let to = dir.path().join("归档");
+
+        assert_eq!(
+            copy_dir_then_remove(&from, &to).unwrap(),
+            MoveMethod::CopyAndDelete
+        );
+        assert!(!from.exists());
+        assert_eq!(fs::read_to_string(to.join("甲.md")).unwrap(), "# 甲\n");
+        assert_eq!(fs::read_to_string(to.join("子/乙.md")).unwrap(), "# 乙\n");
     }
 
     #[test]

@@ -49,12 +49,19 @@ const isGraphView = (): boolean => useUiStore.getState().viewMode === 'graph'
 /** 图谱命令未生效时的统一说明（面板里显示在置灰项旁边；怎么切过去由 `view.graph` 那条命令展示）。 */
 const NEED_GRAPH_VIEW = '需要先切换到知识图谱视图'
 
-/** 文件树选中项若是 Markdown 笔记则返回它（重命名只支持笔记，目录推迟到 M3）。 */
-function selectedMarkdownNote(): string | null {
+/**
+ * 文件树选中项能否改名 / 移动：**笔记与文件夹都可以**。
+ *
+ * 为什么要单独一条（而不是只认笔记）：目录搬迁已经交付，重命名与移动两条命令对文件夹同样
+ * 有效 —— 条件写死成"必须是笔记"会让 F2 / F6 在文件夹上按不动，而用户看到的是一个
+ * "明明选中了却毫无反应"的界面。
+ */
+function selectedMovableEntry(): string | null {
   const { selected, entries } = useVaultStore.getState()
   if (selected === null) return null
   const entry = entries.find((candidate) => candidate.relPath === selected)
-  if (entry === undefined || entry.isDir) return null
+  if (entry === undefined) return null
+  if (entry.isDir) return selected
   return isMarkdown(selected) ? selected : null
 }
 
@@ -191,24 +198,24 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
   },
   {
     id: 'note.rename',
-    title: '重命名笔记…',
+    title: '重命名…',
     category: '笔记',
     keybinding: 'F2',
-    // 只对"文件树里选中的 Markdown 笔记"生效：目录重命名推迟到 M3（与拖拽整理一起做）
-    when: () => selectedMarkdownNote() !== null,
-    unavailableReason: '需要先选中一篇 Markdown 笔记',
+    // 笔记与文件夹都可以（`renameSelected` 按条目类型分派到 `note_rename` / `dir_rename`）
+    when: () => selectedMovableEntry() !== null,
+    unavailableReason: '需要先选中一篇笔记或一个文件夹',
     run: () => renameSelected(),
   },
   {
     // 拖拽的**键盘等价物**：纯拖拽对键盘用户不可用，所以"移动到文件夹"必须是一条命令
     // （`F6` 与 JetBrains 全家的 "Move" 一致，也避开了 F2 重命名）。
-    // 拖拽与这条命令最终走的是同一个 `moveNote`，行为与提示完全一致。
+    // 拖拽与这条命令最终走的是同一个 `moveEntry`，行为与提示完全一致。
     id: 'note.move',
     title: '移动到文件夹…',
     category: '笔记',
     keybinding: 'F6',
-    when: () => selectedMarkdownNote() !== null,
-    unavailableReason: '需要先选中一篇 Markdown 笔记',
+    when: () => selectedMovableEntry() !== null,
+    unavailableReason: '需要先选中一篇笔记或一个文件夹',
     run: () => moveSelected(),
   },
 

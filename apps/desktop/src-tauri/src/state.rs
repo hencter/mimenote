@@ -123,6 +123,23 @@ impl VaultCtx {
         }
     }
 
+    /// 某个目录自身 + 它的所有后代（路径字典序）。
+    ///
+    /// 目录搬迁用它整棵子树一起换路径：`remove` 会连后代一起摘掉，只补回目录本身会让
+    /// 子树里每一篇笔记都从条目表里消失（前端文件树空一片，而磁盘上它们好好的）。
+    pub fn paths_under(&self, rel_path: &str) -> Vec<String> {
+        let dir = rel_path.trim_end_matches('/');
+        let prefix = format!("{dir}/");
+        let mut out: Vec<String> = self
+            .entries
+            .keys()
+            .filter(|key| key.as_str() == dir || key.starts_with(&prefix))
+            .cloned()
+            .collect();
+        out.sort();
+        out
+    }
+
     /// 删除一条（**目录会连同其所有后代一起移除**）。
     pub fn remove(&mut self, rel_path: &str) {
         let prefix = format!("{rel_path}/");

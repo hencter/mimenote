@@ -125,6 +125,31 @@ export const ipc = {
   ) =>
     call<RenameOutcome>('note_move', { relPath, targetParentRel, newTitle, updateLinks }),
 
+  /**
+   * 重命名**目录**（连同整棵子树）：磁盘上换名字 + 全库指向子树里每一篇的链接精确改写。
+   *
+   * 与 `noteRename` 共用同一种出参（{@link RenameOutcome}），差别只有两点：`oldRelPath` /
+   * `newRelPath` 是目录路径，`newMtimeMs` 恒为 `0`（目录不是版本令牌的载体）。
+   * 目标位置已有同名目录 → `ALREADY_EXISTS`（**绝不覆盖、也绝不合并**两棵子树）。
+   */
+  dirRename: (relPath: string, newTitle: string, updateLinks = true) =>
+    call<RenameOutcome>('dir_rename', { relPath, newTitle, updateLinks }),
+
+  /**
+   * 移动**目录**（连同整棵子树）：整棵子树的路径跟着变 + 全库链接精确改写。
+   *
+   * 入参口径与 {@link ipc.noteMove} 完全一致（`targetParentRel` 是目标父目录，`''` = Vault 根，
+   * 不存在时创建；`newTitle` 为 `null` 时沿用目录名 —— 拖拽就是这种情况）。
+   * **把目录移进它自己或它的后代**会被宿主拒绝（`PATH_INVALID`）；前端在落点判定里就拦掉它。
+   */
+  dirMove: (
+    relPath: string,
+    targetParentRel: string,
+    newTitle: string | null = null,
+    updateLinks = true,
+  ) =>
+    call<RenameOutcome>('dir_move', { relPath, targetParentRel, newTitle, updateLinks }),
+
   /** 命令行指定的 Vault（`mimenote.exe <目录>`）；无则返回 null。 */
   startupVault: () => call<string | null>('startup_vault'),
 

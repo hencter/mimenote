@@ -42,6 +42,11 @@ pub fn run() {
             commands::note_rename,
             // 跨目录移动（拖拽整理 / 「移动到…」）：与重命名共用同一条"换位置 + 改写全库链接"链路
             commands::note_move,
+            // 目录搬迁：整棵子树一起换路径 + 改写全库指向子树里每一篇的链接。
+            // 与单篇搬迁共用同一份候选集/span 改写机制（`mn_index::dir_move`），
+            // 出参也复用 `RenameOutcome` —— 前端只多一处"替换整棵子树"的状态收尾
+            commands::dir_rename,
+            commands::dir_move,
             commands::note_delete,
             commands::note_stats,
             commands::index_status,

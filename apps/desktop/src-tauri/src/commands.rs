@@ -600,6 +600,88 @@ pub async fn note_move(
     Ok(outcome)
 }
 
+/// 重命名**目录**（连同整棵子树）：磁盘上换名字 + 全库指向子树里每一篇的链接精确改写。
+///
+/// 出参**复用 [`RenameOutcome`]**（与 `note_rename` / `note_move` 同一形状）：一次目录搬迁要
+/// 交代的仍然是"旧路径 / 新路径 / 被改写的文件与条数"，前端因此能复用同一套状态收尾
+/// （条目表换整棵子树、正在编辑的文档换路径、标签页对账、链接面板刷新）。
+/// 唯一的字段语义差别是 `newMtimeMs` —— 目录不是版本令牌的载体（ADR-0004 的令牌是**文件**
+/// mtime），这里如实返回 `0`，前端对目录作用域的搬迁不会拿它当令牌用。
+///
+/// 入参口径与 [`note_rename`] 一致（`new_title` 不带扩展名；前端偶尔连路径一起传时取末段）。
+///
+/// 错误码：
+///
+/// * 目标位置已有同名目录 → `ALREADY_EXISTS`（**绝不覆盖、也绝不合并**两棵子树）；
+/// * 源不存在 → `NOT_FOUND`；源是文件 → `NOT_A_DIRECTORY`；
+/// * 越界/非法名字 → `PATH_INVALID` / `PATH_ESCAPE`；`.mimenote` 内部目录一律拒绝。
+#[tauri::command]
+pub async fn dir_rename(
+    state: State<'_, Arc<AppState>>,
+    rel_path: String,
+    new_title: String,
+    update_links: Option<bool>,
+) -> Result<RenameOutcome, IpcError> {
+    let started = Instant::now();
+    let app = Arc::clone(state.inner());
+    let rel = rel_path;
+    let update = update_links.unwrap_or(true);
+
+    let report = run_blocking(move || rename_dir_in(&app, &rel, &new_title, update)).await?;
+
+    apply_renamed_dir(&state, &report);
+    let outcome = rename_outcome_from(report, started.elapsed().as_millis() as u64);
+    log::info!(
+        "目录改名：{} → {}（改写 {} 个文件 / {} 条链接，耗时 {}ms）",
+        outcome.old_rel_path,
+        outcome.new_rel_path,
+        outcome.updated_links.len(),
+        outcome.updated_link_count,
+        outcome.elapsed_ms
+    );
+    Ok(outcome)
+}
+
+/// 移动**目录**（连同整棵子树）：整棵子树的路径跟着变 + 全库链接精确改写。
+///
+/// 入参口径与 [`note_move`] 一致：`target_parent_rel` 是**目标父目录**（空串 = Vault 根；
+/// 不存在时创建），`new_title` 为 `None` 时沿用目录名（拖拽就是这种情况）。
+///
+/// 与拖拽的关系：文件夹拖到文件夹上 = 移进那个文件夹；拖到树的空白区域 = 移到 Vault 根。
+/// 前端还会拦"拖进自己的后代"并给出原因，宿主这里同样兜底拒绝（`PATH_INVALID`）——
+/// 文件系统层面那种操作只会给一句"系统找不到指定的路径"，用户无法据以行动。
+#[tauri::command]
+pub async fn dir_move(
+    state: State<'_, Arc<AppState>>,
+    rel_path: String,
+    target_parent_rel: String,
+    new_title: Option<String>,
+    update_links: Option<bool>,
+) -> Result<RenameOutcome, IpcError> {
+    let started = Instant::now();
+    let app = Arc::clone(state.inner());
+    let rel = rel_path;
+    let target = target_parent_rel;
+    let update = update_links.unwrap_or(true);
+
+    let report =
+        run_blocking(move || move_dir_in(&app, &rel, &target, new_title.as_deref(), update))
+            .await?;
+
+    apply_renamed_dir(&state, &report);
+    register_moved_dirs(&state, &report.new_rel_path);
+    let outcome = rename_outcome_from(report, started.elapsed().as_millis() as u64);
+    log::info!(
+        "目录移动：{} → {}（改写 {} 个文件 / {} 条链接，耗时 {}ms）",
+        outcome.old_rel_path,
+        outcome.new_rel_path,
+        outcome.updated_links.len(),
+        outcome.updated_link_count,
+        outcome.elapsed_ms
+    );
+    Ok(outcome)
+}
+
 /// 删除笔记/目录（移入回收站）。必须 `confirm = true`。
 #[tauri::command]
 pub async fn note_delete(
@@ -930,6 +1012,76 @@ fn rename_note_in(
     }
 }
 
+/// 目录改名命令的主体（与 Tauri 无关，可单测）。
+///
+/// 与 `rename_note_in` 共用同一把写锁、同一份索引、同一套全文搜索降级：目录搬迁在这三层上
+/// 与单篇搬迁没有任何区别，只是候选集从"一篇"变成"整棵子树"。
+fn rename_dir_in(
+    state: &AppState,
+    rel_path: &str,
+    new_title: &str,
+    update_links: bool,
+) -> mn_core::Result<RenameReport> {
+    let root = state.vault_root()?;
+    let _write_guard = state.write_guard();
+    let mut index = state.index_write();
+    match state.try_search(|search| {
+        mn_index::dir_move::rename_dir(
+            &root,
+            &mut index,
+            rel_path,
+            new_title,
+            update_links,
+            Some(search),
+        )
+    }) {
+        Some(result) => result,
+        None => mn_index::dir_move::rename_dir(
+            &root,
+            &mut index,
+            rel_path,
+            new_title,
+            update_links,
+            None,
+        ),
+    }
+}
+
+/// 目录移动命令的主体（与 Tauri 无关，可单测）。
+fn move_dir_in(
+    state: &AppState,
+    rel_path: &str,
+    target_parent_rel: &str,
+    new_title: Option<&str>,
+    update_links: bool,
+) -> mn_core::Result<RenameReport> {
+    let root = state.vault_root()?;
+    let _write_guard = state.write_guard();
+    let mut index = state.index_write();
+    match state.try_search(|search| {
+        mn_index::dir_move::move_dir_tree(
+            &root,
+            &mut index,
+            rel_path,
+            target_parent_rel,
+            new_title,
+            update_links,
+            Some(search),
+        )
+    }) {
+        Some(result) => result,
+        None => mn_index::dir_move::move_dir_tree(
+            &root,
+            &mut index,
+            rel_path,
+            target_parent_rel,
+            new_title,
+            update_links,
+            None,
+        ),
+    }
+}
+
 /// 移动命令的主体（与 Tauri 无关，可单测）。
 ///
 /// 与 `rename_note_in` 是同一条链路的两个入口：写锁、索引同步、全文搜索降级都一致 ——
@@ -985,6 +1137,36 @@ fn apply_renamed_entry(state: &AppState, report: &RenameReport) {
             mtime_ms: Some(mtime_ms),
             ext: ext_of(&new_rel),
         });
+    });
+}
+
+/// 目录搬迁成功后就地替换**整棵子树**的条目（纯内存，不重扫目录）。
+///
+/// 为什么必须整棵子树一起换：`VaultCtx::remove` 会连同后代一起摘掉，只补回目录本身会让
+/// 子树里每一篇笔记都从条目表里消失 —— 前端文件树会空一片（而磁盘上它们好好的）。
+/// 逐条按 `新前缀 + 旧路径的后半段` 重写路径（复用 `mn_index::remap_prefix`，与链接改写
+/// 同一份前缀映射），其余字段（size/mtime/ext）原样保留，条目形状与扫描口径因此不会漂移。
+fn apply_renamed_dir(state: &AppState, report: &RenameReport) {
+    let old_rel = report.old_rel_path.clone();
+    let new_rel = report.new_rel_path.clone();
+    state.update_vault(|ctx| {
+        // `remove` 会连后代一起摘掉，所以先把整棵子树的条目**取出来**（含目录自身），再换路径入表
+        let doomed: Vec<EntryMeta> = ctx
+            .paths_under(&old_rel)
+            .into_iter()
+            .filter_map(|rel| ctx.entries.get(&rel).cloned())
+            .collect();
+        ctx.remove(&old_rel);
+        for entry in doomed {
+            let Some(rel_path) = mn_index::remap_prefix(&entry.rel_path, &old_rel, &new_rel) else {
+                continue;
+            };
+            ctx.upsert(EntryMeta {
+                name: file_name_of(&rel_path),
+                rel_path,
+                ..entry
+            });
+        }
     });
 }
 
@@ -1623,6 +1805,175 @@ mod tests {
                 "note_move 复用 RenameOutcome，字段名必须一致：缺少 {key}：{json}"
             );
         }
+    }
+
+    // -- 目录重命名 / 目录移动（dir_rename / dir_move） --------------------------
+
+    #[test]
+    fn dir_rename_moves_the_whole_subtree_and_updates_the_entry_cache() {
+        let (dir, state) = state_with(&[
+            ("项目/甲.md", "# 甲\n"),
+            ("项目/子/丙.md", "# 丙\n"),
+            ("别的/引用.md", "见 [[项目/甲]] 与 [[项目/子/丙]]。\n"),
+        ]);
+
+        let report = rename_dir_in(&state, "项目", "工程", true).unwrap();
+        assert_eq!(report.old_rel_path, "项目");
+        assert_eq!(report.new_rel_path, "工程");
+        assert_eq!(report.updated_link_count, 2);
+
+        apply_renamed_dir(&state, &report);
+
+        // 磁盘：整棵子树搬过去了
+        assert!(dir.path().join("工程").join("甲.md").exists());
+        assert!(dir.path().join("工程").join("子").join("丙.md").exists());
+        assert!(!dir.path().join("项目").exists());
+        assert_eq!(
+            read_file(dir.path(), "别的/引用.md"),
+            "见 [[../工程/甲]] 与 [[../工程/子/丙]]。\n"
+        );
+
+        // 条目缓存：**整棵子树**换路径，一篇都不能少（少一篇 = 文件树空一片）
+        let state_ref = &state;
+        state_ref
+            .with_vault(|ctx| {
+                let paths = ctx.paths_under("工程");
+                assert_eq!(
+                paths,
+                vec![
+                    "工程/子".to_string(),
+                    "工程/子/丙.md".to_string(),
+                    "工程/甲.md".to_string()
+                ],
+                "`工程` 自身的目录条目由 `register_moved_dirs` 补上（它把 `new_rel` 的祖先链补齐）"
+            );
+                assert!(ctx.paths_under("项目").is_empty());
+                assert_eq!(ctx.note_count, 3, "笔记数不变");
+                assert_eq!(ctx.folder_count, 2, "目录数不变（项目 → 工程）");
+                Ok(())
+            })
+            .unwrap();
+
+        // 索引：旧路径消失、新路径可查
+        let index = state_ref.index_write();
+        assert!(index.contains("工程/甲.md"));
+        assert!(!index.contains("项目/甲.md"));
+    }
+
+    #[test]
+    fn dir_move_into_another_directory_and_into_the_root() {
+        let (dir, state) = state_with(&[
+            ("项目/甲.md", "# 甲\n"),
+            ("归档/说明.md", "见 [[项目/甲]]。\n"),
+        ]);
+
+        let report = move_dir_in(&state, "项目", "归档", None, true).unwrap();
+        assert_eq!(report.new_rel_path, "归档/项目");
+        apply_renamed_dir(&state, &report);
+        register_moved_dirs(&state, &report.new_rel_path);
+        assert!(dir.path().join("归档").join("项目").join("甲.md").exists());
+
+        // 再移到 Vault 根：链接写法跟着变成"从根起算"
+        let report = move_dir_in(&state, "归档/项目", "", None, true).unwrap();
+        assert_eq!(report.new_rel_path, "项目");
+        apply_renamed_dir(&state, &report);
+        assert_eq!(
+            read_file(dir.path(), "归档/说明.md"),
+            "见 [[../项目/甲]]。\n"
+        );
+        assert!(state
+            .vault_root()
+            .unwrap()
+            .resolve_existing("项目/甲.md")
+            .is_ok());
+    }
+
+    #[test]
+    fn dir_move_refuses_self_nesting_duplicate_target_and_missing_source() {
+        let (dir, state) = state_with(&[
+            ("项目/甲.md", "# 甲\n"),
+            ("项目/子/丙.md", "# 丙\n"),
+            ("归档/项目/甲.md", "# 归档里的甲\n"),
+        ]);
+
+        // 拖/输到自己的后代上：必须给一句能读懂的原因（不是系统的"找不到路径"）
+        let error = move_dir_in(&state, "项目", "项目/子", None, true).unwrap_err();
+        assert_eq!(error.code(), mn_core::ErrorCode::PathInvalid);
+        assert!(error.to_string().contains("子目录"), "实际：{error}");
+
+        // 目标同名目录：绝不覆盖、也绝不合并
+        let error = move_dir_in(&state, "项目", "归档", None, true).unwrap_err();
+        assert_eq!(error.code(), mn_core::ErrorCode::AlreadyExists);
+        assert_eq!(read_file(dir.path(), "归档/项目/甲.md"), "# 归档里的甲\n");
+        assert!(dir.path().join("项目").join("甲.md").exists());
+
+        // 源不存在 / 源是文件
+        assert_eq!(
+            move_dir_in(&state, "不存在", "归档", None, true)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::NotFound
+        );
+        assert_eq!(
+            move_dir_in(&state, "项目/甲.md", "归档", None, true)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::NotADirectory
+        );
+
+        // 内部工作目录不参与搬迁
+        std::fs::create_dir_all(dir.path().join(".mimenote")).unwrap();
+        assert_eq!(
+            move_dir_in(&state, ".mimenote", "归档", None, true)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::PathInvalid
+        );
+    }
+
+    #[test]
+    fn dir_move_reuses_the_rename_contract() {
+        let (_dir, state) =
+            state_with(&[("项目/甲.md", "[[子/丙]]\n"), ("项目/子/丙.md", "# 丙\n")]);
+        let report = move_dir_in(&state, "项目", "归档", None, true).unwrap();
+        let outcome = rename_outcome_from(report, 7);
+
+        assert_eq!(outcome.old_rel_path, "项目");
+        assert_eq!(outcome.new_rel_path, "归档/项目");
+        assert_eq!(outcome.new_mtime_ms, 0, "目录不是版本令牌的载体，如实报 0");
+        assert_eq!(outcome.elapsed_ms, 7);
+
+        let json = serde_json::to_string(&outcome).unwrap();
+        for key in [
+            "oldRelPath",
+            "newRelPath",
+            "newMtimeMs",
+            "updatedLinks",
+            "updatedLinkCount",
+            "elapsedMs",
+        ] {
+            assert!(
+                json.contains(&format!("\"{key}\"")),
+                "dir_move 复用 RenameOutcome，字段名必须一致：缺少 {key}：{json}"
+            );
+        }
+    }
+
+    #[test]
+    fn dir_rename_without_vault_is_rejected() {
+        let state = AppState::default();
+        assert_eq!(
+            rename_dir_in(&state, "项目", "工程", true)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::VaultNotSet
+        );
+        assert_eq!(
+            move_dir_in(&state, "项目", "归档", None, true)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::VaultNotSet
+        );
     }
 
     // -- 标签与 frontmatter（note_tags / tags_list / tag_notes） -----------------

@@ -18,7 +18,7 @@
 
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import { createNoteHere, deleteSelected, moveNote, openNote, renameSelected } from '@/app/actions'
+import { createNoteHere, deleteSelected, moveEntry, openNote, renameSelected } from '@/app/actions'
 import { REVEAL_ROW_EVENT } from '@/app/dom-events'
 import { Icon } from '@/components/Icon'
 import {
@@ -61,7 +61,10 @@ function revealRow(relPath: string): void {
 /**
  * 落点的最终执行：**唯一**的"把拖拽变成移动"的地方。
  *
- * 不可放置的落点（同一目录、拖到自己身上）在这里就被拦下：不触发 IPC，
+ * 笔记与文件夹都走同一条 `moveEntry`（它按条目类型分派）：拖拽只是"把某个条目挪到某个目录"
+ * 的手势，两种条目在"搬 + 改写链接 + 索引同步"这条链路上没有区别。
+ *
+ * 不可放置的落点（同一目录、拖到自己身上、拖进自己的后代）在这里就被拦下：不触发 IPC，
  * 只把**原因**告诉用户 —— 静默无反应是拖拽最糟的反馈。
  */
 async function applyDrop(payload: DragPayload, target: DropTarget): Promise<void> {
@@ -69,7 +72,7 @@ async function applyDrop(payload: DragPayload, target: DropTarget): Promise<void
     toast.info(target.label, target.reason ?? '')
     return
   }
-  await moveNote(payload.relPath, target.parentRel)
+  await moveEntry(payload.relPath, target.parentRel)
 }
 
 export function FileTree() {
@@ -116,7 +119,8 @@ export function FileTree() {
     (row: FlatRow, event: React.DragEvent<HTMLDivElement>): void => {
       const entry = row.node.entry
       if (!canDrag(entry)) {
-        // 目录/附件不可拖动（本轮只整理笔记）：直接取消，别让它看起来能拖
+        // 附件（图片/`.txt`）不可拖动：移动它们要"顺带改写指向它的链接"，而索引里没有它们
+        // 的条目 —— 拖了只会得到一次无提示的裸搬迁
         event.preventDefault()
         return
       }
@@ -466,7 +470,9 @@ const FileTreeRow = memo(function FileTreeRow({
   const markdown = isMarkdown(relPath)
 
   const iconName = entry.isDir ? (isExpanded ? 'folderOpen' : 'folder') : markdown ? 'file' : 'dot'
-  const draggable = markdown
+  // 笔记与**文件夹**都可以拖（附件不行：索引里没有它们的条目，见 `canDrag`）；
+  // 目录行同样是**合法的落点**
+  const draggable = entry.isDir || markdown
 
   return (
     <div
@@ -490,7 +496,7 @@ const FileTreeRow = memo(function FileTreeRow({
       style={{ paddingLeft: `${6 + row.depth * 14}px`, height: ROW_HEIGHT }}
       title={`${relPath}${entry.isDir ? '' : ` · ${formatBytes(entry.sizeBytes)}`}`}
       onClick={() => onActivate(row)}
-      // 只有 Markdown 笔记可拖（目录拖动推迟）；目录行仍然是**合法的落点**
+      // 笔记与文件夹都可拖（见上面的 `draggable`）；目录行仍然是**合法的落点**
       draggable={draggable}
       onDragStart={(event) => onDragStart(row, event)}
       onDragOver={(event) => onDragOver(row, event)}

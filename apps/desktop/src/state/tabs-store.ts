@@ -154,6 +154,29 @@ function commit(tabs: readonly string[], active: string | null): void {
 // ---------------------------------------------------------------------------
 
 /**
+ * 把标签列表里落在某个目录子树里的路径整体换成新前缀（目录改名/移动时调用）。
+ *
+ * 为什么必须**先换标签、再换条目表**：条目表一变，`pruneMissing` 就会把旧路径的标签剪掉，
+ * 而 `syncFromNote` 只会把"当前文档"补回列表末尾 —— 结果是**标签顺序被打乱**
+ * （原来在第 1 个的标签跑到最后一个）。这里提前把列表换好，剪枝与补入就都成了空操作。
+ *
+ * 与 `note-store` 的文档路径无关：那一半由 `app/actions` 的目录搬迁流程自己收敛
+ *（它知道被改写的是哪几篇，也知道当前文档在不在子树里）。
+ */
+function relocateTabs(oldRel: string, newRel: string): void {
+  const { tabs, active } = useTabsStore.getState()
+  const remap = (relPath: string): string =>
+    relPath === oldRel
+      ? newRel
+      : relPath.startsWith(`${oldRel}/`)
+        ? `${newRel}${relPath.slice(oldRel.length)}`
+        : relPath
+  const next = tabs.map(remap)
+  if (next.every((relPath, index) => relPath === tabs[index])) return
+  commit(next, active === null ? null : remap(active))
+}
+
+/**
  * 换 Vault 期间为真。
  *
  * `handleVaultChange` 里会调用 `note-store.close()`（上一篇笔记属于旧根），而 close 会**同步**
@@ -268,6 +291,17 @@ export function installTabsSync(): Disposer {
     disposeVault()
     disposeNote()
   }
+}
+
+/**
+ * 目录搬迁前把标签列表整棵子树换到新前缀（**必须在条目表变化之前调用**）。
+ *
+ * 见 [`relocateTabs`] 的说明：顺序反了标签顺序就会被剪枝打乱。
+ * 由 `app/actions` 的 `relocateDirectory` 调用 —— 标签 store 不自己去订阅目录搬迁事件，
+ * 因为"哪个目录搬到了哪里"只有那一次调用的上下文知道。
+ */
+export function relocateTabsForDirectory(oldRel: string, newRel: string): void {
+  relocateTabs(oldRel, newRel)
 }
 
 // ---------------------------------------------------------------------------

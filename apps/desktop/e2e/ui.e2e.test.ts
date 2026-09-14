@@ -65,6 +65,10 @@ function treeRow(page: Page, relPath: string) {
  *
  * 为什么需要：用例之间会互相影响树的展开/选中状态（例如键盘导航用例按 Enter
  * 会折叠目录）。每条用例都应该自足，而不是依赖"上一条用例刚好把树留在什么状态"。
+ *
+ * 展开动作是**点击父行**（`toggleExpanded`）—— `revealPath` 只负责滚动，不改展开状态。
+ * 点完必须**等子行真的出现**再返回：否则递归会在"还没重渲染"的间隙里继续往上找，
+ * 于是"父目录其实已经展开"这件事被误判成"还没展开"。
  */
 async function ensureTreeRow(page: Page, relPath: string): Promise<void> {
   const row = treeRow(page, relPath)
@@ -74,6 +78,11 @@ async function ensureTreeRow(page: Page, relPath: string): Promise<void> {
       const parent = relPath.slice(0, index)
       await ensureTreeRow(page, parent)
       await treeRow(page, parent).click()
+      await waitUntil(
+        async () => (await row.count()) > 0,
+        10_000,
+        `展开 ${parent} 后出现 ${relPath}`,
+      )
     }
   }
   await row.waitFor({ state: 'visible', timeout: 10_000 })
@@ -146,6 +155,9 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
     page = await context.newPage()
     page.setDefaultTimeout(15_000)
+    page.on('console', (message) => {
+      if (message.text().startsWith('DBG')) console.log('[page]', message.text())
+    })
     await page.goto(server.url)
     await page.waitForSelector('.mn-gate', { state: 'visible' })
   }, 120_000)
@@ -902,6 +914,99 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       10_000,
       '链接改回原样',
     )
+  })
+
+  it('文件夹改名：F2 → 整棵子树换路径 → 指向子树的链接跟着改（并改回来）', async () => {
+    // 自足：单独跑这一条（`-t`）时门闸还在，先把 Vault 打开
+    if ((await page.locator('.mn-gate').count()) > 0) {
+      await page.getByText('打开文件夹作为 Vault').click()
+      await page.waitForSelector('.mn-tree-row', { state: 'visible' })
+    }
+    // 起点收拾干净：**目录改名是真实的磁盘操作**，上一条用例可能把它留在了别处
+    //（拖拽用例的收尾只保证 `设计.md` 在 `项目/` 里，不保证目录本身叫 `项目`）
+    if ((await treeRow(page, '项目').count()) === 0) {
+      await ensureTreeRow(page, '工程')
+      await dispatchDrag(page, '工程', null)
+      await waitUntil(
+        async () => (await treeRow(page, '项目').count()) === 1,
+        10_000,
+        '把 工程/ 移回 Vault 根并恢复名字',
+      )
+    }
+    await ensureTreeRow(page, '项目/子项目/细节.md')
+
+    // 1) 选中文件夹 → F2 → 改名框预填**目录名**（不带扩展名）
+    await treeRow(page, '项目').click()
+    await page.locator('.mn-tree').press('F2')
+    await page.waitForSelector('.mn-dialog--rename', { state: 'visible' })
+    expect(await page.getByLabel('新文件名').inputValue()).toBe('项目')
+    expect(await page.locator('.mn-rename__ext').count()).toBe(0)
+
+    await page.getByLabel('新文件名').fill('工程')
+    await page.getByLabel('新文件名').press('Enter')
+    // 等对话框真的关掉：改名是异步的（IPC → 搬整棵子树 + 改写链接 → 条目表更新），
+    // 不等就会在"命令还在路上"的那一刻去读树
+    await waitUntil(
+      async () => (await page.locator('.mn-dialog--rename').count()) === 0,
+      10_000,
+      '改名对话框关闭（命令已返回）',
+    )
+
+    // 2) 树里整棵子树都换了前缀（`项目/子项目/细节.md` 这种深层文件也在）
+    await ensureTreeRow(page, '工程/子项目/细节.md')
+    expect(await treeRow(page, '项目').count()).toBe(0)
+    expect(await treeRow(page, '项目/子项目/细节.md').count()).toBe(0)
+
+    // 3) 全库指向子树的链接被改写：路线图里 `[[设计]]` 是裸名（同目录，含义不变），
+    //    而 `[[子项目/细节]]` 这类**路径形式**的链接必须跟着前缀走
+    await openNoteInTree(page, '工程/子项目/细节.md')
+    await showEditView(page)
+    await waitUntil(
+      async () => ((await page.locator('.mn-editor__path').textContent()) ?? '').includes('工程/子项目/细节.md'),
+      10_000,
+      '子树的深层文件跟着换了路径',
+    )
+    // 换回阅读视图看链接是否仍然解析得到（悬空会渲染成 `a.mn-wikilink--unresolved`）
+    // 注意 `细节.md` 本来就有一条故意悬空的 `[[还不存在的笔记]]`（其它用例依赖它），
+    // 所以这里比的是**改动键本身**不见了，而不是"一条悬空都没有"
+    await showReadView(page)
+    await page.waitForSelector('.mn-preview__body', { state: 'visible' })
+    const unresolvedTexts = await page.locator('a.mn-wikilink--unresolved').allTextContents()
+    expect(unresolvedTexts.some((text) => text.includes('子项目/细节'))).toBe(false)
+    expect(await page.locator('a.mn-wikilink--unresolved').count()).toBeLessThanOrEqual(1)
+
+    // 4) 拖到树的空白区域 = 移到 Vault 根：这里本来就**已经在根**，所以是无效落点，
+    //    什么都不该发生（顺带验证"文件夹可拖 + 空白区域是根 + 无效落点不静默"）
+    await ensureTreeRow(page, '工程')
+    await dispatchDrag(page, '工程', null)
+    await waitUntil(
+      async () => (await page.locator('.mn-toasts').textContent() ?? '').includes('已经'),
+      10_000,
+      '无效落点给出原因（而不是静默无反应）',
+    )
+    expect(await treeRow(page, '工程/子项目/细节.md').count()).toBe(1)
+
+    // 5) 布局契约不受影响（标签栏仍在主区域里）
+    const layout = await readLayout(page)
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
+    expect(await page.locator('.mn-main > .mn-tabs').count()).toBe(1)
+
+    // 6) 恢复原来的名字（让后续用例与手工验收看到与初始一致的 Vault）
+    await ensureTreeRow(page, '工程')
+    await treeRow(page, '工程').click()
+    // F2 由**文件树**的 keydown 处理：先把焦点给回树（上一步在编辑器里点过）
+    await page.locator('.mn-tree').focus()
+    await page.locator('.mn-tree').press('F2')
+    await page.waitForSelector('.mn-dialog--rename', { state: 'visible' })
+    await page.getByLabel('新文件名').fill('项目')
+    await page.getByLabel('新文件名').press('Enter')
+    await waitUntil(
+      async () => (await page.locator('.mn-dialog--rename').count()) === 0,
+      10_000,
+      '改名对话框关闭',
+    )
+    await ensureTreeRow(page, '项目/子项目/细节.md')
   })
 
   it('粘贴图片：写进附件目录，编辑器里出现图片、文件树里出现新附件', async () => {

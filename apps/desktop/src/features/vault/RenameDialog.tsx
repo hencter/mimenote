@@ -6,13 +6,17 @@
  *
  * 触发方式是**一次性 DOM 事件**而不是 store 里的布尔标志位：改名对话框属于
  * "谁请求谁打开"的瞬时 UI，放进全局 store 只会让状态图变复杂（同 `dom-events.ts` 的约定）。
+ *
+ * **笔记与文件夹共用这一个对话框**：两者的差别只有"输入框里是文件名还是目录名"以及
+ * "要不要显示扩展名" —— 提交时由 `renameEntry` 按条目类型分派（宿主里就是两条命令，
+ * 前端不该在这里再判断一次"这是不是目录"）。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { renameNote } from '@/app/actions'
+import { renameEntry } from '@/app/actions'
 import { RENAME_REQUEST_EVENT } from '@/app/dom-events'
-import { extensionOf, parentOf, stem } from '@/domain/paths'
+import { extensionOf, isMarkdown, parentOf, stem } from '@/domain/paths'
 import { useRenameStore } from '@/state/rename-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
@@ -28,6 +32,18 @@ export function RenameDialog() {
   /** 关闭后把焦点还给打开它的元素（键盘用户不会"掉焦点"）。 */
   const restoreFocusRef = useRef<HTMLElement | null>(null)
 
+  /**
+   * 目标是不是文件夹（决定文案与扩展名显示）。
+   *
+   * 订阅**条目表**而不是 `store.target`：条目表可能在对话框开着的时候变化（搬迁成功后会
+   * 换掉整棵子树），而这个判断只关心"这个路径上现在是文件还是文件夹"。
+   */
+  const isDir = useVaultStore((state) =>
+    target === null
+      ? false
+      : state.entries.find((item) => item.relPath === target)?.isDir === true,
+  )
+
   const close = useCallback((): void => {
     useRenameStore.getState().close()
     setValue('')
@@ -40,6 +56,7 @@ export function RenameDialog() {
   const open = useCallback((relPath: string): void => {
     const active = typeof document === 'undefined' ? null : document.activeElement
     restoreFocusRef.current = active instanceof HTMLElement ? active : null
+    // 文件夹没有"扩展名"这回事，`stem` 对无扩展名的路径会原样返回
     setValue(stem(relPath))
     setUpdateLinks(true)
     setBusy(false)
@@ -54,8 +71,11 @@ export function RenameDialog() {
       const detail = (event as CustomEvent<string | undefined>).detail
       const relPath = detail ?? useVaultStore.getState().selected
       if (relPath === null || relPath === undefined) return
-      const entry = useVaultStore.getState().entries.find((item) => item.relPath === relPath)
-      if (entry === undefined || entry.isDir) return
+      const found = useVaultStore.getState().entries.find((item) => item.relPath === relPath)
+      if (found === undefined) return
+      // 附件（图片/`.txt`）不在改名范围里：它不在索引里，改名不会带来任何链接改写，
+      // 而"突然打开一个改名框"比"什么都不做"更让人困惑（与 `actions.renameSelected` 同一口径）
+      if (!found.isDir && !isMarkdown(relPath)) return
       open(relPath)
     }
     window.addEventListener(RENAME_REQUEST_EVENT, handler)
@@ -80,7 +100,7 @@ export function RenameDialog() {
       return
     }
     setBusy(true)
-    const outcome = await renameNote(target, title, { updateLinks })
+    const outcome = await renameEntry(target, title, { updateLinks })
     if (outcome !== null) {
       close()
       return
@@ -93,7 +113,7 @@ export function RenameDialog() {
   if (target === null) return null
 
   const parent = parentOf(target)
-  const ext = extensionOf(target)
+  const ext = isDir ? '' : extensionOf(target)
 
   return (
     <div
@@ -107,16 +127,20 @@ export function RenameDialog() {
         className="mn-dialog mn-dialog--rename"
         role="dialog"
         aria-modal="true"
-        aria-label="重命名笔记"
+        aria-label={isDir ? '重命名文件夹' : '重命名笔记'}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="mn-dialog__header">
-          <h2>重命名笔记</h2>
+          <h2>{isDir ? '重命名文件夹' : '重命名笔记'}</h2>
         </div>
 
         <p className="mn-dialog__message">
           位置：{parent === '' ? 'Vault 根目录' : parent}
-          {updateLinks && <span className="mn-rename__hint"> · 会同时改写指向它的链接</span>}
+          {updateLinks && (
+            <span className="mn-rename__hint">
+              {isDir ? ' · 会同时改写子树里每一篇的链接' : ' · 会同时改写指向它的链接'}
+            </span>
+          )}
         </p>
 
         <div className="mn-rename__field">
@@ -153,7 +177,7 @@ export function RenameDialog() {
             disabled={busy}
             onChange={(event) => setUpdateLinks(event.target.checked)}
           />
-          同时改写全库指向它的链接
+          {isDir ? '同时改写全库指向这棵子树里笔记的链接' : '同时改写全库指向它的链接'}
         </label>
 
         <div className="mn-dialog__actions">

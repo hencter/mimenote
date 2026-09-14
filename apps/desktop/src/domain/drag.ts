@@ -7,14 +7,19 @@
  *
  * 落点规则（文件管理器里最符合直觉的那一套）：
  *
- * | 拖到 | 落点目录 |
- * | --- | --- |
- * | 文件夹行 | 那个文件夹 |
- * | 笔记（非目录）行 | 那篇笔记**所在的目录** |
- * | 树的空白区域 | Vault 根目录 |
+ * | 拖到 | 落点目录 | 备注 |
+ * | --- | --- | --- |
+ * | 文件夹行 | 那个文件夹 | **文件夹拖到文件夹**时多一条守卫：见下 |
+ * | 笔记（非目录）行 | 那篇笔记**所在的目录** | |
+ * | 树的空白区域 | Vault 根目录 | |
  *
- * 拖拽载荷刻意只带一个相对路径：本轮只支持单篇笔记（多选、目录拖动都推迟），
- * 而且跨 IPC 只传 Vault 相对路径这条约定在这里同样适用。
+ * **文件夹拖到自己的后代上必须无效**：`项目` 拖到 `项目/子项目` 上等于"把目录移进它自己
+ * 里面"，文件系统层面当然会失败，但错误是"系统找不到指定的路径"这种用户无法据以行动的话。
+ * 这里判成 invalid 并给出原因（悬停就看得见），宿主那边也拦同一件事 —— 两侧都要有，
+ * 前端负责"根本不让它落"，宿主负责"谁来都不许"。
+ *
+ * 拖拽载荷只带一个相对路径 + 一个 kind（笔记 / 文件夹）：跨 IPC 只传 Vault 相对路径这条
+ * 约定在这里同样适用，`kind` 只用来算落点合法性（宿主不看它，它按落点所在的目录判定）。
  */
 
 import type { EntryMeta } from '@/ipc/types'
@@ -29,10 +34,20 @@ import { basename, isMarkdown, parentOf } from './paths'
  */
 export const DRAG_MIME = 'application/x-mimenote-note'
 
+/** 被拖动的条目是笔记还是文件夹（决定落点合法性，不影响"搬到哪个目录"）。 */
+export type DragKind = 'note' | 'folder'
+
 /** 一次拖拽的载荷。 */
 export interface DragPayload {
-  /** 被拖动的笔记（相对 Vault 根，POSIX）。 */
+  /** 被拖动的条目（相对 Vault 根，POSIX）。 */
   relPath: string
+  /**
+   * 这条载荷是笔记还是文件夹（决定落点合法性，不影响"搬到哪个目录"）。
+   *
+   * 可选、缺省 `'note'`：载荷只带一个相对路径是本层的既有约定（"跨 IPC 只传 Vault 相对
+   * 路径"那条纪律的延伸）—— 老格式的载荷（只有 `relPath`）按笔记处理，不会因此被判成非法落点。
+   */
+  kind?: DragKind
 }
 
 /** 落点类型（同时决定悬停时的高亮样式）。 */
@@ -66,15 +81,21 @@ export interface DropTarget {
   label: string
 }
 
-/** 这个条目能不能被拖动（本轮：只有 Markdown 笔记，目录明确推迟）。 */
+/**
+ * 这个条目能不能被拖动。
+ *
+ * 笔记（Markdown）与**文件夹**都可以；附件（图片、`.txt`）不行 —— 移动它们要"顺带改写
+ * 指向它的链接"，而索引里根本没有它们的条目，拖了只会得到一次无提示的裸搬迁。
+ */
 export function canDrag(entry: EntryMeta | null | undefined): boolean {
   if (entry === null || entry === undefined) return false
-  return !entry.isDir && isMarkdown(entry.relPath)
+  if (entry.isDir) return true
+  return isMarkdown(entry.relPath)
 }
 
 /** 由条目构造拖拽载荷（只在 `canDrag(entry)` 为真时调用）。 */
 export function dragPayloadOf(entry: EntryMeta): DragPayload {
-  return { relPath: entry.relPath }
+  return { relPath: entry.relPath, kind: entry.isDir ? 'folder' : 'note' }
 }
 
 /** 从条目表里找一条（`dropTargetFor` 的便捷入口）。 */
@@ -98,6 +119,7 @@ export function dropTargetFor(target: EntryMeta | null, dragged: DragPayload): D
       hostRelPath: '',
       parentRel: '',
       fromDir,
+      dragged,
       what: 'Vault 根目录',
     })
   }
@@ -108,6 +130,7 @@ export function dropTargetFor(target: EntryMeta | null, dragged: DragPayload): D
       hostRelPath: target.relPath,
       parentRel: target.relPath,
       fromDir,
+      dragged,
       what: `文件夹「${target.name}」`,
     })
   }
@@ -118,6 +141,7 @@ export function dropTargetFor(target: EntryMeta | null, dragged: DragPayload): D
     hostRelPath: target.relPath,
     parentRel,
     fromDir,
+    dragged,
     what: parentRel === '' ? `「${target.name}」所在的 Vault 根目录` : `「${target.name}」所在的目录`,
   })
 }
@@ -127,11 +151,29 @@ interface ResolveInput {
   hostRelPath: string
   parentRel: string
   fromDir: string
+  dragged: DragPayload
   what: string
 }
 
 /** 把"在哪放"补全成"能不能放"。 */
 function resolve(input: ResolveInput): DropTarget {
+  // 文件夹拖到它自己或它的后代上：那等于把目录搬进自己里面，必须无效并说明原因
+  if (input.dragged.kind === 'folder' && isSameOrInside(input.parentRel, input.dragged.relPath)) {
+    const ontoItself = input.parentRel === input.dragged.relPath
+    return {
+      kind: input.kind,
+      hostRelPath: input.hostRelPath,
+      parentRel: null,
+      valid: false,
+      dataState: 'invalid',
+      reason: ontoItself
+        ? '不能把文件夹移动到它自己里面'
+        : '不能把文件夹移动到它自己的子目录里',
+      label: ontoItself
+        ? '不能把文件夹移动到它自己里面'
+        : `「${basename(input.dragged.relPath)}」不能移动到它自己的子目录里`,
+    }
+  }
   if (input.parentRel === input.fromDir) {
     return {
       kind: input.kind,
@@ -154,16 +196,32 @@ function resolve(input: ResolveInput): DropTarget {
   }
 }
 
+/**
+ * `relPath` 是不是在目录 `dir` 之内（含等于它自己）。
+ *
+ * 段感知：`项目2` 以 `项目` 开头却**不是**它的后代 —— 用 `startsWith(dir)` 一把梭会把
+ * "拖到同前缀的兄弟目录"误判成"拖进自己的子目录"，用户会看到一句莫名其妙的原因。
+ */
+export function isSameOrInside(relPath: string, dir: string): boolean {
+  if (dir === '') return false
+  return relPath === dir || relPath.startsWith(`${dir}/`)
+}
+
 /** 两个落点是不是同一处（避免每次 `dragover` 都触发一次 React 重渲染）。 */
 export function sameDropTarget(a: DropTarget | null, b: DropTarget | null): boolean {
   if (a === null || b === null) return a === b
   return a.hostRelPath === b.hostRelPath && a.valid === b.valid
 }
 
-/** 把载荷写进 `dataTransfer`（`dragstart` 用）。 */
+/**
+ * 把载荷写进 `dataTransfer`（`dragstart` 用）。
+ *
+ * 自定义 MIME 里带上 `kind`（`folder:` / `note:` 前缀），`drop` 时才能从外部拖拽里区分
+ * "这是一个文件夹"；`text/plain` 仍然是裸相对路径（外部程序只认它）。
+ */
 export function writeDragPayload(dataTransfer: DataTransfer | null, payload: DragPayload): void {
   if (dataTransfer === null) return
-  dataTransfer.setData(DRAG_MIME, payload.relPath)
+  dataTransfer.setData(DRAG_MIME, `${payload.kind}:${payload.relPath}`)
   // 外部程序（编辑器、文件管理器）只认 text/plain：给相对路径比给别的好
   dataTransfer.setData('text/plain', payload.relPath)
   dataTransfer.effectAllowed = 'move'
@@ -180,7 +238,12 @@ export function readDragPayload(dataTransfer: DataTransfer | null): DragPayload 
   if (dataTransfer === null) return null
   const raw = dataTransfer.getData(DRAG_MIME)
   if (raw === '') return null
-  return isSafeRelPath(raw) ? { relPath: raw } : null
+  const separator = raw.indexOf(':')
+  const prefix = separator === -1 ? '' : raw.slice(0, separator)
+  // 不带 `kind` 前缀的载荷按"笔记"处理（旧格式 / 手工塞进来的文本）
+  const kind: DragKind = prefix === 'folder' ? 'folder' : 'note'
+  const relPath = separator === -1 ? raw : raw.slice(separator + 1)
+  return isSafeRelPath(relPath) ? { relPath, kind } : null
 }
 
 /** 形状校验：必须是 Vault 相对路径（非空、不以 `/` 开头、不含 `..` 段）。 */
@@ -196,3 +259,4 @@ export function isSafeRelPath(relPath: string): boolean {
 export function draggedName(payload: DragPayload): string {
   return basename(payload.relPath)
 }
+

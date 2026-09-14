@@ -485,6 +485,117 @@ function mockRewriteLinks(
   return { text: lines.join('\n'), count }
 }
 
+/**
+ * 目录搬迁：把一整棵子树从 `oldDir` 换到 `newDir`，并改写全库指向子树里每一篇的链接。
+ *
+ * 与 Rust（`mn-index/src/dir_move.rs`）**同一套语义**，逐条对齐：
+ *
+ * 1. 候选集 = "索引解析到子树里的那几条" ∪ "子树里每一篇自身"（后者的相对路径会随目录变）；
+ * 2. 每条链接的落点 = `索引解析到的目标` 或 `相对本文件旧目录的路径算术`，再过一遍前缀映射；
+ * 3. 用**本文件改写后的目录**重新表达；结果与原文一字不差就不写盘（子树内部保持最小 diff）；
+ * 4. 裸名 wikilink 只在"原本就指向子树里的某篇"时改，且改成新文件名主干。
+ *
+ * 为什么不复用 `mockRewriteLinks`：那个函数是"单篇搬迁"的形状（一个旧目标 → 一个新目标），
+ * 而目录搬迁要按**前缀**判断"这条链接是否落在被搬走的子树里"。两套形状各写一份是必要的，
+ * 但**目标写法规则**（`relativeRelPath` + 保留裸名/扩展名写法）仍然共用同一份。
+ */
+function mockRewriteDirLinks(options: {
+  files: Map<string, MockNote>
+  oldDir: string
+  newDir: string
+  updateLinks: boolean
+}): RenameLinkUpdate[] {
+  const { files, oldDir, newDir, updateLinks } = options
+  if (!updateLinks) return []
+
+  const resolver = createMockResolver(files)
+  const inside = (rel: string): boolean => rel === oldDir || rel.startsWith(`${oldDir}/`)
+  const remap = (rel: string): string =>
+    rel === oldDir ? newDir : `${newDir}${rel.slice(oldDir.length)}`
+
+  /** 这条链接**改写后**落在哪个 Vault 根相对路径上（`undefined` = 不碰它）。 */
+  const landingOf = (from: string, raw: string): string | undefined => {
+    const resolved = resolver(from, raw).path
+    if (resolved !== null) {
+      // 解析到子树之外：按相对本文件旧目录的路径算术（索引没有"越界改写"的权限）
+      return inside(resolved) ? remap(resolved) : undefined
+    }
+    const key = normalizeLinkTarget(raw)
+    const folded = resolveRelativeKey('', key)
+    if (inside(folded)) return remap(folded)
+    return undefined
+  }
+
+  const updated: RenameLinkUpdate[] = []
+  const writes: Array<{ from: string; text: string }> = []
+
+  for (const [from, note] of files) {
+    const fromAfter = inside(from) ? remap(from) : from
+    const newDirOfFrom = parentOf(fromAfter)
+
+    let inFence = false
+    let count = 0
+    const nextLines = note.text.split('\n').map((line) => {
+      const trimmed = line.trimStart()
+      if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
+        inFence = !inFence
+        return line
+      }
+      if (inFence) return line
+
+      const links = scanLineLinks(line)
+      if (links.length === 0) return line
+
+      let out = ''
+      let cursor = 0
+      for (const link of links) {
+        const bare = !normalizeLinkTarget(link.raw).includes('/')
+        const landing = landingOf(from, link.raw)
+        if (landing === undefined) continue
+
+        const replacement = bare
+          ? mockBareDirTarget(landing, newDirOfFrom)
+          : mockPathDirTarget(link, landing, newDirOfFrom)
+        if (replacement === null || replacement === link.raw) continue
+
+        out += line.slice(cursor, link.start) + rebuildLink(line, link, replacement)
+        cursor = link.end
+        count += 1
+      }
+      return out + line.slice(cursor)
+    })
+
+    if (count === 0) continue
+    writes.push({ from, text: nextLines.join('\n') })
+    // 被改写的文件按**旧路径**上报（与 Rust 同一口径：前端在搬迁前的坐标系里对账）
+    updated.push({ relPath: from, count })
+  }
+
+  for (const write of writes) {
+    const existing = files.get(write.from)
+    if (existing === undefined) continue
+    files.set(write.from, { relPath: write.from, text: write.text })
+  }
+  return updated
+}
+
+/** 裸名 wikilink 在目录搬迁后的写法：同层保持裸名，跨层写成相对路径。 */
+function mockBareDirTarget(landing: string, newDirOfFrom: string): string {
+  const stem = (landing.split('/').pop() ?? landing).replace(/\.(md|markdown)$/i, '')
+  if (parentOf(landing) === newDirOfFrom) return stem
+  return relativeRelPath(newDirOfFrom, landing.replace(/\.(md|markdown)$/i, ''))
+}
+
+/** 路径形式的链接在目录搬迁后的写法（保留 `[[x]]` 不加扩展名的惯例）。 */
+function mockPathDirTarget(link: ScannedLink, landing: string, newDirOfFrom: string): string | null {
+  const keepsExtension = link.form === 'markdown' && /\.(md|markdown)$/i.test(link.raw)
+  const noExt = landing.replace(/\.(md|markdown)$/i, '')
+  const target = relativeRelPath(newDirOfFrom, noExt)
+  if (!keepsExtension) return target
+  const ext = extensionOf(landing)
+  return ext === '' ? target : `${target}.${ext}`
+}
+
 // ---------------------------------------------------------------------------
 // Mock 的标签 / frontmatter（`mn_core::tags` + `mn_core::frontmatter` 的简化镜像）
 //
@@ -996,6 +1107,35 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
 
   const noteCount = (): number => [...files.keys()].filter(isMockMarkdown).length
 
+  // -- 目录搬迁的小工具（闭包内，直接读 `files` / `dirs` 两张表） --------------
+  //
+  // 与 Rust 的 `mn_index::path_inside` 同一纪律：`归档2` 以 `归档` 开头却**不是**它的后代，
+  // 用 `startsWith(oldDir)` 一把梭会在"移动整棵子树"时动错目录。
+
+  /** `rel` 是否在目录 `dir` 之内（`dir === ''` = Vault 根，任何路径都在内）。 */
+  const insideDir = (rel: string, dir: string): boolean =>
+    dir === '' || rel === dir || rel.startsWith(`${dir}/`)
+
+  /** 把已在 `oldDir` 之内的路径映射到 `newDir` 下。 */
+  const remapPrefix = (rel: string, oldDir: string, newDir: string): string => {
+    const rest = oldDir === '' ? rel : rel === oldDir ? '' : rel.slice(oldDir.length + 1)
+    return rest === '' ? newDir : newDir === '' ? rest : `${newDir}/${rest}`
+  }
+
+  /** 子树里每个文件的旧 → 新相对路径（字典序，测试可复现）。 */
+  const relocateTree = (oldDir: string, newDir: string): Array<{ from: string; to: string }> =>
+    [...files.keys()]
+      .filter((rel) => insideDir(rel, oldDir))
+      .sort()
+      .map((from) => ({ from, to: remapPrefix(from, oldDir, newDir) }))
+
+  /** 目录表里 `oldDir` 及其所有后代换成 `newDir` 前缀（拖拽后树里不能留着旧目录）。 */
+  const remapDirs = (oldDir: string, newDir: string): void => {
+    const doomed = [...dirs].filter((dir) => insideDir(dir, oldDir))
+    for (const dir of doomed) dirs.delete(dir)
+    for (const dir of doomed) dirs.add(remapPrefix(dir, oldDir, newDir))
+  }
+
   // 显式类型标注：让 TypeScript 的流程分析知道调用后不可达（从而正确收窄 note 等变量）
   const fail: (code: ErrorCode, message: string) => never = (code, message) => {
     throw new MimenoteError({ code, message, detail: null, currentMtimeMs: null })
@@ -1300,6 +1440,159 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
             oldRelPath: relPath,
             newRelPath,
             newMtimeMs: mtimeOf(newRelPath),
+            updatedLinks,
+            updatedLinkCount: updatedLinks.reduce((sum, item) => sum + item.count, 0),
+            elapsedMs: 1,
+          }
+          return payload as T
+        }
+        case 'dir_rename': {
+          // 目录改名（`dir_rename` 的 Mock 镜像）：真的搬整棵子树 + 改写指向它的链接。
+          // 与宿主同一套语义（见 `mockRewriteDirLinks`）：子树里每篇都要跟着换路径，
+          // 目标同名一律拒（**绝不合并两棵子树**）。
+          const relPath = String(a.relPath ?? '')
+          const rawTitle = String(a.newTitle ?? '')
+          const updateLinks = a.updateLinks !== false
+          validate(relPath)
+          if (!dirs.has(relPath)) fail('NOT_A_DIRECTORY', `不是目录：${relPath}`)
+          if (relPath === '.mimenote' || relPath.startsWith('.mimenote/')) {
+            fail('PATH_INVALID', '.mimenote 是应用的内部目录，不能重命名或移动')
+          }
+          if (rawTitle !== rawTitle.trim()) fail('PATH_INVALID', '新名字不能带首尾空白')
+          // 名字里的分隔符一律拒绝（与宿主同一口径）：允许 `子/新名` 会让"改名"偷偷变成"移动"，
+          // 而改名与移动的链接改写规则不同 —— 换目录请走 `dir_move`
+          if (rawTitle.includes('/') || rawTitle.includes('\\')) {
+            fail('PATH_INVALID', '新名字不能包含路径分隔符（换目录请用目标目录参数）')
+          }
+          const name = rawTitle
+          if (name === '' || name === '.' || name === '..' || /[\\/:*?"<>|]/.test(name)) {
+            fail('PATH_INVALID', `非法目录名：${rawTitle}`)
+          }
+
+          const parent = parentOf(relPath)
+          const newRelPath = parent === '' ? name : `${parent}/${name}`
+          validate(newRelPath)
+          if (newRelPath !== relPath && (dirs.has(newRelPath) || files.has(newRelPath))) {
+            fail('ALREADY_EXISTS', `目标已存在：${newRelPath}`)
+          }
+
+          const updatedLinks = mockRewriteDirLinks({
+            files,
+            oldDir: relPath,
+            newDir: newRelPath,
+            updateLinks,
+          })
+          const moves = relocateTree(relPath, newRelPath)
+          for (const item of moves) {
+            const note = files.get(item.from)
+            if (note === undefined) continue
+            files.set(item.to, { relPath: item.to, text: note.text })
+            const movedMtime = mtimeOf(item.from)
+            mtimes.delete(item.from)
+            mtimes.set(item.to, movedMtime)
+          }
+          for (const item of moves) files.delete(item.from)
+          remapDirs(relPath, newRelPath)
+          for (const from of updatedLinks.map((item) => item.relPath)) {
+            mtimes.set(from, touch())
+          }
+
+          const payload: RenameOutcome = {
+            oldRelPath: relPath,
+            newRelPath,
+            // 目录不是版本令牌的载体（与宿主一致：如实报 0）
+            newMtimeMs: 0,
+            updatedLinks,
+            updatedLinkCount: updatedLinks.reduce((sum, item) => sum + item.count, 0),
+            elapsedMs: 1,
+          }
+          return payload as T
+        }
+        case 'dir_move': {
+          // 目录移动（`dir_move` 的 Mock 镜像）：与 `dir_rename` 共用同一段"搬子树 + 改写链接"，
+          // 只有目标父目录由参数给（不存在就建）。搬进自己的后代一律拒绝 —— 与宿主同一口径。
+          const relPath = String(a.relPath ?? '')
+          const rawTarget = String(a.targetParentRel ?? '')
+          const rawTitle =
+            a.newTitle === null || a.newTitle === undefined ? null : String(a.newTitle)
+          const updateLinks = a.updateLinks !== false
+          validate(relPath)
+          if (!dirs.has(relPath)) fail('NOT_A_DIRECTORY', `不是目录：${relPath}`)
+          if (relPath === '.mimenote' || relPath.startsWith('.mimenote/')) {
+            fail('PATH_INVALID', '.mimenote 是应用的内部目录，不能重命名或移动')
+          }
+
+          const parentRel = rawTarget
+            .trim()
+            .replaceAll('\\', '/')
+            .replace(/^\/+/, '')
+            .replace(/\/+$/, '')
+          if (parentRel !== '') validate(parentRel)
+
+          let name = basename(relPath)
+          if (rawTitle !== null) {
+            if (rawTitle !== rawTitle.trim()) fail('PATH_INVALID', '新名字不能带首尾空白')
+            if (rawTitle.includes('/') || rawTitle.includes('\\')) {
+              fail('PATH_INVALID', '新名字不能包含路径分隔符（换目录请用目标目录参数）')
+            }
+            name = rawTitle
+            if (name === '' || name === '.' || name === '..' || /[\\/:*?"<>|]/.test(name)) {
+              fail('PATH_INVALID', `非法目录名：${rawTitle}`)
+            }
+          }
+          const newRelPath = parentRel === '' ? name : `${parentRel}/${name}`
+          validate(newRelPath)
+          // 搬进自己或自己的后代：宿主也是拒绝（这里给出同样的原因）
+          if (newRelPath !== relPath && newRelPath.startsWith(`${relPath}/`)) {
+            fail('PATH_INVALID', `不能把目录搬到它自己或它的子目录里（${relPath}）`)
+          }
+          if (newRelPath !== relPath && (dirs.has(newRelPath) || files.has(newRelPath))) {
+            fail('ALREADY_EXISTS', `目标已存在：${newRelPath}`)
+          }
+          if (newRelPath === relPath) {
+            const payload: RenameOutcome = {
+              oldRelPath: relPath,
+              newRelPath,
+              newMtimeMs: 0,
+              updatedLinks: [],
+              updatedLinkCount: 0,
+              elapsedMs: 0,
+            }
+            return payload as T
+          }
+          if (parentRel !== '') {
+            let accumulated = ''
+            for (const segment of parentRel.split('/')) {
+              accumulated = accumulated === '' ? segment : `${accumulated}/${segment}`
+              dirs.add(accumulated)
+            }
+          }
+
+          const updatedLinks = mockRewriteDirLinks({
+            files,
+            oldDir: relPath,
+            newDir: newRelPath,
+            updateLinks,
+          })
+          const moves = relocateTree(relPath, newRelPath)
+          for (const item of moves) {
+            const note = files.get(item.from)
+            if (note === undefined) continue
+            files.set(item.to, { relPath: item.to, text: note.text })
+            const movedMtime = mtimeOf(item.from)
+            mtimes.delete(item.from)
+            mtimes.set(item.to, movedMtime)
+          }
+          for (const item of moves) files.delete(item.from)
+          remapDirs(relPath, newRelPath)
+          for (const from of updatedLinks.map((item) => item.relPath)) {
+            mtimes.set(from, touch())
+          }
+
+          const payload: RenameOutcome = {
+            oldRelPath: relPath,
+            newRelPath,
+            newMtimeMs: 0,
             updatedLinks,
             updatedLinkCount: updatedLinks.reduce((sum, item) => sum + item.count, 0),
             elapsedMs: 1,

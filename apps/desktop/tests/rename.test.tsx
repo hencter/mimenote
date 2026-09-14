@@ -14,7 +14,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { openNote, renameNote, renameSelected } from '@/app/actions'
+import { openNote, renameNote } from '@/app/actions'
 import { requestRename } from '@/app/dom-events'
 import { RenameDialog } from '@/features/vault/RenameDialog'
 import { setIpcAdapter } from '@/ipc/client'
@@ -182,12 +182,17 @@ describe('重命名笔记', () => {
     expect(doc?.text).toContain('[[自链改]]')
   })
 
-  it('目录重命名被明确拒绝（推迟到 M3）', async () => {
+  it('目录改名不再被拒绝：F2 会打开改名框（宿主走 dir_rename）', async () => {
+    render(<RenameDialog />)
     useVaultStore.getState().select('项目')
-    renameSelected()
 
-    expect(useToastStore.getState().toasts.some((item) => item.message.includes('目录重命名'))).toBe(true)
-    expect(textOf('项目/设计.md')).toBeDefined()
+    requestRename('项目')
+
+    const input = await screen.findByLabelText('新文件名')
+    // 目录名原样预填；文件夹没有扩展名这回事
+    expect((input as HTMLInputElement).value).toBe('项目')
+    expect(screen.getByText('重命名文件夹')).toBeDefined()
+    expect(document.querySelector('.mn-rename__ext')).toBeNull()
   })
 })
 
