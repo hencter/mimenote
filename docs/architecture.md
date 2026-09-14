@@ -114,6 +114,7 @@
 | `vault_close` | — | `void` | 释放 Vault 上下文 |
 | `note_read` | `relPath` | `NoteContent` | 读取原文（不解释 BOM/换行，交给前端领域层） |
 | `note_write` | `relPath, text, baseMtimeMs?, force` | `WriteOutcome` | 冲突检查 + 原子写 + 返回新 mtime |
+| `note_set_tags` | `relPath, add[], remove[], baseMtimeMs` | `SetTagsOutcome` | 在 frontmatter 上**加/删标签**（标签面板的写入口，ADR-0006「后续修订」）：宿主一次做完「令牌校验 → 读盘 → 最小 diff 改写 → 原子写 → 索引增量同步」，前端不自己拼 frontmatter（判同与保真纪律只有一份，在 `mn-core`）。入参是**增与删**而不是"新的完整列表"—— 面板上的列表可能比磁盘旧一拍，传"想要什么"会在那种情况下静默丢掉别的标签；幂等请求（结果与磁盘一致）返回 `changed=false`：**不写盘、不动 mtime、不重建索引**；`baseMtimeMs` **必填**，与磁盘不一致 → `CONFLICT`（与 `note_write` 同一套语义，绝不静默覆盖）。出参多带 `tags`（写入后磁盘上真实的标签，供前端如实解释"这条来自 `tag:` 字段、没被删掉"）与 `text`（写入后的整篇文本，前端据此**一次往返**把编辑器内存对齐磁盘，不必再读一次） |
 | `note_create` | `parentRel, title` | `NoteContent` | 唯一命名，返回新笔记 |
 | `note_delete` | `relPath, confirm` | `TrashRecord` | `confirm=false` 时返回 `CONFIRMATION_REQUIRED` |
 | `note_rename` | `relPath, newTitle, updateLinks?` | `RenameOutcome` | 同目录改名 + **全库链接精确改写**（默认 `updateLinks=true`）：按字符 span 改写，保留别名/锚点、跳过代码块、BOM/换行保真；返回被改写的文件与条数 |
@@ -135,8 +136,16 @@
 | `snippets_list` | — | `SnippetFile[]` | 读取 `.mimenote/snippets/*.css` |
 | `version_info` | — | `VersionInfo` | 应用 / mn-core / Tauri 版本 |
 
-**事件（宿主 → 前端）**：`mn://index-status` 推送索引进度（`IndexStatus`）。
-用事件而不是轮询：索引构建是秒级的一次性过程，前端只需要"被通知"。
+**事件（宿主 → 前端）**：
+
+- `mn://index-status` 推送索引进度（`IndexStatus`）。用事件而不是轮询：索引构建是秒级的一次性过程，前端只需要"被通知"。
+- `mn://vault-changed` 推送"Vault 在应用之外被改动了"（`VaultChanged = { paths, truncated, changes, detectedAtMs }`，ADR-0016）：
+  宿主用 `notify` 监听 Vault 根（Windows 上是 `ReadDirectoryChangesW`），把**磁盘状态与条目表不一致**的事件
+  去抖合并（静默期 500ms、硬上限 2s）后推给前端；前端据此静默重扫条目表（走既有的 `vault_snapshot`）
+  并让当前笔记跟随磁盘（无未保存修改 → 自动重载；有 → 进既有的冲突态）。事件只回答"磁盘上有新闻"、
+  不指挥接收方做什么 —— 因此不需要新命令，`Ctrl+Alt+R` 的手工重扫与自动重扫共用同一条链路。
+  **应用自己写的文件不算外部改动**（保存/新建/改名后条目表立刻更新，事件到达时磁盘与条目表对得上就丢弃），
+  `.mimenote/` 内部与 `mn_core::atomic` 的临时文件一律忽略。监听失败只记 warn，手动重扫仍是兜底。
 
 ### 3.2 打开 Vault 的数据流
 
@@ -179,7 +188,7 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | [ADR-0003](adr/0003-ipc-contract-and-async-isolation.md) | IPC 契约 + 文件 IO 全部 `spawn_blocking` 隔离 | 已采纳 |
 | [ADR-0004](adr/0004-atomic-write-and-conflict.md) | 原子写 + mtime 版本令牌 + 显式冲突解决 | 已采纳 |
 | [ADR-0005](adr/0005-plugin-model-deferred.md) | 第三方插件推迟到 M4，先做内置扩展点 | 已采纳 |
-| [ADR-0006](adr/0006-tags-and-frontmatter.md) | 标签/Frontmatter：解析在 `mn-core`、索引在 `mn-index`、`normalize_tag` 判同、改标签走既有写路径 | 已采纳 |
+| [ADR-0006](adr/0006-tags-and-frontmatter.md) | 标签/Frontmatter：解析在 `mn-core`、索引在 `mn-index`、`normalize_tag` 判同、改标签走既有写路径（后续修订：面板里加/删 frontmatter 标签走 `note_set_tags`） | 已采纳 |
 | [ADR-0007](adr/0007-local-images-asset-protocol.md) | 本地图片走 `asset:` 协议，作用域按 Vault 动态注入（而非 IPC 传 base64 或自定义协议） | 已采纳 |
 | [ADR-0008](adr/0008-full-text-search-fts5.md) | 全文搜索用 SQLite FTS5：中文逐字分词、external content 换行号、构建期放宽持久化 + 坏库自愈 | 已采纳 |
 | [ADR-0009](adr/0009-wysiwyg-editor.md) | 所见即所得编辑（Live Preview），**移除"编辑 + 预览"双栏**；主区域三选一（编辑 / 阅读 / 图谱） | 已采纳 |
@@ -189,6 +198,7 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | [ADR-0013](adr/0013-image-attachments.md) | 粘贴 / 拖入的图片写进 Vault 附件目录（`attachment_save`）：字节走 IPC、MIME 定扩展名、同名去重、整批原子 | 已采纳 |
 | [ADR-0014](adr/0014-persisted-link-tag-index.md) | 链接/标签索引与 FTS 落进同一个缓存库、共用同一份 `(path, mtime, size)` 判定键，写穿透挂在 `LinkIndex::upsert/remove` 内部 | 已采纳 |
 | [ADR-0015](adr/0015-directory-rename-and-move.md) | **目录重命名与目录移动**（连同整棵子树的链接改写）：复用单篇搬迁的候选集/span 改写机制 + 前缀映射；整棵目录一次原子 `rename`；复用 `RenameOutcome`、不新增错误码 | 已采纳 |
+| [ADR-0016](adr/0016-file-watching.md) | **文件监听**（Vault 外部改动的自动同步）：`notify` 只加在宿主；判定"是不是新闻"用**条目表 vs 磁盘**对账（自己写的文件天然被排除）；去抖 500ms / 硬上限 2s 合并风暴；不做按文件精细增量，走既有的去抖后重扫 + 增量索引构建；监听生命周期挂在 `set_vault` / `clear_vault` | 已采纳 |
 
 ## 5. 安全模型
 
@@ -222,6 +232,8 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | 阅读视图代码块复制 / 大纲跳转 | 瞬时 | 都是"渲染后挂按钮"与"滚一行"级别的 DOM 操作，无 IPC、无文件 IO |
 | **目录搬迁**（1000 篇的子树） | 交互可接受 | 与**被引用的篇数**成正比、与子树大小无关：1000 篇里 50 篇被引用 **2.0 s**；500 篇内部链接 + 200 篇外部引用（700 个文件被改写）**8.3–10.4 s**。四段分解：计划 742 ms / 搬树 **2 ms**（整棵一次 `fs::rename`）/ 写回 405 ms（50 文件）/ 索引同步 720 ms。**瓶颈是每个被改写文件的 `write_atomic`（约 8 ms，含 fsync）** —— 700 次写入单独测就是 5.5 s（ADR-0015） |
 | 内存（1 万笔记） | ≤ 500 MB | M5 接入（FTS5 库文件 29.1 万行约 114 MB、链接/标签表约 3.7 万行，都是磁盘缓存不是常驻内存） |
+| **外部改动自动同步**（ADR-0016） | 可感延迟 ≤ 1.5 s | 去抖静默期 **500 ms**（风暴硬上限 2 s）+ 重扫与增量索引构建：1 万笔记 Vault 实测**宿主侧端到端 ≈ 714 ms**（判定 502–510 ms / 重扫 107 ms / 复用构建 105 ms），前端再叠一次 `buildTree(10000)` **11.7 ms**；小 Vault（十几篇）**≈ 0.51 s**（几乎全是静默期）。全过程在后台线程，不阻塞输入、可取消 |
+| 监听常驻开销（1 个 Vault） | 可忽略 | **4 个 OS 句柄 + 2 个线程 + 约 0.5 MB 工作集**（`RecursiveMode::Recursive` 一次覆盖整棵树，不随文件数增长）；停掉监听后句柄与线程都回到基线（实测见 ADR-0016） |
 
 ### 扫描性能的关键实现约束（踩过的坑）
 
@@ -253,13 +265,13 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 原属 M5 的项（**索引跨会话复用**：ADR-0008「后续修订」+ ADR-0014），以及超出原范围的体验项
 （搜索命中行跳转、图片粘贴/拖入附件、大纲面板、阅读视图代码块复制、窗口标题跟随当前笔记、
 **目录重命名 / 目录移动**：ADR-0015，整棵子树的路径与全库链接一起改）。
-仍推迟：标签编辑、M4 插件系统。
+仍推迟：M4 插件系统（**标签编辑已交付**：ADR-0006「后续修订」，面板里加/删 frontmatter 标签）。
 
 ## 8. 已知限制
 
 1. **本地图片已可渲染**（ADR-0007 逐文件授权），并支持 `![[图.png]]` 嵌入、裸文件名全库兜底解析、点击放大灯箱（**预览与编辑器两处都能点开**：阅读视图的图片是 `img.mn-image`、所见即所得里的图片是 Live Preview 的 widget `img.mn-md-image`，灯箱两套类名都认；同一篇里有多张时还能翻页）；**粘贴/拖入的图片会自动落到附件目录并插入链接**（ADR-0013：MIME 定扩展名、通用名换成带时间戳的名字、同名追加 ` 1`，附件目录可在设置页改）。版式上：独占一段的图片渲染成**块级居中**（`.mn-figure--block` / `.mn-md-image-wrap`），段落里与文字混排的图片仍是行内（`inline-block`，按基线对齐）；**尺寸用 Obsidian 的写法** —— `![[图.png|300]]` 定宽、`|300x200` 定宽高（渲染成 `width`/`height` **属性**而不是内联样式：DOMPurify 默认放行它们，且只写宽度时浏览器按比例缩放；预览与编辑器两处共用同一个纯函数 `parseImageSize`，判据只写一遍 —— 数字以外的别名仍是图注，因为"300 字以内"这类**看起来像数字的图注**在中文笔记里很常见）。仍未做的：多图拖入时的**批量进度**（当前是一次 IPC 整批落盘，落盘中只显示一次"正在保存"）、图片的**对齐控制**（居中/左右浮动要写 CSS 片段）、附件转码/压缩（原样落盘）。
 2. **重命名（M2）与跨目录移动（M3，`note_move`）都已交付**：同目录改名保持"最小 diff"（裸名链接仍是裸名），**跨目录移动**则把链接一律改成**相对新位置的路径**（`[[乙]]` → `[[子/乙]]`）—— 因为裸名靠"同目录优先"消歧，换了目录之后同一条链接可能落到另一篇同名笔记上；两者都复用同一套字符 span 改写（`[[甲]]` 不会误伤 `[[甲虫]]`、保留别名/锚点、跳过代码块、BOM/换行保真）与索引增量同步。移动**还会改写被移动笔记自身正文里的相对链接**（ADR-0012：`![](../附件/图.png)` 随新位置重算，纯路径算术、不查文件是否存在）。**目录重命名与目录移动也已交付**（ADR-0015，`dir_rename` / `dir_move`）：整棵子树的路径跟着变、全库指向子树里每一篇的链接精确改写，复用同一条搬迁链路与同一个 DTO；文件夹可拖、F2 / F6 对文件夹同样可用，**拖进自己的后代**是无效落点（两侧都拦）。仍未做：**引用式定义行**（`[id]: ../附件/图.png`）里的相对目标不改写（既有链接抽取器不认这种形态，为它单写一套上下文判定等于再养一个 Markdown 解析器）；带反斜杠的目标与**越出 Vault 根**的目标也跳过；另外被移动笔记里的**裸名 wikilink**（`[[乙]]`）不动 —— 它按文件名主干解析，移动后若全库有同名笔记可能改指另一篇（要修得模拟"搬过去之后会解析到谁"，属另一块）；目录搬迁本身**没有进度与取消**（1000 篇实测 2–10 s，只给一次 toast，见 ADR-0015 的代价表）。
-3. `[[双链]]` **已可解析、渲染、跳转与反向链接**（M2 已交付）；**标签与 Frontmatter 已可抽取、展示与跳转**（M2 已交付），但面板是**只读**的 —— 改标签要手动编辑 frontmatter 或正文（`mn_core::frontmatter::set_tags` 已经就绪，接线时走 `note_read → set_tags → note_write`，复用 ADR-0004 的冲突令牌，不开新写路径）。标签重命名/合并、按标签过滤文件树也未做。
+3. `[[双链]]` **已可解析、渲染、跳转与反向链接**（M2 已交付）；**标签与 Frontmatter 已可抽取、展示、跳转，并可在标签面板里直接改**（M2 + ADR-0006「后续修订」）：加/删走 `note_set_tags`（宿主一次做完「令牌校验 → 读盘 → 最小 diff 改写 → 原子写 → 索引增量同步」，复用 ADR-0004 的冲突令牌与同一条冲突横幅，**不开第二套写路径**；幂等请求不写盘）。**只覆盖 frontmatter**：正文行内 `#标签` 是只读的（面板标出来源并提示"请到正文里删"）；**标签重命名/合并**、按标签过滤文件树仍未做。另有一处口径要知道：面板显示的是 `tags` 与 `tag` **两个字段合并**后的列表，而写入目标永远是 `tags`（没有 `tags` 时才写 `tag`）—— 因此两者同时存在时 `tag:` 字段里的标签点 `×` 删不掉，面板会如实说"没有改动，它来自 `tag:` 字段"（`mn_core::frontmatter::editable_tags` 与 `Frontmatter::tags` 的分工见代码注释）。
 4. **快速切换与命令面板已交付**（`Mod+K` / `Mod+P`）；**全文搜索已交付**（`Mod+Shift+F`，SQLite FTS5 + `bm25`，第三个面板模式 + 带竞态丢弃的异步查询），**命中行跳转也已交付**：入口是 `features/editor/line-jump.ts` 的 `openNoteAt(relPath, line)` —— 它先切回编辑视图、走既有的 `openNote` 打开，再**等这篇文档真的进了编辑器**（`note-store.revision` 那次整篇替换跑完，按帧重试并有超时上限）才用 `doc.line(n).from` 算行首，因此绝不会在旧文档上算偏移；定位本身是一次"只改选区 + 装饰"的事务（`Transaction.addToHistory.of(false)`：不进撤销历史、不置 dirty、不往正文插任何标记），滚动交给 `EditorView.scrollIntoView(..., { y: 'center' })`，并给该行一层几百毫秒后自动消失的高亮（`features/editor/cm/flash-line.ts`）。反向链接面板走**同一个入口**（`BacklinkRef.line` 是来源笔记里的行号，可直接定位）；出链刻意不定位 —— `ResolvedLink.line` 是引用写在当前笔记的哪一行，而 `#锚点` 是锚点名，宿主没有"锚点 → 行号"的接口（要做得新增一条宿主命令，不在本次范围）。
 5. **frontmatter 会计入正文统计**（`text_stats` 拿的是磁盘原文，前端即时统计同样如此）：字数/行数/阅读时长里包含 `---` 分隔行与键值。要改必须**两侧同时改**（`mn_core::frontmatter::body` + TS 侧对应实现），否则"编辑器统计"与"磁盘统计"会互相打架。
 6. 删除走 Vault 内 `.mimenote/trash`（可见、可入 Git 忽略），未对接系统回收站；`restore` 尚未提供 UI。
