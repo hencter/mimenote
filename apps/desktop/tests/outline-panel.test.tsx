@@ -17,11 +17,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openNote } from '@/app/actions'
 import { registerBuiltinCommands } from '@/app/builtin-commands'
 import { MarkdownEditor } from '@/features/editor/MarkdownEditor'
-import { OutlinePanel } from '@/features/outline/OutlinePanel'
+import { OutlinePanel, currentHeadingIndex } from '@/features/outline/OutlinePanel'
 import { OUTLINE_FLASH_CLASS } from '@/features/outline/outline-scroll'
 import { MarkdownPreview } from '@/features/preview/MarkdownPreview'
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter, MOCK_VAULT_PATH } from '@/ipc/mock-adapter'
+import { useCursorStore } from '@/state/cursor-store'
 import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
 import { useUiStore } from '@/state/ui-store'
@@ -239,6 +240,104 @@ describe('大纲面板', () => {
     expect(outlineItem(16).getAttribute('title')).toContain('第 16 行')
     // 标题为空时给出占位文案而不是一个看不见的空按钮
     expect(outlineItem(1).textContent).toBe('项目说明')
+  })
+
+  it('当前章节高亮：光标所在行及以上最近的那个标题被标出来（含 aria-current）', async () => {
+    render(<OutlinePanel />)
+    await openVault()
+    await open('笔记/大纲.md')
+
+    await waitFor(() => {
+      expect(outlineTexts()).toHaveLength(4)
+    })
+
+    // 纯函数：行号 → 当前章节下标（`<=` 语义：光标落在正文里时仍属于上面那一节）
+    const headings = [
+      { level: 1, text: '一', line: 1 },
+      { level: 2, text: '二', line: 5 },
+      { level: 2, text: '三', line: 10 },
+    ]
+    expect(currentHeadingIndex(headings, null)).toBe(-1)
+    expect(currentHeadingIndex(headings, 1)).toBe(0)
+    expect(currentHeadingIndex(headings, 4)).toBe(0)
+    expect(currentHeadingIndex(headings, 5)).toBe(1)
+    expect(currentHeadingIndex(headings, 9)).toBe(1)
+    expect(currentHeadingIndex(headings, 999)).toBe(2)
+
+    // 契约：光标在第 10 行 → 「子目标」是当前章节
+    await act(async () => {
+      useCursorStore.getState().setLine(10)
+    })
+    await waitFor(() => {
+      const current = document.querySelectorAll('.mn-outline__item--current')
+      expect(current).toHaveLength(1)
+      expect(current[0]?.getAttribute('data-outline-line')).toBe('10')
+      expect(current[0]?.getAttribute('aria-current')).toBe('location')
+    })
+
+    // 光标移进正文（第 12 行）仍属于第 10 行那一节
+    await act(async () => {
+      useCursorStore.getState().setLine(12)
+    })
+    await waitFor(() => {
+      expect(document.querySelector('.mn-outline__item--current')?.getAttribute('data-outline-line')).toBe(
+        '10',
+      )
+    })
+
+    // 光标回到开头：高亮切到第一个标题
+    await act(async () => {
+      useCursorStore.getState().setLine(1)
+    })
+    await waitFor(() => {
+      expect(document.querySelector('.mn-outline__item--current')?.getAttribute('data-outline-line')).toBe(
+        '1',
+      )
+    })
+
+    // 阅读视图没有光标：不高亮（不猜"读到哪一节"）
+    await act(async () => {
+      useUiStore.getState().setViewMode('read')
+    })
+    await waitFor(() => {
+      expect(document.querySelectorAll('.mn-outline__item--current')).toHaveLength(0)
+    })
+  })
+
+  it('编辑器把光标行写进 store（真编辑器里移动光标 → 大纲跟着变）', async () => {
+    render(
+      <>
+        <OutlinePanel />
+        <MarkdownEditor />
+      </>,
+    )
+    await openVault()
+    await open('笔记/大纲.md')
+    await waitFor(() => {
+      expect(document.querySelector('.cm-content')).not.toBeNull()
+    })
+
+    const view = EditorView.findFromDOM(
+      document.querySelector<HTMLElement>('.cm-editor') as HTMLElement,
+    ) as EditorView
+
+    // 把光标放到「子目标」那一行（第 10 行）
+    await act(async () => {
+      view.dispatch({ selection: { anchor: view.state.doc.line(10).from } })
+    })
+    await waitFor(() => {
+      expect(useCursorStore.getState().line).toBe(10)
+      expect(document.querySelector('.mn-outline__item--current')?.getAttribute('data-outline-line')).toBe(
+        '10',
+      )
+    })
+
+    // 同一行里左右移动不该重复写入（节流：只有行号变化才回调）
+    await act(async () => {
+      const from = view.state.doc.line(10).from
+      view.dispatch({ selection: { anchor: from + 1 } })
+    })
+    expect(useCursorStore.getState().line).toBe(10)
   })
 })
 

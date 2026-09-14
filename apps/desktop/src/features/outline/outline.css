@@ -76,6 +76,20 @@
   outline-offset: -2px;
 }
 
+/*
+ * 「当前章节」：光标所在（或光标上方最近）的那个标题。
+ * 用左侧色条 + 背景，而不是只改字色 —— 只改字色在深浅两套主题里都太弱，
+ * 而大纲本身是一列同样大小的文字，需要一眼能定位。
+ */
+.mn-outline__item--current {
+  background: var(--mn-active);
+  box-shadow: inset 2px 0 0 var(--mn-accent);
+}
+
+.mn-outline__item--current:hover {
+  background: var(--mn-active);
+}
+
 /* 层级：一级标题最醒目，越深越轻（与正文里的标题一致的心智模型） */
 .mn-outline__item--h1 {
   color: var(--mn-fg);

@@ -83,6 +83,15 @@ export interface EditorCallbacks {
   onDocChanged?: (text: string) => void
   /** 焦点变化。 */
   onFocusChanged?: (focused: boolean) => void
+  /**
+   * 光标所在行变化（**1 起算**，与搜索结果/大纲的行号同一口径）。
+   *
+   * 只在**行号真的变了**时调用：光标在同一行里左右移动、输入、撤销都会触发
+   * `selectionSet`，但那种情况下订阅方（大纲的"当前章节"）什么都不用改 ——
+   * 不做这层过滤就等于"每按一个键让面板重渲染一次"。
+   * 文档被整篇替换时行号通常也会变，因此 `docChanged` 一并纳入判据。
+   */
+  onCursorLineChanged?: (line: number) => void
 }
 
 /**
@@ -170,8 +179,33 @@ export function createEditorExtensions(
       if (update.focusChanged) {
         callbacks.onFocusChanged?.(update.view.hasFocus)
       }
+      if (update.selectionSet || update.docChanged) {
+        publishCursorLine(update, callbacks)
+      }
     }),
   ]
+}
+
+/**
+ * 光标行的"上报节流"：只有**行号变了**才回调。
+ *
+ * 按**编辑器实例**记账（`WeakMap`）而不是模块级的一个变量：标签页切换会新建实例，
+ * 两个实例各自的光标行恰好相同时，模块级的变量会把后一个的上报吞掉（面板停在上一个笔记
+ * 的章节上）；`WeakMap` 随实例一起被回收，也没有"忘记清理"的问题。
+ */
+const lastPublishedLine = new WeakMap<EditorView, number>()
+
+function publishCursorLine(update: { state: EditorState; view: EditorView }, callbacks: EditorCallbacks): void {
+  if (callbacks.onCursorLineChanged === undefined) return
+  const line = currentCursorLine(update.view)
+  if (lastPublishedLine.get(update.view) === line) return
+  lastPublishedLine.set(update.view, line)
+  callbacks.onCursorLineChanged(line)
+}
+
+/** 光标所在行（1 起算）。装配完成时可以先用它上报一次初值。 */
+export function currentCursorLine(view: EditorView): number {
+  return view.state.doc.lineAt(view.state.selection.main.head).number
 }
 
 /** 运行时切换明暗（不重建编辑器）。 */

@@ -14,12 +14,14 @@ import { EditorView } from '@codemirror/view'
 import { useCallback, useEffect, useRef } from 'react'
 
 import { Icon } from '@/components/Icon'
+import { useCursorStore } from '@/state/cursor-store'
 import { useNoteStore } from '@/state/note-store'
 import { useSettingsStore } from '@/state/settings-store'
 import { useUiStore } from '@/state/ui-store'
 import { getTheme } from '@/theme/apply'
 import {
   createEditorExtensions,
+  currentCursorLine,
   replaceEditorText,
   setEditorAppearance,
   setEditorTabSize,
@@ -61,6 +63,10 @@ export function MarkdownEditor() {
           // 只写内存，不触发任何 IO；保存由防抖流水线负责
           useNoteStore.getState().setText(text)
         },
+        // 光标行 → 大纲面板的"当前章节"。只在行号变化时回调（节流在装配层）。
+        onCursorLineChanged: (line) => {
+          useCursorStore.getState().setLine(line)
+        },
       },
       isDarkRef.current,
       tabWidthRef.current,
@@ -73,6 +79,8 @@ export function MarkdownEditor() {
         extensions,
       }),
     })
+    // 装上就上报一次初值：否则"打开一篇笔记、什么都没点"时大纲里没有任何高亮
+    useCursorStore.getState().setLine(currentCursorLine(viewRef.current))
   }, [])
 
   // 组件整体卸载时兜底销毁（回调 ref 传 null 通常已经处理，这里防御性再清一次）
@@ -91,10 +99,13 @@ export function MarkdownEditor() {
     const doc = useNoteStore.getState().doc
     if (doc === null) {
       replaceEditorText(view, '')
+      useCursorStore.getState().setLine(null)
       return
     }
     if (doc.relPath !== relPath) return
     replaceEditorText(view, doc.text)
+    // 整篇替换后光标被夹到文档开头附近：同步一次，别让大纲停在上一个笔记的章节上
+    useCursorStore.getState().setLine(currentCursorLine(view))
   }, [relPath, revision])
 
   // 主题明暗切换：重配置 Compartment，不重建编辑器

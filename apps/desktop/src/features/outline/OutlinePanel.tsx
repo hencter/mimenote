@@ -23,6 +23,7 @@ import { useUiStore } from '@/state/ui-store'
 import { Icon } from '@/components/Icon'
 import { outlineDepths, parseOutline, type OutlineHeading } from '@/domain/outline'
 import { jumpToLineInOpenNote } from '@/features/editor/line-jump'
+import { useCursorStore } from '@/state/cursor-store'
 import { useNoteStore } from '@/state/note-store'
 
 import { scrollPreviewToHeading } from './outline-scroll'
@@ -31,15 +32,43 @@ import './outline.css'
 /** 每一项的缩进步长（像素），与 `outline.css` 里的 padding 计算一致。 */
 const INDENT_STEP = 12
 
+/**
+ * "当前章节"：最后一个**不晚于**光标行的标题。
+ *
+ * 用 `<=` 而不是"行号完全相等"：光标落在标题下面的正文里时，用户看到的仍然是那一章
+ * （这正是"我在哪一节"的含义）。返回下标而不是标题对象 —— 渲染时要按它打标记。
+ */
+export function currentHeadingIndex(
+  headings: readonly OutlineHeading[],
+  cursorLine: number | null,
+): number {
+  if (cursorLine === null) return -1
+  let index = -1
+  for (let i = 0; i < headings.length; i += 1) {
+    const heading = headings[i]
+    if (heading === undefined || heading.line > cursorLine) break
+    index = i
+  }
+  return index
+}
+
 export function OutlinePanel() {
   const relPath = useNoteStore((state) => state.doc?.relPath ?? null)
   const text = useNoteStore((state) => state.doc?.text ?? '')
   const viewMode = useUiStore((state) => state.viewMode)
   const setViewMode = useUiStore((state) => state.setViewMode)
+  /** 光标行（编辑器装配层节流后写入；阅读视图里没有光标 → `null`）。 */
+  const cursorLine = useCursorStore((state) => state.line)
 
   const deferredText = useDeferredValue(text)
   const headings = useMemo(() => parseOutline(deferredText), [deferredText])
   const depths = useMemo(() => outlineDepths(headings), [headings])
+  // 阅读视图里没有光标，但"当前读到哪一节"同样有意义：用不上就先不高亮，
+  // 保持"高亮 = 光标所在章节"这一条语义（不猜、不装作知道）
+  const activeIndex = useMemo(
+    () => (viewMode === 'edit' ? currentHeadingIndex(headings, cursorLine) : -1),
+    [viewMode, headings, cursorLine],
+  )
 
   const jump = useCallback(
     (heading: OutlineHeading, ordinal: number): void => {
@@ -77,9 +106,15 @@ export function OutlinePanel() {
             <button
               key={`${heading.line}-${heading.text}`}
               type="button"
-              className={`mn-outline__item mn-outline__item--h${heading.level}`}
+              className={
+                'mn-outline__item' +
+                ` mn-outline__item--h${heading.level}` +
+                (ordinal === activeIndex ? ' mn-outline__item--current' : '')
+              }
               style={{ paddingLeft: 8 + (depths[ordinal] ?? 0) * INDENT_STEP }}
               data-outline-line={heading.line}
+              // `aria-current="location"`：读屏软件会念出"当前"（纯颜色高亮对它们不可见）
+              aria-current={ordinal === activeIndex ? 'location' : undefined}
               title={`第 ${heading.line} 行 · ${'#'.repeat(heading.level)} ${heading.text}`}
               onClick={() => jump(heading, ordinal)}
             >
