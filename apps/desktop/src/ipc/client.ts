@@ -23,6 +23,7 @@ import type {
   NoteTags,
   RenameOutcome,
   SearchResult,
+  SetTagsOutcome,
   SnippetFile,
   TagNotes,
   TagSummary,
@@ -160,6 +161,22 @@ export const ipc = {
 
   /** 某篇笔记的标签与 frontmatter 属性。 */
   noteTags: (relPath: string) => call<NoteTags>('note_tags', { relPath }),
+  /**
+   * 在笔记的 frontmatter 上**加/删标签**（标签面板的写入口，见 ADR-0006 的后续修订）。
+   *
+   * - 传的是**增与删**，不是"新的完整列表"：面板上的列表可能比磁盘旧一拍，
+   *   传"想要什么"会在这种情况下静默丢掉别的标签；
+   * - `baseMtimeMs` 是**必填**的版本令牌：磁盘被外部改过 → `CONFLICT`（附 `currentMtimeMs`），
+   *   与 `note_write` 同一套语义，**绝不静默覆盖**（ADR-0004）；
+   * - 幂等：结果与磁盘一致时 `changed === false`，不写盘、不动 mtime、不重建索引。
+   */
+  noteSetTags: (relPath: string, add: readonly string[], remove: readonly string[], baseMtimeMs: number) =>
+    call<SetTagsOutcome>('note_set_tags', {
+      relPath,
+      add: [...add],
+      remove: [...remove],
+      baseMtimeMs,
+    }),
   /** 全库标签概览（按笔记数降序）。 */
   tagsList: () => call<TagSummary[]>('tags_list'),
   /** 某个标签下的笔记（`key` 为归一化键）。 */

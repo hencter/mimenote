@@ -7,8 +7,8 @@
 //! * [`mn_core::frontmatter::set_tags`] 的**最小 diff**：除被改的那几行外逐字节不变。
 
 use mn_core::frontmatter::{self, FrontmatterValue};
-use mn_core::tags::{extract_tags, normalize_tag, TagSource};
-use mn_core::{parse_frontmatter, set_tags};
+use mn_core::tags::{apply_tag_edits, extract_tags, normalize_tag, TagSource};
+use mn_core::{parse_frontmatter, set_tags, set_tags_or_create};
 
 /// 把文本按"含换行符的行"切开，便于逐字节比对（`split_inclusive` 保留行尾）。
 fn lines(text: &str) -> Vec<&str> {
@@ -133,6 +133,76 @@ fn set_tags_refuses_without_frontmatter() {
     assert!(set_tags(unclosed, &["甲".to_string()]).is_none());
     assert!(parse_frontmatter(unclosed).is_none());
     assert_eq!(frontmatter::body(unclosed), unclosed);
+}
+
+/// 面板"加标签 / 删标签"在宿主里就是这三步：`parse` → `apply_tag_edits` → `set_tags_or_create`。
+/// 这里钉住整条链路的**可逆性**：加了再删，磁盘文本逐字节回到原样。
+#[test]
+fn tag_edits_round_trip_through_the_public_api() {
+    let text = "\u{feff}---\r\ntitle: 示例\r\ntags: [Rust]\r\n---\r\n\r\n正文 #丙\r\n";
+    let existing = parse_frontmatter(text).unwrap().tags;
+    assert_eq!(existing, vec!["Rust".to_string()]);
+
+    let wanted = apply_tag_edits(
+        &existing,
+        &["#新标签".to_string(), "父/子".to_string()],
+        &[],
+    );
+    let added = set_tags_or_create(text, &wanted);
+    assert!(added.starts_with('\u{feff}'), "BOM 必须保留");
+    assert_only_these_lines_changed(text, &added, &[2]);
+    assert_eq!(
+        parse_frontmatter(&added).unwrap().tags,
+        vec![
+            "Rust".to_string(),
+            "新标签".to_string(),
+            "父/子".to_string()
+        ]
+    );
+    // 行内标签一个都没动
+    assert_eq!(
+        extract_tags(&added)
+            .into_iter()
+            .filter(|tag| tag.source == TagSource::Inline)
+            .map(|tag| tag.tag)
+            .collect::<Vec<String>>(),
+        vec!["丙".to_string()]
+    );
+
+    // 删掉刚加的两个（其中 `#Rust` 用大小写不同的写法删也没问题），必须逐字节回到原样
+    let current = parse_frontmatter(&added).unwrap().tags;
+    let back = apply_tag_edits(&current, &[], &["新标签".to_string(), "父/子".to_string()]);
+    assert_eq!(set_tags_or_create(&added, &back), text);
+}
+
+/// 完全没有 frontmatter 的笔记：加标签要**造出**区块，但正文一个字节都不能少。
+#[test]
+fn tag_edits_create_frontmatter_without_touching_the_body() {
+    let plain = "# 只有正文\n\n正文里的 #丙。\n";
+    assert!(parse_frontmatter(plain).is_none());
+
+    let added = set_tags_or_create(plain, &["甲".to_string()]);
+    assert_eq!(
+        added,
+        "---\ntags: [甲]\n---\n# 只有正文\n\n正文里的 #丙。\n"
+    );
+    // 正文（区块之后的部分）与原文逐字节相同 —— 首行没有被吞进区块
+    assert_eq!(frontmatter::body(&added), plain);
+    assert_eq!(
+        extract_tags(&added)
+            .into_iter()
+            .map(|tag| (tag.tag, tag.source))
+            .collect::<Vec<(String, TagSource)>>(),
+        vec![
+            ("甲".to_string(), TagSource::Frontmatter),
+            ("丙".to_string(), TagSource::Inline)
+        ]
+    );
+
+    // 删掉最后一个标签：**保留** `tags` 字段并写成空列表（不删 key，见 ADR-0006 的后续修订）
+    let back = set_tags_or_create(&added, &[]);
+    assert_eq!(back, "---\ntags: []\n---\n# 只有正文\n\n正文里的 #丙。\n");
+    assert_eq!(frontmatter::body(&back), plain);
 }
 
 #[test]

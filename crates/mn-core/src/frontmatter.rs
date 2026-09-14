@@ -60,6 +60,9 @@
 //! * 有 frontmatter 但既无 `tags` 也无 `tag` → 在结束分隔行**之前追加**一行 `tags: [...]`；
 //! * 要设置空标签且原本没有 tags 字段 → 原样返回（不插入空字段）。
 //!
+//! [`set_tags_or_create`] 是同一套改写的**另一个入口**：没有 frontmatter 时它会补一个区块
+//! （那是"在面板里加标签"这个产品决策，不是本模块的默认行为，见该函数的文档）。
+//!
 //! 键名比较**大小写不敏感**（`Tags` 与 `tags` 等价），与 [`crate::tags`] 的抽取保持一致。
 
 use std::collections::HashSet;
@@ -267,6 +270,94 @@ pub fn set_tags(text: &str, tags: &[String]) -> Option<String> {
     Some(splice(text, start, end, &replacement))
 }
 
+/// [`set_tags`] **可编辑的那一份**标签列表（落点与它严格一致：优先 `tags` 字段，其次 `tag` 字段）。
+///
+/// 与 [`Frontmatter::tags`] 的分工必须分清：
+///
+/// * [`Frontmatter::tags`] 是**面板要显示的** —— 两个字段**合并**去重；
+/// * 本函数是**改写要用的基准** —— 只有 [`set_tags`] 真正会写的那个字段。
+///
+/// 拿合并列表去改写会踩两个坑：`tag: 单数` 的标签会被复制一份进 `tags:`（于是"什么都没改"的
+/// 请求也改了文件），而它自己又永远删不掉（写入目标从来不是 `tag`）。所以：
+/// **显示用合并，改写用本函数**。
+pub fn editable_tags(text: &str) -> Vec<String> {
+    let Some(located) = parse_located(text) else {
+        return Vec::new();
+    };
+    let target = located
+        .fields
+        .iter()
+        .find(|field| field.key.eq_ignore_ascii_case("tags"))
+        .or_else(|| {
+            located
+                .fields
+                .iter()
+                .find(|field| field.key.eq_ignore_ascii_case("tag"))
+        });
+    let Some(field) = target else {
+        return Vec::new();
+    };
+
+    match &field.value {
+        FrontmatterValue::List(items) => items.clone(),
+        // 标量只按逗号切（与 `collect_tags` 同一口径），不按空白切
+        FrontmatterValue::Scalar(text) | FrontmatterValue::Number(text) => text
+            .split(',')
+            .map(strip_hash)
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect(),
+        FrontmatterValue::Bool(_) | FrontmatterValue::Null => Vec::new(),
+    }
+}
+
+/// 与 [`set_tags`] 相同，但**没有 frontmatter 时补一个区块**（返回全文而不是 `Option`）。
+///
+/// 为什么另开一个函数、而不是把 [`set_tags`] 改成"总是补"：ADR-0006 把"要不要给文件补
+/// frontmatter"明确划成**产品决策**，[`set_tags`] 因此只做纯改写、绝不擅自插入。
+/// "在标签面板里加标签"这个动作本身已经回答了那个决策 —— 用户点的是"给这篇加标签"，
+/// 那就必须有地方放它。于是决策落在**这一个新函数**上，[`set_tags`] 的既有契约
+/// （没有 frontmatter → `None`）一字不改，两处调用方各取所需。
+///
+/// 规则（其余一切与 [`set_tags`] 逐字节一致）：
+///
+/// * 有 frontmatter → 与 [`set_tags`] 完全等价（含最小 diff 的全部保真纪律）；
+/// * 没有 frontmatter 且**没有要写入的标签** → 原样返回：不为了"设置空标签"
+///   给一个干净的正文文件戴上一顶空区块的帽子；
+/// * 没有 frontmatter 且有标签 → 在最前面插入「`---` / `tags: [...]` / `---`」三行：
+///   BOM 仍在最前、**正文一个字节不动**（原本的首行绝不会被当成区块内容吞掉）；
+///   插入行的换行风格沿用文件自己的（CRLF 文件不会突然多出几行 LF；看不出风格的用 `\n`）。
+///
+/// 以未闭合的 `---` 开头的文件**不算**有 frontmatter（与 [`parse`]、[`set_tags`] 同一口径），
+/// 因此区块插在它**之前**，那一行与它下面的正文照旧整段保留。
+pub fn set_tags_or_create(text: &str, tags: &[String]) -> String {
+    if let Some(updated) = set_tags(text, tags) {
+        return updated;
+    }
+
+    let wanted = clean_tags(tags);
+    if wanted.is_empty() {
+        return text.to_string();
+    }
+
+    let bom = bom_len(text);
+    let body = &text[bom..];
+    let eol = first_eol(body);
+
+    let mut out = String::with_capacity(text.len() + 32);
+    out.push_str(&text[..bom]);
+    out.push_str(DELIMITER);
+    out.push_str(eol);
+    out.push_str("tags: ");
+    out.push_str(&format_inline_list(&wanted));
+    out.push_str(eol);
+    out.push_str(DELIMITER);
+    // 结束分隔行**必须**自己收尾：否则正文首行会被粘到这一行上，等于吞掉了一行
+    out.push_str(eol);
+    out.push_str(body);
+    out
+}
+
 /// 结束分隔行之后的字节偏移（= Markdown 正文起点）。
 ///
 /// `pub(crate)`：`crate::tags` 需要它来跳过 frontmatter 并换算绝对行号。
@@ -354,6 +445,17 @@ fn eol_ending_at(text: &str, end: usize) -> &'static str {
         "\r\n"
     } else {
         "\n"
+    }
+}
+
+/// **文件自己**的换行风格：第一个换行符长什么样就用什么样（没有换行 → `\n`）。
+///
+/// 插入新行时用它，而不是固定 `\n`：[`set_tags_or_create`] 往一个 CRLF 文件里塞进几行 LF，
+/// 会让"这个文件的换行风格"变成一个混合体 —— 下游的 diff/统计/编辑器格式化全都要分辨它。
+fn first_eol(text: &str) -> &'static str {
+    match text.find('\n') {
+        Some(index) => eol_ending_at(text, index + 1),
+        None => "\n",
     }
 }
 
@@ -1334,6 +1436,155 @@ mod tests {
             } else {
                 assert_eq!(lhs, rhs, "第 {index} 行不应变化");
             }
+        }
+    }
+
+    // -- set_tags_or_create -------------------------------------------------
+
+    #[test]
+    fn set_tags_or_create_creates_frontmatter_without_eating_the_first_body_line() {
+        let text = "# 标题\n\n正文第一段。\n";
+        let out = set_tags_or_create(text, &["甲".to_string(), "乙".to_string()]);
+        assert_eq!(out, "---\ntags: [甲, 乙]\n---\n# 标题\n\n正文第一段。\n");
+        // 逐字节：新文本去掉插入的三行后与原文完全一致（正文一行都没被吞掉）
+        assert_eq!(out.replacen("---\ntags: [甲, 乙]\n---\n", "", 1), text);
+        assert_eq!(body(&out), text);
+        assert_eq!(tags_of(&out), vec!["甲".to_string(), "乙".to_string()]);
+    }
+
+    #[test]
+    fn set_tags_or_create_keeps_bom_and_uses_the_files_own_eol() {
+        let crlf = "# 标题\r\n\r\n正文\r\n";
+        let out = set_tags_or_create(crlf, &["甲".to_string()]);
+        assert_eq!(out, "---\r\ntags: [甲]\r\n---\r\n# 标题\r\n\r\n正文\r\n");
+        // 每一个 `\n` 前面都必须有 `\r`：插入的行不能是孤零零的 LF
+        assert!(
+            out.match_indices('\n')
+                .all(|(index, _)| index > 0 && out.as_bytes()[index - 1] == b'\r'),
+            "CRLF 文件里混进了 LF 行：{out:?}"
+        );
+
+        let bom = "\u{feff}正文\n";
+        let with_bom = set_tags_or_create(bom, &["甲".to_string()]);
+        assert!(with_bom.starts_with('\u{feff}'));
+        assert_eq!(with_bom, "\u{feff}---\ntags: [甲]\n---\n正文\n");
+        assert_eq!(body(&with_bom), "正文\n");
+    }
+
+    #[test]
+    fn set_tags_or_create_is_a_no_op_without_tags_and_never_doubles() {
+        // 要写入的标签为空 → 不给干净正文戴空区块
+        assert_eq!(set_tags_or_create("正文\n", &[]), "正文\n");
+        assert_eq!(set_tags_or_create("正文\n", &["".into()]), "正文\n");
+        assert_eq!(set_tags_or_create("正文\n", &["#".into()]), "正文\n");
+
+        // 没有结尾换行的单行文件：结束分隔行必须自己收尾，正文不能被粘上去
+        assert_eq!(
+            set_tags_or_create("只有一行", &["甲".to_string()]),
+            "---\ntags: [甲]\n---\n只有一行"
+        );
+
+        // 幂等：第二次调用走的是"有 frontmatter"那条路
+        let once = set_tags_or_create("# 标题\n", &["甲".to_string()]);
+        let twice = set_tags_or_create(&once, &["甲".to_string()]);
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn set_tags_or_create_inserts_before_an_unclosed_delimiter() {
+        // 首行 `---` 但**没有**结束行 → 不是 frontmatter（整篇都是正文）。
+        // 补区块只能插在它之前：那一行与正文照旧整段保留，`#标签` 仍按行内标签抽
+        let text = "---\n标题\n\n正文 #甲\n";
+        assert!(parse(text).is_none());
+        let out = set_tags_or_create(text, &["新".to_string()]);
+        assert_eq!(out, "---\ntags: [新]\n---\n---\n标题\n\n正文 #甲\n");
+        assert_eq!(body(&out), text);
+        assert_eq!(
+            crate::tags::extract_tags(&out)
+                .into_iter()
+                .map(|tag| tag.tag)
+                .collect::<Vec<String>>(),
+            vec!["新".to_string(), "甲".to_string()]
+        );
+    }
+
+    #[test]
+    fn set_tags_or_create_delegates_to_set_tags_when_frontmatter_exists() {
+        let text = "---\ntitle: t\ntags:\n  - 旧\n---\n正文\n";
+        assert_eq!(
+            set_tags_or_create(text, &["新".to_string()]),
+            set_tags(text, &["新".to_string()]).unwrap()
+        );
+        // 没有 tags 字段时就地追加（不新造区块）
+        assert_eq!(
+            set_tags_or_create("---\ntitle: t\n---\n正文\n", &["甲".to_string()]),
+            "---\ntitle: t\ntags: [甲]\n---\n正文\n"
+        );
+    }
+
+    // -- editable_tags（改写的基准列表） -------------------------------------
+
+    #[test]
+    fn editable_tags_is_the_field_set_tags_would_write() {
+        // 只有 `tags` → 就是它
+        assert_eq!(
+            editable_tags("---\ntags: [甲, 乙]\n---\n"),
+            vec!["甲".to_string(), "乙".to_string()]
+        );
+        // 只有 `tag`（单数）→ 退到它（`set_tags` 的落点也是它）
+        assert_eq!(
+            editable_tags("---\ntag: 单数\n---\n"),
+            vec!["单数".to_string()]
+        );
+        // 两个都有 → **只取 `tags`**：把 `tag` 里的也并进来会让改写把标签复制一份，
+        // 而它自己又永远删不掉（显示用 `parse().tags`，改写用本函数）
+        assert_eq!(
+            editable_tags("---\ntag: 单数\ntags: [甲]\n---\n"),
+            vec!["甲".to_string()]
+        );
+        assert_eq!(
+            parse("---\ntag: 单数\ntags: [甲]\n---\n").unwrap().tags,
+            vec!["单数".to_string(), "甲".to_string()],
+            "显示的列表是合并的（两者分工不同）"
+        );
+        // 标量只按逗号切，且与 `set_tags` 的清理口径一致（去掉开头的 `#`）
+        assert_eq!(
+            editable_tags("---\ntags: \"#甲, 乙\"\n---\n"),
+            vec!["甲".to_string(), "乙".to_string()]
+        );
+        // 而没加引号的 `#乙` 是 **YAML 注释**（`#` 前是空白），不是标签的一部分
+        assert_eq!(
+            editable_tags("---\ntags: 甲, #乙\n---\n"),
+            vec!["甲".to_string()]
+        );
+        assert_eq!(
+            editable_tags("---\ntags: 甲 乙\n---\n"),
+            vec!["甲 乙".to_string()],
+            "不按空白切"
+        );
+        // 没有 frontmatter / 没有 tags 字段 / 空值 → 空列表
+        assert!(editable_tags("正文\n").is_empty());
+        assert!(editable_tags("---\ntitle: t\n---\n").is_empty());
+        assert!(editable_tags("---\ntags:\n---\n").is_empty());
+        // 块数组
+        assert_eq!(
+            editable_tags("---\ntags:\n  - 甲\n  - 乙\n---\n"),
+            vec!["甲".to_string(), "乙".to_string()]
+        );
+    }
+
+    #[test]
+    fn editable_tags_makes_a_no_op_request_byte_identical() {
+        // 这就是"两份列表各司其职"的直接收益：把可编辑列表原样写回去，一个字节都不变
+        for text in [
+            "---\ntitle: t\ntags: [甲, 乙]\n---\n正文\n",
+            "---\ntags:\n  - 甲\n  - 乙\n---\n正文\n",
+            "---\ntags: 甲\n---\n",
+            "---\ntag: 单数\ntags: [甲]\n---\n正文\n",
+            "\u{feff}---\r\ntags: [甲]\r\n---\r\n正文\r\n",
+        ] {
+            let same = set_tags(text, &editable_tags(text)).unwrap();
+            assert_eq!(same, text, "空请求不该改一个字节：{text:?}");
         }
     }
 

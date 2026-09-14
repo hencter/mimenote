@@ -12,9 +12,11 @@ import { currentAdapterKind, ipc } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
 import type { RenameOutcome } from '@/ipc/types'
 import { useConfirmStore } from '@/state/confirm-store'
+import { refreshGraphData } from '@/state/graph-store'
 import { useLinksStore } from '@/state/links-store'
 import { hasUnsavedChanges, useNoteStore } from '@/state/note-store'
 import { relocateTabsForDirectory } from '@/state/tabs-store'
+import { useTagsStore } from '@/state/tags-store'
 import { toast } from '@/state/toast-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
@@ -208,6 +210,119 @@ export async function deleteSelected(relPath?: string): Promise<void> {
   } catch (cause) {
     toast.error(describeError(MimenoteError.from(cause), '删除失败'))
   }
+}
+
+// ---------------------------------------------------------------------------
+// 标签（frontmatter 的增删）
+// ---------------------------------------------------------------------------
+
+/** 一次标签编辑的结果（`null` = 根本没发出去，界面状态不该变）。 */
+export interface TagEditResult {
+  /** 宿主是否真的写了盘（`false` = 结果与磁盘一致，一个字节都没动）。 */
+  changed: boolean
+  /** 写入后磁盘上真实的 frontmatter 标签。 */
+  tags: string[]
+  /** 请求删除、但**仍然在** frontmatter 里的标签（见下面的 `tag:` 字段说明）。 */
+  notRemoved: string[]
+}
+
+/**
+ * 在当前笔记的 frontmatter 上加/删标签（标签面板的写入口）。
+ *
+ * 顺序约束集中在这里，组件不需要知道（与 {@link renameNote} 逐条对齐）：
+ *
+ * 1. **先落盘**：宿主会基于**磁盘上的最新文本**改标签。若内存里还有未保存的正文，
+ *    两者就会打架 —— 随后那次自动保存会把刚写下去的标签覆盖掉。落盘失败（典型是冲突）
+ *    就整体放弃，并给出与保存冲突同一句提示；
+ * 2. 宿主一次完成「令牌校验 → 读 → 改 frontmatter → 原子写 → 索引增量同步」：
+ *    前端不自己拼 frontmatter，判同与最小 diff 只有一份（`mn_core`，见 ADR-0006）；
+ * 3. 成功后把**内存文本对齐到磁盘**（`applyWrittenText`）——这一步不能省，理由同上；
+ * 4. 面板与全库概览立刻重读（索引已在宿主侧增量更新，不需要重扫）；
+ * 5. 图谱只在画布正显示时刷新：与 `startGraphAutoRefresh` 同一纪律，不给看不见的面板发 IPC。
+ *
+ * 冲突（磁盘在读取之后被外部改过）走**和保存冲突完全一样**的通道：进 `conflict` 态 →
+ * 顶部出现同一条横幅 → 由用户选择"覆盖保存 / 重新加载"。绝不静默覆盖（ADR-0004）。
+ */
+export async function editCurrentNoteTags(changes: {
+  add?: readonly string[]
+  remove?: readonly string[]
+}): Promise<TagEditResult | null> {
+  const add = [...(changes.add ?? [])]
+  const remove = [...(changes.remove ?? [])]
+  if (add.length === 0 && remove.length === 0) return null
+
+  const store = useNoteStore.getState()
+  const doc = store.doc
+  if (doc === null) {
+    toast.warn('先打开一篇笔记', '标签写在笔记开头的 frontmatter 里')
+    return null
+  }
+
+  try {
+    if (hasUnsavedChanges()) {
+      const saved = await store.saveNow()
+      if (!saved && hasUnsavedChanges()) {
+        toast.error('已取消修改标签', '当前笔记有未保存的修改，请先解决保存冲突')
+        return null
+      }
+    }
+
+    // 落盘期间用户可能换了文档：换过就整体放弃，别把标签写到另一篇上
+    const current = useNoteStore.getState().doc
+    if (current === null || current.relPath !== doc.relPath) return null
+
+    const outcome = await ipc.noteSetTags(current.relPath, add, remove, current.baseMtimeMs)
+
+    if (outcome.changed) {
+      useNoteStore.getState().applyWrittenText(outcome.text, {
+        mtimeMs: outcome.mtimeMs,
+        sizeBytes: outcome.sizeBytes,
+      })
+    }
+
+    const notRemoved = remove.filter((tag) =>
+      outcome.tags.some((kept) => kept.toLowerCase() === tag.toLowerCase()),
+    )
+
+    await useTagsStore.getState().refreshFor(current.relPath)
+
+    if (outcome.changed && useUiStore.getState().viewMode === 'graph') {
+      void refreshGraphData()
+    }
+
+    if (notRemoved.length > 0) {
+      // "点 × 没反应"最容易被当成 bug，所以这条提示优先于成功提示：删不掉不是失败，
+      // 但必须说清为什么 —— `tags` 与 `tag` 两个字段并存时写入目标永远是 `tags`
+      // （`mn_core::frontmatter::set_tags` 的既有口径），`tag:` 里的那个只能到属性区手动改
+      toast.info(
+        '有标签没能移除',
+        `${notRemoved.join('、')} 仍在 frontmatter 里：它来自 tag: 字段，请在属性区手动改`,
+      )
+    } else if (outcome.changed) {
+      toast.success(
+        add.length > 0 && remove.length > 0 ? '标签已更新' : add.length > 0 ? '已添加标签' : '已移除标签',
+        (add.length > 0 ? add : remove).join('、'),
+      )
+    } else if (add.length > 0) {
+      toast.info('没有变化', '这些标签已经在 frontmatter 里了（判同不区分大小写）')
+    }
+
+    return { changed: outcome.changed, tags: outcome.tags, notRemoved }
+  } catch (cause) {
+    const error = MimenoteError.from(cause)
+    if (error.isConflict) {
+      // 与保存冲突**同一套语义**：进冲突态（顶部横幅、由用户二选一），不自己发明一套提示
+      useNoteStore.getState().noteExternalChange(error.currentMtimeMs ?? 0)
+      return null
+    }
+    toast.error(describeError(error, '修改标签失败'))
+    return null
+  }
+}
+
+/** 正文行内标签删不掉时给出的可读提示（面板的 `×` 走它，而不是让按钮看起来坏了）。 */
+export function explainInlineTag(tag: string): void {
+  toast.info('这是正文里的标签', `#${tag} 写在正文里，请到正文里删（标签面板只改 frontmatter）`)
 }
 
 // ---------------------------------------------------------------------------

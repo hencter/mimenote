@@ -88,6 +88,94 @@
   opacity: 0.7;
 }
 
+/*
+ * 本篇标签是"胶囊 + 移除按钮"的组合：胶囊负责跳转（点击展开含它的笔记），
+ * 按钮负责移除。两者必须**分开成两个 button**，不能用一个按钮套一个 span 冒充 ——
+ * 那样键盘用户只能按到一个可聚焦元素，移除就用不了了。
+ */
+.mn-tags__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.mn-tag__remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--mn-fg-muted);
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.mn-tag__remove:hover:not(:disabled) {
+  color: var(--mn-danger);
+  background: var(--mn-bg);
+}
+
+/* 行内标签的 × 只是"解释一下为什么删不掉"的入口：压低存在感，但仍然可聚焦、可点 */
+.mn-tag__remove--inline {
+  opacity: 0.45;
+}
+
+/* "正文"角标：行内标签是只读的，必须在视觉上立刻看得出来源 */
+.mn-tag__source {
+  padding: 0 4px;
+  font-size: 10px;
+  color: var(--mn-fg-muted);
+  border: 1px solid var(--mn-border);
+  border-radius: 999px;
+}
+
+.mn-tag--active .mn-tag__source {
+  color: var(--mn-bg);
+  border-color: var(--mn-bg);
+}
+
+.mn-tags__hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--mn-fg-muted);
+}
+
+.mn-tags__add {
+  display: flex;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.mn-tags__add-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 3px 7px;
+  font-family: var(--mn-font-ui);
+  font-size: 12px;
+  color: var(--mn-fg);
+  background: var(--mn-bg);
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+}
+
+.mn-tags__add-input:focus {
+  border-color: var(--mn-accent);
+  outline: none;
+}
+
+/* 面板里的按钮比全局按钮小一号（这里的行高只有 12px 的正文，用全局尺寸会撑高一行） */
+.mn-tags .mn-button--small {
+  padding: 3px 9px;
+  font-size: 12px;
+}
+
+
 .mn-tags__props {
   margin: 0;
   font-size: 12px;

@@ -31,6 +31,7 @@ import type {
   ResolvedLink,
   SearchHit,
   SearchResult,
+  SetTagsOutcome,
   TagNotes,
   TagRef,
   TagSource,
@@ -695,9 +696,12 @@ function mockParseFrontmatter(text: string): MockFrontmatter | null {
     if (colon <= 0) continue
     const value = raw.slice(colon + 1).trim()
     const inline = parseInlineList(value)
+    // `[...]` 一律是数组，**空数组 `[]` 也算**（Rust 的 `FrontmatterValue::List(vec![])`）。
+    // 少了这一条，"删掉最后一个标签"留下的 `tags: []` 会被当成一个名叫 `[]` 的标量标签
+    const isList = value.startsWith('[') && value.endsWith(']')
     fields.push({
       key: raw.slice(0, colon).trim(),
-      value: inline.length > 0 ? { kind: 'list', value: inline } : classifyFrontmatterValue(value),
+      value: isList ? { kind: 'list', value: inline } : classifyFrontmatterValue(value),
       line: index + 1,
     })
   }
@@ -809,6 +813,174 @@ function mockScanInlineTags(bodyLines: readonly string[], lineOffset: number): T
     }
   }
   return out
+}
+
+/**
+ * 在既有的 frontmatter 标签上做增删（Rust 侧 `mn_core::tags::apply_tag_edits` 的镜像）。
+ *
+ * 判同走 {@link mockNormalizeTag}：既有项的写法与顺序原样保留，`add` 会先清理
+ * （去首尾空白与开头的 `#`、折叠连续空白），已经存在的不重复加入。
+ */
+function mockApplyTagEdits(
+  existing: readonly string[],
+  add: readonly string[],
+  remove: readonly string[],
+): string[] {
+  const removed = new Set(remove.map((raw) => mockNormalizeTag(raw)).filter((key) => key !== ''))
+  const out: string[] = []
+  const seen = new Set<string>()
+
+  for (const tag of existing) {
+    const key = mockNormalizeTag(tag)
+    if (key === '' || removed.has(key) || seen.has(key)) continue
+    seen.add(key)
+    out.push(tag)
+  }
+  for (const raw of add) {
+    const tag = raw
+      .trim()
+      .replace(/^#+/, '')
+      .trim()
+      .split(/\s+/)
+      .filter((part) => part !== '')
+      .join(' ')
+    if (tag === '') continue
+    const key = mockNormalizeTag(tag)
+    if (key === '' || seen.has(key)) continue
+    seen.add(key)
+    out.push(tag)
+  }
+  return out
+}
+
+/** 需要引号才能被读回来的标签（含空格/逗号/冒号等）——与 Rust 的 `needs_quote` 同口径的简化版。 */
+function mockFormatTag(tag: string): string {
+  return /^[\p{L}\p{N}_\-/.]+$/u.test(tag) ? tag : `'${tag.replace(/'/g, "''")}'`
+}
+
+/**
+ * 把整篇文本的 `tags`/`tag` 字段改写成 `wanted`（Rust 侧 `mn_core::frontmatter::set_tags_or_create`
+ * 的镜像）。
+ *
+ * ⚠️ 权威实现永远在 Rust：这里只覆盖面板真实会遇到的几种形态（行内数组 / 标量 / 块数组 /
+ * 空值 / 没有 tags 字段 / 没有 frontmatter），为的是让 UI 层测试与浏览器预览**不是假绿** ——
+ * `note_tags` 与 `tags_list` 都是从文本现算的，所以只要这里真的改了文本，面板就真的会变。
+ * 保真纪律与 Rust 一致：只动 tags 那几行，BOM/CRLF/注释/未知键/字段顺序一律不动。
+ */
+function mockSetTags(text: string, add: readonly string[], remove: readonly string[]): string {
+  const lines = text.split('\n')
+  const bom = lines[0]?.startsWith('\u{feff}') === true ? '\u{feff}' : ''
+  const bare = (line: string | undefined): string => (line ?? '').replace(/\r$/, '')
+  const cr = (line: string | undefined): string => ((line ?? '').endsWith('\r') ? '\r' : '')
+
+  // frontmatter 区块：首行（允许 BOM）是 `---`，且后面还有一行 `---`
+  let end = -1
+  if (bare(lines[0]).replace(bom, '').trim() === '---') {
+    for (let index = 1; index < lines.length; index += 1) {
+      if (bare(lines[index]).trim() === '---') {
+        end = index
+        break
+      }
+    }
+  }
+
+  // 写入目标：优先 `tags`（**无论它在文档里的位置**），其次 `tag` —— 与 Rust 的 `set_tags`
+  // 落点一致（那里先 `find("tags")` 再 `find("tag")`）。写成"取第一行匹配的字段"会在
+  // `tag:` 写在 `tags:` 前面时选错字段，于是"删不掉的标签"这个已知边界会表现成另一副样子
+  const target = (() => {
+    let fallback: { index: number; key: string; rest: string } | null = null
+    for (let index = 1; index < end; index += 1) {
+      const match = /^(tags|tag)\s*:(.*)$/.exec(bare(lines[index]))
+      if (match === null) continue
+      const candidate = { index, key: match[1] ?? 'tags', rest: match[2] ?? '' }
+      if (candidate.key === 'tags') return candidate
+      fallback ??= candidate
+    }
+    return fallback
+  })()
+
+  // **可编辑的那一份**（`mn_core::frontmatter::editable_tags` 的镜像）：只有写入目标**这一个**
+  // 字段里的标签。用两个字段合并后的列表去改写，会把 `tag:` 里的标签复制进 `tags:`，
+  // 而它自己又永远删不掉 —— 真实现刻意把"显示（合并）"与"改写（单字段）"分开，这里必须跟住
+  const existing: string[] = (() => {
+    if (target === null) return []
+    const field = (mockParseFrontmatter(text)?.fields ?? []).find(
+      (entry) => entry.key === target.key,
+    )
+    if (field === undefined) return []
+    if (field.value.kind === 'list') return [...field.value.value]
+    if (field.value.kind === 'scalar' || field.value.kind === 'number') {
+      return field.value.value
+        .split(',')
+        .map((part) => stripQuotes(part))
+        .filter((part) => part !== '')
+    }
+    return []
+  })()
+
+  const wanted = mockApplyTagEdits(existing, add, remove)
+  const eol = lines[0]?.includes('\r') === true || text.includes('\r\n') ? '\r' : ''
+
+  // 没有 frontmatter：有标签才补区块（正文一行都不吞）
+  if (end <= 0) {
+    if (wanted.length === 0) return text
+    // 正文那几行原样搬过去，只把 BOM 从原来的首行挪到新的首行
+    const body = [...lines]
+    if (bom !== '') body[0] = (body[0] ?? '').slice(1)
+    return [
+      `${bom}---${eol}`,
+      // 补区块时一律写行内数组（与 Rust 的 `set_tags_or_create` 一致：单个标签也带方括号）
+      `tags: [${wanted.map(mockFormatTag).join(', ')}]${eol}`,
+      `---${eol}`,
+      ...body,
+    ].join('\n')
+  }
+
+  const formatted = wanted.map(mockFormatTag)
+  if (target === null) {
+    if (wanted.length === 0) return text
+    lines.splice(end, 0, `tags: [${formatted.join(', ')}]${eol}`)
+    return lines.join('\n')
+  }
+  const raw = bare(lines[target.index])
+  const value = target.rest.trim()
+  const comment = value.startsWith('#') ? target.rest.trimEnd() : ''
+  const trail = cr(lines[target.index])
+  const written = wanted.length === 1 ? (formatted[0] ?? '') : `[${formatted.join(', ')}]`
+
+  // 行内数组：只换 `[...]` 这一段（同一行上的行尾注释原样保留）
+  const open = raw.indexOf('[', raw.indexOf(':'))
+  const close = raw.lastIndexOf(']')
+  if (open >= 0 && close > open) {
+    lines[target.index] = `${raw.slice(0, open)}[${formatted.join(', ')}]${raw.slice(close + 1)}${trail}`
+    return lines.join('\n')
+  }
+
+  if (value !== '' && comment === '') {
+    // 标量：0 或 ≥2 个标签写成行内数组，1 个仍是标量
+    const hash = value.indexOf(' #')
+    const tail = hash >= 0 ? value.slice(hash) : ''
+    lines[target.index] = `${target.key}: ${written}${tail}${trail}`
+    return lines.join('\n')
+  }
+
+  // 空值：看后面紧跟的 `- item` 行是不是它的块数组
+  const items: number[] = []
+  for (let index = target.index + 1; index < end; index += 1) {
+    if (/^\s*-\s+/.test(bare(lines[index]))) items.push(index)
+    else break
+  }
+  if (items.length > 0) {
+    const first = items[0] ?? 0
+    const indent = /^(\s*)/.exec(bare(lines[first]))?.[1] ?? ''
+    // 项行沿用**原来第一项**的缩进与行尾（最后一项整行删掉时不留空行）
+    const replacement = formatted.map((tag) => `${indent}- ${tag}${cr(lines[first])}`)
+    lines.splice(first, items.length, ...replacement)
+    return lines.join('\n')
+  }
+  if (wanted.length === 0) return text
+  lines[target.index] = `${target.key}: ${written}${comment}${trail}`
+  return lines.join('\n')
 }
 
 /** 抽取一篇笔记的全部标签（frontmatter 在前，按归一化键去重）。 */
@@ -1596,6 +1768,49 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
             updatedLinks,
             updatedLinkCount: updatedLinks.reduce((sum, item) => sum + item.count, 0),
             elapsedMs: 1,
+          }
+          return payload as T
+        }
+        case 'note_set_tags': {
+          // 与真实实现同一条纪律：令牌校验 → 改文本 → 写回 → `note_tags`/`tags_list` 立刻跟着变
+          // （那两条都是从文本现算的，所以这里**必须真的改文本**，否则 UI/E2E 会假绿）
+          const relPath = String(a.relPath ?? '')
+          const add = Array.isArray(a.add) ? (a.add as unknown[]).map((item) => String(item)) : []
+          const remove = Array.isArray(a.remove)
+            ? (a.remove as unknown[]).map((item) => String(item))
+            : []
+          const baseMtimeMs =
+            a.baseMtimeMs === null || a.baseMtimeMs === undefined ? null : Number(a.baseMtimeMs)
+          validate(relPath)
+          await sleep()
+          const note = files.get(relPath)
+          if (note === undefined) fail('NOT_FOUND', `文件不存在：${relPath}`)
+
+          const current = mtimeOf(relPath)
+          if (baseMtimeMs !== null && baseMtimeMs !== current) {
+            throw new MimenoteError({
+              code: 'CONFLICT',
+              message: '文件已被外部修改',
+              detail: null,
+              currentMtimeMs: current,
+            })
+          }
+
+          const updated = mockSetTags(note.text, add, remove)
+          const changed = updated !== note.text
+          if (changed) {
+            files.set(relPath, { relPath, text: updated })
+            mtimes.set(relPath, touch())
+          }
+          const frontmatter = mockParseFrontmatter(updated)
+          const payload: SetTagsOutcome = {
+            relPath,
+            mtimeMs: mtimeOf(relPath),
+            sizeBytes: new TextEncoder().encode(updated).length,
+            writtenInMs: changed ? writeLatencyMs : 0,
+            changed,
+            tags: (frontmatter?.tags ?? []).map((entry) => entry.tag),
+            text: updated,
           }
           return payload as T
         }

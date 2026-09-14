@@ -38,6 +38,9 @@ pub fn run() {
             commands::vault_close,
             commands::note_read,
             commands::note_write,
+            // 标签面板的写入口：与 note_write 同一把写锁 + 同一份 mtime 令牌 + 同一个原子写，
+            // 只多一步"在区块里按最小 diff 改 tags"（见 commands.rs 的 note_set_tags 文档）
+            commands::note_set_tags,
             commands::note_create,
             commands::note_rename,
             // 跨目录移动（拖拽整理 / 「移动到…」）：与重命名共用同一条"换位置 + 改写全库链接"链路

@@ -98,6 +98,32 @@ pub struct WriteOutcome {
     pub written_in_ms: u64,
 }
 
+/// frontmatter 标签增删的结果（`note_set_tags`）。
+///
+/// 为什么不复用 [`WriteOutcome`]：这个方法有两个"只有它才有"的输出 —— **写入后的标签列表**
+/// 与**幂等标志**。前者让前端能如实告诉用户"这条标签来自 `tag:` 字段、没被删掉"，
+/// 后者区分"真的改了文件"与"本来就一样"（后者不写盘、不动 mtime、不重建索引）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetTagsOutcome {
+    pub rel_path: String,
+    /// 新的版本令牌；**没有实际改动时与请求里的 `baseMtimeMs` 相同**。
+    pub mtime_ms: u64,
+    pub size_bytes: u64,
+    /// 实际写入耗时（毫秒，含 fsync）；幂等请求为 0。
+    pub written_in_ms: u64,
+    /// 是否真的写了盘（`false` = 新的标签列表与磁盘上的完全一致，一个字节都没动）。
+    pub changed: bool,
+    /// 写入后**磁盘上真实的** frontmatter 标签（保留用户写法、去重、保序）。
+    pub tags: Vec<String>,
+    /// 写入后的整篇文本。
+    ///
+    /// 为什么要把它一起带回去（而不是让前端再 `note_read` 一次）：前端必须把编辑器内存对齐到
+    /// 磁盘，否则下一次自动保存会把刚加的标签覆盖掉；再读一次会在"读完到写回"之间多开一个
+    /// 竞态窗口（用户此刻敲的字用的是旧文本）。一次往返里把"磁盘现在是什么"讲清楚最安全。
+    pub text: String,
+}
+
 /// 重命名时被改写了链接的某个文件。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -489,6 +515,58 @@ pub async fn note_write(
         size_bytes,
         written_in_ms,
     })
+}
+
+/// 在笔记的 frontmatter 上**加/删标签**（标签面板的写入口）。
+///
+/// ## 为什么是宿主命令，而不是"前端读原文 → 改 → note_write"
+///
+/// ADR-0006 §3 的原话是"改标签走 `note_read → set_tags → note_write`、不开新写路径"。
+/// 这里**没有**开新写路径：本命令内部就是那三步，而且与 `note_write` 共用**同一把写锁、
+/// 同一次 mtime 令牌校验、同一个 `write_atomic`、同一处索引增量更新**——ADR-0004 的保护一条不少。
+/// 之所以把这三步搬进宿主，是因为"改哪一行、写成什么形态（标量/行内数组/块数组/补区块）"
+/// 全在 `mn_core::frontmatter`，让前端用 TypeScript 再实现一遍最小 diff，等于把判同与保真
+/// 纪律复制成两份（正是 ADR-0006 第 2 条最反对的事）。
+///
+/// ## 入参是"增"与"删"，不是"新的完整列表"
+///
+/// 前端面板上的列表可能比磁盘旧一拍（索引/面板刷新有延迟）。传"想要什么"会在这种情况下
+/// **静默丢掉别的标签**；传"加什么、删什么"则由宿主基于**它刚刚读到的文本**算结果，
+/// 旧一拍的最坏后果只是"重复加了一个已存在的"（幂等，不写盘）。
+///
+/// ## 冲突
+///
+/// `base_mtime_ms` 是**必填**的版本令牌：与 `note_write` 一样在写锁内重新 `stat` 比对，
+/// 不一致返回 `CONFLICT` + `currentMtimeMs`，**绝不静默覆盖**外部改动（ADR-0004）。
+#[tauri::command]
+pub async fn note_set_tags(
+    state: State<'_, Arc<AppState>>,
+    rel_path: String,
+    add: Vec<String>,
+    remove: Vec<String>,
+    base_mtime_ms: u64,
+) -> Result<SetTagsOutcome, IpcError> {
+    let app = Arc::clone(state.inner());
+    let rel = rel_path.clone();
+
+    let outcome =
+        run_blocking(move || note_set_tags_in(&app, &rel, &add, &remove, base_mtime_ms)).await?;
+
+    // 条目缓存跟着走（大小与 mtime 变了）——与 note_write 同一收尾
+    if outcome.changed {
+        state.update_vault(|ctx| {
+            ctx.upsert(EntryMeta {
+                rel_path: outcome.rel_path.clone(),
+                name: file_name_of(&outcome.rel_path),
+                is_dir: false,
+                size_bytes: outcome.size_bytes,
+                mtime_ms: Some(outcome.mtime_ms),
+                ext: ext_of(&outcome.rel_path),
+            })
+        });
+    }
+
+    Ok(outcome)
 }
 
 /// 新建笔记：唯一命名，写入初始标题。
@@ -1285,6 +1363,106 @@ fn note_tags_in(root: &VaultRoot, state: &AppState, rel_path: &str) -> mn_core::
     })
 }
 
+/// `note_set_tags` 的主体（与 Tauri 无关，可单测）。
+///
+/// 一次临界区里做完五件事（顺序不能换）：
+///
+/// 1. **写锁**：与 `note_write` / `rename_note_in` 同一把 —— "读当前 mtime → 读文本 → 改 → 写"
+///    必须在没有并发写的窗口里完成，否则并发的自动保存会以旧文本覆盖掉刚改出来的标签；
+/// 2. **令牌比对**：磁盘 mtime 与前端给的 `base_mtime_ms` 不一致 → `CONFLICT`（附当前 mtime），
+///    一个字节都不写（ADR-0004：绝不静默覆盖外部改动）；
+/// 3. 读**磁盘上的最新文本**（不是前端内存里的那份），既有标签从这里取；
+/// 4. 结果列表 = `mn_core::tags::apply_tag_edits(既有, add, remove)`（判同只有 `normalize_tag` 一份）；
+/// 5. 新文本与旧文本**逐字节相同就整个跳过**：不写盘、不动 mtime、不重建索引 ——
+///    "加一个已经存在的标签"必须是彻底的幂等，而不是制造一次无意义的 diff 与一次索引重建。
+///
+/// 写入走 `mn_core::atomic::write_atomic`（原子替换），并复用 `indexer::update_note`
+/// 让标签/搜索/图谱三份索引在同一处增量同步（ADR-0006 影响一节：文本派生数据只有一个入口）。
+fn note_set_tags_in(
+    state: &AppState,
+    rel_path: &str,
+    add: &[String],
+    remove: &[String],
+    base_mtime_ms: u64,
+) -> mn_core::Result<SetTagsOutcome> {
+    let root = state.vault_root()?;
+    let _write_guard = state.write_guard();
+
+    let path = root.resolve_existing(rel_path)?;
+    if path.is_dir() {
+        return Err(Error::IsDirectory(rel_path.to_string()));
+    }
+
+    let current = mn_core::atomic::path_mtime_ms(&path)?;
+    if let Some(cur) = current {
+        if cur != base_mtime_ms {
+            return Err(Error::Conflict {
+                current_mtime_ms: cur,
+            });
+        }
+    }
+
+    let text = read_text(&path, MAX_READ_BYTES)?;
+    // **面板显示的**（两个字段合并）与**能改的**（`set_tags` 真正会写的那个字段）是两份列表：
+    // 用合并列表去改写会把 `tag:` 字段里的标签复制进 `tags:`，还会让它永远删不掉 ——
+    // 详见 `mn_core::frontmatter::editable_tags` 的文档
+    let merged = mn_core::parse_frontmatter(&text)
+        .map(|frontmatter| frontmatter.tags)
+        .unwrap_or_default();
+    let size_bytes = text.len() as u64;
+    let unchanged = |tags: Vec<String>| SetTagsOutcome {
+        rel_path: rel_path.to_string(),
+        mtime_ms: base_mtime_ms,
+        size_bytes,
+        written_in_ms: 0,
+        changed: false,
+        tags,
+        text: text.clone(),
+    };
+
+    // 既不增也不删 = 一次纯查询：不写盘、不重建索引（连算一遍新文本都不必）
+    if add.is_empty() && remove.is_empty() {
+        return Ok(unchanged(merged));
+    }
+
+    let editable = mn_core::editable_tags(&text);
+    let wanted = mn_core::apply_tag_edits(&editable, add, remove);
+    let updated = mn_core::set_tags_or_create(&text, &wanted);
+
+    if updated == text {
+        // 幂等：一个字节都不动（含 mtime 与索引）
+        return Ok(unchanged(merged));
+    }
+
+    let started = Instant::now();
+    write_atomic(&path, updated.as_bytes())?;
+    let written_in_ms = started.elapsed().as_millis() as u64;
+
+    // 标签/链接/搜索/图谱：与 `note_write` 完全同一处增量更新
+    indexer::update_note(state, rel_path, &updated);
+
+    let meta = std::fs::metadata(&path).map_err(|e| Error::io(&path, e))?;
+    let tags = mn_core::parse_frontmatter(&updated)
+        .map(|frontmatter| frontmatter.tags)
+        .unwrap_or_default();
+
+    log::debug!(
+        "改写 {rel_path} 的标签（{} 个，{} 字节，写入 {written_in_ms}ms）",
+        tags.len(),
+        updated.len()
+    );
+
+    Ok(SetTagsOutcome {
+        rel_path: rel_path.to_string(),
+        mtime_ms: mn_core::atomic::mtime_ms(&meta).unwrap_or(base_mtime_ms),
+        size_bytes: meta.len(),
+        written_in_ms,
+        changed: true,
+        tags,
+        text: updated,
+    })
+}
+
 /// `tags_list` 的主体（与 Tauri 无关，可单测）。
 fn tags_list_in(state: &AppState) -> Vec<TagSummaryDto> {
     indexer::tag_summary(state)
@@ -1292,7 +1470,6 @@ fn tags_list_in(state: &AppState) -> Vec<TagSummaryDto> {
         .map(TagSummaryDto::from)
         .collect()
 }
-
 /// `tag_notes` 的主体（与 Tauri 无关，可单测）：空键 → `PATH_INVALID`。
 fn tag_notes_in(state: &AppState, key: &str) -> mn_core::Result<TagNotes> {
     // 空键（`""`、`"#"`、只有空白）归一化后是空串，等于"查询所有空标签"：明确拒绝，
@@ -1977,6 +2154,367 @@ mod tests {
     }
 
     // -- 标签与 frontmatter（note_tags / tags_list / tag_notes） -----------------
+
+    // -- 改标签（note_set_tags） -------------------------------------------------
+
+    /// 一个"什么形态都有一点"的笔记：BOM + CRLF + 注释 + 未知键 + 块数组标签 + 行内标签。
+    const TAGGED: &str = "\u{feff}---\r\ntitle: 示例\r\ntags:\r\n  - 甲\r\ndraft: false # 未完成\r\ncover: 图.png\r\n---\r\n# 标题\r\n\r\n正文 #行内\r\n";
+
+    fn owned(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_string()).collect()
+    }
+
+    /// 磁盘上的当前令牌（前端面板拿到的就是这个值，来自 `note_read`）。
+    ///
+    /// 令牌是**必填**的：这里刻意不给"0 表示不校验"的后门，否则"绝不静默覆盖"就成了摆设。
+    fn token_of(dir: &std::path::Path, rel: &str) -> u64 {
+        let path = dir.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        mn_core::atomic::path_mtime_ms(&path).unwrap().unwrap_or(0)
+    }
+
+    #[test]
+    fn set_tags_adds_and_removes_with_a_minimal_diff() {
+        let (dir, state) = state_with(&[("笔记/甲.md", TAGGED)]);
+
+        let added = note_set_tags_in(
+            &state,
+            "笔记/甲.md",
+            &owned(&["乙"]),
+            &[],
+            token_of(dir.path(), "笔记/甲.md"),
+        )
+        .unwrap();
+        assert!(added.changed);
+        assert_eq!(added.tags, owned(&["甲", "乙"]));
+        let on_disk = read_file(dir.path(), "笔记/甲.md");
+        assert_eq!(
+            on_disk,
+            TAGGED.replace("  - 甲\r\n", "  - 甲\r\n  - 乙\r\n"),
+            "只该多出一个项行"
+        );
+        assert!(on_disk.starts_with('\u{feff}'), "BOM 必须保留");
+        assert!(
+            on_disk.contains("draft: false # 未完成"),
+            "行尾注释必须保留"
+        );
+        assert!(on_disk.contains("cover: 图.png"), "未知键必须保留");
+        assert!(on_disk.contains("# 标题"), "正文一个字节不动");
+
+        // 索引增量同步：标签索引、全库概览、搜索索引都跟着变了（不需要重扫）
+        assert_eq!(
+            indexer::tags_of(&state, "笔记/甲.md")
+                .unwrap()
+                .iter()
+                .map(|tag| tag.tag.clone())
+                .collect::<Vec<String>>(),
+            owned(&["甲", "乙", "行内"])
+        );
+        assert!(tags_list_in(&state).iter().any(|item| item.key == "乙"));
+        assert!(
+            state
+                .try_search(|search| search.search("乙", 10))
+                .map(|result| result
+                    .unwrap()
+                    .hits
+                    .iter()
+                    .any(|hit| hit.rel_path == "笔记/甲.md"))
+                .unwrap_or(false),
+            "搜索索引也应能命中新写入的标签"
+        );
+
+        // 删掉：磁盘逐字节回到原样
+        let removed =
+            note_set_tags_in(&state, "笔记/甲.md", &[], &owned(&["乙"]), added.mtime_ms).unwrap();
+        assert!(removed.changed);
+        assert_eq!(removed.tags, owned(&["甲"]));
+        assert_eq!(read_file(dir.path(), "笔记/甲.md"), TAGGED);
+    }
+
+    #[test]
+    fn set_tags_refuses_on_a_stale_token_and_never_overwrites() {
+        let (dir, state) = state_with(&[("甲.md", "---\ntags: [甲]\n---\n正文\n")]);
+        let stale = token_of(dir.path(), "甲.md") + 1;
+
+        let error = note_set_tags_in(&state, "甲.md", &owned(&["乙"]), &[], stale).unwrap_err();
+        assert_eq!(error.code(), mn_core::ErrorCode::Conflict);
+        assert!(matches!(
+            error,
+            Error::Conflict {
+                current_mtime_ms
+            } if current_mtime_ms > 0
+        ));
+        // 一个字节都没写
+        assert_eq!(
+            read_file(dir.path(), "甲.md"),
+            "---\ntags: [甲]\n---\n正文\n"
+        );
+    }
+
+    #[test]
+    fn set_tags_is_idempotent_and_writes_nothing_for_an_existing_tag() {
+        let (dir, state) = state_with(&[("甲.md", "---\ntags: [Rust]\n---\n正文\n")]);
+        let base = token_of(dir.path(), "甲.md");
+
+        // 加一个**已经存在**的标签（写法不同、判同后是同一个）→ 不写盘、mtime 不变
+        let outcome = note_set_tags_in(&state, "甲.md", &owned(&["#rust"]), &[], base).unwrap();
+        assert!(!outcome.changed, "幂等请求不该产生无意义的 diff");
+        assert_eq!(outcome.written_in_ms, 0);
+        assert_eq!(outcome.mtime_ms, base, "没有实际写入就不该动令牌");
+        assert_eq!(outcome.tags, owned(&["Rust"]), "写法保留首次出现的那份");
+        assert_eq!(
+            read_file(dir.path(), "甲.md"),
+            "---\ntags: [Rust]\n---\n正文\n"
+        );
+
+        // 空请求同理：什么都不做
+        let empty = note_set_tags_in(&state, "甲.md", &[], &[], base).unwrap();
+        assert!(!empty.changed);
+        assert_eq!(empty.tags, owned(&["Rust"]));
+    }
+
+    #[test]
+    fn set_tags_creates_frontmatter_when_the_note_has_none() {
+        let (dir, state) = state_with(&[("裸.md", "# 只有正文\n\n正文里的 #行内。\n")]);
+
+        let outcome = note_set_tags_in(
+            &state,
+            "裸.md",
+            &owned(&["新"]),
+            &[],
+            token_of(dir.path(), "裸.md"),
+        )
+        .unwrap();
+        assert!(outcome.changed);
+        assert_eq!(outcome.tags, owned(&["新"]));
+        assert_eq!(
+            read_file(dir.path(), "裸.md"),
+            "---\ntags: [新]\n---\n# 只有正文\n\n正文里的 #行内。\n"
+        );
+        assert_eq!(
+            outcome.text, "---\ntags: [新]\n---\n# 只有正文\n\n正文里的 #行内。\n",
+            "出参里的 text 必须就是磁盘上的那份（前端据此对齐编辑器内存）"
+        );
+
+        // 删掉最后一个标签：**保留** `tags` 字段写成空列表（不删 key，见 ADR-0006 后续修订）
+        let back =
+            note_set_tags_in(&state, "裸.md", &[], &owned(&["新"]), outcome.mtime_ms).unwrap();
+        assert!(back.changed);
+        assert!(back.tags.is_empty());
+        assert_eq!(
+            read_file(dir.path(), "裸.md"),
+            "---\ntags: []\n---\n# 只有正文\n\n正文里的 #行内。\n"
+        );
+        // 正文里的行内标签从头到尾没被碰过
+        assert_eq!(
+            indexer::tags_of(&state, "裸.md")
+                .unwrap()
+                .iter()
+                .filter(|tag| tag.source == mn_core::TagSource::Inline)
+                .map(|tag| tag.tag.clone())
+                .collect::<Vec<String>>(),
+            owned(&["行内"])
+        );
+    }
+
+    #[test]
+    fn set_tags_handles_scalar_tags_and_quotes_unsafe_values() {
+        let (dir, state) = state_with(&[("甲.md", "---\r\ntags: 甲\r\n---\r\n正文\r\n")]);
+
+        // 标量 + 一个 → 仍是标量（沿用既有写法）
+        let one = note_set_tags_in(
+            &state,
+            "甲.md",
+            &owned(&["乙"]),
+            &[],
+            token_of(dir.path(), "甲.md"),
+        )
+        .unwrap();
+        let disk = read_file(dir.path(), "甲.md");
+        assert_eq!(disk, "---\r\ntags: [甲, 乙]\r\n---\r\n正文\r\n");
+        assert!(disk.contains("\r\n"), "CRLF 保真");
+
+        // 带空格 / 层级 / 中文：写出去必须能原样读回来
+        let unsafe_tags = note_set_tags_in(
+            &state,
+            "甲.md",
+            &owned(&["带 空格", "父/子", "中文标签"]),
+            &[],
+            one.mtime_ms,
+        )
+        .unwrap();
+        assert_eq!(
+            unsafe_tags.tags,
+            owned(&["甲", "乙", "带 空格", "父/子", "中文标签"]),
+            "含空格的标签必须被引号保护后原样读回"
+        );
+        assert!(read_file(dir.path(), "甲.md").contains("'带 空格'"));
+
+        // 删到一个不剩 → 保留字段、写成空列表（而不是把 key 删掉）
+        let none = note_set_tags_in(
+            &state,
+            "甲.md",
+            &[],
+            &owned(&["甲", "#乙", "带 空格", "父/子", "中文标签"]),
+            unsafe_tags.mtime_ms,
+        )
+        .unwrap();
+        assert_eq!(none.tags, Vec::<String>::new());
+        assert_eq!(
+            read_file(dir.path(), "甲.md"),
+            "---\r\ntags: []\r\n---\r\n正文\r\n"
+        );
+    }
+
+    #[test]
+    fn set_tags_only_touches_the_field_it_owns() {
+        // 同时存在 `tag` 与 `tags`：写入目标永远是 `tags`（`set_tags` 的既有口径）。
+        // 因此"只被 `tag` 字段提供"的标签删不掉 —— 这是已知边界，钉住它以免被误认为随机行为
+        let (dir, state) = state_with(&[("甲.md", "---\ntag: 单数\ntags: [甲]\n---\n正文\n")]);
+
+        let existing =
+            note_set_tags_in(&state, "甲.md", &[], &[], token_of(dir.path(), "甲.md")).unwrap();
+        assert_eq!(
+            existing.tags,
+            owned(&["单数", "甲"]),
+            "两个字段合并后才是面板看到的列表"
+        );
+
+        let outcome =
+            note_set_tags_in(&state, "甲.md", &[], &owned(&["单数"]), existing.mtime_ms).unwrap();
+        assert!(!outcome.changed, "没有可写的改动");
+        assert_eq!(outcome.tags, owned(&["单数", "甲"]), "`tag: 单数` 仍然在");
+        assert_eq!(
+            read_file(dir.path(), "甲.md"),
+            "---\ntag: 单数\ntags: [甲]\n---\n正文\n"
+        );
+
+        // 加标签则照常工作（结果写进 `tags`，不会与 `tag` 字段打架）
+        let added =
+            note_set_tags_in(&state, "甲.md", &owned(&["乙"]), &[], outcome.mtime_ms).unwrap();
+        assert_eq!(added.tags, owned(&["单数", "甲", "乙"]));
+        assert_eq!(
+            read_file(dir.path(), "甲.md"),
+            "---\ntag: 单数\ntags: [甲, 乙]\n---\n正文\n"
+        );
+    }
+
+    #[test]
+    fn set_tags_works_on_the_singular_tag_field_and_on_an_empty_request() {
+        // 只有 `tag:`（单数）的笔记：写入目标就是它（`set_tags` 的既有口径）
+        let (dir, state) = state_with(&[("甲.md", "---\ntag: 旧\n---\n正文\n")]);
+        let added = note_set_tags_in(
+            &state,
+            "甲.md",
+            &owned(&["新"]),
+            &[],
+            token_of(dir.path(), "甲.md"),
+        )
+        .unwrap();
+        assert_eq!(added.tags, owned(&["旧", "新"]));
+        assert_eq!(
+            read_file(dir.path(), "甲.md"),
+            "---\ntag: [旧, 新]\n---\n正文\n"
+        );
+
+        // 删到一个不剩：保留字段、写成空列表（不删 key）
+        let back =
+            note_set_tags_in(&state, "甲.md", &[], &owned(&["旧", "新"]), added.mtime_ms).unwrap();
+        assert!(back.tags.is_empty());
+        assert_eq!(read_file(dir.path(), "甲.md"), "---\ntag: []\n---\n正文\n");
+
+        // 既不增也不删 = 纯查询：不改一个字节（`tags: 甲, 乙` 这种标量形态最容易被顺手"规范化"）
+        let (plain_dir, plain_state) = state_with(&[("乙.md", "---\ntags: 甲, 乙\n---\n正文\n")]);
+        let query = note_set_tags_in(
+            &plain_state,
+            "乙.md",
+            &[],
+            &[],
+            token_of(plain_dir.path(), "乙.md"),
+        )
+        .unwrap();
+        assert!(!query.changed);
+        assert_eq!(query.tags, owned(&["甲", "乙"]));
+        assert_eq!(
+            read_file(plain_dir.path(), "乙.md"),
+            "---\ntags: 甲, 乙\n---\n正文\n"
+        );
+    }
+
+    #[test]
+    fn set_tags_reports_missing_file_directory_and_unopened_vault() {
+        let (_dir, state) = state_with(&[("甲.md", "正文\n")]);
+        assert_eq!(
+            note_set_tags_in(&state, "不存在.md", &owned(&["甲"]), &[], 0)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::NotFound
+        );
+        std::fs::create_dir_all(_dir.path().join("目录")).unwrap();
+        assert_eq!(
+            note_set_tags_in(&state, "目录", &owned(&["甲"]), &[], 0)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::IsDirectory
+        );
+        // Vault 未打开
+        let closed = AppState::default();
+        assert_eq!(
+            note_set_tags_in(&closed, "甲.md", &owned(&["甲"]), &[], 0)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::VaultNotSet
+        );
+    }
+
+    /// 只读文件 / 只读 Vault：写盘失败必须是**可解释的错误**，且磁盘内容一字不改。
+    ///
+    /// 只在 Windows 上跑：`write_atomic` 的收尾是 `MoveFileEx(REPLACE_EXISTING)`，
+    /// 目标只读时它必然失败；POSIX 的 `rename` 只看目录权限、会把只读文件照样换掉，
+    /// 在那边这个用例会**假失败**（用例本身没错，是平台语义不同）。
+    #[cfg(windows)]
+    #[test]
+    // `set_readonly(false)` 在 Unix 上语义不同（会让文件对所有人可写），但这一段本来就只跑在
+    // Windows 上：这里恢复只读位只是为了**让临时目录能被清理**，不是产品行为
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn set_tags_reports_io_instead_of_silently_failing_on_a_read_only_file() {
+        let (dir, state) = state_with(&[("只读.md", "---\ntags: [甲]\n---\n正文\n")]);
+        let path = dir.path().join("只读.md");
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).unwrap();
+
+        let error = note_set_tags_in(
+            &state,
+            "只读.md",
+            &owned(&["乙"]),
+            &[],
+            token_of(dir.path(), "只读.md"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.code(),
+            mn_core::ErrorCode::Io,
+            "写失败要报 IO，不能假装成功"
+        );
+
+        // 收尾：把只读位摘掉再断言内容（否则临时目录清理会失败）
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        assert_eq!(
+            read_file(dir.path(), "只读.md"),
+            "---\ntags: [甲]\n---\n正文\n"
+        );
+        // 索引也不该被这次失败的写入污染
+        assert_eq!(
+            indexer::tags_of(&state, "只读.md")
+                .unwrap()
+                .iter()
+                .map(|tag| tag.tag.clone())
+                .collect::<Vec<String>>(),
+            owned(&["甲"])
+        );
+    }
 
     #[test]
     fn note_tags_returns_index_tags_and_frontmatter_fields() {

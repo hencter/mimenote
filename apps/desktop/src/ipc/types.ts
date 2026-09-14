@@ -3,7 +3,7 @@
  *
  * ⚠️ 这些类型必须与 Rust 侧结构逐字段一致（见 `docs/architecture.md` §3.1）：
  * - `mn_core::scanner::EntryMeta`
- * - `mimenote_lib::commands::{VaultInfo, VaultSnapshot, NoteContent, WriteOutcome, SnippetFile, VersionInfo}`
+ * - `mimenote_lib::commands::{VaultInfo, VaultSnapshot, NoteContent, WriteOutcome, SetTagsOutcome, SnippetFile, VersionInfo}`
  * - `mimenote_lib::assets::{AssetGrant, AssetBytes}`
  * - `mimenote_lib::attachments::{AttachmentInput, AttachmentSaved}`
  * - `mimenote_lib::export::ExportWriteOutcome`
@@ -71,6 +71,32 @@ export interface WriteOutcome {
   sizeBytes: number
   /** 实际写入耗时（毫秒，含 fsync）。 */
   writtenInMs: number
+}
+
+/**
+ * frontmatter 标签增删的结果（`mimenote_lib::commands::SetTagsOutcome`）。
+ *
+ * 与 {@link WriteOutcome} 的区别是三个"只有它才有"的输出：`changed`（幂等标志）、
+ * `tags`（写入后磁盘上真实的标签）与 `text`（写入后的整篇文本）。
+ */
+export interface SetTagsOutcome {
+  relPath: string
+  /** 新的版本令牌；**没有实际改动时与请求里的 `baseMtimeMs` 相同**。 */
+  mtimeMs: number
+  sizeBytes: number
+  /** 实际写入耗时（毫秒，含 fsync）；幂等请求为 0。 */
+  writtenInMs: number
+  /** 是否真的写了盘（`false` = 结果与磁盘上的完全一致，一个字节都没动）。 */
+  changed: boolean
+  /** 写入后**磁盘上真实的** frontmatter 标签（保留用户写法、去重、保序）。 */
+  tags: string[]
+  /**
+   * 写入后的整篇文本（原始文本，未解释 BOM/换行）。
+   *
+   * 带回整篇是为了让编辑器内存**一次往返**就能对齐磁盘：再 `note_read` 一次会在
+   * "读完到写回"之间多开一个竞态窗口（用户此刻敲的字用的是旧文本）。
+   */
+  text: string
 }
 
 /** 回收站记录。 */

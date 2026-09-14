@@ -140,6 +140,62 @@ pub fn normalize_tag(raw: &str) -> String {
     out.trim_end_matches('/').to_string()
 }
 
+/// 在一个**既有的标签列表**上做增删，返回新的列表（显示写法，保序、按 [`normalize_tag`] 去重）。
+///
+/// 为什么要单独一个纯函数：标签面板的"加标签/删标签"最终都归结为同一个问题 ——
+/// "改完之后这篇的标签列表是什么"。把它做成纯函数，宿主就只需要
+/// `parse(...).tags → 本函数 → frontmatter::set_tags_or_create`，没有一处自己拼列表，
+/// 判同也只有 [`normalize_tag`] 一份（与索引、面板高亮、`set_tags` 的清理同源）。
+///
+/// 规则：
+///
+/// * `remove` **按归一化键匹配**：传 `#Rust` 也能删掉 `rust`（判同只有一份）；
+///   既有标签的**写法与顺序原样保留**（不重排、不改大小写）；
+/// * `add` 先清理：去首尾空白与开头的 `#`，并把中间的连续空白折叠成一个空格 ——
+///   折叠口径与 [`normalize_tag`] 一致，而且带换行的标签会写出一个跨行的引号标量、
+///   把整个区块切成两半（本模块与 `frontmatter` 都按行解析，读回来就散了）；
+/// * 已经存在的（归一化键命中）**不重复加入**；`add` 里自己重复的只进第一个；
+/// * 无法归一化的输入（`""`、`"#"`、纯空白）一律忽略；
+/// * 结果顺序 = 既有顺序（去掉被删的） + 新标签按输入顺序追加。
+pub fn apply_tag_edits(existing: &[String], add: &[String], remove: &[String]) -> Vec<String> {
+    let removed: HashSet<String> = remove
+        .iter()
+        .map(|raw| normalize_tag(raw))
+        .filter(|key| !key.is_empty())
+        .collect();
+
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for tag in existing {
+        let key = normalize_tag(tag);
+        if key.is_empty() || removed.contains(&key) || !seen.insert(key) {
+            continue;
+        }
+        out.push(tag.clone());
+    }
+
+    for raw in add {
+        let Some(tag) = clean_input(raw) else {
+            continue;
+        };
+        let key = normalize_tag(&tag);
+        if key.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        out.push(tag);
+    }
+
+    out
+}
+
+/// 把用户输入的一个标签清理成**能安全写进 YAML 一行**的形式；空输入返回 `None`。
+fn clean_input(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_start_matches('#').trim();
+    let collapsed = trimmed.split_whitespace().collect::<Vec<&str>>().join(" ");
+    (!collapsed.is_empty()).then_some(collapsed)
+}
+
 /// 是否是标签字符（字母数字含 Han/假名/谚文，另有 `_`、`-`、层级分隔符 `/`）。
 fn is_tag_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '_' | '-' | '/')
@@ -530,6 +586,97 @@ mod tests {
         assert_eq!(normalize_tag("A/B"), "a/b");
         // CJK 不做大小写变换（恒等，钉住行为）
         assert_eq!(normalize_tag("日本語"), "日本語");
+    }
+
+    // -- apply_tag_edits（面板加/删标签的纯函数） ----------------------------
+
+    fn owned(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_string()).collect()
+    }
+
+    #[test]
+    fn apply_tag_edits_appends_keeping_existing_order_and_wording() {
+        let existing = owned(&["Rust", "父/子"]);
+        let out = apply_tag_edits(&existing, &owned(&["新标签"]), &[]);
+        assert_eq!(out, owned(&["Rust", "父/子", "新标签"]));
+    }
+
+    #[test]
+    fn apply_tag_edits_matches_removals_by_normalized_key_only() {
+        // 显示写法是 `Rust`，用户删的是 `#rust` —— 归一化后是同一个标签
+        let out = apply_tag_edits(&owned(&["Rust", "乙"]), &[], &owned(&["#RUST"]));
+        assert_eq!(out, owned(&["乙"]));
+        // 大小写/首尾 `/` 同样只影响判同，不影响剩下的写法
+        let out2 = apply_tag_edits(&owned(&["父/子/", "Keep"]), &[], &owned(&["父/子"]));
+        assert_eq!(out2, owned(&["Keep"]));
+    }
+
+    #[test]
+    fn apply_tag_edits_is_idempotent_for_existing_and_duplicate_adds() {
+        let existing = owned(&["Rust"]);
+        // 加已存在的（写法不同）→ 一个字符都不多
+        assert_eq!(apply_tag_edits(&existing, &owned(&["rust"]), &[]), existing);
+        // 输入里自己重复 → 只进第一个
+        assert_eq!(
+            apply_tag_edits(&existing, &owned(&["甲", "#甲", "甲"]), &[]),
+            owned(&["Rust", "甲"])
+        );
+        // 加完再加一次也不变
+        let once = apply_tag_edits(&existing, &owned(&["甲"]), &[]);
+        assert_eq!(apply_tag_edits(&once, &owned(&["甲"]), &[]), once);
+    }
+
+    #[test]
+    fn apply_tag_edits_cleans_inputs_but_keeps_existing_wording() {
+        let out = apply_tag_edits(
+            &owned(&["原样  保留"]),
+            &owned(&["  #带井号  ", "多  空白", "", "#", "  "]),
+            &[],
+        );
+        // 既有项一字不改（不能因为我们折叠空白就顺手美化用户磁盘上的写法）
+        assert_eq!(
+            out,
+            owned(&["原样  保留", "带井号", "多 空白"]),
+            "换行/连续空白必须折叠成一个空格"
+        );
+    }
+
+    #[test]
+    fn apply_tag_edits_survives_newlines_in_input() {
+        // 单行输入框进不来换行，但 IPC 与未来的插件能：带换行的标签会写出跨行标量
+        let out = apply_tag_edits(&[], &owned(&["a\nb", "c\td"]), &[]);
+        assert_eq!(out, owned(&["a b", "c d"]));
+        assert!(!out.iter().any(|tag| tag.contains('\n')));
+    }
+
+    #[test]
+    fn apply_tag_edits_remove_wins_over_add_in_the_same_call() {
+        // 同一次调用里既删又加同一个标签：`remove` 作用于**既有**项，`add` 再追加输入写法
+        let out = apply_tag_edits(&owned(&["Rust"]), &owned(&["RUST"]), &owned(&["rust"]));
+        assert_eq!(out, owned(&["RUST"]));
+    }
+
+    #[test]
+    fn apply_tag_edits_does_not_touch_inline_tags() {
+        // 行内标签根本不在 frontmatter 列表里：把 frontmatter 的删光，正文的 `#甲` 依旧在
+        let text = "---\ntags: [甲]\n---\n\n正文 #甲 与 #乙\n";
+        let fm_tags = extract_tags(text)
+            .into_iter()
+            .filter(|tag| tag.source == TagSource::Frontmatter)
+            .map(|tag| tag.tag)
+            .collect::<Vec<String>>();
+        assert_eq!(fm_tags, owned(&["甲"]));
+        assert_eq!(
+            apply_tag_edits(&fm_tags, &[], &owned(&["甲"])),
+            Vec::<String>::new()
+        );
+        // 正文里的两个标签仍然抽得到（删 frontmatter 不代表删正文）
+        let inline = extract_tags("---\ntags: []\n---\n\n正文 #甲 与 #乙\n")
+            .into_iter()
+            .filter(|tag| tag.source == TagSource::Inline)
+            .map(|tag| tag.tag)
+            .collect::<Vec<String>>();
+        assert_eq!(inline, owned(&["甲", "乙"]));
     }
 
     #[test]

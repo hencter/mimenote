@@ -56,6 +56,14 @@ interface NoteState {
   open: (relPath: string) => Promise<boolean>
   setText: (text: string) => void
   saveNow: (options?: { force?: boolean }) => Promise<boolean>
+  /**
+   * 记录"磁盘上的文件被外部改过了"（**非编辑器**的写路径用它，例如标签面板改 frontmatter）。
+   *
+   * 为什么必须走这里、而不是各条写路径自己弹一个提示：冲突只有一种语义 ——
+   * 顶部横幅 + 由用户在"覆盖保存 / 重新加载"之间二选一。任何写路径自己发明一套说法，
+   * 用户就会同时面对两种互相矛盾的提示（而其中一套很可能是错的）。
+   */
+  noteExternalChange: (currentMtimeMs: number) => void
   resolveConflict: (choice: 'overwrite' | 'reload') => Promise<void>
   reload: () => Promise<void>
   /**
@@ -66,6 +74,20 @@ interface NoteState {
    * （若文件内容也被改写过 —— 例如自链接 —— 调用方应改用 `open()` 重新读取。）
    */
   retarget: (newRelPath: string, mtimeMs: number) => void
+  /**
+   * 用**刚刚写进磁盘的那份文本**替换当前文档（标签编辑用）。
+   *
+   * 为什么必须有这一条：改标签是"在别的通道上改同一个文件"。若内存里的文本还停在旧版本，
+   * 下一次自动保存就会把刚写下去的标签**覆盖掉**（用户看到标签闪一下又没了）——
+   * 这是数据正确性问题，优先级高于"光标别动"。
+   *
+   * 为什么走 `revision` 自增（整篇替换）而不是"原地换文本"：编辑器只订阅
+   * `relPath` / `revision` 这类原始值（**刻意不订阅 `text`**，否则每次按键都会让 React 重渲染），
+   * `revision` 是既有的、也是唯一的"把外部文本送进 CM 文档模型"的通道。代价是光标位置按旧偏移
+   * 保留（标签改在文件开头，正文里的光标会差一个标签长度的偏移），但**撤销历史保留**
+   * （整篇替换是一次普通事务），而且"刚改的那个标签可以被 Ctrl+Z 撤销"反而是好行为。
+   */
+  applyWrittenText: (diskText: string, options: { mtimeMs: number; sizeBytes: number }) => void
   close: () => void
   refreshDiskStats: () => Promise<void>
 }
@@ -259,6 +281,16 @@ export const useNoteStore = create<NoteState>((set, get) => ({
     }
   },
 
+  noteExternalChange: (currentMtimeMs) => {
+    if (get().doc === null) return
+    // 刻意**不动** `dirty`：这次冲突是"磁盘被别人改了"，本地一个字符都没改，
+    // 谎报 dirty 会让标签页上的 ● 与关闭窗口时的"有未保存修改"确认框凭空出现
+    set({
+      status: 'conflict',
+      conflict: { currentMtimeMs, detectedAt: Date.now() },
+    })
+  },
+
   resolveConflict: async (choice) => {
     if (choice === 'overwrite') {
       await get().saveNow({ force: true })
@@ -313,6 +345,29 @@ export const useNoteStore = create<NoteState>((set, get) => ({
     set({
       doc: { ...doc, relPath: newRelPath, baseMtimeMs: mtimeMs },
       status: 'ready',
+      error: null,
+      conflict: null,
+    })
+  },
+
+  applyWrittenText: (diskText, { mtimeMs, sizeBytes }) => {
+    const doc = get().doc
+    if (doc === null) return
+    // 待写的那次防抖保存必须取消：它的文本是"改标签之前"的，写下去等于撤销这次改动
+    cancelAutosave()
+    const { text, format } = toEditorText(diskText)
+    revisionCounter += 1
+    set({
+      doc: {
+        ...doc,
+        text,
+        format,
+        baseMtimeMs: mtimeMs,
+        sizeBytes,
+        revision: revisionCounter,
+      },
+      status: 'ready',
+      dirty: false,
       error: null,
       conflict: null,
     })
