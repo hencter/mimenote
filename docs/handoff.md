@@ -6,12 +6,12 @@
 ## 0. 一句话现状
 
 13 条需求那一轮与连线重做都已交付；现在是**用户逐条提、主会话逐条做**的修补轮，
-已交付 **标题栏三区（ADR-0029）**，门禁全绿。
+已交付 **标题栏三区（ADR-0029）**与**界面不写 `.md`（ADR-0030）**，门禁全绿。
 
 ```
 pnpm typecheck                 ✓ 无错误
-pnpm test                      ✓ 84 个测试文件 / 1573 条
-pnpm test:e2e:ui               ✓ 59 条（前置：先 pnpm build）
+pnpm test                      ✓ 84 个测试文件 / 1575 条
+pnpm test:e2e:ui               ✓ 60 条（前置：先 pnpm build）
 pnpm test:e2e:app              ✓ 33 条（前置：先 tauri build --no-bundle；release 二进制未变，未重跑）
 ```
 
@@ -70,12 +70,18 @@ pnpm test:e2e:app              ✓ 33 条（前置：先 tauri build --no-bundle
 | # | 用户原话 | 落在哪 |
 | --- | --- | --- |
 | 1 | `mn-editor__path` 居中在中间页、高度不固定，希望进标题栏那一行并分成左/中/右三区 | **ADR-0029**：`.mn-titlebar` 改网格 `1fr / 2fr / 1fr`（`__left` / `__center` / `__right`），路径从编辑器面板搬进中区（`.mn-titlebar__path`），删掉 `.mn-editor__path` / `.mn-editor__status` |
+| 2 | 隐藏 `.md` 的扩展名 | **ADR-0030**：`domain/paths.ts` 新增 `displayName` / `displayPath`（建在既有的 `isMarkdown` 上），标签页 / 标题栏 / 文件树 / 反链出链 / 快速切换 / 搜索命中 / 窗口标题 / 回收站 / 冲突横幅 / 拖拽与保存提示都改走它；导出件、宿主报错原文、移动对话框保留真实文件名 |
 
 两个细节值得记住（下一个交付项会复用）：
 
 - 路径的旧类名 `.mn-editor__path` 曾是 E2E 里"当前打开的是哪一篇"的主力探针（约 20 处），
   现在一律是 `.mn-titlebar__path`；`openNoteInTree` 里"编辑视图读路径、否则退回树里选中态"的分支
   已经删掉（路径三种视图里都在，不需要间接信号了）。
+- **可见文字不再承载身份**：标题栏路径元素上有 `data-note-path`（真实路径），两层 E2E 的
+  `currentNotePath(page)` 读它，**别改回读 `textContent`** —— `includes('项目/设计')` 会被
+  `项目/设计文档` 误命中，而且可见文字现在**不带 `.md`**。
+- 快速切换与图谱「定位笔记」的 `NoteIndexEntry` / `RankedNote` 多了 `displayPath` 字段：
+  匹配与高亮下标都相对它算（渲染也用同一串字符），新写消费方时别再用 `relPath` 去匹配。
 - 顺手修的门禁红：`tests/demo-vault.test.ts` 的 `listFiles` 现在跳过 `.mimenote/trash`
   （用户删除的副本不该被当成夹具；`README` 里列着的 `.mimenote/snippets/` 仍然照查）。
 
@@ -96,7 +102,7 @@ pnpm test:e2e:app              ✓ 33 条（前置：先 tauri build --no-bundle
 
 - **注释与文档一律中文，注释解释"为什么"**（取舍、代价、踩过的坑），不复述代码在做什么。
 - **提交由主会话做**：派出去的子代理**绝不执行 git 写操作**，只允许 `status`/`log`/`diff` 这类只读命令。
-  每个交付项 = feature commit + docs-sync commit；ADR 放 `docs/adr/`，**下一个编号是 0030**。
+  每个交付项 = feature commit + docs-sync commit；ADR 放 `docs/adr/`，**下一个编号是 0031**。
 - **`examples/demo-vault/` 是用户自己的草稿区**：不要动、不要提交里面的未跟踪文件（含
   `项目/未命名笔记.md` 与 `测试笔记.md` 那两处删除 —— 都是用户自己删的，保持原样）。
 - **确定性是一条纪律**：力场自己实现 xorshift32、固定遍历顺序、不用 `Math.hypot` 的地方就别用；
@@ -106,7 +112,7 @@ pnpm test:e2e:app              ✓ 33 条（前置：先 tauri build --no-bundle
   `features/dock/dock-layout.ts`，连线形状是 `features/graph/edge-routing.ts`。
 - **数字要同步**：用例数写在 `README.md`（质量门禁表 + E2E 覆盖段），功能描述写在 README 的功能表 +
   `docs/architecture.md`（§7 ADR 表、§8 边界清单）+ `docs/milestones.md`。现在改完是
-  **84 文件 / 1573 条 / UI E2E 59 条 / 应用层 E2E 33 条**。
+  **84 文件 / 1575 条 / UI E2E 60 条 / 应用层 E2E 33 条**。
 - **验证顺序**：`pnpm typecheck` + 目标 vitest → `pnpm test` → 动了前端就 `pnpm build` + `pnpm test:e2e:ui`
   → 动了 Rust 或要跑应用层 E2E 才 `tauri build --no-bundle`（约 3–4 分钟）+ `pnpm test:e2e:app`。
 - **`pnpm test` 有已知抖动**：`tests/graph.test.tsx` 的「仅标题」用例在**并行跑整套**时偶发失败
