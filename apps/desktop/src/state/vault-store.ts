@@ -63,6 +63,10 @@ interface VaultState {
    * 而外部改动是**背景事件**（同步盘可能每分钟都在落文件），每次都弹提示等于噪音。
    */
   applyExternalChange: (payload: VaultChanged) => Promise<void>
+  /**
+   * 从回收站恢复之后对齐条目表与文件树（静默；见实现处的文档）。
+   */
+  syncAfterRestore: () => Promise<void>
   closeVault: () => Promise<void>
 
   toggleExpanded: (relPath: string) => void
@@ -251,6 +255,31 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       const error = MimenoteError.from(cause)
       console.warn('[vault] 外部改动后重扫失败：', error)
       toast.warn('外部改动后重扫失败', describeError(error, 'Vault 可能已被移动或删除'))
+    }
+  },
+
+  /**
+   * 从回收站恢复之后，把条目表与文件树对齐（**静默**，不弹"已重扫"提示）。
+   *
+   * 为什么必须刷新：宿主的 `note_restore` 会让文件回到磁盘（并就地更新索引与它自己那份条目表），
+   * 但**前端这份快照**是打开 Vault 时拍的 —— 不刷新的话文件已经回来了、树里却没有那一行。
+   *
+   * 为什么走一次完整重扫，而不是"往树里插一行"：一次恢复可能是**一整棵目录**（几百个文件），
+   * 逐条插入等于把扫描器的口径（扩展名、忽略规则、大小统计）抄第二遍；
+   * 而 `vault_snapshot` 会复用索引缓存，1 万笔记约 0.1–0.3 s，代价可接受。
+   * 单篇恢复时宿主其实已经就地补好了条目与索引，这一步只是让前端跟上。
+   */
+  syncAfterRestore: async () => {
+    if (get().info === null || get().status === 'loading') return
+    const seq = ++externalSeq
+    try {
+      const snapshot = await ipc.vaultSnapshot()
+      if (seq !== externalSeq) return
+      set(snapshotPatch(snapshot, get().selected))
+    } catch (cause) {
+      const error = MimenoteError.from(cause)
+      console.warn('[vault] 恢复后刷新条目表失败：', error)
+      toast.warn('恢复后刷新失败', describeError(error, '请按 Ctrl+Alt+R 手工重扫一次'))
     }
   },
 

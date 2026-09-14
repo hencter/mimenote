@@ -58,6 +58,9 @@ pub fn run() {
             commands::dir_rename,
             commands::dir_move,
             commands::note_delete,
+            // 回收站：列出与恢复（恢复原语在 `mn-core`，见 ADR-0017）
+            commands::trash_list,
+            commands::note_restore,
             commands::note_stats,
             commands::index_status,
             commands::note_links,

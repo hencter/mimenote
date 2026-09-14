@@ -29,6 +29,7 @@ import type {
   RenameLinkUpdate,
   RenameOutcome,
   ResolvedLink,
+  RestoreSummary,
   SearchHit,
   SearchResult,
   SetTagsOutcome,
@@ -39,6 +40,7 @@ import type {
   TagRenameSkip,
   TagSource,
   TagSummary,
+  TrashEntry,
   TrashRecord,
   VaultInfo,
   VaultSnapshot,
@@ -1506,6 +1508,13 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
    */
   const binaries = new Map<string, Uint8Array>()
   const trashed: TrashRecord[] = []
+  /** 被删笔记的正文（`id → text`）：Mock 没有真文件系统，但"恢复后内容逐字回来"要成立。 */
+  const removedTexts = new Map<string, string>()
+  /** 被删/被恢复时"曾经存在过的目录"：Mock 用了扁平的文件表，目录需要单独记一笔。 */
+  const trashDirs = new Set<string>()
+  /** 台账里的记录现在还算不算"东西还在"（模拟用户在文件管理器里清过回收站）。 */
+  const goneFromTrash = new Set<string>()
+  const presentInTrash = (record: TrashRecord): boolean => !goneFromTrash.has(record.id)
   let clock = Date.now()
 
   const touch = (): number => {
@@ -1773,8 +1782,63 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
             sizeBytes: new TextEncoder().encode(note.text).length,
             isDir: false,
           }
+          // 正文另存一份：真实宿主是把它移进 `.mimenote/trash`，Mock 里没有真文件系统，
+          // 但"恢复之后内容逐字回来"这条必须在 Mock 下也成立（否则前端测试就是在测空气）
+          removedTexts.set(record.id, note.text)
           trashed.push(record)
           return record as T
+        }
+        case 'trash_list': {
+          // 与宿主同口径：按删除时间倒序，并如实标出"东西还在不在"
+          const entries: TrashEntry[] = [...trashed]
+            .sort((left, right) => right.deletedAtMs - left.deletedAtMs)
+            .map((record) => ({ ...record, present: presentInTrash(record) }))
+          return entries as T
+        }
+        case 'note_restore': {
+          const id = String(a.id ?? '')
+          const targetRaw = a.targetRelPath
+          const index = trashed.findIndex((record) => record.id === id)
+          if (index < 0) fail('NOT_FOUND', `回收站记录不存在：${id}`)
+          const record = trashed[index]!
+          if (!presentInTrash(record)) fail('NOT_FOUND', '回收站里的这个文件已经不在了')
+
+          const target = targetRaw === undefined || targetRaw === null ? record.originalRelPath : String(targetRaw)
+          validate(target)
+          if (files.has(target) || trashDirs.has(target)) {
+            fail('ALREADY_EXISTS', `目标已存在：${target}（先把那个文件移开，或用「恢复为…」换个名字）`)
+          }
+
+          // 父目录缺了就补（与 mn-core 的 restore_from_trash 同一行为），并自浅到深报出来
+          const createdDirs: string[] = []
+          const segments = target.split('/')
+          let accumulated = ''
+          for (const segment of segments.slice(0, -1)) {
+            accumulated = accumulated === '' ? segment : `${accumulated}/${segment}`
+            if (!trashDirs.has(accumulated) && !files.has(accumulated)) {
+              trashDirs.add(accumulated)
+              createdDirs.push(accumulated)
+            }
+          }
+
+          const text = removedTexts.get(record.id)
+          if (text === undefined) fail('NOT_FOUND', '回收站里的这个文件已经不在了')
+          files.set(target, { relPath: target, text })
+          touch()
+          removedTexts.delete(record.id)
+          trashed.splice(index, 1)
+
+          const summary: RestoreSummary = {
+            id: record.id,
+            originalRelPath: record.originalRelPath,
+            restoredRelPath: target,
+            isDir: record.isDir,
+            createdDirs,
+            restoredToOriginalPlace: target === record.originalRelPath,
+            // 目录恢复要交给真实重扫；Mock 里没有扫描器，但契约形状要保持一致
+            needsRescan: record.isDir,
+          }
+          return summary as T
         }
         case 'note_rename': {
           const relPath = String(a.relPath ?? '')

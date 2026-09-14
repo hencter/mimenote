@@ -1,0 +1,138 @@
+/*
+ * 回收站对话框的样式。
+ *
+ * 沿用全站的 `.mn-overlay` / `.mn-dialog` 语言（见 `move-dialog.css`、`settings` 的对话框），
+ * 只加"一条记录一行"这个列表形状：左边是名字 + 原路径 + 时间/大小，右边两个按钮。
+ * 颜色全部走主题令牌，不新增令牌。
+ */
+
+.mn-trash {
+  width: min(720px, 92vw);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mn-trash__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mn-trash__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.mn-trash__count {
+  color: var(--mn-fg-subtle);
+  font-size: 12px;
+  /* 把「关闭」推到最右 */
+  margin-right: auto;
+}
+
+.mn-trash__hint {
+  margin: 0;
+  color: var(--mn-fg-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.mn-trash__hint code {
+  background: var(--mn-code-bg);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
+.mn-trash__error {
+  margin: 0;
+  color: var(--mn-danger);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mn-trash__empty {
+  margin: 8px 0;
+  color: var(--mn-fg-subtle);
+  font-size: 12px;
+}
+
+.mn-trash__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  min-height: 0;
+  border-top: 1px solid var(--mn-border);
+}
+
+.mn-trash__row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--mn-border);
+}
+
+.mn-trash__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mn-trash__name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mn-trash__path {
+  color: var(--mn-fg-subtle);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.mn-trash__sub {
+  color: var(--mn-fg-subtle);
+  font-size: 12px;
+}
+
+/* 孤儿记录（台账有、文件没了）：用危险色标出来，但**不禁用整行的解释**——
+   用户仍然能看到它原本叫什么、什么时候删的 */
+.mn-trash__orphan {
+  color: var(--mn-danger);
+}
+
+.mn-trash__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.mn-trash__form {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mn-trash__label {
+  color: var(--mn-fg-subtle);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.mn-trash__form .mn-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}

@@ -170,6 +170,15 @@ interface UiState extends UiPreferences {
    * 不在 store 里再抄一份口径。
    */
   setOutlineLevels: (vaultRoot: string, levels: readonly number[]) => void
+
+  /**
+   * 回收站对话框是否打开。
+   *
+   * 与 `paletteMode` 同一类**瞬时状态**：刻意不进 `persist()` 的白名单 ——
+   * 重启后不该自动弹出一个对话框。
+   */
+  trashDialogOpen: boolean
+  setTrashDialogOpen: (open: boolean) => void
 }
 
 function persist(state: UiState): void {
@@ -191,6 +200,13 @@ export const useUiStore = create<UiState>((set, get) => ({
   ...initial,
 
   paletteMode: null,
+
+  trashDialogOpen: false,
+
+  setTrashDialogOpen: (open) => {
+    // 与 `openPalette` 一样：对话框开关不是需要记住的偏好，不调用 persist()
+    set({ trashDialogOpen: open })
+  },
 
   openPalette: (mode) => {
     // 不调用 persist()：面板开关不是需要记住的偏好

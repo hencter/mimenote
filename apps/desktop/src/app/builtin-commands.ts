@@ -18,6 +18,7 @@ import {
   deleteSelected,
   moveSelected,
   openVaultInteractive,
+  openTrash,
   reloadCurrentNote,
   renameSelected,
   rescanVault,
@@ -163,6 +164,14 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     run: closeVault,
   },
 
+  {
+    id: 'vault.trash',
+    title: '打开回收站…',
+    category: 'Vault',
+    when: hasVault,
+    unavailableReason: '需要先打开 Vault',
+    run: openTrash,
+  },
   {
     id: 'note.new',
     title: '新建笔记',

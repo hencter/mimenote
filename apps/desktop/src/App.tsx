@@ -26,6 +26,7 @@ import { Splitter } from '@/components/Splitter'
 import { Toasts } from '@/components/Toasts'
 import { MarkdownEditor } from '@/features/editor/MarkdownEditor'
 import { ExportButton } from '@/features/export/ExportButton'
+import { TrashDialog } from '@/features/trash/TrashDialog'
 import { WindowControls } from '@/features/window/WindowControls'
 import { ExportDialog } from '@/features/export/ExportDialog'
 import { GraphCanvas } from '@/features/graph/GraphCanvas'
@@ -281,6 +282,7 @@ export function App() {
       <ImageLightbox />
       <SettingsDialog />
       <ExportDialog />
+      <TrashDialog />
     </div>
   )
 }

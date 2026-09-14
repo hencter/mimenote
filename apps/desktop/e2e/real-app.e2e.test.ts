@@ -1343,6 +1343,125 @@ describe.skipIf(!supported)('真实应用：标签重命名 / 合并（真实磁
 })
 
 /**
+ * 回收站：从"删掉"到"拿回来"的完整闭环（真实二进制 + 真实磁盘）。
+ *
+ * 为什么要在这一层验：恢复要同时动**文件**（搬回原位置）、**台账**（删掉那条记录）、
+ * **条目表**与**索引**（单篇就地补，目录交给重扫）。Mock 适配器只能验证界面按对了按钮，
+ * 文件到底有没有回到磁盘、内容是否逐字相同，只有真实宿主能回答。
+ * 「原位置被占用」那条也在这里验：它必须**拒绝并且什么都不改** —— 静默覆盖比删错更糟。
+ */
+describe.skipIf(!supported)('真实应用：回收站恢复（真实磁盘）', () => {
+  let app: LaunchedApp
+  let vault: TempVault
+
+  const KEEP = 'notes/留下的.md'
+  const RESTORE_ME = 'notes/拿回来.md'
+  const BODY = '# 拿回来\n\n这一行的内容必须逐字回得来。\n\n#标签甲 与 [[留下的]]\n'
+
+  beforeAll(async () => {
+    vault = await createTempVault({ [KEEP]: '# 留下的\n', [RESTORE_ME]: BODY })
+    app = await launchApp({ vaultPath: vault.path })
+    await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
+  }, 120_000)
+
+  afterAll(async () => {
+    if (app !== undefined) await app.close()
+    if (vault !== undefined) await vault.cleanup()
+  })
+
+  /** 在文件树上删掉一篇（走真实的二次确认）。先确保那一行可见（父目录该展开就展开）。 */
+  async function deleteViaTree(relPath: string): Promise<void> {
+    await openNoteInTree(app.page, relPath)
+    await app.page.locator('.mn-tree').focus()
+    await app.page.keyboard.press('Delete')
+    await app.page.waitForSelector('.mn-dialog', { state: 'visible', timeout: 10_000 })
+    await app.page.locator('.mn-dialog button', { hasText: '移入回收站' }).click()
+  }
+
+  /** 用命令面板打开回收站（顺带验证命令注册表里有它）。 */
+  async function openTrashViaPalette(): Promise<void> {
+    await app.page.keyboard.press('Control+k')
+    await app.page.waitForSelector('.mn-palette', { state: 'visible', timeout: 10_000 })
+    // 只在**唯一命中**时按回车：`回收站` 会同时匹配到「删除到回收站」（没有选中项时它是置灰的），
+    // 面板的 Enter 落在置灰项上什么都不做 —— 这条测试要的是"打开回收站"这一条。
+    // 顺带验证命令注册表里有它（否则面板根本搜不到）。
+    await app.page.locator('.mn-palette input').fill('打开回收站')
+    // 等那一条**真的**被渲染出来且高亮，再按回车。
+    // 为什么不能 fill 完就按：过滤是 React 状态更新，Enter 可能赶在重渲染之前落到上一次的
+    // 高亮项上（这条用例真的偶发过"什么都没发生"）。这里等状态而不是 sleep。
+    const item = app.page.locator('.mn-palette [data-palette-id="vault.trash"]')
+    await item.waitFor({ state: 'visible', timeout: 10_000 })
+    await waitUntil(
+      async () => ((await item.getAttribute('class')) ?? '').includes('active'),
+      10_000,
+      '「打开回收站…」被高亮',
+    )
+    await app.page.keyboard.press('Enter')
+    await app.page.waitForSelector('.mn-trash', { state: 'visible', timeout: 10_000 })
+  }
+
+  it('删掉 → 命令面板打开回收站 → 恢复：文件与内容逐字回到磁盘，树里也回来了', async () => {
+    const absolute = vault.absolute(RESTORE_ME)
+    await deleteViaTree(RESTORE_ME)
+    await waitUntil(async () => !existsSync(absolute), 10_000, '文件被移入回收站')
+
+    await openTrashViaPalette()
+    await waitUntil(
+      async () => (await app.page.locator('.mn-trash').textContent())?.includes('拿回来.md') === true,
+      10_000,
+      '回收站里列出了刚删的笔记',
+    )
+    // 面板能打开，说明命令注册表里有这条命令（否则面板搜不到）
+    await app.page.locator('.mn-trash button', { hasText: '恢复' }).first().click()
+
+    // 磁盘上内容逐字回来
+    await waitUntil(async () => existsSync(absolute), 10_000, '文件回到原位置')
+    expect(await vault.read(RESTORE_ME)).toBe(BODY)
+    // 树里的行回来（条目表被就地补上，不需要重扫）
+    await waitUntil(
+      async () => (await app.page.locator(`.mn-tree [data-rel-path="${RESTORE_ME}"]`).count()) === 1,
+      10_000,
+      '文件树里重新出现这一行',
+    )
+    // 台账里不该再有它（恢复过的条目不会被列第二次）
+    await waitUntil(
+      async () => (await app.page.locator('.mn-trash').textContent())?.includes('拿回来.md') === false,
+      10_000,
+      '列表里不再有它',
+    )
+
+    // 关掉对话框：它铺满整个窗口，留着会挡住后面用例对文件树的点击
+    await app.page.locator('.mn-trash button', { hasText: '关闭' }).click()
+    await waitUntil(
+      async () => (await app.page.locator('.mn-trash').count()) === 0,
+      10_000,
+      '回收站对话框已关闭',
+    )
+  }, 120_000)
+
+  it('原位置被占用时：恢复被拒绝，磁盘上一个字节都不变', async () => {
+    await deleteViaTree(RESTORE_ME)
+    await waitUntil(async () => !existsSync(vault.absolute(RESTORE_ME)), 10_000, '再次删掉')
+
+    // 用户在应用里（或外部）把同一个名字写了别的笔记
+    await vault.write(RESTORE_ME, '# 占位者\n')
+    await openTrashViaPalette()
+    await app.page.locator('.mn-trash button', { hasText: '恢复' }).first().click()
+
+    // 错误提示必须点出「恢复为…」这条路（toast 的 detail 里带着出路）
+    await waitUntil(
+      async () =>
+        ((await app.page.locator('.mn-toasts').textContent()) ?? '').includes('恢复为'),
+      10_000,
+      '提示绝不覆盖并指出出路',
+    )
+    expect(await vault.read(RESTORE_ME)).toBe('# 占位者\n')
+    // 记录仍在回收站里，供用户换名字再来
+    expect((await app.page.locator('.mn-trash').textContent()) ?? '').toContain('拿回来.md')
+  }, 120_000)
+})
+
+/**
  * 自绘标题栏（`decorations: false` + 我们自己的窗口按钮）。
  *
  * 为什么必须在**真实应用**这一层验：这组行为一半在 Rust 侧（窗口装饰、能力声明），

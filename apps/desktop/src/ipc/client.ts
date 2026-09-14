@@ -22,12 +22,14 @@ import type {
   NoteLinks,
   NoteTags,
   RenameOutcome,
+  RestoreSummary,
   SearchResult,
   SetTagsOutcome,
   SnippetFile,
   TagNotes,
   TagRenameOutcome,
   TagSummary,
+  TrashEntry,
   TrashRecord,
   VaultInfo,
   VaultSnapshot,
@@ -99,6 +101,16 @@ export const ipc = {
     call<NoteContent>('note_create', { parentRel, title }),
   noteDelete: (relPath: string, confirm: boolean) =>
     call<TrashRecord>('note_delete', { relPath, confirm }),
+  /** 列出回收站（最近的排最前，含"东西还在不在"）。 */
+  trashList: () => call<TrashEntry[]>('trash_list'),
+  /**
+   * 把回收站里的一条恢复回来。
+   *
+   * 不传 `targetRelPath` 就恢复到**当初的位置**；传了就恢复到那里（界面上的「恢复为…」，
+   * 原位置已被别人占用时的出路）。目标已存在时返回 `ALREADY_EXISTS`，**绝不覆盖**。
+   */
+  noteRestore: (id: string, targetRelPath?: string) =>
+    call<RestoreSummary>('note_restore', { id, targetRelPath: targetRelPath ?? null }),
   noteStats: (relPath: string) => call<DocumentStats>('note_stats', { relPath }),
   /**
    * 重命名笔记（同目录改名）并改写全库指向它的链接。

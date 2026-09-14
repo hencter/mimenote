@@ -50,6 +50,18 @@ export async function rescanVault(): Promise<void> {
   await useVaultStore.getState().rescan()
 }
 
+/**
+ * 打开回收站（列出删掉的东西，可恢复）。
+ *
+ * 为什么做成动作而不是让命令直接改 store：命令注册表里的 `run` 都是"做一件事"的函数，
+ * 菜单 / 命令面板 / 将来的快捷键三条入口共用同一个它；动作层也是唯一能一眼看清
+ * "这条命令到底碰了哪些状态"的地方。对话框自己在打开时拉一次台账（见 `TrashDialog`），
+ * 这里只负责把它打开。
+ */
+export async function openTrash(): Promise<void> {
+  useUiStore.getState().setTrashDialogOpen(true)
+}
+
 /** 关闭当前 Vault（先把未保存内容落盘）。 */
 export async function closeVault(): Promise<void> {
   if (hasUnsavedChanges()) {
@@ -195,7 +207,9 @@ export async function deleteSelected(relPath?: string): Promise<void> {
       (isDirectory ? '\n\n目录内的所有内容都会一起被移走。' : '') +
       (useNoteStore.getState().dirty && useNoteStore.getState().doc?.relPath === target
         ? '\n\n该笔记有未保存的修改，删除后这些修改将丢失。'
-        : ''),
+        : '') +
+      // 说清"这不是单向动作"：用户敢按删除，往往是因为知道能找回来
+      '\n\n删掉之后可以随时在「回收站」（菜单 / 命令面板搜"回收站"）里恢复。',
     confirmLabel: '移入回收站',
     danger: true,
   })
@@ -207,7 +221,7 @@ export async function deleteSelected(relPath?: string): Promise<void> {
     if (useNoteStore.getState().doc?.relPath === target) {
       useNoteStore.getState().close()
     }
-    toast.success('已移入回收站', record.storedRelPath)
+    toast.success('已移入回收站', '可在「回收站」里恢复')
   } catch (cause) {
     toast.error(describeError(MimenoteError.from(cause), '删除失败'))
   }

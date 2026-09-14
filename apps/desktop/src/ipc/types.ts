@@ -109,6 +109,36 @@ export interface TrashRecord {
   isDir: boolean
 }
 
+/**
+ * 回收站列表里的一条：台账记录 + **它现在还在不在**。
+ *
+ * `present === false` 是"孤儿记录"（台账还在，但 `.mimenote/trash` 里那个文件已经没了 ——
+ * 用户手工清理过，或同步盘搬走了）。界面必须如实区分"可以恢复"与"东西已经没了"，
+ * 而不是让用户点下去才吃到 `NOT_FOUND`。
+ */
+export interface TrashEntry extends TrashRecord {
+  present: boolean
+}
+
+/** `note_restore` 的结果。 */
+export interface RestoreSummary {
+  id: string
+  originalRelPath: string
+  /** 实际恢复到哪个 Vault 相对路径（「恢复为…」时与 `originalRelPath` 不同）。 */
+  restoredRelPath: string
+  isDir: boolean
+  /** 为了放回它新建了哪些目录（自浅到深）—— 界面要能说清"顺手建了 2 个目录"。 */
+  createdDirs: string[]
+  restoredToOriginalPlace: boolean
+  /**
+   * 宿主要求前端调一次静默重扫。
+   *
+   * 目录恢复会置 `true`（一个目录可能带几百个文件，逐条构造条目等于把扫描口径抄第二遍），
+   * 单篇恢复读回失败时也会置 `true` 作为兜底。
+   */
+  needsRescan: boolean
+}
+
 /** 用户 CSS 片段。 */
 export interface SnippetFile {
   name: string
