@@ -1,22 +1,25 @@
 # 交接说明：下一个会话从这里开始
 
 > 这份文件是**临时**的会话交接，不是产品文档。新会话接手顺利之后可以直接删掉它。
-> 最后更新：这一轮（13 条需求 + 连线重做）交付收尾时。
+> 最后更新：进入"用户逐条提需求、主会话逐条交付"的修补轮之后（第一项 = 标题栏三区，ADR-0029）。
 
 ## 0. 一句话现状
 
-用户这一轮给的 **13 条需求全部交付、外加一轮连线重做（用户参与讨论后定稿）**，门禁全绿。
+13 条需求那一轮与连线重做都已交付；现在是**用户逐条提、主会话逐条做**的修补轮，
+已交付 **标题栏三区（ADR-0029）**，门禁全绿。
 
 ```
 pnpm typecheck                 ✓ 无错误
-pnpm test                      ✓ 84 个测试文件 / 1571 条
-pnpm test:e2e:ui               ✓ 58 条（前置：先 pnpm build）
-pnpm test:e2e:app              ✓ 33 条（前置：先 tauri build --no-bundle；本轮已重建 release 二进制）
+pnpm test                      ✓ 84 个测试文件 / 1573 条
+pnpm test:e2e:ui               ✓ 59 条（前置：先 pnpm build）
+pnpm test:e2e:app              ✓ 33 条（前置：先 tauri build --no-bundle；release 二进制未变，未重跑）
 ```
 
 工作树里**只剩用户自己在 `examples/demo-vault/` 里的草稿文件**（未跟踪，刻意不提交、不改动）。
-其中 `项目/未命名笔记.md`（**已跟踪**）在用户自己的试用里被删进了 `.mimenote/trash`（时间戳 20:24，
-在上一轮之前）—— 那一处删除**没有**进任何提交，也没有被恢复，留给用户决定。
+其中 `项目/未命名笔记.md`（**已跟踪**）与 `测试笔记.md`（未跟踪）都被用户自己删进了 `.mimenote/trash`
+—— 那两处删除**没有**进任何提交，也没有被恢复，留给用户决定。
+（`测试笔记.md` 进回收站时让 `tests/demo-vault.test.ts` 的"图片引用都要解析得到"变红，
+已在 `listFiles` 里跳过 `.mimenote/trash` —— **不是**放宽判据，回收站里的东西本来就已被用户删掉。）
 
 ## 1. 这一轮交付了什么
 
@@ -60,6 +63,22 @@ pnpm test:e2e:app              ✓ 33 条（前置：先 tauri build --no-bundle
 提交：`0cab6fd` 图谱卡片 · `2c3f8eb` 停靠/标签栏/右键菜单 · `d6540cf` 偏好与阅读体验 ·
 `07f58f8` 文档（ADR-0025/0026/0027 + 架构）；本轮连线与剩余文档见下面"下一轮"开头的说明。
 
+## 1.5 修补轮（用户逐条提、主会话逐条做）
+
+用户明确定了节奏：**"我提功能你做，提一个做一个"**。已交付：
+
+| # | 用户原话 | 落在哪 |
+| --- | --- | --- |
+| 1 | `mn-editor__path` 居中在中间页、高度不固定，希望进标题栏那一行并分成左/中/右三区 | **ADR-0029**：`.mn-titlebar` 改网格 `1fr / 2fr / 1fr`（`__left` / `__center` / `__right`），路径从编辑器面板搬进中区（`.mn-titlebar__path`），删掉 `.mn-editor__path` / `.mn-editor__status` |
+
+两个细节值得记住（下一个交付项会复用）：
+
+- 路径的旧类名 `.mn-editor__path` 曾是 E2E 里"当前打开的是哪一篇"的主力探针（约 20 处），
+  现在一律是 `.mn-titlebar__path`；`openNoteInTree` 里"编辑视图读路径、否则退回树里选中态"的分支
+  已经删掉（路径三种视图里都在，不需要间接信号了）。
+- 顺手修的门禁红：`tests/demo-vault.test.ts` 的 `listFiles` 现在跳过 `.mimenote/trash`
+  （用户删除的副本不该被当成夹具；`README` 里列着的 `.mimenote/snippets/` 仍然照查）。
+
 ## 2. 下一轮可以做的（按价值排序）
 
 1. **把连线搬进 canvas**：这是所有"更优雅的线"效果（渐细笔触 taper、发光、流动虚线、60fps 漂浮）
@@ -77,21 +96,27 @@ pnpm test:e2e:app              ✓ 33 条（前置：先 tauri build --no-bundle
 
 - **注释与文档一律中文，注释解释"为什么"**（取舍、代价、踩过的坑），不复述代码在做什么。
 - **提交由主会话做**：派出去的子代理**绝不执行 git 写操作**，只允许 `status`/`log`/`diff` 这类只读命令。
-  每个交付项 = feature commit + docs-sync commit；ADR 放 `docs/adr/`，**下一个编号是 0029**。
+  每个交付项 = feature commit + docs-sync commit；ADR 放 `docs/adr/`，**下一个编号是 0030**。
 - **`examples/demo-vault/` 是用户自己的草稿区**：不要动、不要提交里面的未跟踪文件（含
-  `项目/未命名笔记.md` 那处删除 —— 那是用户自己删的，保持原样）。
+  `项目/未命名笔记.md` 与 `测试笔记.md` 那两处删除 —— 都是用户自己删的，保持原样）。
 - **确定性是一条纪律**：力场自己实现 xorshift32、固定遍历顺序、不用 `Math.hypot` 的地方就别用；
   同一份输入 + 同一组参数 ⇒ 同一份坐标（ADR-0021）。连线走线同样**不含任何随机量**。
 - **判据只有一份**：callout 是 `domain/callouts.ts`，任务列表是 `domain/task-list.ts`，
   frontmatter 是 `domain/frontmatter.ts`，文件树排序是 `domain/tree.ts`，停靠模型是
   `features/dock/dock-layout.ts`，连线形状是 `features/graph/edge-routing.ts`。
 - **数字要同步**：用例数写在 `README.md`（质量门禁表 + E2E 覆盖段），功能描述写在 README 的功能表 +
-  `docs/architecture.md`（§7 ADR 表、§8 边界清单）+ `docs/milestones.md`。本轮改完是
-  **84 文件 / 1571 条 / UI E2E 58 条 / 应用层 E2E 33 条**。
+  `docs/architecture.md`（§7 ADR 表、§8 边界清单）+ `docs/milestones.md`。现在改完是
+  **84 文件 / 1573 条 / UI E2E 59 条 / 应用层 E2E 33 条**。
 - **验证顺序**：`pnpm typecheck` + 目标 vitest → `pnpm test` → 动了前端就 `pnpm build` + `pnpm test:e2e:ui`
   → 动了 Rust 或要跑应用层 E2E 才 `tauri build --no-bundle`（约 3–4 分钟）+ `pnpm test:e2e:app`。
+- **`pnpm test` 有已知抖动**：`tests/graph.test.tsx` 的「仅标题」用例在**并行跑整套**时偶发失败
+  （单独跑必过；`a9d472d` 那次把门闸改成"布局高度"只消掉了其中一条路径）。遇到它先单独重跑一次确认，
+  别急着改被测代码。
 - **子代理在本轮两次中途失败过**（B 干到一半、A 完全没跑起来）：派活时把"硬性纪律 + 文件地图 +
   交付报告格式"写全，并且**假设它随时可能死** —— 主会话要留出接手收尾的余量。
+- **这台机器上 `apps/desktop/src/**` 与 `README.md` 常被别的进程（Vite watch / VS Code）短暂占用**：
+  `edit` 工具会报 `ReplaceFileW EIO (Win32 32/1175)`。**原样重试一次通常就过了**；
+  连续失败就改用 PowerShell 的 `[IO.File]::ReadAllText/WriteAllText` + 重试循环，别为此改文件内容。
 
 ## 4. 环境事实
 
@@ -112,6 +137,10 @@ pnpm test:e2e:app              ✓ 33 条（前置：先 tauri build --no-bundle
 
 ## 5. 关键文件地图
 
+- `apps/desktop/src/App.tsx` 的 `<header className="mn-titlebar">`：**唯一的标题栏**，
+  内部三区 `.mn-titlebar__left / __center / __right`（ADR-0029）；中区放当前笔记路径
+  `.mn-titlebar__path`（含 `.mn-titlebar__path-text` 与「保存中…」），它的缩放/省略样式与三区列宽
+  都在 `styles/app.css` 标题栏那一段。**`align-items` 不能加**（窗口按钮靠 `align-self: stretch`）。
 - `apps/desktop/src/features/graph/GraphCanvas.tsx`：坐标换算、命中、指针、模拟 effect、漂浮循环、
   浮动面板、HUD、**卡片菜单**、**连线样式与走线的组装**（`edgeVisuals` 那段）。
 - `apps/desktop/src/features/graph/edge-routing.ts`：**连线形状**（弧 / 径向切线 / 交回调用方），
