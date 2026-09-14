@@ -247,13 +247,20 @@ describe('编辑器里的图片也能放大', () => {
     })
 
     // 光标在文档开头（第一行），因此三张图都不在光标所在行 ⇒ 都渲染成 widget
-    const images = await waitFor(() => {
-      const nodes = Array.from(
-        document.querySelectorAll<HTMLImageElement>('.cm-content img.mn-md-image'),
-      )
-      expect(nodes).toHaveLength(3)
-      return nodes
-    })
+    //
+    // ⚠️ 给一个**宽**超时：图片 widget 是编辑器装饰的产物，而装饰要等 Lezer 把语法树解析到那几行
+    // 才建得出来，解析本身有**时间预算**（机器忙时只解析一部分，下一轮继续）。默认的 1s 在
+    // 全量套件并行（外加构建）时不够 —— 表现为"只找到 1 张图"这种与实现无关的假红。
+    const images = await waitFor(
+      () => {
+        const nodes = Array.from(
+          document.querySelectorAll<HTMLImageElement>('.cm-content img.mn-md-image'),
+        )
+        expect(nodes).toHaveLength(3)
+        return nodes
+      },
+      { timeout: 15_000 },
+    )
 
     await act(async () => {
       fireEvent.click(images[1] as HTMLImageElement)

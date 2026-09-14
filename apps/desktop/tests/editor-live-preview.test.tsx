@@ -14,6 +14,7 @@
  */
 
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
+import { ensureSyntaxTree } from '@codemirror/language'
 import { EditorState } from '@codemirror/state'
 import { EditorView, type Decoration } from '@codemirror/view'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
@@ -104,6 +105,18 @@ function decosOf(
   context: LivePreviewContext = contextOf(),
   visible?: readonly { from: number; to: number }[],
 ): Deco[] {
+  // 语法树解析有**时间预算**：机器忙（例如全量套件并行）时 `syntaxTree(state)` 可能只解析了一部分，
+  // 装饰就会少几条 —— 于是用例的结果取决于"这台机器当时有多忙"。真实编辑器里视图会把视口解析完
+  // 再算装饰，这里先把它逼到完整（`live-preview-table.test.tsx` 的 `decosOf` 是同一套做法）。
+  // 单次预算内没解析完时 `ensureSyntaxTree` 返回 `null` 并**下次从断点继续**，所以循环推进；
+  // 全都失败就明确报错，而不是让断言以"少了一条装饰"这种看不懂的形式失败。
+  if (state.doc.length > 0) {
+    let parsed = ensureSyntaxTree(state, state.doc.length, 10_000)
+    for (let attempt = 0; parsed === null && attempt < 5; attempt += 1) {
+      parsed = ensureSyntaxTree(state, state.doc.length, 10_000)
+    }
+    if (parsed === null) throw new Error('语法树在预算内没有解析完，本用例无法继续')
+  }
   const set = buildLivePreviewDecorations(state, context, visible)
   const items: Deco[] = []
   set.between(0, state.doc.length, (from, to, value: Decoration) => {
