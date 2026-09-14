@@ -453,7 +453,16 @@ md.core.ruler.push('mn_callout', (state) => {
     if (marker === null) continue
 
     open.tag = 'div'
-    open.attrSet('class', `mn-callout mn-callout--${marker.type}`)
+    // `mn-callout--unknown` 是给**下游**留的痕迹：类型被规范化进类名之后，"用户写的是不是
+    // 系统认识的类型"在渲染流里就无法恢复了（`[!摘录]` 与 `[!note]` 的类名逐字相同）。
+    // 画布那张卡片想如实说出这件事，就只能靠这里多写一个类名（见 features/graph/canvas/blocks.ts）。
+    // 它不影响观感：没有任何样式挂在这个类名上，未知类型照旧按 `note` 的样子渲染。
+    open.attrSet(
+      'class',
+      marker.known
+        ? `mn-callout mn-callout--${marker.type}`
+        : `mn-callout mn-callout--${marker.type} mn-callout--unknown`,
+    )
     const close = tokens.findLastIndex(
       (token, at) => at > index && token.type === 'blockquote_close' && token.level === open.level,
     )

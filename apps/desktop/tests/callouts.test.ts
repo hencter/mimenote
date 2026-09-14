@@ -187,6 +187,19 @@ describe('渲染（与阅读视图/导出件同一条管线）', () => {
     expect(html).toContain('<blockquote>')
   })
 
+  it('未知类型仍然按 note 渲染，但类名里留一个 `mn-callout--unknown` 的痕迹', () => {
+    // 为什么要有这个痕迹：类型被规范化进类名之后（`[!摘录]` 与 `[!note]` 的类名逐字相同），
+    // "用户写的是不是系统认识的类型"在渲染流里就不可恢复了。下游（画布卡片）要如实说出
+    // 这件事只能靠它；观感上一个字都不变（没有样式挂在这个类名上）。
+    const known = renderMarkdown('> [!note] 甲\n')
+    const unknown = renderMarkdown('> [!摘录] 甲\n')
+
+    expect(known).toContain('class="mn-callout mn-callout--note"')
+    expect(known).not.toContain('mn-callout--unknown')
+    expect(unknown).toContain('mn-callout--note')
+    expect(unknown).toContain('mn-callout--unknown')
+  })
+
   it('普通引用块**一个字都不变**（不因为这条新语法而多出类名）', () => {    const html = renderMarkdown('> 只是引用\n')
     expect(html).toContain('<blockquote>')
     expect(html).not.toContain('mn-callout')
