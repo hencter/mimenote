@@ -174,10 +174,9 @@ function siteShellRules(): string {
 /** 页面顶部的导航：回索引 + 面包屑目录 + 标签。 */
 function navHtml(page: SitePage, vaultName: string): string {
   const segments = page.pagePath.split('/').slice(0, -1)
-  // 面包屑显示完整目录路径（每一层都是纯文本，不做"每一层都可点" —— 站点里没有目录页）
-  const crumbs = escapeExportHtml(
-    segments.map((_, index) => segments.slice(0, index + 1).join('/')).join(' / '),
-  )
+  // 面包屑显示**完整目录路径**（`项目/子` 而不是"项目 / 项目/子"）：站点里每一层目录都没有自己的页面，
+  // 做成"每层可点"会指向不存在的地址；只当方位提示，写全路径反而最短最准。
+  const crumbs = escapeExportHtml(segments.join('/'))
   const tags =
     page.tags.length === 0
       ? ''

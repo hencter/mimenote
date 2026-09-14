@@ -450,7 +450,7 @@ function reportSiteResult(result: SiteExportResult): void {
   const seconds = (result.elapsedMs / 1000).toFixed(1)
   const detail =
     `${result.outputDir}\n${result.pages} 篇笔记 · ${result.assets} 张图片 · ` +
-    `${result.files} 个文件 · 用时 ${seconds}s\n打开 ${result.outputDir}\\index.html 就能看（不需要本应用）`
+    `${result.files} 个文件 · 用时 ${seconds}s\n打开那个目录里的 index.html 就能看（不需要本应用）`
 
   const problems: string[] = []
   if (result.skipped.length > 0) problems.push(`${result.skipped.length} 篇没能导出`)
