@@ -1,0 +1,273 @@
+/*
+ * 标签过滤控件样式（文件树头部）。
+ *
+ * 与 drag-drop.css / rename-dialog.css 同一姿态：单组件自带样式，改动不外溢到全局样式表；
+ * 颜色一律走主题令牌，因此跟随主题切换（不新增任何令牌）。
+ */
+
+/*
+ * 工具栏原本是单行 flex（搜索框 + 一排图标按钮），控件要独占第二行。
+ * 用复合选择器而不是单类名：`flex-wrap` 是覆盖 app.css 的 `.mn-tree-toolbar`，
+ * 同优先级下谁赢取决于两个样式表的加载顺序 —— 复合选择器把这件事变成确定的。
+ */
+.mn-tree-toolbar.mn-tree-toolbar--with-tags {
+  flex-wrap: wrap;
+}
+
+.mn-tag-filter {
+  /* `position: relative` 是浮层的定位基准；`1 1 100%` 让它自己占满一行 */
+  position: relative;
+  flex: 1 1 100%;
+  min-width: 0;
+  font-family: var(--mn-font-ui);
+  font-size: 12px;
+}
+
+.mn-tag-filter__bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mn-tag-filter__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  color: var(--mn-fg-muted);
+  background: transparent;
+  border: 1px solid var(--mn-border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.mn-tag-filter__trigger:hover {
+  color: var(--mn-fg);
+  border-color: var(--mn-accent);
+}
+
+.mn-tag-filter__trigger--open,
+.mn-tag-filter[data-tag-filter-active='true'] .mn-tag-filter__trigger {
+  color: var(--mn-accent);
+  border-color: var(--mn-accent);
+}
+
+/* 计数：过滤控件的第一信息，用等宽字体免得数字变化时整行抖动 */
+.mn-tag-filter__count {
+  margin-left: auto;
+  font-family: var(--mn-font-mono);
+  font-size: 11px;
+  color: var(--mn-fg-muted);
+  white-space: nowrap;
+}
+
+.mn-tag-filter__active {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.mn-tag-filter__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+
+.mn-tag-filter__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 2px 1px 7px;
+  color: var(--mn-accent);
+  background: transparent;
+  border: 1px solid var(--mn-accent);
+  border-radius: 999px;
+}
+
+.mn-tag-filter__chip-label {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mn-tag-filter__chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--mn-accent);
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.mn-tag-filter__chip-remove:hover {
+  color: var(--mn-danger);
+}
+
+/*
+ * 「含子标签」：一对一的开关。开与关必须一眼可辨（点亮 + `aria-pressed`），
+ * 禁用时（选中键没有子标签）压到最低存在感但仍可聚焦 —— 鼠标用户靠 title 得知原因，
+ * 键盘/读屏用户靠 aria-pressed 与 title 同样能读到。
+ */
+.mn-tag-filter__subtags {
+  padding: 1px 7px;
+  font-size: 11px;
+  color: var(--mn-fg-muted);
+  background: transparent;
+  border: 1px dashed var(--mn-border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.mn-tag-filter__subtags--on {
+  color: var(--mn-bg);
+  background: var(--mn-accent);
+  border-style: solid;
+  border-color: var(--mn-accent);
+}
+
+.mn-tag-filter__subtags:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.mn-tag-filter__hint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--mn-fg-subtle);
+}
+
+.mn-tag-filter__hint code {
+  font-family: var(--mn-font-mono);
+}
+
+.mn-tag-filter__note {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--mn-fg-muted);
+}
+
+.mn-tag-filter__note--warn {
+  color: var(--mn-warning);
+}
+
+/* 浮层：挂在控件下方，压住文件树（`.mn-tree` 是 position: relative 且 DOM 在后，
+   同层级会盖住绝对定位的浮层 —— z-index 必须显式给） */
+.mn-tag-filter__popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 340px;
+  margin-top: 2px;
+  padding: 8px;
+  background: var(--mn-bg-elevated);
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  box-shadow: var(--mn-shadow);
+}
+
+/* 搜索框：外观与文件树工具栏那个一致（复用 `.mn-search-field` 的外层），
+   但类名独立 —— 页面上有两个同类输入框会让选择器/自动化分不清点的是哪一个 */
+.mn-tag-filter__search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--mn-fg);
+  font-family: inherit;
+  font-size: inherit;
+  outline: none;
+}
+
+.mn-tag-filter__options {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.mn-tag-filter__option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 6px;
+  font-family: var(--mn-font-ui);
+  font-size: 12px;
+  text-align: left;
+  color: var(--mn-fg);
+  background: transparent;
+  border: none;
+  border-radius: var(--mn-radius);
+  cursor: pointer;
+}
+
+.mn-tag-filter__option--active {
+  background: var(--mn-hover);
+}
+
+.mn-tag-filter__option--selected {
+  color: var(--mn-accent);
+  background: var(--mn-active);
+}
+
+.mn-tag-filter__option-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mn-tag-filter__option-count {
+  font-family: var(--mn-font-mono);
+  font-size: 10px;
+  color: var(--mn-fg-subtle);
+}
+
+.mn-tag-filter__footer {
+  display: flex;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+/* 浮层与树行一样是紧凑布局，按钮比全局尺寸小一号 */
+.mn-tag-filter .mn-button--small {
+  padding: 3px 9px;
+  font-size: 12px;
+}
+
+/*
+ * 标签过滤的空态里有两三个按钮（重新过滤 / 清除标签过滤 / 清除文本过滤），
+ * 它们是一组"退路"，横排一行比在 `.mn-tree--empty` 的竖排里各占一行更好读。
+ * 放在这里而不是 `styles/app.css`：那是全仓共用的样式表，而这条只服务于本能力带来的界面。
+ */
+.mn-tree__empty-buttons {
+  display: flex;
+  gap: 8px;
+}

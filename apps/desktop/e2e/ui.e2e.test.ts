@@ -1330,7 +1330,181 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.keyboard.press('Control+Shift+o')
     await waitUntil(async () => (await page.locator('.mn-outline').count()) === 0, 5_000, '面板收起')
   })
+
+  it('按标签过滤文件树：只留命中笔记与祖先目录，计数说清 M/N，Esc 随时回到全量', async () => {
+    // 本文件共用一个页面：单独跑这一条时门闸还在。
+    // 刻意不调 `showEditView`：这一条只用文件树与它的头部控件，而"没有打开的笔记时
+    // 编辑器根本不存在"（`.cm-content` 等不到），那样单独跑就会因为无关的原因失败。
+    if ((await page.locator('.mn-gate').count()) > 0) {
+      await page.getByText('打开文件夹作为 Vault').click()
+      await page.waitForSelector('.mn-tree-row', { state: 'visible' })
+    }
+    // 起点干净：清掉可能残留的标签过滤与文本过滤
+    await resetTagFilter(page)
+    await page.locator('.mn-search-field__input').fill('')
+
+    // —— 入口在文件树头部：可搜索的选择器 ——
+    await page.locator('[data-tag-filter-toggle]').click()
+    await page.locator('[data-tag-filter-search]').fill('项')
+    await waitUntil(
+      async () => (await page.locator('[data-tag-filter-option="项目"]').count()) === 1,
+      5_000,
+      '搜索后出现「项目」选项',
+    )
+    await page.locator('[data-tag-filter-option="项目"]').click()
+
+    // —— 树被收窄到"命中笔记 + 祖先目录"：Mock 里 #项目 命中 设计.md 与 标签示例.md ——
+    await waitUntil(
+      async () => (await page.locator('.mn-tree-row').count()) === 3,
+      10_000,
+      '过滤后只剩命中项与祖先目录',
+    )
+    const filtered = await page
+      .locator('.mn-tree-row')
+      .evaluateAll((rows) => rows.map((row) => row.getAttribute('data-rel-path')))
+    // 集合一致（行内顺序按"目录在前 + 拼音"排，这里只钉住"祖先行排在它的子行之前"）
+    expect([...filtered].sort()).toEqual(['项目', '项目/设计.md', '项目/标签示例.md'].sort())
+    expect(filtered[0]).toBe('项目')
+
+    // 没有命中的笔记、空目录（`项目/子项目` 下的笔记没有这个标签）都不出现
+    for (const hidden of ['项目/路线图.md', '项目/子项目', '日记', '随手记.md']) {
+      expect(await treeRow(page, hidden).count()).toBe(0)
+    }
+
+    // 计数一眼可见，且分母是全库笔记数
+    expect(await page.locator('[data-tag-filter-count]').textContent()).toMatch(/^仅显示 2\/\d+ 篇$/)
+    expect(await page.locator('[data-tag-filter-count]').getAttribute('data-tag-filter-count')).toBe(
+      '2',
+    )
+    // 多选语义与「含子标签」都写在界面上（不留歧义）
+    expect(await page.locator('[data-tag-filter-hint]').textContent()).toContain('任一')
+    const subtags = page.locator('[data-tag-filter-subtags]')
+    expect(await subtags.textContent()).toContain('含子标签')
+    // Mock 里没有 `项目/…` 子标签 → 开关禁用并说明原因（点了没反应比禁用更难懂）
+    expect(await subtags.isDisabled()).toBe(true)
+    expect(await subtags.getAttribute('title')).toContain('没有子标签')
+
+    // —— 与既有的文本过滤叠加（两个条件都生效）——
+    await page.locator('[data-tag-filter-toggle]').click() // 收起选择器
+    await waitUntil(
+      async () => (await page.locator('[data-tag-filter-popover]').count()) === 0,
+      5_000,
+      '选择器收起',
+    )
+    await page.locator('.mn-search-field__input').fill('设计')
+    await waitUntil(
+      async () => (await page.locator('.mn-tree-row').count()) === 2,
+      5_000,
+      '文本过滤在标签结果上再收窄',
+    )
+    expect(await treeRow(page, '项目/标签示例.md').count()).toBe(0)
+    await page.locator('.mn-search-field__input').fill('')
+
+    // —— 键盘导航只在可见项之间走 ——
+    await page.locator('.mn-tree').focus()
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('ArrowDown')
+    const selected = await page.locator('.mn-tree-row--selected').getAttribute('data-rel-path')
+    expect(['项目', '项目/设计.md', '项目/标签示例.md']).toContain(selected)
+
+    // —— Esc 一键回到全量 ——
+    await page.keyboard.press('Escape')
+    await waitUntil(
+      async () => (await page.locator('[data-tag-filter-count]').count()) === 0,
+      5_000,
+      'Esc 清除标签过滤',
+    )
+    expect(await page.locator('[data-tag-filter-hint]').count()).toBe(0)
+    // 全量 = 没有标签的笔记也回来了。用工具栏的「展开全部目录」把整棵树摊开，
+    // 这样断言不依赖上一条用例留下的展开状态（哪一级目录开着是别人的事）
+    await page.locator('button[aria-label="展开全部目录"]').click()
+    await waitUntil(
+      async () => (await treeRow(page, '项目/路线图.md').count()) === 1,
+      5_000,
+      '回到全量后没有标签的笔记可见',
+    )
+    expect(await treeRow(page, '随手记.md').count()).toBe(1)
+  })
+
+  it('标签过滤期间拖拽只能落在看得见的行上：树的空白处明确拒绝并说明原因', async () => {
+    if ((await page.locator('.mn-gate').count()) > 0) {
+      await page.getByText('打开文件夹作为 Vault').click()
+      await page.waitForSelector('.mn-tree-row', { state: 'visible' })
+    }
+    // 造一个已知的过滤态
+    await resetTagFilter(page)
+    await filterByTag(page, '项目')
+    await waitUntil(
+      async () => (await page.locator('.mn-tree-row').count()) === 3,
+      10_000,
+      '过滤生效',
+    )
+    // 收起选择器，免得浮层挡住拖拽的空白区域
+    await page.locator('[data-tag-filter-toggle]').click()
+    await waitUntil(
+      async () => (await page.locator('[data-tag-filter-popover]').count()) === 0,
+      5_000,
+      '选择器收起',
+    )
+
+    // 悬停到空白区域：**不出现**落点反馈（空白处 = Vault 根目录，在收窄视图里恰恰最看不见）
+    await dispatchDrag(page, '项目/设计.md', null, 'hover')
+    expect(await page.locator('.mn-tree [data-drop-root]').count()).toBe(0)
+
+    // 真的丢下去：不搬文件，只给一句能读懂的原因
+    await dispatchDrag(page, '项目/设计.md', null, 'drop')
+    const toast = page.locator('.mn-toast', { hasText: '过滤期间不能拖到树的空白处' })
+    await toast.waitFor({ state: 'visible', timeout: 5_000 })
+    expect(await toast.textContent()).toContain('Vault 根目录')
+    // 没有被搬到 Vault 根：笔记还在原处，可见行数也没变
+    expect(await treeRow(page, '项目/设计.md').count()).toBe(1)
+    expect(await page.locator('.mn-tree-row').count()).toBe(3)
+
+    // 收尾：清除过滤、恢复全量，别把状态漏给后面的用例
+    await page.locator('[data-tag-filter-clear]').click()
+    await waitUntil(
+      async () => (await page.locator('[data-tag-filter-count]').count()) === 0,
+      5_000,
+      '清除标签过滤',
+    )
+  })
 })
+
+/**
+ * 把标签过滤恢复到"没有过滤"的确定状态（本文件共用一个页面，用例之间会互相影响）。
+ *
+ * 先收浮层再清过滤：浮层开着时点触发按钮是"收起"，不清这个状态的话，
+ * 后面想选标签的那一步会点在收起按钮上（表现为"选项找不到"这种误导性的失败）。
+ */
+async function resetTagFilter(page: Page): Promise<void> {
+  if ((await page.locator('[data-tag-filter-popover]').count()) > 0) {
+    await page.locator('[data-tag-filter-toggle]').click()
+    await waitUntil(
+      async () => (await page.locator('[data-tag-filter-popover]').count()) === 0,
+      5_000,
+      '选择器收起',
+    )
+  }
+  if ((await page.locator('[data-tag-filter-clear]').count()) > 0) {
+    await page.locator('[data-tag-filter-clear]').click()
+    await waitUntil(
+      async () => (await page.locator('[data-tag-filter-count]').count()) === 0,
+      5_000,
+      '清除标签过滤',
+    )
+  }
+}
+
+/** 从文件树头部的标签选择器里选一个标签（标签概览是异步来的，所以等选项出现）。 */
+async function filterByTag(page: Page, key: string): Promise<void> {
+  await page.locator('[data-tag-filter-toggle]').click()
+  await waitUntil(
+    async () => (await page.locator(`[data-tag-filter-option="${key}"]`).count()) === 1,
+    10_000,
+    `标签选择器里出现「${key}」`,
+  )
+  await page.locator(`[data-tag-filter-option="${key}"]`).click()
+}
 
 /**
  * 派发一次真实的 HTML5 拖拽（`dragstart` → `dragover` → `drop` → `dragend`）。

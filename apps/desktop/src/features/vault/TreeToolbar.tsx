@@ -1,4 +1,11 @@
-/** 文件树工具栏：过滤、展开/折叠、新建、重扫、切换 Vault。 */
+/**
+ * 文件树工具栏：过滤、展开/折叠、新建、重扫、切换 Vault。
+ *
+ * 第二行是**标签过滤控件**（`TagFilterControl`）：它同样属于文件树头部 ——
+ * 两个入口并排放在一起，"文本收窄"与"标签收窄"在同一处可发现、可清除。
+ * 因此这个容器加了 `--with-tags`（只在 CSS 里给自己开一行 `flex-wrap`，不改动
+ * 原有的单行布局，见 `tag-filter.css`）。
+ */
 
 import { useEffect, useRef } from 'react'
 
@@ -6,6 +13,7 @@ import { FOCUS_FILTER_EVENT } from '@/app/dom-events'
 import { createNoteHere, moveSelected, openVaultInteractive, renameSelected, rescanVault } from '@/app/actions'
 import { Icon } from '@/components/Icon'
 import { useVaultStore } from '@/state/vault-store'
+import { TagFilterControl } from './TagFilterControl'
 
 export function TreeToolbar() {
   const filter = useVaultStore((state) => state.filter)
@@ -27,7 +35,7 @@ export function TreeToolbar() {
   }, [])
 
   return (
-    <div className="mn-tree-toolbar">
+    <div className="mn-tree-toolbar mn-tree-toolbar--with-tags">
       <div className="mn-search-field">
         <Icon name="search" size={14} />
         <input
@@ -121,6 +129,8 @@ export function TreeToolbar() {
           <Icon name="folderOpen" />
         </button>
       </div>
+
+      <TagFilterControl />
     </div>
   )
 }

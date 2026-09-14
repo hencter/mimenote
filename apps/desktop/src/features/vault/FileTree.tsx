@@ -14,6 +14,22 @@
  *   其余行按 `memo` 原样跳过 —— 否则每移动一次鼠标都要重渲染几十行；
  * * HTML5 的 `dragover` 阶段读不到 `dataTransfer.getData()`，所以"当前拖的是谁"留在
  *   组件状态里，`dataTransfer` 只用于过手（顺带让外部程序能拿到相对路径）。
+ *
+ * 标签过滤（`TagFilterControl.tsx` + `domain/tag-filter.ts`，见 architecture.md §8 第 3 条）：
+ *
+ * * **只读的收窄视图**：可见行 = 文本过滤的结果 ∩ 标签命中集合。两个条件都交给既有的
+ *   `flattenTree` 展平，因此排序、祖先保留、虚拟窗口、键盘导航**只有一套实现**
+ *   —— 过滤视图里不会长出第二套"怎么展开、怎么排"的规则；
+ * * **命中的祖先目录自动展开**：与文本过滤的 `autoExpandMatches` 同一观感。行集是
+ *   `flattenTree` 与标签集合的交集，所以这里把可见目录并进 `expanded` 一起喂给它
+ *   （否则命中项会藏在没展开的目录里，看起来像"过滤没生效"）；
+ * * **拖拽的唯一例外**：过滤期间"树的空白区域 = Vault 根目录"这个落点被停用，并给出原因。
+ *   过滤之后列表很短、空白区域很大，一次不经意的拖动就会把笔记静默搬到根目录 ——
+ *   而根目录在收窄视图里通常根本看不见。行与行之间的拖动照旧（落点都是看得见的行，
+ *   "拖到看不见的地方"在结构上不可能发生）；
+ * * 重命名 / 新建 / 删除 / F6 移动照旧可用：它们作用在**选中项**上，与视图收窄无关
+ *   （`F6` 的移动对话框会把目标目录名逐条列出来，不存在"选了看不见的落点"）；
+ * * **Esc**：过滤生效时按下即回到全量（与控件上的「清除」同一条路径）。
  */
 
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -36,12 +52,17 @@ import { isMarkdown } from '@/domain/paths'
 import { flattenTree, type FlatRow } from '@/domain/tree'
 import { computeWindow, scrollTopToReveal } from '@/domain/virtual-list'
 import { useNoteStore } from '@/state/note-store'
+import { useTagFilterStore } from '@/state/tag-filter-store'
 import { toast } from '@/state/toast-store'
 import { useVaultStore } from '@/state/vault-store'
 import { MoveDialog } from './MoveDialog'
 import { RenameDialog } from './RenameDialog'
+import { useTagFilterView } from './use-tag-filter-view'
 
 import './drag-drop.css'
+// 标签过滤的样式也在这里托管一条（空态按钮的排版）：`styles/app.css` 不在本次改动的范围内，
+// 而它属于"标签过滤"这个能力带来的界面，因此与控件样式放在一起；重复 import 会被打包器去重
+import './tag-filter.css'
 
 const ROW_HEIGHT = 26
 const OVERSCAN = 10
@@ -84,12 +105,54 @@ export function FileTree() {
   const select = useVaultStore((state) => state.select)
   const setFilter = useVaultStore((state) => state.setFilter)
 
+  // 标签过滤：文件树是**唯一**开自动重算的地方（条目表变了就重新问一次宿主）。
+  // 控件不再开一份，否则"重扫"这一个事件会被两个组件各触发一轮 IPC。
+  const tagView = useTagFilterView({ autoRefresh: true })
+  const clearTagFilter = useTagFilterStore((state) => state.clear)
+  const reloadTagFilter = useTagFilterStore((state) => state.reload)
+  /** 生效中的标签可见集合；`null` = 没有标签过滤（走原来那条路，一个像素都不变）。 */
+  const tagVisible = tagView.applied ? tagView.visiblePaths : null
+
   // 过滤是 O(n) 遍历：用 deferred value 让它不阻塞输入
   const deferredFilter = useDeferredValue(filter)
-  const rows = useMemo(
-    () => flattenTree(tree, { expanded, filter: deferredFilter }),
-    [tree, expanded, deferredFilter],
-  )
+
+  /**
+   * 标签过滤时把可见目录并入展开集合，交给 `flattenTree` 一并展平。
+   *
+   * 为什么不是过滤完之后再补行：`flattenTree` 只在目录"被展开"时才下探子节点，
+   * 没展开的目录里的命中笔记根本不会出现在结果里（然后再怎么筛也筛不回来）。
+   * 文件路径也在集合里，但它们没有子节点，`expanded` 对它们不被读到 —— 无害。
+   *
+   * 引用稳定性：`tagVisible` 由 hook 按引用 memo，`expanded` 只在真的改动时换新 Set，
+   * 因此这份 memo 不会每次渲染都失效（4000 条目的展平不该被无谓地重做）。
+   */
+  const expandedForRows = useMemo(() => {
+    if (tagVisible === null) return expanded
+    const next = new Set(expanded)
+    for (const relPath of tagVisible) next.add(relPath)
+    return next
+  }, [expanded, tagVisible])
+
+  /**
+   * 可见行 = `flattenTree` 的结果 ∩ 标签可见集合。
+   *
+   * 为什么不给 `flattenTree` 加一个"只看这些路径"的选项：那要改 `domain/tree.ts`
+   * （别的改动的战场），而这里**两处过滤共用同一份展平结果**正是我们要的
+   * —— 文本过滤与标签过滤的祖先保留、排序、自动展开因此不可能漂移。
+   */
+  const rows = useMemo(() => {
+    const all = flattenTree(tree, { expanded: expandedForRows, filter: deferredFilter })
+    return tagVisible === null
+      ? all
+      : all.filter((row) => tagVisible.has(row.node.entry.relPath))
+  }, [tree, expandedForRows, deferredFilter, tagVisible])
+
+  /**
+   * 过滤生效时，子行是自动展开的（见 `expandedForRows`）；行上的三角必须跟着说同一件事，
+   * 否则界面自相矛盾（子行明明在，三角却指着右边）。文本过滤走的是同一条
+   * （`flattenTree` 的 `autoExpandMatches`），所以这里两个条件合并成一个开关。
+   */
+  const autoExpanded = deferredFilter.trim() !== '' || tagVisible !== null
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [viewport, setViewport] = useState({ scrollTop: 0, height: 0 })
@@ -161,29 +224,46 @@ export function FileTree() {
     [clearDrag],
   )
 
-  /** 容器的空白区域：等于"移到 Vault 根目录"。 */
+  /** 容器的空白区域：等于"移到 Vault 根目录"（**标签过滤期间除外**，见下）。 */
   const handleRootDragOver = useCallback(
     (event: React.DragEvent<HTMLDivElement>): void => {
       const payload = dragRef.current ?? readDragPayload(event.dataTransfer)
       if (payload === null) return
+      if (tagVisible !== null) {
+        // 过滤期间**不接收**空白区域的落点：收窄之后列表往往只有几行，下方全是空白，
+        // 而"空白 = Vault 根目录"在收窄视图里恰恰是最看不见的那个目标。
+        // 不 `preventDefault` = 浏览器给出"不可放置"的光标 —— 比静默搬家诚实。
+        setDropTarget(null)
+        return
+      }
       const target = dropTargetFor(null, payload)
       event.preventDefault()
       event.dataTransfer.dropEffect = target.valid ? 'move' : 'none'
       showDropTarget(target)
     },
-    [showDropTarget],
+    [showDropTarget, tagVisible],
   )
 
   const handleRootDrop = useCallback(
     (event: React.DragEvent<HTMLDivElement>): void => {
       const payload = dragRef.current ?? readDragPayload(event.dataTransfer)
       if (payload === null) return
+      if (tagVisible !== null) {
+        // 真实浏览器里到不了这里（没有 `preventDefault` 就没有 `drop`），但把原因说出来
+        // 成本极低：静默吞掉一次拖拽才是最糟的反馈（也是这句提示存在的唯一理由）
+        clearDrag()
+        toast.info(
+          '过滤期间不能拖到树的空白处',
+          '空白处 = Vault 根目录。请拖到看得见的文件夹行上，或先清除标签过滤。',
+        )
+        return
+      }
       event.preventDefault()
       const target = dropTargetFor(null, payload)
       clearDrag()
       void applyDrop(payload, target)
     },
-    [clearDrag],
+    [clearDrag, tagVisible],
   )
 
   /** 拖出树的范围时收掉高亮（`dragleave` 在子元素之间移动也会触发，所以要判包含关系）。 */
@@ -357,14 +437,65 @@ export function FileTree() {
           renameSelected(entry.relPath)
           return
         }
+        case 'Escape': {
+          // 一键回到全量（与控件上的「清除」同一条路径）。焦点在树上时按 Esc 是用户最自然的
+          // 第一反应，而过滤把树收窄之后"怎么退回去"必须是零思考的。
+          if (!tagView.active) return
+          event.preventDefault()
+          clearTagFilter()
+          return
+        }
         default:
           return
       }
     },
-    [activateRow, expanded, rows, select, selected, toggleExpanded],
+    [activateRow, clearTagFilter, expanded, rows, select, selected, tagView.active, toggleExpanded],
   )
 
   if (rows.length === 0) {
+    /*
+     * 空态必须回答"为什么空"。标签过滤是**收窄**视图，用户看不到笔记时第一反应是
+     * "我的笔记是不是没了" —— 所以这里把三种可能分开说：没有笔记用这些标签 /
+     * 命中的都不在当前条目表里（刚重扫）/ 被文本过滤又筛掉了。
+     */
+    if (tagVisible !== null) {
+      const labels = tagView.labels.map((label) => `#${label}`).join('、')
+      const reason =
+        tagView.hitCount === 0
+          ? `没有笔记使用 ${labels}`
+          : tagView.visibleNoteCount > 0
+            ? `标签命中的 ${tagView.visibleNoteCount} 篇笔记都被文本过滤排除了`
+            : `命中 ${labels} 的 ${tagView.hitCount} 篇笔记都不在当前文件树里`
+      return (
+        <div className="mn-tree mn-tree--empty" role="tree" aria-label="文件树">
+          <p className="mn-empty__text" data-tag-filter-empty>
+            {reason}。
+          </p>
+          {filter !== '' && (
+            <p className="mn-empty__text">文本过滤「{filter}」也在生效。</p>
+          )}
+          <div className="mn-tree__empty-buttons">
+            {tagView.hitCount > 0 && (
+              <button
+                type="button"
+                className="mn-button"
+                onClick={() => void reloadTagFilter()}
+              >
+                重新过滤
+              </button>
+            )}
+            <button type="button" className="mn-button" onClick={clearTagFilter}>
+              清除标签过滤
+            </button>
+          </div>
+          {filter !== '' && (
+            <button type="button" className="mn-button" onClick={() => setFilter('')}>
+              清除文本过滤
+            </button>
+          )}
+        </div>
+      )
+    }
     return (
       <div className="mn-tree mn-tree--empty" role="tree" aria-label="文件树">
         <p className="mn-empty__text">
@@ -416,6 +547,7 @@ export function FileTree() {
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
                 dragging={dragPayload?.relPath === row.node.entry.relPath}
+                autoExpanded={autoExpanded}
                 dropState={
                   dropTarget !== null && dropTarget.hostRelPath === row.node.entry.relPath
                     ? dropTarget.dataState
@@ -451,6 +583,11 @@ interface RowProps {
   dragging: boolean
   /** 这一行是不是当前落点。 */
   dropState: RowDropState
+  /**
+   * 当前有过滤生效（文本或标签）—— 此时子行是**自动展开**的，三角必须跟着说同一件事。
+   * 见 `FileTree` 里 `autoExpanded` 的注释。
+   */
+  autoExpanded: boolean
 }
 
 const FileTreeRow = memo(function FileTreeRow({
@@ -461,6 +598,7 @@ const FileTreeRow = memo(function FileTreeRow({
   onDrop,
   dragging,
   dropState,
+  autoExpanded,
 }: RowProps) {
   const entry = row.node.entry
   const relPath = entry.relPath
@@ -468,8 +606,16 @@ const FileTreeRow = memo(function FileTreeRow({
   const isExpanded = useVaultStore((state) => entry.isDir && state.expanded.has(relPath))
   const isOpen = useNoteStore((state) => state.doc?.relPath === relPath)
   const markdown = isMarkdown(relPath)
+  /** 视觉上这一行的子项在不在下面（过滤时子项由过滤条件强制展开，与 store 无关）。 */
+  const showsChildren = isExpanded || (entry.isDir && autoExpanded)
 
-  const iconName = entry.isDir ? (isExpanded ? 'folderOpen' : 'folder') : markdown ? 'file' : 'dot'
+  const iconName = entry.isDir
+    ? showsChildren
+      ? 'folderOpen'
+      : 'folder'
+    : markdown
+      ? 'file'
+      : 'dot'
   // 笔记与**文件夹**都可以拖（附件不行：索引里没有它们的条目，见 `canDrag`）；
   // 目录行同样是**合法的落点**
   const draggable = entry.isDir || markdown
@@ -491,7 +637,7 @@ const FileTreeRow = memo(function FileTreeRow({
         .join(' ')}
       role="treeitem"
       aria-selected={isSelected}
-      aria-expanded={entry.isDir ? isExpanded : undefined}
+      aria-expanded={entry.isDir ? showsChildren : undefined}
       aria-level={row.depth + 1}
       style={{ paddingLeft: `${6 + row.depth * 14}px`, height: ROW_HEIGHT }}
       title={`${relPath}${entry.isDir ? '' : ` · ${formatBytes(entry.sizeBytes)}`}`}
@@ -504,7 +650,9 @@ const FileTreeRow = memo(function FileTreeRow({
       aria-dropeffect={entry.isDir ? 'move' : undefined}
     >
       {entry.isDir ? (
-        <span className={`mn-tree-row__chevron${isExpanded ? ' mn-tree-row__chevron--open' : ''}`}>
+        <span
+          className={`mn-tree-row__chevron${showsChildren ? ' mn-tree-row__chevron--open' : ''}`}
+        >
           <Icon name="chevron" size={13} />
         </span>
       ) : (
