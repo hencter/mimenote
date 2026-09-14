@@ -50,6 +50,16 @@ function listFiles(root: string): string[] {
     for (const name of readdirSync(dir)) {
       const full = join(dir, name)
       if (statSync(full).isDirectory()) {
+        /*
+         * `.mimenote/trash/` 是**回收站**：里面的东西按定义已经被用户删掉了，不该再被当成
+         * 夹具的一部分（同一目录下的 `.mimenote/snippets/` 反而是夹具 —— README 里列着它，
+         * 所以这里只跳回收站，不跳整个 `.mimenote/`）。
+         *
+         * 直接的起因是真事：用户把 `测试笔记.md` 删进回收站，那份**副本**里还留着指向
+         * `附件/示例图片.png` 的引用，而回收站里的相对位置已经变了 ⇒ "图片引用都要解析得到"
+         * 这条检查被一份已经被删掉的东西点红。用户删任何一篇（包括真夹具）都会留下这样一份副本。
+         */
+        if (relative(root, full).split(sep).join('/') === '.mimenote/trash') continue
         walk(full)
         continue
       }
