@@ -151,6 +151,87 @@ ${scope} blockquote {
   color: var(--mn-fg-muted);
 }
 
+/* Callout：与阅读视图同一份排版（类型 → 强调色），但**不能**依赖应用里的样式表 ——
+   导出件与静态站点都可能在没有本应用的浏览器里打开，所以这一份必须自带。
+   颜色写死在类型规则里（而不是像应用里那样读主题的 callout 变量）：导出件的令牌快照
+   只带必需令牌，类型色不是主题的一部分。 */
+${scope} .mn-callout {
+  margin: 1em 0;
+  padding: 6px 14px 2px;
+  border-left: 3px solid var(--mn-callout-accent, var(--mn-quote-border));
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg-elevated);
+}
+
+${scope} .mn-callout__title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 4px 0;
+  font-weight: 600;
+  color: var(--mn-callout-accent, var(--mn-fg));
+}
+
+${scope} .mn-callout__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15em;
+  font-family: var(--mn-font-mono);
+}
+
+${scope} .mn-callout__label {
+  flex: 1;
+}
+
+${scope} .mn-callout__fold {
+  color: var(--mn-fg-subtle);
+  font-family: var(--mn-font-mono);
+  font-size: 0.85em;
+}
+
+${scope} .mn-callout > *:last-child {
+  margin-bottom: 8px;
+}
+
+${scope} .mn-callout--note {
+  --mn-callout-accent: #448aff;
+}
+${scope} .mn-callout--abstract,
+${scope} .mn-callout--info {
+  --mn-callout-accent: #00b8d4;
+}
+${scope} .mn-callout--todo {
+  --mn-callout-accent: #448aff;
+}
+${scope} .mn-callout--tip {
+  --mn-callout-accent: #00bfa5;
+}
+${scope} .mn-callout--success {
+  --mn-callout-accent: #00c853;
+}
+${scope} .mn-callout--question {
+  --mn-callout-accent: #64dd17;
+}
+${scope} .mn-callout--warning {
+  --mn-callout-accent: #ff9100;
+}
+${scope} .mn-callout--failure {
+  --mn-callout-accent: #ff5252;
+}
+${scope} .mn-callout--danger {
+  --mn-callout-accent: #ff1744;
+}
+${scope} .mn-callout--bug {
+  --mn-callout-accent: #f50057;
+}
+${scope} .mn-callout--example {
+  --mn-callout-accent: #7c4dff;
+}
+${scope} .mn-callout--quote {
+  --mn-callout-accent: var(--mn-quote-border);
+}
+
 ${scope} code {
   padding: 0.16em 0.36em;
   border-radius: 4px;

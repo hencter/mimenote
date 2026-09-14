@@ -16,6 +16,7 @@
 import MarkdownIt from 'markdown-it'
 
 import { isImageAssetTarget, parseImageSize } from './assets'
+import { CALLOUT_TYPES, calloutTitle, parseCallout } from './callouts'
 import { splitWikilink, wikilinkDisplayText } from './links'
 
 const md = new MarkdownIt({
@@ -24,6 +25,38 @@ const md = new MarkdownIt({
   breaks: false,
   typographer: false,
 })
+
+/**
+ * 解析成 **markdown-it 的 token 流**（不生成 HTML）。
+ *
+ * 为什么需要它：知识图谱的节点要**画在 canvas 上**（ADR-0021），而 canvas 没有 HTML ——
+ * 只能拿着 token 自己排字。这里直接复用同一个 `md` 实例，于是"语法口径"仍然只有一份：
+ * 标题/列表/引用/代码块的判定、以及我们自己的 wikilink 与嵌入规则，与阅读视图逐字一致
+ * （差别只在最后一步：那边把 token 交给渲染器变 HTML，这边交给 canvas 排版）。
+ *
+ * ⚠️ 返回的是**内部对象**：调用方只许读，不许改（token 会被 markdown-it 复用）。
+ */
+export function parseMarkdownTokens(source: string, env: Record<string, unknown> = {}): MarkdownToken[] {
+  return md.parse(source, env) as unknown as MarkdownToken[]
+}
+
+/** 一行 token 的宽松形状（只声明我们真的会读的字段，避免把 markdown-it 的类型泄漏出去）。 */
+export interface MarkdownToken {
+  type: string
+  tag: string
+  content: string
+  children: MarkdownToken[] | null
+  /** 块级 token 的层级（`bullet_list_open` → `list_item_open` …）。 */
+  level: number
+  /** 列表是否有序（`ordered_list_open` 上为 true）。 */
+  hidden?: boolean
+  attrs?: Array<[string, string]> | null
+  markup?: string
+  info?: string
+  attrGet?: (name: string) => string | null
+  /** 列表起始序号（`ordered_list_open`）。 */
+  attrIndex?: (name: string) => number
+}
 
 /**
  * wikilink 的 `href`：用文内锚点，是为了让它可聚焦、可键盘激活（`href="#"` 会被点击处理器拦截）。
@@ -373,7 +406,116 @@ export function imageSpecFromElement(element: Element): ImageSpec {
   }
 }
 
-/** 图片渲染规则。规格从令牌里取，HTML 一律交给 {@link imageHtml}。 */
+/**
+ * 引用块渲染：**其中一类引用是 callout**（`> [!note] 标题`），其余照旧是普通引用。
+ *
+ * 实现方式是"改写开闭令牌的标签与类名"，而不是把整块内容拿出来自己拼 HTML：
+ * 引用块内部可能有一整个子文档（列表、代码块、表格、嵌套引用），自己拼就等于把
+ * markdown-it 已经算好的块级结构再实现一遍。这里只做三件事：
+ *
+ * 1. 判定这**是不是** callout：看块内第一个 `paragraph_open` 后面那个 `inline` 令牌的
+ *    内容是否是 `[!type]…`（判定只有一份，在 `domain/callouts.ts` 的 `parseCallout`）；
+ * 2. 是的话把 `<blockquote>` 换成 `<div class="mn-callout mn-callout--type">`，
+ *    并把那个"标记段落"替换成标题栏（图标 + 标题），正文部分原样留在里面；
+ * 3. 不是的话一切照旧（连类名都不加，既有观感一个字不变）。
+ *
+ * 折叠（`[!note]-` / `[!note]+`）在**静态渲染**里不折叠：阅读视图与导出件是"读"的地方，
+ * 收起正文会让读者以为内容不存在。折叠的意思是"编辑器里默认收起"，因此它只体现在所见即所得
+ * 那一侧（见 `features/editor/cm/live-preview/callout.ts`）。这条取舍写进 ADR-0022。
+ */
+md.core.ruler.push('mn_callout', (state) => {
+  const tokens = state.tokens
+  for (let index = 0; index < tokens.length; index += 1) {
+    const open = tokens[index]
+    if (open === undefined || open.type !== 'blockquote_open') continue
+    // 找到块内第一个 inline：`[!type]` 必须出现在**段落的开头**
+    let paragraph = -1
+    let inline = -1
+    for (let probe = index + 1; probe < tokens.length; probe += 1) {
+      const token = tokens[probe]
+      if (token === undefined) break
+      if (token.type === 'blockquote_close' && token.level === open.level) break
+      // 块里的第一个孩子又是一层引用：`> > [!tip]` 的标记属于**内层**引用，外层不能也认领它 ——
+      // 否则同一段会被两层各改一次（外层先改，内层的 `[!tip]` 已经被换成标题栏 HTML，判据随之失效），
+      // 结果是"两层引用变成两层 callout"这种没人想要的嵌套。
+      if (token.type === 'blockquote_open') break
+      if (token.type === 'paragraph_open' && paragraph < 0) {
+        paragraph = probe
+        continue
+      }
+      if (paragraph >= 0 && token.type === 'inline') {
+        inline = probe
+        break
+      }
+    }
+    if (inline < 0) continue
+    const marker = parseCallout(tokens[inline]?.content ?? '')
+    if (marker === null) continue
+
+    open.tag = 'div'
+    open.attrSet('class', `mn-callout mn-callout--${marker.type}`)
+    const close = tokens.findLastIndex(
+      (token, at) => at > index && token.type === 'blockquote_close' && token.level === open.level,
+    )
+    if (close > index) {
+      const closing = tokens[close]
+      if (closing !== undefined) closing.tag = 'div'
+    }
+
+    // 标记那一段变成标题栏：图标 + 标题（标题为空时用类型展示名；未知类型用用户写的名字）。
+    // 段落内容可能是 "[!note] 标题\n正文"（CommonMark 里相邻两行引用是**同一个段落**），
+    // 因此这里还要把正文切出来重新排成一段 —— 直接整段塞进标题栏会把正文也变成标题。
+    const title = calloutTitle(marker)
+    const definition = CALLOUT_TYPES[marker.type]
+    const heading = state.tokens[paragraph]
+    const titleToken = state.tokens[inline]
+    if (heading === undefined || titleToken === undefined) continue
+
+    // 先把这一段的闭合标签也对齐（`paragraph_close` 默认是 `</p>`，与开标签必须成对）
+    const paragraphClose = tokens.findIndex(
+      (token, at) =>
+        at > inline && token.type === 'paragraph_close' && token.level === heading.level,
+    )
+    if (paragraphClose > inline) {
+      const closing = tokens[paragraphClose]
+      if (closing !== undefined) closing.tag = 'div'
+    }
+    heading.tag = 'div'
+    heading.attrSet('class', 'mn-callout__title')
+
+    // 折叠标记在静态渲染里只作为**说明**出现（不真的收起），让读者知道作者写了它
+    const foldHint =
+      marker.fold === null
+        ? ''
+        : `<span class="mn-callout__fold" aria-hidden="true">${marker.fold}</span>`
+    // 图标只用**字形**：`data-*` 会被净化器剥掉（ALLOW_DATA_ATTR 关着，见 domain/markdown.ts），
+    // 而字形在导出件里不依赖字体或脚本 —— 多一个属性只会多一处要被放行的白名单。
+    titleToken.type = 'html_block'
+    titleToken.content =
+      `<span class="mn-callout__icon" aria-hidden="true">${definition.glyph}</span>` +
+      `<span class="mn-callout__label">${escapeHtml(title)}</span>` +
+      foldHint
+    titleToken.children = null
+
+    if (marker.body !== '') {
+      // 正文重新走一遍**行内解析**（粗体/链接/wikilink 都要照常），排成标记栏之后的段落。
+      // 用 `md.parseInline` 而不是自己拼字符串：拼接会丢掉行内规则与转义口径。
+      const bodyChildren = md.parseInline(marker.body, state.env)[0]?.children ?? []
+      const bodyTokens = [
+        new state.Token('paragraph_open', 'p', 1),
+        Object.assign(new state.Token('inline', '', 0), {
+          content: marker.body,
+          children: bodyChildren,
+        }),
+        new state.Token('paragraph_close', 'p', -1),
+      ]
+      // 插在标记段的闭合标签之后，这样正文与标题栏是同级兄弟
+      const at = paragraphClose > inline ? paragraphClose + 1 : inline + 1
+      tokens.splice(at, 0, ...bodyTokens)
+    }
+  }
+})
+
 md.renderer.rules.image = (tokens, idx, _options, env, _self) => {
   const token = tokens[idx]
   const src = String(token?.attrGet('src') ?? '')

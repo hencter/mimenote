@@ -145,6 +145,79 @@ export class TaskCheckboxWidget extends WidgetType {
   }
 }
 
+/**
+ * callout 的标记（`[!note]` → 一个图标，可能带类型名与折叠角标）。
+ *
+ * 为什么标题**不**进 widget：标记行剩下的文字（`> [!note] 标题` 里的"标题"）是用户写的正文，
+ * 留着它就是**可编辑的真文字**（只是加粗上色），少一次"DOM 文本 ≠ 文档源码"的例外。
+ * 只有标题为空时才由这里补出类型名 —— 那时候补的是一份**推断**，不是用户写的东西。
+ *
+ * 点击它切换折叠标记（`-` ↔ `+`）：折叠在编辑器里会真的收起正文，于是"怎么展开"必须有一个
+ * 看得见的入口 —— 只靠键盘把光标移进被收起的行里，没人猜得到。点击结果走**文档变更**
+ * （`callout.ts` 的 `toggleCalloutFold`），因此自动进入保存流水线，与任务勾选框同一条路径。
+ */
+export class CalloutMarkerWidget extends WidgetType {
+  constructor(
+    private readonly glyph: string,
+    /** 标题为空时的类型名（已知类型是展示名，未知类型是用户写的那一个）。 */
+    private readonly label: string,
+    /** 标记行没有标题文字 → 名字由 widget 补。 */
+    private readonly showLabel: boolean,
+    private readonly fold: '-' | '+' | null,
+    /** 标记区间的终点（`]` 之后、含折叠符），点击时交给插件当"改哪里"的提示。 */
+    private readonly markerEnd: number,
+  ) {
+    super()
+  }
+
+  override eq(other: WidgetType): boolean {
+    return (
+      other instanceof CalloutMarkerWidget &&
+      other.glyph === this.glyph &&
+      other.label === this.label &&
+      other.showLabel === this.showLabel &&
+      other.fold === this.fold &&
+      other.markerEnd === this.markerEnd
+    )
+  }
+
+  override toDOM(): HTMLElement {
+    const marker = document.createElement('span')
+    marker.className = MD.calloutMarker
+    marker.setAttribute('data-mn-callout-fold', String(this.markerEnd))
+    marker.setAttribute('title', this.fold === '-' ? '点击展开' : '点击收起')
+
+    const glyph = document.createElement('span')
+    glyph.className = MD.calloutGlyph
+    // 字形而不是 SVG：canvas 端画的是同一个字形（`CALLOUT_TYPES` 的 `glyph`），两边看起来一致
+    glyph.textContent = this.glyph
+    marker.appendChild(glyph)
+
+    if (this.showLabel) {
+      const label = document.createElement('span')
+      label.className = MD.calloutLabel
+      label.textContent = this.label
+      marker.appendChild(label)
+    }
+
+    if (this.fold !== null) {
+      const fold = document.createElement('span')
+      fold.className = MD.calloutFold
+      fold.textContent = this.fold
+      marker.appendChild(fold)
+    }
+    return marker
+  }
+
+  /**
+   * 与复选框同一个理由（见 {@link TaskCheckboxWidget.ignoreEvent}）：点击必须由插件的
+   * mousedown 处理，返回 true 会把这次事件整个丢掉，连插件自己也收不到。
+   */
+  override ignoreEvent(): boolean {
+    return false
+  }
+}
+
 /** 分隔线 `---` 的 widget：一条真正的横线，而不是三个减号。 */
 export class HorizontalRuleWidget extends WidgetType {
   override eq(other: WidgetType): boolean {

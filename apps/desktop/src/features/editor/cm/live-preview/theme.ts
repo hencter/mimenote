@@ -20,6 +20,26 @@ export const MD = {
   h6: 'mn-md-h6',
   quote: 'mn-md-quote',
   quoteNested: 'mn-md-quote--nested',
+  /** callout（`> [!note] 标题`）的行装饰前缀：完整类名见 `callout.ts` 的 `calloutLineClass`。 */
+  callout: 'mn-md-callout',
+  /**
+   * 强调色**令牌载体的类名前缀**（`mn-callout--note`）。
+   *
+   * 它不是 md 层的类名，而是 `styles/app.css` 里那条"只声明 `--mn-callout-accent`"的规则。
+   * 借它来上色，是为了让"类型 → 颜色"全应用只有一份表：编辑器主题里再抄一遍 13 种颜色，
+   * 迟早会和阅读视图漂移，而那种差异没有任何测试能提前发现。
+   */
+  calloutAccent: 'mn-callout--',
+  calloutNested: 'mn-md-callout--nested',
+  calloutFirst: 'mn-md-callout--first',
+  calloutLast: 'mn-md-callout--last',
+  /** 标记行的标题文字（标记被换成图标后，剩下的正文继续当**真文字**，只加粗上色）。 */
+  calloutTitle: 'mn-md-callout-title',
+  /** 图标 widget 的外层（点击切换折叠）。 */
+  calloutMarker: 'mn-md-callout-marker',
+  calloutGlyph: 'mn-md-callout-glyph',
+  calloutLabel: 'mn-md-callout-label',
+  calloutFold: 'mn-md-callout-fold',
   listMark: 'mn-md-list-mark',
   task: 'mn-md-task',
   taskDone: 'mn-md-task--done',
@@ -104,6 +124,57 @@ export const livePreviewThemeSpec: { [selector: string]: { [property: string]: s
     color: 'var(--mn-fg-muted)',
   },
   '.cm-line.mn-md-quote--nested': { paddingLeft: '30px' },
+
+  /* ── callout：引用的一种（`> [!note] 标题`） ──
+     这里刻意**不**复用 `.mn-md-quote`：callout 是"有颜色的块"，引用是"淡色的从属文本"，
+     叠在一行上只能靠选择器优先级去分胜负（两者特异性相同，谁赢取决于样式表顺序）。
+     所以判读阶段就把类名换掉（见 build.ts 的 emitQuoteLines），一行要么是引用、要么是 callout。
+     颜色走 `--mn-callout-accent`（由 `mn-callout--<type>` 提供，见 MD.calloutAccent）。 */
+  '.cm-line.mn-md-callout': {
+    borderLeft: '3px solid var(--mn-callout-accent, var(--mn-quote-border))',
+    background: 'var(--mn-bg-elevated)',
+    // 引用行是淡色的；callout 的正文是正常正文
+    color: 'var(--mn-fg)',
+    paddingLeft: '10px',
+    paddingRight: '10px',
+  },
+  /* 嵌套：多一个类名（而**不是**靠样式表顺序）压过上面那条 paddingLeft —— 两条规则特异性相同，
+     谁赢取决于生成的样式表里的先后，那种"偶尔生效"的样式是最难查的一类 bug */
+  '.cm-line.mn-md-callout.mn-md-callout--nested': { paddingLeft: '30px' },
+  '.cm-line.mn-md-callout--first': {
+    borderTopRightRadius: '6px',
+    borderTopLeftRadius: '6px',
+    paddingTop: '3px',
+  },
+  '.cm-line.mn-md-callout--last': {
+    borderBottomRightRadius: '6px',
+    borderBottomLeftRadius: '6px',
+    paddingBottom: '3px',
+  },
+  '.mn-md-callout-title': {
+    fontWeight: '600',
+    color: 'var(--mn-callout-accent, var(--mn-fg))',
+  },
+  '.mn-md-callout-marker': { cursor: 'pointer', userSelect: 'none' },
+  '.mn-md-callout-glyph': {
+    display: 'inline-block',
+    minWidth: '1.15em',
+    color: 'var(--mn-callout-accent, var(--mn-fg))',
+    fontFamily: 'var(--mn-font-mono)',
+    fontWeight: '600',
+  },
+  /* 标题为空时由图标补出类型名（与 `.mn-callout__label` 同一个观感） */
+  '.mn-md-callout-label': {
+    fontWeight: '600',
+    color: 'var(--mn-callout-accent, var(--mn-fg))',
+  },
+  /* 折叠角标：`-` 收起、`+` 展开（静态渲染里它只是个说明，见 ADR-0022） */
+  '.mn-md-callout-fold': {
+    marginLeft: '0.35em',
+    color: 'var(--mn-fg-subtle)',
+    fontFamily: 'var(--mn-font-mono)',
+    fontSize: '0.85em',
+  },
 
   /* ── 列表：符号"退让"（淡色、不加粗），让正文和标题说话 ── */
   '.mn-md-list-mark': { color: 'var(--mn-fg-subtle)', fontWeight: '400' },

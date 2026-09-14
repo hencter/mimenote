@@ -37,6 +37,7 @@ import {
   subscribeAssets,
 } from './assets'
 import { buildLivePreview } from './build'
+import { toggleCalloutFold } from './callout'
 import { toggleTaskAt } from './task'
 import { LINK_ATTR, WIKILINK_ATTR, WIKILINK_RESOLVED_ATTR, livePreviewTheme } from './theme'
 import type { LivePreviewContext } from './types'
@@ -103,6 +104,15 @@ function handleMouseDown(event: MouseEvent, view: EditorView): boolean {
     const at = Number(taskBox.getAttribute('data-mn-task'))
     event.preventDefault()
     toggleTaskAt(view, Number.isFinite(at) ? at : 0)
+    return true
+  }
+
+  // callout 的图标：切换折叠标记（`-` ↔ `+`），同样是**写回文档**而不是只改显示
+  const calloutMarker = target.closest('[data-mn-callout-fold]')
+  if (calloutMarker !== null) {
+    const at = Number(calloutMarker.getAttribute('data-mn-callout-fold'))
+    event.preventDefault()
+    toggleCalloutFold(view, Number.isFinite(at) ? at : 0)
     return true
   }
 

@@ -27,9 +27,11 @@ import { normalizeLinkTarget, splitWikilink } from '@/domain/links'
 import type { ResolvedLink } from '@/ipc/types'
 
 import { LINK_ATTR, MD, WIKILINK_ATTR, WIKILINK_RESOLVED_ATTR, mdHeadingClass } from './theme'
+import { calloutLineClass, readCallout, type CalloutLinePosition, type LiveCallout } from './callout'
 import { isNestedTable, renderTableHtml, tableSourceWithinLimits } from './table'
 import type { LivePreviewContext, LivePreviewDecorationResult, ImageResolution, VisibleRange } from './types'
 import {
+  CalloutMarkerWidget,
   HorizontalRuleWidget,
   ImageWidget,
   TableWidget,
@@ -118,12 +120,26 @@ interface Build {
   /** 代码区间（wikilink 扫描时要跳过）。 */
   codeRanges: VisibleRange[]
   /**
-   * 每行的引用深度（行号 → `>` 个数）。
+   * 每行的引用层数（行号 → 层数）。
    *
-   * 必须**跨节点**累加：嵌套引用是嵌套的 Blockquote，各自只看得见自己那一层的 `>`，
-   * 只按单个节点数就会把 `> > 乙` 当成一级引用。
+   * 必须**跨节点**累加：嵌套引用是嵌套的 Blockquote，两层各覆盖内层那几行一次，
+   * 只按"某一行里有几个 `>`"数就会把 `> > 乙` 与 `> > > 丙` 的第三行算成同一级。
    */
   quoteDepth: Map<number, number>
+  /**
+   * callout 的**行**（行号 → 这一行在 callout 里的位置）。
+   *
+   * 为什么与 `quoteDepth` 分开：行类名要等**所有**引用块都数完深度才定得下来（嵌套引用的
+   * 内层节点在外层之后处理），而这里记的是"这一行属于哪个 callout"，与顺序无关。
+   */
+  callouts: Map<number, { callout: LiveCallout; position: CalloutLinePosition }>
+  /**
+   * 折叠起来（`[!note]-`）的正文行。
+   *
+   * 这些行的**一切**装饰都要跳过：它们被 `MD.collapsedLine` 压成零高，再往里塞 widget
+   * 或原子区间，既不显示又会白白参与命中与测量（表格 / 图片 widget 是块级的，零高根本压不住它）。
+   */
+  collapsed: Set<number>
   /** 文档开头的 frontmatter 行区间（1 起、闭区间）；那里的 Markdown 语法不渲染。 */
   frontmatter: { first: number; last: number } | null
 }
@@ -215,6 +231,8 @@ export function buildLivePreview(
     visible,
     codeRanges: [],
     quoteDepth: new Map<number, number>(),
+    callouts: new Map<number, { callout: LiveCallout; position: CalloutLinePosition }>(),
+    collapsed: new Set<number>(),
     frontmatter: frontmatterLines(state),
   }
 
@@ -277,6 +295,8 @@ export function buildLivePreviewDecorations(
 
 function emitBlock(build: Build, entry: Collected): void {
   if (inFrontmatter(build, entry.from)) return
+  // 折叠起来的 callout 正文：块级装饰（行类名、widget）一概不产出（理由见 Build.collapsed）
+  if (collapsedAt(build, entry.from)) return
   const level = HEADING_LEVELS[entry.name]
   if (level !== undefined) {
     emitHeading(build, entry, level)
@@ -329,25 +349,133 @@ function emitHeading(build: Build, entry: Collected, level: number): void {
 
 function emitBlockquote(build: Build, entry: Collected): void {
   const doc = build.state.doc
-  const marks = childrenNamed(entry.node, 'QuoteMark')
+  // 块覆盖到的行：**按节点范围取**，而不是按 `QuoteMark` 的个数。两种不听话的形状都真实存在：
+  // `> 甲\n> 乙` 里第二行的 `>` 是 `Paragraph` 的孩子（同一个段落，软换行），
+  // 懒续行（`> 甲\n乙`）干脆没有 `>` —— 而它们都属于这个引用块，观感上必须是同一个框。
+  const firstLine = doc.lineAt(entry.from)
+  const lastLine = doc.lineAt(Math.max(entry.from, entry.to - 1))
+  const lines: number[] = []
+  for (let number = firstLine.number; number <= lastLine.number; number += 1) lines.push(number)
 
-  for (const mark of marks) {
+  // 深度 = **这一层覆盖到的每一行**各加一：嵌套引用是嵌套的 Blockquote，两层都会覆盖内层那几行，
+  // 于是内层行自然多一级（原先按 `QuoteMark` 数会在"续行的 `>` 藏在段落里"时少数一层）
+  for (const number of lines) {
+    build.quoteDepth.set(number, (build.quoteDepth.get(number) ?? 0) + 1)
+  }
+
+  for (const mark of quoteMarksOf(entry.node)) {
     const line = doc.lineAt(mark.from)
-    // 深度是**跨节点**累加的（见 Build.quoteDepth）：嵌套引用是嵌套的 Blockquote
-    build.quoteDepth.set(line.number, (build.quoteDepth.get(line.number) ?? 0) + 1)
-
     if (cursorOnLine(build.state, mark.from)) continue
     if (!lineVisible(build, line)) continue
     build.collection.replace(mark.from, mark.to, HIDDEN)
   }
+
+  const first = lines[0]
+  const last = lines[lines.length - 1]
+  if (first === undefined || last === undefined) return
+  const markerLine = doc.line(first)
+  if (!lineVisible(build, markerLine)) return
+
+  // callout：判据只有一份（`domain/callouts.ts`），这里只负责"哪一行、标记在哪"
+  const callout = readCallout(markerLine.text, markerLine.from)
+  if (callout === null) return
+
+  build.callouts.set(first, { callout, position: 'first' })
+  for (const number of lines) {
+    if (number === first) continue
+    // 内层 callout 后写、覆盖外层：一行上只能有一条左边框，显示**最内层**的那个框
+    // （`> [!note] 外\n> > [!tip] 内` 的第二行是内层 callout 的标记行）
+    build.callouts.set(number, { callout, position: number === last ? 'last' : 'middle' })
+  }
+
+  // 折叠（`[!note]-`）：正文行整行收起，直到光标（或选区）进入这一块。
+  // 逐行挂零高类名，而不是"一个跨行的 replace" —— 后者在 ViewPlugin 里被直接禁止
+  // （跨换行的替换装饰会抛 "Decorations that replace line breaks may not be specified via plugins"），
+  // 与表格藏源码是同一个约束、同一个解法（见 emitTable 的第 3 条）。
+  if (callout.fold === '-' && !selectionTouches(build.state, markerLine.from, lastLine.to)) {
+    for (const number of lines) {
+      if (number === first) continue
+      const line = doc.line(number)
+      build.collapsed.add(number)
+      build.collection.add(line.from, line.from, Decoration.line({ class: MD.collapsedLine }))
+    }
+  }
+
+  // 标记行：光标不在这一行时，`[!note]`（含折叠符）换成图标 widget；光标进入则**整行**露原文
+  if (!cursorOnLine(build.state, first)) emitCalloutMarker(build, callout, markerLine)
 }
 
-/** 引用行的行装饰：左侧竖线 + 淡色；多级再缩进一级。 */
+/**
+ * 引用块**这一层**的 `QuoteMark`。
+ *
+ * 必须递归：续行的 `>` 长在 `Paragraph` 里（见 `emitBlockquote` 的说明），只找直接孩子会漏掉
+ * 除首行以外的**所有** `>`（真实踩过：多行引用只有第一行被隐藏，第二行还挂着原文的 `>`）。
+ * 但**不进**内层 `Blockquote`：那些标记属于内层自己那一次遍历，两层各算各的，
+ * 深度才能在 `quoteDepth` 里正确累加。
+ */
+function quoteMarksOf(node: SyntaxNodeLike): SyntaxNodeLike[] {
+  const result: SyntaxNodeLike[] = []
+  const walk = (parent: SyntaxNodeLike): void => {
+    for (let child = parent.firstChild; child !== null; child = child.nextSibling) {
+      if (child.name === 'Blockquote') continue
+      if (child.name === 'QuoteMark') {
+        result.push(child)
+        continue
+      }
+      walk(child)
+    }
+  }
+  walk(node)
+  return result
+}
+
+/**
+ * 把 `[!note]` 换成图标 widget，并给标记行剩下的标题文字上色加粗。
+ *
+ * 只替换**标记本身**：标题是用户写的正文，让它继续当文档里的真文字 —— 于是"编辑器的 DOM 文本
+ * 等于文档源码"这条前提在这一处也成立（唯一的例外是表格，理由见 `table.css`）。
+ */
+function emitCalloutMarker(build: Build, callout: LiveCallout, line: { from: number; to: number }): void {
+  build.collection.replace(
+    callout.markerFrom,
+    callout.markerTo,
+    Decoration.replace({
+      widget: new CalloutMarkerWidget(
+        callout.glyph,
+        callout.label,
+        !callout.hasTitle,
+        callout.fold,
+        callout.markerTo,
+      ),
+    }),
+  )
+
+  // 标记与标题之间的空白不算标题（否则加粗会从空格开始，观感上像是缩进了一格）
+  let titleFrom = callout.markerTo
+  const doc = build.state.doc
+  while (titleFrom < line.to && /\s/u.test(doc.sliceString(titleFrom, titleFrom + 1))) titleFrom += 1
+  if (titleFrom < line.to) {
+    build.collection.add(titleFrom, line.to, Decoration.mark({ class: MD.calloutTitle }))
+  }
+}
+
+/** 引用行的行装饰：左侧竖线 + 淡色；多级再缩进一级；callout 行换成自己的类名（见 callout.ts）。 */
 function emitQuoteLines(build: Build): void {
   const doc = build.state.doc
   for (const [number, depth] of build.quoteDepth) {
     const line = doc.line(number)
     if (!lineVisible(build, line)) continue
+    // 被折叠的正文行已经有了"零高"的行装饰，再叠一层行类名没有意义
+    if (build.collapsed.has(number)) continue
+    const callout = build.callouts.get(number)
+    if (callout !== undefined) {
+      build.collection.add(
+        line.from,
+        line.from,
+        Decoration.line({ class: calloutLineClass(callout.callout, depth, callout.position) }),
+      )
+      continue
+    }
     const classes = depth > 1 ? `${MD.quote} ${MD.quoteNested}` : MD.quote
     build.collection.add(line.from, line.from, Decoration.line({ class: classes }))
   }
@@ -568,6 +696,8 @@ function emitWikilinks(build: Build): void {
       // frontmatter 是元数据：里面的 `[[…]]` 不该变成可点的链接（宿主也不从那里抽链接）
       if (inFrontmatter(build, line.from)) continue
       const text = line.text
+      // 折叠起来的 callout 正文：行内的链接 / 图片 / 粗体都不该再产出装饰（理由见 Build.collapsed）
+      if (collapsedAt(build, line.from)) continue
       // `matchAll` 会克隆正则，不会污染模块级 `lastIndex`
       for (const match of text.matchAll(WIKILINK_PATTERN)) {
         const offset = match.index ?? 0
@@ -688,8 +818,7 @@ function frontmatterLines(state: EditorState): { first: number; last: number } |
   return { first: region.startLine + 1, last: Math.min(region.endLine + 1, limit) }
 }
 
-function inFrontmatter(build: Build, pos: number): boolean {
-  const region = build.frontmatter
+function inFrontmatter(build: Build, pos: number): boolean {  const region = build.frontmatter
   if (region === null) return false
   const line = build.state.doc.lineAt(Math.min(Math.max(pos, 0), build.state.doc.length)).number
   return line >= region.first && line <= region.last
@@ -716,6 +845,7 @@ function emitInline(build: Build, entry: Collected): void {
   if (build.collection.isClaimed(entry.from, entry.to)) return
   if (!visible(build, entry.from, entry.to)) return
   if (inFrontmatter(build, entry.from)) return
+  if (collapsedAt(build, entry.from)) return
 
   switch (entry.name) {
     case 'StrongEmphasis':
@@ -897,6 +1027,14 @@ function cursorOnLine(state: EditorState, pos: number): boolean {
 
 function lineVisible(build: Build, line: { from: number; to: number }): boolean {
   return visible(build, line.from, line.to)
+}
+
+/** 位置所在的行是否属于"被折叠起来的 callout 正文"（见 {@link Build.collapsed}）。 */
+function collapsedAt(build: Build, pos: number): boolean {
+  if (build.collapsed.size === 0) return false
+  const doc = build.state.doc
+  if (doc.length === 0) return false
+  return build.collapsed.has(doc.lineAt(Math.min(Math.max(pos, 0), doc.length)).number)
 }
 
 function visible(build: Build, from: number, to: number): boolean {

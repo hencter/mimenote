@@ -526,6 +526,98 @@ kbd {
   color: var(--mn-fg-muted);
 }
 
+/* ---------------------------------------------------------------------------
+   Callout（`> [!note] 标题`，ADR-0022）
+   ---------------------------------------------------------------------------
+   类型 → 颜色只有**这一份**：每种类型在这里定义 `--mn-callout-accent`，画布那边用
+   `getComputedStyle` 读同一个变量（见 `features/graph/canvas/palette.ts`）——
+   两份色表迟早会出现"阅读视图是蓝色、画布上是绿色"这种没人能解释的差异。
+   颜色刻意只用在**左边框与标题**上，背景仍走主题的 `--mn-bg-elevated`：
+   Obsidian 那种"整体染色"需要 color-mix/半透明叠色，在 110 版 Chromium（构建目标）上
+   不一定可用，而主题安全比多一层底色重要。
+   --------------------------------------------------------------------------- */
+
+.mn-callout {
+  margin: 1em 0;
+  padding: 6px 14px 2px;
+  border-left: 3px solid var(--mn-callout-accent, var(--mn-quote-border));
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg-elevated);
+}
+
+.mn-callout__title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 4px 0;
+  font-weight: 600;
+  color: var(--mn-callout-accent, var(--mn-fg));
+}
+
+.mn-callout__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15em;
+  font-family: var(--mn-font-mono);
+}
+
+.mn-callout__label {
+  flex: 1;
+}
+
+/* 折叠标记只是个说明（静态渲染不真的收起，见 ADR-0022），所以做成低调的角标 */
+.mn-callout__fold {
+  color: var(--mn-fg-subtle);
+  font-family: var(--mn-font-mono);
+  font-size: 0.85em;
+}
+
+/* 里面最后一个块不要拖出一条多余的空白 */
+.mn-callout > *:last-child {
+  margin-bottom: 8px;
+}
+
+.mn-callout--note {
+  --mn-callout-accent: var(--mn-callout-note, #448aff);
+}
+.mn-callout--abstract {
+  --mn-callout-accent: var(--mn-callout-abstract, #00b8d4);
+}
+.mn-callout--info {
+  --mn-callout-accent: var(--mn-callout-info, #00b8d4);
+}
+.mn-callout--todo {
+  --mn-callout-accent: var(--mn-callout-todo, #448aff);
+}
+.mn-callout--tip {
+  --mn-callout-accent: var(--mn-callout-tip, #00bfa5);
+}
+.mn-callout--success {
+  --mn-callout-accent: var(--mn-callout-success, #00c853);
+}
+.mn-callout--question {
+  --mn-callout-accent: var(--mn-callout-question, #64dd17);
+}
+.mn-callout--warning {
+  --mn-callout-accent: var(--mn-callout-warning, #ff9100);
+}
+.mn-callout--failure {
+  --mn-callout-accent: var(--mn-callout-failure, #ff5252);
+}
+.mn-callout--danger {
+  --mn-callout-accent: var(--mn-callout-danger, #ff1744);
+}
+.mn-callout--bug {
+  --mn-callout-accent: var(--mn-callout-bug, #f50057);
+}
+.mn-callout--example {
+  --mn-callout-accent: var(--mn-callout-example, #7c4dff);
+}
+.mn-callout--quote {
+  --mn-callout-accent: var(--mn-callout-quote, var(--mn-quote-border));
+}
+
 .mn-preview__body code {
   padding: 0.16em 0.36em;
   border-radius: 4px;
