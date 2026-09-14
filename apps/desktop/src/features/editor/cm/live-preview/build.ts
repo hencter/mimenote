@@ -27,8 +27,15 @@ import { normalizeLinkTarget, splitWikilink } from '@/domain/links'
 import type { ResolvedLink } from '@/ipc/types'
 
 import { LINK_ATTR, MD, WIKILINK_ATTR, WIKILINK_RESOLVED_ATTR, mdHeadingClass } from './theme'
-import type { LivePreviewContext, LivePreviewDecorationResult, VisibleRange } from './types'
-import { HorizontalRuleWidget, ImageWidget, TaskCheckboxWidget } from './widgets'
+import { isNestedTable, renderTableHtml, tableSourceWithinLimits } from './table'
+import type { LivePreviewContext, LivePreviewDecorationResult, ImageResolution, VisibleRange } from './types'
+import {
+  HorizontalRuleWidget,
+  ImageWidget,
+  TableWidget,
+  TaskCheckboxWidget,
+  type TableWidgetLink,
+} from './widgets'
 
 type TreeLike = ReturnType<typeof syntaxTree>
 /** 语法树节点（`@lezer/common` 不是本包的直接依赖，因此用索引访问拿到类型而不 import 它）。 */
@@ -56,6 +63,7 @@ const BLOCK_NODES = new Set([
   'TaskMarker',
   'HorizontalRule',
   'FencedCode',
+  'Table',
 ])
 
 /** 行内节点：样式 + 隐藏首尾标记。 */
@@ -145,6 +153,19 @@ class DecorationCollector {
     const range = value.range(from, to)
     this.ranges.push(range)
     this.hidden.push(range)
+    this.claims.push({ from, to })
+  }
+
+  /**
+   * 只登记"这一段已经被接管"，**不产出任何装饰**。
+   *
+   * 用途是表格：整块换成 widget 之后，单元格里的行内语法不该再各自产出装饰
+   * （那些文字在渲染态是 `display: none`，再往里塞 replace/原子区间只是白算，
+   * 还会让"藏起来的文本被二次替换"）。与 {@link replace} 共用同一份 `claims`，
+   * 因此 `isClaimed` 的判据只有一处。
+   */
+  claim(from: number, to: number): void {
+    if (to <= from) return
     this.claims.push({ from, to })
   }
 
@@ -276,6 +297,9 @@ function emitBlock(build: Build, entry: Collected): void {
       return
     case 'FencedCode':
       emitFencedCode(build, entry)
+      return
+    case 'Table':
+      emitTable(build, entry)
       return
     default:
       return
@@ -411,6 +435,120 @@ function emitFencedCode(build: Build, entry: Collected): void {
     build.collection.replace(fenceLine.from, fenceLine.to, HIDDEN)
     build.collection.add(fenceLine.from, fenceLine.from, Decoration.line({ class: MD.collapsedLine }))
   }
+}
+
+// ---------------------------------------------------------------------------
+// 表格
+// ---------------------------------------------------------------------------
+
+/**
+ * GFM 表格：光标不在这一块里时整块渲染成真表格，光标（或选区）进入时整块露原文。
+ *
+ * 三处取舍写在这里，改之前先读：
+ *
+ * 1. **判据是"整块"**：一张渲染出来的表是一个 `<table>`，列宽由所有行共享 ——
+ *    "只露光标那一行"在结构上做不到（那要拆成"每行一张小表"，列宽就不再共享，竖线全对不上），
+ *    而且会让行高/列宽随光标上下移动反复跳动，读者的视线每次都要重新找位置。
+ *    所以这里与标题/加粗是同一条纪律（进入即露原文），只是粒度从"一行/一个范围"放大到"一整块"，
+ *    做法与 Obsidian 一致：进则整块原样。
+ * 2. **整块接管（`claim`）**：块内的行内语法（`**粗体**`、`[[链接]]`、`![[图.png]]`）不再产出
+ *    Live Preview 的行内装饰。渲染态它们本来就看不见（源码被 CSS 藏起来，见第 3 条）；
+ *    露原文时用户要看的正是**原样的 Markdown**（连 `[[ ]]` 都在，也就不需要原子区间去挡光标）。
+ *    单元格里的行内语法由**渲染管线**负责（`renderTableHtml` → `domain/markdown.ts`），
+ *    不在这里再实现一套。
+ * 3. **藏源码用 CSS（`display: none`）而不是 `Decoration.replace`**（本模块唯一一处例外）：
+ *    ViewPlugin **不允许** replace 跨越换行 —— CodeMirror 会直接抛
+ *    "Decorations that replace line breaks may not be specified via plugins"，而一块表最少也是
+ *    两三行。逐行 replace 当然能绕开这条限制，但那样源码就从 DOM 里消失了，而
+ *    "编辑器的 DOM 文本 == 文档源码"是既有工具与用例的前提（完整理由见 `table.css`）。
+ *    于是改为：每一行整行文字挂一个 `display: none` 的 mark，表格 widget 挂在块首。
+ */
+function emitTable(build: Build, entry: Collected): void {
+  const doc = build.state.doc
+  // 整块都在视口外：什么都不做（与其它块级一致 —— widget 的真实高度只有浏览器知道，
+  // 为视口外的东西算 DOM 是纯粹的浪费）
+  if (!visible(build, entry.from, entry.to)) return
+  if (inFrontmatter(build, entry.from)) return
+  // 引用块 / 列表项里的表格：原样显示（理由见 table.ts 的 isNestedTable）
+  if (isNestedTable(entry.node)) return
+
+  // `to` 是开区间：减 1 才不会在"节点正好结束在行首"时多算一行（与 emitFencedCode 同一处理）
+  const firstLine = doc.lineAt(entry.from)
+  const lastLine = doc.lineAt(Math.max(entry.from, entry.to - 1))
+  const source = doc.sliceString(firstLine.from, lastLine.to)
+  if (!tableSourceWithinLimits(lastLine.number - firstLine.number + 1, source)) return
+
+  // 先接管：接下来无论是渲染还是露原文，块内都不该再有行内装饰（理由见函数头第 2 条）
+  build.collection.claim(firstLine.from, lastLine.to)
+
+  // 光标 / 选区落在块内：整块露原文（一个装饰都不挂）。
+  // 这一条刻意排在渲染**之前**：正在表格里打字是最热的那条路径，而这时根本不需要 widget ——
+  // 少掉的是一次 markdown-it + DOMPurify（实测单张表约 1ms），按键路径上不值得付
+  if (selectionTouches(build.state, firstLine.from, lastLine.to)) return
+
+  const html = renderTableHtml(source, (src) => resolveTableImage(build, src))
+  // 渲染管线不认它是一张表（列数不齐、只解析出前半截…）：原样显示，绝不自己猜一个表格出来
+  if (html === null) return
+
+  for (let number = firstLine.number; number <= lastLine.number; number += 1) {
+    const line = doc.line(number)
+    build.collection.add(line.from, line.to, Decoration.mark({ class: MD.tableSource }))
+  }
+
+  // widget 挂在块首（`side: -1` = 排在同一位置上的文本之前）。它自身是块级外观
+  // （`.mn-md-table` 的 `display: block`）：被藏起来的源码行不占高度，于是整张表出现在第一行的位置上
+  build.collection.add(
+    firstLine.from,
+    firstLine.from,
+    Decoration.widget({
+      widget: new TableWidget(html, tableLinks(build, source)),
+      side: -1,
+    }),
+  )
+}
+
+/**
+ * 单元格里的图片：与行内图片**同一条**解析链（`![[图.png]]` 的裸文件名要靠全库索引兜底）。
+ *
+ * 必须先 `resolveAsset` 再查授权缓存：`domain/markdown.ts` 交给我们的是源码里那个**原始**地址
+ * （可能是裸文件名），而授权缓存与宿主按 Vault 相对路径记账 —— 顺序反了就会拿裸文件名当相对路径
+ * 去请求，永远拿不到授权（表现是"行内图片好好的，表格里的图一直是占位"）。
+ */
+function resolveTableImage(build: Build, src: string): ImageResolution {
+  const rel = resolveAsset(build, src)
+  return rel === null ? { kind: 'placeholder' } : build.context.resolveImage(rel)
+}
+
+/**
+ * 表格源码里的 wikilink 解析结果（widget 据此给渲染出来的 `<a>` 补上点击标记）。
+ *
+ * 为什么在装饰层算、而不是让 widget 自己去查 store：这里已经拿着"当前笔记的出链"这份快照，
+ * 与行内 wikilink 走的是**同一个** `resolveOutbound`（含同一套 `normalizeLinkTarget` 口径）。
+ * 两处各查一次，迟早会出现"行内链接点得开、表格里的点不开"这种漂移。
+ */
+function tableLinks(build: Build, source: string): TableWidgetLink[] {
+  const links: TableWidgetLink[] = []
+  const seen = new Set<string>()
+  for (const match of source.matchAll(WIKILINK_PATTERN)) {
+    const inner = match[2] ?? ''
+    if (inner.trim() === '') continue
+    const offset = match.index ?? 0
+    // 转义的 `\[[x]]` 不是链接（与宿主链接抽取、与行内装饰同一口径）
+    if (offset > 0 && source[offset - 1] === '\\') continue
+    const parts = splitWikilink(inner)
+    if (parts.target === '') continue
+    const key = normalizeLinkTarget(parts.target)
+    if (key === '' || seen.has(key)) continue
+    seen.add(key)
+    const resolved = resolveOutbound(build, parts.target)
+    links.push({
+      // 与 `domain/markdown.ts` 渲染出来的 `data-target` 逐字相同（两边都是 `splitWikilink` 的结果）
+      target: parts.target,
+      resolvedRelPath: resolved?.resolvedRelPath ?? null,
+      ambiguous: resolved?.ambiguous === true,
+    })
+  }
+  return links
 }
 
 // ---------------------------------------------------------------------------

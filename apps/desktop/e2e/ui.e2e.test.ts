@@ -947,9 +947,14 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     // 起点：确实没对齐（否则这条用例证明不了什么）
     expect(new Set(before.map((line) => line.width)).size).toBeGreaterThan(1)
 
-    // 把光标放进表格里（点 `文件层` 那一行），再按快捷键
+    // 把光标放进表格里（点 `文件层` 那一行），再按快捷键。
+    //
+    // `.first()` 是必需的：所见即所得**渲染表格**之后，承载 widget 的那一行（DOM 里含整张
+    // 渲染出来的表，而表里有"文件层"三个字）与那一行的原始源码都命中 `hasText`，strict mode
+    // 会报"命中 2 个元素"。先命中 DOM 顺序里靠前的那一条正是 widget 宿主行 —— 它就在表格里，
+    // 点它等于"把光标放进表格"，正是本用例要做的动作。
     await page.locator('.cm-content').click()
-    const row = page.locator('.cm-content .cm-line', { hasText: '文件层' })
+    const row = page.locator('.cm-content .cm-line', { hasText: '文件层' }).first()
     await row.click()
     await page.keyboard.press('Control+Alt+f')
 
@@ -1468,6 +1473,201 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       '清除标签过滤',
     )
   })
+
+  it('所见即所得：表格渲染成真表格，光标进入露原文（源码仍在 DOM 里）', async () => {
+    await ensureVaultOpen(page)
+    // 先开笔记再切视图：单独跑这一条时编辑器里还没有任何文档（`.cm-content` 不存在）
+    await openNoteInTree(page, '项目/设计.md')
+    await showEditView(page)
+
+    // 让光标离开表格：表格在 mock 笔记的第 5~8 行，点第一行（标题）即可
+    await page.locator('.cm-content .cm-line').first().click()
+
+    const table = page.locator('.cm-content .mn-md-table table')
+    await table.waitFor({ state: 'visible', timeout: 10_000 })
+
+    // 真表格：thead / th / tbody / td 都真的在，表头就是分隔行上面那一行
+    expect(await table.locator('thead th').count()).toBe(2)
+    expect(await table.locator('tbody tr').count()).toBe(2)
+    expect(await table.locator('tbody td').count()).toBe(4)
+    expect(((await table.locator('th').first().textContent()) ?? '').trim()).toBe('层')
+
+    // 用户看到的是一张表：可见文本里一个 `|` 都没有
+    const rendered = await editorVisibleText(page)
+    expect(rendered).toContain('文件层')
+    expect(rendered).not.toContain('|')
+
+    // 但源码**仍然**留在 DOM 里（只是 `display: none`）：Live Preview 是视图层，
+    // 不做"把源码从 DOM 里删掉"那件事 —— 浏览器的查找、以及靠 `.cm-line` 文本读表格的既有路径都还成立
+    expect(await editorTextContent(page)).toContain('| 文件层 | 原子写 |')
+
+    // 被藏起来的源码行**不占高度**：否则表格上下会多出三道缝（jsdom 测不了布局，所以放在这一层）
+    expect(await zeroHeightLineCount(page)).toBe(3)
+
+    // 光标进表格 → 整块露原文（表格消失，`|` 回来）
+    await table.locator('tbody td').first().click()
+    await waitUntil(
+      async () => (await editorVisibleText(page)).includes('| 文件层'),
+      10_000,
+      '光标进入表格后露出原始 Markdown',
+    )
+    expect(await page.locator('.cm-content .mn-md-table table').count()).toBe(0)
+
+    // 再让光标离开 → 又变回表格（同一份文档、同一个编辑器实例，只重算装饰）
+    await page.locator('.cm-content .cm-line').first().click()
+    await page.locator('.cm-content .mn-md-table table').waitFor({ state: 'visible', timeout: 10_000 })
+    expect(await editorVisibleText(page)).not.toContain('|')
+  })
+
+  it('所见即所得：单元格里的对齐与行内语法都渲染，「格式化表格」不改变渲染结果', async () => {
+    await ensureVaultOpen(page)
+    // 先开笔记再切视图：单独跑这一条时编辑器里还没有任何文档（`.cm-content` 不存在）
+    await openNoteInTree(page, '项目/设计.md')
+    await showEditView(page)
+
+    // 在文档末尾敲一张带对齐标记与行内语法的表。
+    // 注意本用例**真的会改** mock 笔记（自动保存写进内存里的条目表），所以刻意放在文件最后一条。
+    await page.locator('.cm-content').click()
+    await page.keyboard.press('Control+End')
+    await page.keyboard.press('Enter')
+    const rows = ['| 名称 | 数量 | 备注 |', '| :--- | ---: | :---: |', '| 甲 | **12** | `码` |']
+    // 两个换行 = 让表格前有一个**空行**：GFM 的表体会一直吃到空行/别的块级结构，
+    // 少了它，新表格的第一行会被当成上面那个段落的续行（上一次运行就是这么假通过的）
+    await page.keyboard.press('Enter')
+    await page.keyboard.press('Enter')
+    for (const [index, line] of rows.entries()) {
+      if (index > 0) await page.keyboard.press('Enter')
+      await page.keyboard.type(line)
+    }
+
+    /*
+     * 单元格里的 `[[` 补全：弹层挂在 `.cm-editor` 下（不在 `.cm-content` 里），与表格装饰
+     * 互不干扰 —— 这里钉住"弹出 → 关掉 → 继续输入"这条链，免得以后谁改了表格的行内接管方式，
+     * 把补全悄悄弄坏。
+     *
+     * 查询串刻意用「路线」而不是「设计」：
+     * - 候选列表**不含当前笔记自己**（`candidates.ts` 的规则），而当前笔记正是 `项目/设计.md` ——
+     *   用「设计」的话一条候选都没有，弹层会直接关掉；
+     * - 「路线图」本来就在这篇笔记的出链表里（`参考 [[路线图]] 与 [[细节]]。`），
+     *   所以渲染出来的 `<a>` 会带上"已解析"的标记，正好把这条链路也断言掉。
+     */
+    await page.keyboard.press('Enter')
+    await page.keyboard.type('| [[路线')
+    await page.waitForSelector('.mn-wiki-complete', { state: 'visible', timeout: 10_000 })
+    expect(await page.locator('.mn-wiki-complete__item').count()).toBeGreaterThan(0)
+    await page.keyboard.press('Escape')
+    await waitUntil(
+      async () => (await page.locator('.mn-wiki-complete').count()) === 0,
+      5_000,
+      '补全弹层关闭',
+    )
+    await page.keyboard.type('图]] |')
+
+    // 光标离开表格 → 整块渲染
+    await page.locator('.cm-content .cm-line').first().click()
+    const table = page.locator('.cm-content .mn-md-table table').last()
+    await table.waitFor({ state: 'visible', timeout: 10_000 })
+
+    // 对齐方式来自分隔行（`:---` / `---:` / `:---:`），由浏览器算出来的是真的对齐
+    expect(
+      await table
+        .locator('thead th')
+        .evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).textAlign)),
+    ).toEqual(['left', 'right', 'center'])
+
+    // 单元格里的行内语法渲染成元素，标记一个都不留给用户看
+    expect(await table.locator('tbody strong').count()).toBe(1)
+    expect(await table.locator('tbody code').count()).toBe(1)
+    const body = await table.locator('tbody').innerText()
+    expect(body).toContain('12')
+    expect(body).not.toContain('**')
+    expect(body).not.toContain('`')
+    // `[[路线图]]` 渲染成可点击的 wikilink（不再是双方括号），且带着编辑器认的标记与解析结果
+    const wikiLink = table.locator('a.mn-wikilink').first()
+    expect(await table.locator('a.mn-wikilink[data-mn-wikilink="路线图"]').count()).toBe(1)
+    expect(await wikiLink.getAttribute('data-mn-resolved')).toBe('项目/路线图.md')
+
+    // 「格式化表格」：光标进表格 → Ctrl+Alt+F → 只改空白，**渲染结果逐字不变**
+    const before = await table.locator('tbody').innerText()
+    await table.locator('tbody td').first().click()
+    await page.keyboard.press('Control+Alt+f')
+    await delay(200)
+    await page.locator('.cm-content .cm-line').first().click()
+    const after = await page
+      .locator('.cm-content .mn-md-table table')
+      .last()
+      .locator('tbody')
+      .innerText()
+    expect(after).toBe(before)
+  })
+
+  it('所见即所得：超宽表格横向滚动、超长单元格换行（正文不会被撑爆）', async () => {
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/设计.md')
+    await showEditView(page)
+
+    const contentWidth = async (): Promise<number> =>
+      await page.evaluate(
+        () => document.querySelector<HTMLElement>('.cm-content')?.clientWidth ?? 0,
+      )
+    const before = await contentWidth()
+
+    /*
+     * 16 列 + 一个"没有空格可断"的长串：**列多**就会超过正文宽度（每列有 `min-width: 4em`
+     * 的下限，表格不会为了塞进正文而把自己压成"一列一个字"）—— 这正是要验的那个场景。
+     * 第二格是一长段可换行的中文：它必须换行，而不是把整张表再撑宽。
+     */
+    const columns = Array.from({ length: 16 }, (_, index) => `列${index + 1}`)
+    const longToken = 'W'.repeat(80)
+    const longText = '可换行的长文本'.repeat(8)
+    const rows = [
+      `| ${columns.join(' | ')} |`,
+      `| ${columns.map(() => '---').join(' | ')} |`,
+      `| ${columns.map((_, index) => (index === 0 ? longToken : index === 1 ? longText : `值${index}`)).join(' | ')} |`,
+    ]
+    await page.locator('.cm-content').click()
+    await page.keyboard.press('Control+End')
+    // 两个换行 = 让表格前有一个**空行**（GFM 的表体会一直吃到空行/别的块级结构为止，
+    // 少了它，新敲的第一行会被当成上面那段文字的续行）
+    await page.keyboard.press('Enter')
+    await page.keyboard.press('Enter')
+    for (const [index, line] of rows.entries()) {
+      if (index > 0) await page.keyboard.press('Enter')
+      await page.keyboard.type(line)
+    }
+    await waitUntil(
+      async () => (await editorTextContent(page)).includes(longToken),
+      15_000,
+      '超宽表格已经输入',
+    )
+
+    await page.locator('.cm-content .cm-line').first().click()
+    const scroller = page.locator('.cm-content .mn-md-table__scroll').last()
+    await scroller.waitFor({ state: 'visible', timeout: 10_000 })
+
+    // 1) 横向**滚动**而不是把正文挤爆：内容比容器宽，而容器自己不超过正文宽度
+    const scrollerBox = await scroller.evaluate((element) => ({
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    }))
+    expect(scrollerBox.scrollWidth).toBeGreaterThan(scrollerBox.clientWidth)
+    expect(await contentWidth()).toBe(before)
+
+    // 2) 超长单元格**换行**：没有任何一格横向溢出，长文本那一格被压成好几行
+    const cells = await scroller
+      .locator('tbody td')
+      .evaluateAll((nodes) =>
+        nodes.map((node) => ({
+          scrollWidth: node.scrollWidth,
+          clientWidth: node.clientWidth,
+          clientHeight: node.clientHeight,
+        })),
+      )
+    for (const cell of cells) {
+      expect(cell.scrollWidth).toBeLessThanOrEqual(cell.clientWidth + 1)
+    }
+    expect(cells[1]?.clientHeight ?? 0).toBeGreaterThan(40)
+  })
 })
 
 /**
@@ -1545,5 +1745,50 @@ async function dispatchDrag(
       }
     },
     { fromRel, toRel, phase },
+  )
+}
+
+/**
+ * 单独跑某一条用例时门闸还在（整个文件跑时 Vault 已经开着）。
+ *
+ * 与"拖拽整理"等用例同一写法：每条用例都该自足，而不是依赖上一条刚好把状态留在哪里。
+ */
+async function ensureVaultOpen(page: Page): Promise<void> {
+  if ((await page.locator('.mn-gate').count()) > 0) {
+    await page.getByText('打开文件夹作为 Vault').click()
+    await page.waitForSelector('.mn-tree-row', { state: 'visible' })
+  }
+}
+
+/**
+ * 编辑器里**看得见**的正文。
+ *
+ * 用 `innerText`（按渲染结果取文本，会跳过 `display: none` 的东西）：Live Preview 的表格
+ * 渲染态里，源码行只是被 CSS 藏起来、仍留在 DOM 中，所以 `textContent` 两种状态下都一样，
+ * 只有 `innerText` 能区分"用户现在看到的是表格"还是"看到的是源码"。
+ */
+async function editorVisibleText(page: Page): Promise<string> {
+  return await page.evaluate(
+    () => document.querySelector<HTMLElement>('.cm-content')?.innerText ?? '',
+  )
+}
+
+/** 编辑器 DOM 里的**全部**文本（含被藏起来的源码行）。 */
+async function editorTextContent(page: Page): Promise<string> {
+  return await page.evaluate(() => document.querySelector('.cm-content')?.textContent ?? '')
+}
+
+/**
+ * 高度为 0 的 `.cm-line` 数量。
+ *
+ * 表格渲染态里，源码行是靠"文字 `display: none`、行盒没有内容"塌成 0 高度的 ——
+ * 这一条只有真实排版量得出来（jsdom 没有布局），所以放在 E2E 层。
+ */
+async function zeroHeightLineCount(page: Page): Promise<number> {
+  return await page.evaluate(
+    () =>
+      Array.from(document.querySelectorAll<HTMLElement>('.cm-content .cm-line')).filter(
+        (line) => line.getBoundingClientRect().height === 0,
+      ).length,
   )
 }

@@ -1,0 +1,105 @@
+/*
+ * 所见即所得（Live Preview）里表格的样式。
+ *
+ * 为什么单独一个文件而不是写进 `styles/app.css`：`app.css` 是所有特性的公共文件，表格只是
+ * "编辑器里的一块渲染"，规则与 `domain/markdown.ts` 渲染出来的结构（`table / thead / tbody /
+ * th / td / code / a.mn-wikilink`）成对维护 —— 与 `features/lightbox/preview-image.css`
+ * 同一个理由。
+ *
+ * 版式口径**对齐阅读视图**（`app.css` 的 `.mn-preview__body table / th / td`）：同样的
+ * `border-collapse`、同样的 1px 边框、同样的单元格内边距、表头同样的底色。
+ * 两处刻意各写一份（而不是让编辑器借用 `.mn-preview__body` 的规则）：那是阅读视图的容器类，
+ * 编辑器里不该依赖"某个面板恰好挂着它"。改一处必须改两处，这条写在这里以免被忘记。
+ */
+
+/*
+ * 表格源码行里的文字。
+ *
+ * `display: none` 而不是"把源码从 DOM 里删掉"（其他语法用的是 `Decoration.replace`）：
+ * 1. 一块表的源码与它的渲染结果是**互斥**的：要么整块渲染、要么整块露原文（见 build.ts 的
+ *    判据），所以这里没有"光标停在看不见的字符里"的风险，不需要原子区间；
+ * 2. 文本节点留着 = 编辑器的 DOM 文本始终等于文档源码。依赖它的东西比想象中多：
+ *    浏览器自带的查找（Ctrl+F）、以及"从 DOM 里读表格行"的既有工具与用例。
+ *    把源码从 DOM 里删掉，这些都会在看到表格时突然"瞎掉"。
+ * 文字不可见，也就不可选中、不可点击（`display: none` 同时把它排除在无障碍树之外，不会
+ * 出现"屏幕阅读器把同一张表读两遍"）。
+ */
+.mn-md-table-source {
+  display: none;
+}
+
+/*
+ * 表格 widget 的外层。
+ *
+ * 用 `padding` 而不是 `margin`：它是 `.cm-line` 里的块级子元素，垂直 margin 会穿过父元素折叠
+ * 出去，既看不出间距，又会让 CodeMirror 量到的行高偏小（滚动条与"滚到光标"会因此逐步失准）。
+ * 与图片 widget（`.mn-md-image-wrap`）同一取舍。
+ */
+.mn-md-table {
+  display: block;
+  padding: 8px 0;
+}
+
+/*
+ * 横向溢出：**滚动**，而不是把表格压扁或把正文挤爆。
+ *
+ * 表格最小宽度由 widget 按列数算好（`widgets.ts` 的 `applyTableMinimumWidth`）：列一多，
+ * 表格就比正文宽，由这里滚动；列少时它仍然是 `width: 100%`（与阅读视图一致）。
+ * 单元格用 `overflow-wrap: break-word`，所以长文本是换行而不是把表格再撑宽。
+ * 刻意**不用** `overflow-wrap: anywhere` / `word-break: break-all`：那两个会把表格的
+ * min-content 压到"一个字符宽"，任何表格都能塞进正文宽度、滚动条永远不出现。
+ */
+.mn-md-table__scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /*
+   * `contain: inline-size` 不是优化，是**必须**：
+   * 表格的最小宽度（列多时超过正文宽度）会沿"最小内容宽度"一路往上传播 ——
+   * 而编辑器的 `.cm-content` 是 flex 项、`min-width: auto`，于是它会跟着撑宽到表格那么宽，
+   * 结果是**整篇正文**都变宽、读者要横向滚动才能读完一段话（正是"把正文挤爆"）。
+   * 声明"这个容器的行内尺寸与内容无关"之后，滚动条留在这里，正文宽度纹丝不动。
+   * （高度不受影响：`inline-size` 只管行内轴，表格行数变了这个盒子照样跟着长高。）
+   */
+  contain: inline-size;
+}
+
+.mn-md-table table {
+  border-collapse: collapse;
+  /* 与阅读视图一致：表格铺满正文宽度，列宽由浏览器按内容自动分配 */
+  width: 100%;
+  margin: 0;
+}
+
+.mn-md-table th,
+.mn-md-table td {
+  padding: 6px 10px;
+  border: 1px solid var(--mn-border);
+  /* 对齐方式由 markdown-it 写在 `style="text-align:…"` 上（来自分隔行的 `:---`），
+     这里的 `left` 是它的兜底 —— 与阅读视图同一套口径 */
+  text-align: left;
+  /* 只在"一个词自己一行也放不下"时才拆词；配合 widget 给表格算出的最小宽度
+     （见 widgets.ts 的 `applyTableMinimumWidth`）共同保证："长文本换行、列多了横向滚动" */
+  overflow-wrap: break-word;
+}
+
+.mn-md-table th {
+  background: var(--mn-bg-elevated);
+  font-weight: 600;
+}
+
+/* 单元格里的图片（`![](…)` / `![[图.png]]`）不能撑破单元格 */
+.mn-md-table .mn-image {
+  max-width: 100%;
+  height: auto;
+}
+
+/* 单元格里的链接。
+   注意这些 `<a>` 是**渲染管线**的产物（`domain/markdown.ts` 按阅读视图的写法渲染），
+   不该依赖编辑器的装饰类（`mn-md-link` 只在行内装饰上出现）——所以这里按阅读视图的观感
+   把颜色与下划线写一遍。`a.mn-wikilink` 排除在外：它的样式由 live-preview 的 theme 提供。 */
+.mn-md-table a:not(.mn-wikilink) {
+  color: var(--mn-link);
+  text-decoration: underline;
+  cursor: pointer;
+}

@@ -206,16 +206,18 @@ const livePreviewPlugin = ViewPlugin.fromClass(
 
     private readonly onImageError = (event: Event): void => {
       const target = event.target
-      if (target instanceof HTMLImageElement && target.classList.contains('mn-md-image')) {
-        markAssetFailed(target.src)
-      }
+      if (!(target instanceof HTMLImageElement)) return
+      // `mn-md-image` 是行内图片 widget；表格里的图片来自**渲染管线**（`domain/markdown.ts`），
+      // 类名就是阅读视图那个 `mn-image` —— 两处都要降级，否则"表格里的图坏了"会留一个裂图。
+      if (!target.classList.contains('mn-md-image') && !target.classList.contains('mn-image')) return
+      markAssetFailed(target.src)
     }
 
     private readonly onImageLoad = (event: Event): void => {
       const target = event.target
-      if (target instanceof HTMLImageElement && target.classList.contains('mn-md-image')) {
-        this.view.requestMeasure()
-      }
+      if (!(target instanceof HTMLImageElement)) return
+      if (!target.classList.contains('mn-md-image') && !target.classList.contains('mn-image')) return
+      this.view.requestMeasure()
     }
 
     update(update: ViewUpdate): void {

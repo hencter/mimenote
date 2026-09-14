@@ -37,6 +37,18 @@ export const MD = {
   hrLine: 'mn-md-hr-line',
   /** 整行只有一张图片（或图片占位）时挂在行上：去掉行盒多余的行距。 */
   imageLine: 'mn-md-image-line',
+  /** 表格 widget 的外层（`live-preview/table.css`）。 */
+  table: 'mn-md-table',
+  /** 表格的横向滚动容器（超宽表格靠它滚动，而不是把正文挤爆）。 */
+  tableScroll: 'mn-md-table__scroll',
+  /**
+   * 表格源码行的文字。
+   *
+   * 表格是唯一一处"把源码留在 DOM 里、只用 CSS 藏起来"的语法（`display: none`）：
+   * 一块表要么整块渲染、要么整块露原文，因此不需要原子区间，而留下文本节点让编辑器的
+   * DOM 文本始终等于文档源码（理由见 `table.css` 与 `build.ts` 的 `emitTable`）。
+   */
+  tableSource: 'mn-md-table-source',
   wikilink: 'mn-wikilink',
   wikilinkUnresolved: 'mn-wikilink--unresolved',
   wikilinkAmbiguous: 'mn-wikilink--ambiguous',
