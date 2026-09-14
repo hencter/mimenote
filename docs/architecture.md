@@ -146,6 +146,10 @@
 | `graph_data` | — | `GraphData` | 知识图谱的节点与边（ADR-0010）：节点含 `folder`/`tags`/出入度；边按 `(from,to)` 去重并带 `count`，`toRelPath=null` 表示悬空链接且 **`toRawTarget` 是用户写下的原始目标名**（三者都取第一条链接的写法）；只读索引、不做文件 IO；节点超过 8000 时按度数截断并置 `truncated` |
 | `asset_read_base64` | `relPaths[]` | `AssetBytes[]` | 图片字节（`data:` URL 的原料，**导出**用）：与 `asset_authorize` 共用扩展名白名单与 `path_guard::resolve_existing`；单张 ≤ 8 MiB、单批 ≤ 32 MiB / 256 张，**超限或越界的条目静默跳过**（与 `asset_authorize` 的"拿不到就不返回"语义一致） |
 | `export_write_html` | `path, html` | `ExportOutcome` | 把自包含 HTML 写到系统保存对话框选定的路径（ADR-0011）。这是**唯一允许写 Vault 之外**的写命令：目标路径不做越界限制（导出到桌面是正常需求），靠**扩展名白名单 `.html`/`.htm` + 内容 ≤ 32 MiB** 把能力收窄成"写一个 HTML 文件"；写入走 `mn_core::atomic::write_atomic` |
+| `export_site_plan` | `outputDir?` | `SitePlan`（`vaultName / outputDir / previous / pages[] / stats / assets[]`） | **整库导出的计划**（ADR-0019）：页面表（每页的 `pagePath`/`urlPath`/`title`/`tags`/出链 `href`/反链）、统计。**只读、只回一次**（4 千篇的计划是几 MB 的 JSON，逐篇问会是几千次往返）。链接的 `href` 由索引的解析规则算好（相对**本页**、逐段百分号编码），前端只查表 —— "谁指向谁"只有索引那一份。传了 `outputDir` 就顺带做目标目录预检并回带上次标记（`previous`）；**在 Vault 内/`<Vault>/.mimenote` 之下 → `PATH_INVALID`**，非空且没有我们的标记 → `ALREADY_EXISTS`；索引未就绪 → `INDEX_NOT_READY` |
+| `notes_read_batch` | `relPaths[]`（≤ 64） | `NotesBatch`（`items: NoteContent[]` / `skipped[]`） | 批量读原文（整库导出用）：把 4 千次往返压到几十次。**单篇失败不整批失败**：`skipped[{relPath, reason, message}]`，`reason ∈ not-found / unreadable / not-utf8 / too-large`（与 `tag_rename` 的跳过口径同构） |
+| `export_site_write_pages` | `outputDir, files[{relPath, text}]` | `SiteWriteOutcome`（`files / bytes / writtenInMs / createdDirs[]`） | 往用户选定的目录批量写站点文件。**扩展名白名单 `.html`/`.css`/`.json`**；站内路径逐段校验（`..`、绝对路径、盘符、`:`（ADS）、Windows 保留设备名、控制字符、结尾点/空格全拒）；**批内按数组顺序写**（前端据此把 `index.html` 与标记文件留到最后 —— 中途失败时目录里没有任何东西自称导出完成）；逐文件 `write_atomic`；**从不删除任何文件**；单批 ≤ 256 个文件 / 32 MiB |
+| `export_site_copy_assets` | `outputDir, assets[{vaultRelPath}]` | `SiteAssetOutcome`（`copied / bytes / createdDirs[] / skipped[]`） | 把图片复制进站点的 `assets/<原 Vault 相对路径>`（**复制而不是内嵌**：静态站是一个目录，内嵌会让同一张图在几千个页面里各存一份）。字节只在宿主里搬，不走 IPC 的 base64 通道。白名单复用 `assets.rs` 的图片扩展名判定（唯一一份）；单张 ≤ 64 MiB、单次 ≤ 512 张；越界/读失败/非图片进 `skipped` 并如实汇报 |
 | `attachment_save` | `dirRel, files[]` | `AttachmentSaved[]` | 把粘贴/拖入的图片写进附件目录（ADR-0013）：`files` 是 `{ name, dataBase64 }[]`，出参是**去重之后**的相对路径与字节数。**要么整批落盘、要么一张都不落**；同名绝不覆盖（追加 ` 1`/` 2`）；扩展名白名单与 `asset_authorize` **同源**（`assets.rs` 的同一份常量）；单张 ≤ 8 MiB、一批 ≤ 32 MiB、一次 ≤ 32 张；文件名必须单段并过 `path_guard`（越界/保留名/符号链接一律拒），非法输入返回 `UNSUPPORTED_MEDIA`/`TOO_LARGE`/`PATH_INVALID`/`PATH_ESCAPE` |
 | `snippets_list` | — | `SnippetFile[]` | 读取 `.mimenote/snippets/*.css` |
 | `version_info` | — | `VersionInfo` | 应用 / mn-core / Tauri 版本 |
@@ -208,6 +212,7 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | [ADR-0009](adr/0009-wysiwyg-editor.md) | 所见即所得编辑（Live Preview），**移除"编辑 + 预览"双栏**；主区域三选一（编辑 / 阅读 / 图谱） | 已采纳 |
 | [ADR-0010](adr/0010-knowledge-graph-card-canvas.md) | 知识图谱是**卡片画布**（非力导向小圆点）：文件夹自动成组、入链虚线/出链实线、卡片可直接预览 | 已采纳 |
 | [ADR-0011](adr/0011-export-html-and-print-pdf.md) | 导出自包含 HTML（图片内嵌 `data:` URL）；PDF 交给系统打印对话框；`export_write_html` 是唯一允许写 Vault 外路径的命令，靠扩展名白名单收窄 | 已采纳 |
+| [ADR-0019](adr/0019-static-site-export.md) | 整库导出静态站点：宿主出计划（索引驱动的链接解析 + URL 分配）、前端渲染（唯一一份 Markdown 管线）、宿主批量落盘；输出目录必须在 Vault 之外、非空目录凭标记文件认领、从不删除；零 JavaScript；页面里不含时间戳（确定性） | 已采纳 |
 | [ADR-0012](adr/0012-move-rewrites-relative-links.md) | 跨目录移动**同时改写被移动笔记自身正文里的相对路径链接**（纯路径算术，不做存在性检查；只动随位置变化的目标） | 已采纳 |
 | [ADR-0013](adr/0013-image-attachments.md) | 粘贴 / 拖入的图片写进 Vault 附件目录（`attachment_save`）：字节走 IPC、MIME 定扩展名、同名去重、整批原子 | 已采纳 |
 | [ADR-0014](adr/0014-persisted-link-tag-index.md) | 链接/标签索引与 FTS 落进同一个缓存库、共用同一份 `(path, mtime, size)` 判定键，写穿透挂在 `LinkIndex::upsert/remove` 内部 | 已采纳 |
@@ -226,6 +231,7 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | 预览读取 Vault 外的文件（本地图片） | asset 协议**逐文件授权**：`path_guard::resolve_existing` 逐级检查符号链接 + 越界拒绝，只把通过校验的那一个文件加进作用域。**不用目录级作用域** —— Tauri 的 asset 协议按路径字符串匹配后直接 `File::open`（不 canonicalize），目录级放行会被 Vault 内的符号链接绕过（ADR-0007） | `src-tauri/src/assets.rs`、`mn-core/path_guard.rs` |
 | Windows 保留名/ADS（`con.md`、`a:b`） | 段级黑名单校验 | `mn-core/path_guard.rs` |
 | 写到 Vault 之外（导出） | 只有 `export_write_html` 一条命令能写 Vault 外路径，且**只接受 `.html`/`.htm`**（大小写不敏感）—— 白名单同时挡掉 ADS 尾巴（`a.html:ads`）；路径来自系统保存对话框；内容 ≤ 32 MiB。没有这条白名单，"带 path 参数且不校验越界"就等于一个任意文件写入后门（ADR-0011） | `src-tauri/src/export.rs`、`docs/adr/0011-export-html-and-print-pdf.md` |
+| 写到 Vault 之外的**目录树**（整库导出） | 两条命令（`export_site_write_pages` / `export_site_copy_assets`）各自带**扩展名白名单**（页面只 `.html`/`.css`/`.json`，图片只走既有的图片白名单）；输出目录必须在 Vault 之外（在 Vault 内/`.mimenote` 之下 → `PATH_INVALID`）；每个站内路径逐段校验（`..`、盘符、`:`、保留设备名、控制字符、结尾点空格）并按"校验 → 建目录 → **再校验一次**（此时能真实 canonicalize）→ 原子写"的顺序执行；**从不删除任何文件**（ADR-0019） | `src-tauri/src/site_export.rs`、`docs/adr/0019-static-site-export.md` |
 | 半写文件（断电/崩溃） | 临时文件 + fsync + rename 覆盖 | `mn-core/atomic.rs` |
 | 误删数据 | 删除必须 `confirm=true`，文件移入 `.mimenote/trash` 并记 jsonl 台账（可恢复） | `mn-core/trash.rs` |
 | XSS（笔记内嵌 HTML） | `markdown-it` 关闭 raw HTML + DOMPurify 二次净化 + 严格 CSP（`script-src 'self'`） | `domain/markdown.ts`、`tauri.conf.json` |
@@ -240,6 +246,7 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | Vault 扫描（1 万文件 + 100 目录） | ≤ 800 ms | **143 ms**（`cargo run -p mn-core --release --example scan_bench`，本机 SSD） |
 | 打开 1MB Markdown | ≤ 100 ms | 状态栏显示每次读取耗时（`加载读取`），可直接观察 |
 | 输入延迟 | ≤ 16 ms | 结构性保证：输入路径零 IO、编辑器不因文本变化重渲染、预览/大纲走 `useDeferredValue` |
+| 整库导出（1 万笔记） | 未定目标（一次性动作，进度可见、可取消） | 计划本身是 O(索引) 且不读文件；成本全在"逐篇渲染 + 逐篇原子写"，按 24 篇一批推进并在批边界让出主线程（ADR-0019）。实测见 §8 的静态站点条目 |
 | 主线程单任务 | ≤ 8 ms | Rust 侧所有文件 IO 走 `spawn_blocking`；前端只做 O(可视行) 的窗口计算 |
 | 保存（本地） | ≤ 50 ms | 状态栏显示每次写入耗时（含 fsync）；另有一次索引写穿透 **+0.68 ms/篇**（ADR-0014） |
 | 文件树滚动 | 稳定 60fps | 固定行高 + 窗口化渲染：DOM 行数 = 可视行 + 2×overscan（与条目总数无关） |
@@ -283,8 +290,10 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 拖拽整理文件（跨目录移动 + 全库链接改写 + 移动时改写自身相对链接））。M3 之后又提前交付了若干
 原属 M5 的项（**索引跨会话复用**：ADR-0008「后续修订」+ ADR-0014），以及超出原范围的体验项
 （搜索命中行跳转、图片粘贴/拖入附件、大纲面板、阅读视图代码块复制、窗口标题跟随当前笔记、
-**目录重命名 / 目录移动**：ADR-0015，整棵子树的路径与全库链接一起改）。
-仍推迟：M4 插件系统（**标签编辑已交付**：ADR-0006「后续修订」，面板里加/删 frontmatter 标签）。
+**目录重命名 / 目录移动**：ADR-0015，整棵子树的路径与全库链接一起改、
+**整库导出静态站点**：ADR-0019，每篇一个 HTML + 可点的双链 + 共享样式表 + 索引页，零 JavaScript）。
+仍推迟：M4 插件系统（**标签编辑已交付**：ADR-0006 的三次「后续修订」，面板里加/删、
+全库重命名/合并、**层级编辑**）。
 
 ## 8. 已知限制
 
@@ -299,7 +308,14 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
     （挂到自己/自己的后代/父标签里有空段/已经在那里了）—— 这里刻意不走 `describeError` 的错误码映射，
     否则 `PATH_INVALID` 会把"不能把标签挂到它自己下面"翻成"路径不合法"。宿主侧不开第二套写路径
     （`tag_move` 内部就是 `tag_rename_in`）。仍推迟：标签面板上的**拖拽成树**、多选一起移动、父标签输入的**前缀补全**。
-4. **快速切换与命令面板已交付**（`Mod+K` / `Mod+P`）；**全文搜索已交付**（`Mod+Shift+F`，SQLite FTS5 + `bm25`，第三个面板模式 + 带竞态丢弃的异步查询），**命中行跳转也已交付**：入口是 `features/editor/line-jump.ts` 的 `openNoteAt(relPath, line)` —— 它先切回编辑视图、走既有的 `openNote` 打开，再**等这篇文档真的进了编辑器**（`note-store.revision` 那次整篇替换跑完，按帧重试并有超时上限）才用 `doc.line(n).from` 算行首，因此绝不会在旧文档上算偏移；定位本身是一次"只改选区 + 装饰"的事务（`Transaction.addToHistory.of(false)`：不进撤销历史、不置 dirty、不往正文插任何标记），滚动交给 `EditorView.scrollIntoView(..., { y: 'center' })`，并给该行一层几百毫秒后自动消失的高亮（`features/editor/cm/flash-line.ts`）。反向链接面板走**同一个入口**（`BacklinkRef.line` 是来源笔记里的行号，可直接定位）；出链刻意不定位 —— `ResolvedLink.line` 是引用写在当前笔记的哪一行，而 `#锚点` 是锚点名，宿主没有"锚点 → 行号"的接口（要做得新增一条宿主命令，不在本次范围）。
+4. **导出**：单篇导出自包含 HTML / 打印为 PDF 已交付（ADR-0011）；**整库导出静态站点也已交付**（ADR-0019，
+   `export.site` / `Ctrl+Alt+S`）：每篇一个 HTML（镜像目录树）、双链变成相对链接、图片复制进 `assets/`、
+   整站一份共享样式表、根目录 `index.html`，**零 JavaScript**。仍然要知道的边界：输出目录**必须在 Vault 之外**
+   （写进去会触发重扫、还会被同步盘整站上传）；**站内没有搜索**（零 JS 的直接代价：`file://` 下禁止 `fetch()`，
+   而 FTS5 库实测 207 MB）；**不做增量重导出**（每次整库重渲染），也**不删除旧文件**（变小了的 Vault 会留下旧页面，
+   结果与索引页都点名）；图片先写页面后复制 ⇒ 中断会留短暂死图；大 Vault 仍是主进程分片渲染（每批 24 篇让出主线程，
+   进度可见、可取消）；单个页面文件离开站点目录后样式会丢（要"单文件到处能看"就用单篇导出）。
+5. **快速切换与命令面板已交付**（`Mod+K` / `Mod+P`）；**全文搜索已交付**（`Mod+Shift+F`，SQLite FTS5 + `bm25`，第三个面板模式 + 带竞态丢弃的异步查询），**命中行跳转也已交付**：入口是 `features/editor/line-jump.ts` 的 `openNoteAt(relPath, line)` —— 它先切回编辑视图、走既有的 `openNote` 打开，再**等这篇文档真的进了编辑器**（`note-store.revision` 那次整篇替换跑完，按帧重试并有超时上限）才用 `doc.line(n).from` 算行首，因此绝不会在旧文档上算偏移；定位本身是一次"只改选区 + 装饰"的事务（`Transaction.addToHistory.of(false)`：不进撤销历史、不置 dirty、不往正文插任何标记），滚动交给 `EditorView.scrollIntoView(..., { y: 'center' })`，并给该行一层几百毫秒后自动消失的高亮（`features/editor/cm/flash-line.ts`）。反向链接面板走**同一个入口**（`BacklinkRef.line` 是来源笔记里的行号，可直接定位）；出链刻意不定位 —— `ResolvedLink.line` 是引用写在当前笔记的哪一行，而 `#锚点` 是锚点名，宿主没有"锚点 → 行号"的接口（要做得新增一条宿主命令，不在本次范围）。
 5. **frontmatter 会计入正文统计**（`text_stats` 拿的是磁盘原文，前端即时统计同样如此）：字数/行数/阅读时长里包含 `---` 分隔行与键值。要改必须**两侧同时改**（`mn_core::frontmatter::body` + TS 侧对应实现），否则"编辑器统计"与"磁盘统计"会互相打架。
 6. 删除走 Vault 内 `.mimenote/trash`（可见、可入 Git 忽略），未对接系统回收站。**恢复已交付**（ADR-0018）：`restore_from_trash` / `restore_as` + 宿主命令 `trash_list` / `note_restore` + 界面（命令 `vault.trash`「打开回收站…」→ 列表 + 「恢复」/「恢复为…」）。三条纪律：**绝不覆盖**占位者（出路是换个名字）、**只动台账里且确实在 `.mimenote/trash` 之下的东西**（台账是磁盘上的普通 JSONL，手改一行就能指向任意文件，所以逐条校验 —— 没有这条"恢复"就是任意文件移动原语）、先搬文件后改台账（最坏是留一条可重试的孤儿记录）。父目录缺了就建并**如实报出建了哪些**。**没有"永久删除/清空"**：清空仍要用户去文件管理器里做（之后台账会出现孤儿记录，界面已标出）。
 7. 外部变更检测依赖 mtime（毫秒）。同一毫秒内的外部改动理论上有漏检窗口（概率极低；M5 引入内容哈希作为二级令牌）。
