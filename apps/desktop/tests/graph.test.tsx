@@ -1267,6 +1267,20 @@ describe('图谱命令', () => {
  * 1 跳就已经把整个连通分量拿全了 —— 调大跳数**不会**多出任何卡片，
  * 那条用例就只能写成"跳数变了但卡片数没变"，等于没测到"深度真的往外扩了一层"。
  */
+/**
+ * 环向走线/语义分层那条用例的夹具：**同一环内**互链（中心 → 甲、中心 → 乙、甲 → 乙）
+ * 加一条**跨环**的边（乙 → 丙）。
+ *
+ * 为什么需要它：缺省 Mock Vault 的边全都与圆心直接相连（那些边保持 ADR-0023 的老画法），
+ * 而"沿环走弧"只在**同一环的两张卡片之间**才成立 —— 没有这种边就测不到它。
+ */
+const RING_NOTES = [
+  { relPath: '中心.md', text: '# 中心\n\n指向 [[甲]] 与 [[乙]]。\n' },
+  { relPath: '甲.md', text: '# 甲\n\n也指向 [[乙]]。\n' },
+  { relPath: '乙.md', text: '# 乙\n\n指向 [[丙]]。\n' },
+  { relPath: '丙.md', text: '# 丙\n\n没有更多出链。\n' },
+]
+
 const CHAIN_NOTES = [
   { relPath: '中心.md', text: '# 中心\n\n指向 [[一跳]]。\n' },
   { relPath: '一跳.md', text: '# 一跳\n\n再指向 [[两跳]]。\n' },
@@ -2374,6 +2388,100 @@ describe('知识图谱画布', () => {
     expect(aligned).toBeLessThan(leads().length)
   })
 
+  it('连线的语义分层与环向走线（ADR-0028）：出链暖 / 入链冷、越远越细、同环走弧', async () => {
+    /*
+      一条夹具同时把四种情形摆出来（深度 2，圆心是 中心.md）：
+        · 中心 → 甲 / 中心 → 乙：都是**出链**（暖色，最粗）
+        · 甲 → 乙：两端同为 1 跳 ⇒ **同一环** ⇒ 沿环外弧走（中性色）
+        · 乙 → 丙：1 跳 → 2 跳 ⇒ **跨环** ⇒ 朝外鼓的曲线（中性色，按 2 跳的权重更细）
+      判据都摆在宿主属性与 SVG 属性上，不靠肉眼看画布。
+    */
+    setIpcAdapter(createMockAdapter({ rootPath: VAULT_ROOT, notes: RING_NOTES }))
+    await act(async () => {
+      await useVaultStore.getState().openVault(VAULT_ROOT)
+    })
+    await mountFocus('中心.md')
+    fireEvent.click(screen.getByRole('button', { name: '增加一跳' }))
+    await waitFor(() => {
+      expect(graphHost().getAttribute('data-graph-depth')).toBe('2')
+    })
+
+    /** 卡外那段（`span` 层）的路径：按 tooltip 里的"甲 → 乙"找，避开引线那一层。 */
+    const spanOf = (from: string, to: string): SVGPathElement | null => {
+      for (const group of document.querySelectorAll<SVGGElement>('g[data-edge]')) {
+        const span = group.querySelector<SVGPathElement>(
+          'path.mn-graph-edge:not(.mn-graph-edge--lead)',
+        )
+        if (span === null) continue
+        const title = group.querySelector('title')?.textContent ?? ''
+        if (title.includes(`${from} → ${to}`)) return span
+      }
+      return null
+    }
+
+    await waitFor(() => {
+      expect(spanOf('甲', '乙')).not.toBeNull()
+    })
+
+    // 1) 色相：出链暖（`--out`）、环间的边是上下文（`--context`）、这里没有入链
+    const outEdge = spanOf('中心', '甲')
+    expect(outEdge?.getAttribute('class') ?? '').toContain('mn-graph-edge--out')
+    expect(spanOf('甲', '乙')?.getAttribute('class') ?? '').toContain('mn-graph-edge--context')
+    expect(document.querySelectorAll('path.mn-graph-edge--in')).toHaveLength(0)
+
+    /*
+      2) 权重是"跳数基准 × 强调/淡化调制"（见 GraphCanvas 里那两个因子）：
+         与圆心相关的一跳边（强调）：宽 max(2, 2.2) = 2.2、透明度 min(1, 0.95+0.22) = 1；
+         环与环之间的二跳边（淡化）：宽 max(1, 1.5×0.7) = 1.05、透明度 0.72×0.3 ≈ 0.216。
+         关键判据是"**二跳的线比一跳的细且淡**"——这正是"越远越细越淡"能被看见的地方。
+    */
+    expect(outEdge?.getAttribute('stroke-width')).toBe('2.2')
+    expect(Number(outEdge?.getAttribute('opacity'))).toBeCloseTo(1, 6)
+    const farEdge = spanOf('乙', '丙')
+    expect(Number(farEdge?.getAttribute('stroke-width'))).toBeCloseTo(1.05, 6)
+    expect(Number(farEdge?.getAttribute('opacity'))).toBeCloseTo(0.216, 6)
+    const sameRing = spanOf('甲', '乙')
+    expect(Number(sameRing?.getAttribute('stroke-width'))).toBeCloseTo(1.4, 6)
+    expect(Number(sameRing?.getAttribute('opacity'))).toBeCloseTo(0.285, 6)
+
+    // 3) 同环 ⇒ 弧（`A` 命令），跨环 ⇒ 贝塞尔（`C` 命令）
+    expect(spanOf('甲', '乙')?.getAttribute('d') ?? '').toContain(' A ')
+    expect(farEdge?.getAttribute('d') ?? '').toContain(' C ')
+    // 引线仍然与它严丝合缝：换锚点之后引线的终点 = 卡外那段的起点
+    const leadOf = (from: string, to: string): SVGPathElement | null => {
+      for (const group of document.querySelectorAll<SVGGElement>('g[data-edge]')) {
+        const lead = group.querySelector<SVGPathElement>('path.mn-graph-edge--lead')
+        if (lead === null) continue
+        const title = group.querySelector('title')?.textContent ?? ''
+        if (title.includes(`${from} → ${to}`)) return lead
+      }
+      return null
+    }
+    const lastPoint = (path: string): [number, number] =>
+      (path.match(/-?\d+(?:\.\d+)?/g) ?? []).slice(-2).map(Number) as [number, number]
+    const firstPoint = (path: string): [number, number] =>
+      (path.match(/-?\d+(?:\.\d+)?/g) ?? []).slice(0, 2).map(Number) as [number, number]
+    const pair = spanOf('甲', '乙')
+    const lead = leadOf('甲', '乙')
+    expect(pair).not.toBeNull()
+    expect(lead).not.toBeNull()
+    expect(lastPoint(lead?.getAttribute('d') ?? '')).toEqual(firstPoint(pair?.getAttribute('d') ?? ''))
+
+    // 4) 开关：关掉"沿环走线"⇒ 退回两点一条曲线，且偏好落盘
+    fireEvent.click(hudButton('toggle-ring-routing'))
+    await waitFor(() => {
+      expect(spanOf('甲', '乙')?.getAttribute('d') ?? '').not.toContain(' A ')
+    })
+    expect(spanOf('甲', '乙')?.getAttribute('d') ?? '').toContain(' C ')
+    expect(JSON.parse(window.localStorage.getItem(PREFS_KEY) ?? '{}')).toMatchObject({
+      ringRouting: false,
+    })
+    // 收尾：打开（后面的用例按默认观感断言）
+    fireEvent.click(hudButton('toggle-ring-routing'))
+    await waitFor(() => {
+      expect(spanOf('甲', '乙')?.getAttribute('d') ?? '').toContain(' A ')
+    })
+  })
   it('张力旋钮真的作用在连线上：调大之后路径的控制点变了，而且落盘', async () => {
     /*
       "张力"如果不能从画出来的路径上看出来，它就只是个滑块。这里断言 `d` 变了（同一条边），
@@ -2756,8 +2864,12 @@ describe('连线的两层', () => {
     expect(container.querySelectorAll('path.mn-graph-edge:not(.mn-graph-edge--lead)')).toHaveLength(2)
     expect(container.querySelectorAll('.mn-graph-edge-lead-dot')).toHaveLength(0)
     expect(container.querySelectorAll('.mn-graph-phantom')).toHaveLength(1)
-    // 箭头定义在卡外层：marker 的 id 要能被 `marker-end` 引到
-    expect(container.querySelectorAll('marker')).toHaveLength(3)
+    /*
+      箭头定义在卡外层：marker 的 id 要能被 `marker-end` 引到。
+      数量是 **3 色相 × 3 状态 = 9**（ADR-0028 加了"出链暖 / 入链冷 / 环间中性"，
+      而 marker 里的 path 不继承引用方的 stroke，只能按变体各写一份）。
+    */
+    expect(container.querySelectorAll('marker')).toHaveLength(9)
   })
 
   it('不给 layer 时两条段还在同一个 SVG 里（默认行为不变）', () => {

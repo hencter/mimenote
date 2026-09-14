@@ -79,7 +79,14 @@ import { DEFAULT_METRICS } from './canvas/text-layout'
 import { FORCE_PRESETS } from './force-presets'
 import { ForcePanel } from './ForcePanel'
 import { createForceSimulation, type ForceSimulation } from './force'
-import { linkEdgeGeometry, linkZones, normalizeLinkText, type LinkZone } from './link-edge'
+import { outerExit, routeEdgePath, routingKind } from './edge-routing'
+import {
+  leadPathBetween,
+  linkEdgeGeometry,
+  linkZones,
+  normalizeLinkText,
+  type LinkZone,
+} from './link-edge'
 import { FloatingNote } from './FloatingNote'
 import {
   OVERSCAN,
@@ -161,6 +168,39 @@ const EGO_FALLBACK_SIZE: EgoSize = { width: EGO_CARD_WIDTH, height: 76 }
 
 /** 全库视图紧凑卡片里标签那一行最多显示几个字符（超出截断加省略号）。 */
 const COMPACT_TAG_CHARS = 20
+
+/**
+ * 跳数 → 线宽 / 不透明度（ADR-0028）。
+ *
+ * 判据是"这条边最远牵到第几跳"（两端跳数的较大者）：一跳的线最实最粗、越远越细越淡。
+ * 为什么用连续的一组数而不是"虚实两档"：环布局里"几跳"是唯一的结构信息，
+ * 让线自己把它画出来，比在 tooltip 里写一遍有用得多。
+ */
+const EDGE_WEIGHT_BY_HOP: readonly { width: number; opacity: number }[] = [
+  { width: 2.2, opacity: 0.98 }, // 0：理论上不存在（圆心只有自己），留着占位免得索引错位
+  { width: 2, opacity: 0.95 },
+  { width: 1.5, opacity: 0.72 },
+  { width: 1.25, opacity: 0.55 },
+]
+
+/** 更远（4 跳及以上）统一落到最轻的那一档。 */
+const EDGE_WEIGHT_FAR = { width: 1, opacity: 0.4 }
+
+/**
+ * 淡化 / 强调是**在跳数权重上调制**，而不是替换它。
+ *
+ * 为什么必须这样：如果"强调"直接把宽度钉成 2.2、"淡化"直接钉成 1/0.16，
+ * 那么跳数权重永远看不见 —— 与圆心相关的边全是强调档、环与环之间的边全是淡化档，
+ * 而这两档恰好覆盖了所有边（"越远越细越淡"就成了空话，图上没人能看出来）。
+ * 乘法还有第二个好处：强调过的二跳边仍然比强调过的一跳边细一点，
+ * "这条线牵得多远"在**任何**状态下都还在。
+ */
+const EDGE_DIM_FACTOR = { width: 0.7, opacity: 0.3, minWidth: 1 }
+const EDGE_HIGHLIGHT_GAIN = { minWidth: 2.2, opacity: 0.22 }
+
+function edgeWeight(hop: number): { width: number; opacity: number } {
+  return EDGE_WEIGHT_BY_HOP[hop] ?? EDGE_WEIGHT_FAR
+}
 
 /** 键盘上下左右选卡片时的最大搜索距离（世界坐标）。 */
 const KEYBOARD_REACH = 2400
@@ -359,6 +399,8 @@ export function GraphCanvas() {
   const edgeFromLink = useGraphStore((state) => state.edgeFromLink)
   /** 纯标题卡片（只画文件名，不排正文；见 store 里 `titleOnly` 的说明）。 */
   const titleOnly = useGraphStore((state) => state.titleOnly)
+  /** 环向走线（ADR-0028）：同环的线沿环外弧走、跨环的线朝外鼓。 */
+  const ringRouting = useGraphStore((state) => state.ringRouting)
   const floatingPanes = useGraphStore((state) => state.floatingPanes)
   /** 力导向的预设 id 与"是否持续漂浮"（两个偏好，见 `features/graph/force-presets.ts`）。 */
   const forcePresetId = useGraphStore((state) => state.forcePreset)
@@ -860,11 +902,38 @@ export function GraphCanvas() {
         const key = edgeKey(edge)
         // 悬停正文里某段 [[链接]] 时，它对应的那条边提亮（哪怕它原本是"环与环之间"的淡虚线）
         const hoveredEdge = hoveredLink !== null && hoveredLink.edgeKey === key
+        const highlight = touchesRoot || touchesSelected || hoveredEdge
+        const dim = !touchesRoot && !touchesSelected && !hoveredEdge
+        /*
+          语义色相（ADR-0028）：**以当前笔记为参照** —— 圆心指向别人是出链（暖），
+          别人指向圆心是入链（冷），既不碰圆心也不碰选中的是环与环之间的上下文（中性）。
+          为什么以圆心为参照：整幅图就是围着它组织的（"离它几跳"是唯一的结构维度），
+          边在别处没有稳定的"出/入"可言（环与环之间是双向都算一跳的）。
+        */
+        const hue: 'out' | 'in' | 'context' =
+          edge.fromRelPath === root ? 'out' : edge.toRelPath === root ? 'in' : 'context'
+        // "这条边最远牵到第几跳" = 两端跳数的较大者
+        const edgeHop = Math.max(fromCard.hop, toCard.hop)
+        const base = edgeWeight(edgeHop)
+        const weight = highlight
+          ? {
+              width: Math.max(base.width, EDGE_HIGHLIGHT_GAIN.minWidth),
+              opacity: Math.min(1, base.opacity + EDGE_HIGHLIGHT_GAIN.opacity),
+            }
+          : dim
+            ? {
+                width: Math.max(EDGE_DIM_FACTOR.minWidth, base.width * EDGE_DIM_FACTOR.width),
+                opacity: base.opacity * EDGE_DIM_FACTOR.opacity,
+              }
+            : base
         const style: EdgeStyle = {
           // 与中心无关的边画虚线：环与环之间的横线是"这两篇也互相提到"，属于上下文，不是主角
           dashed: !touchesRoot,
-          dim: !touchesRoot && !touchesSelected && !hoveredEdge,
-          highlight: touchesRoot || touchesSelected || hoveredEdge,
+          dim,
+          highlight,
+          hue,
+          width: weight.width,
+          opacity: weight.opacity,
         }
         const title =
           edge.count > 1
@@ -883,19 +952,50 @@ export function GraphCanvas() {
           // run 各有多宽 —— 不传就只能按字符数摊派（中英混排会偏十几像素）
           ...(measure === null ? {} : { measure }),
         })
+        /*
+          环向走线（ADR-0028）：同环走弧、跨环朝外鼓 —— 两种形状都要把锚点换到卡片**外缘**。
+          为什么连锚点一起换：环外的弧与"朝目标"的内侧锚点之间那段连接会被卡片挡住
+          （卡片是不透明底、线段在它下面），看起来就是"线在卡片里断了"（理由写在
+          `edge-routing.ts` 的文件头）。换了锚点，引线也必须重画到同一个点上 ——
+          分界处严丝合缝那条纪律（ADR-0023）不能因为换了形状就破。
+        */
+        const route = ringRouting
+          ? routingKind(
+              { rect: fromRect, hop: fromCard.hop },
+              { rect: toRect, hop: toCard.hop },
+            )
+          : 'straight-to-center'
+        const exit = route === 'straight-to-center' ? geometry.exit : outerExit(fromRect)
+        const entry = route === 'straight-to-center' ? geometry.entry : outerExit(toRect)
+        const spanPath =
+          route === 'straight-to-center'
+            ? geometry.spanPath
+            : (routeEdgePath({
+                exit,
+                entry,
+                from: { rect: fromRect, hop: fromCard.hop },
+                to: { rect: toRect, hop: toCard.hop },
+                tension,
+              }) ?? geometry.spanPath)
+        const leadPath = geometry.fromLink
+          ? route === 'straight-to-center'
+            ? geometry.leadPath
+            : leadPathBetween(geometry.anchor, exit)
+          : ''
+
         visuals.push({
           key,
           edge,
           style,
-          d: geometry.spanPath,
-          start: geometry.exit,
-          end: geometry.entry,
+          d: spanPath,
+          start: exit,
+          end: entry,
           phantom: false,
           title: geometry.fromLink
             ? `${title}（从正文里的 [[${geometry.matchedText ?? ''}]] 引出）`
             : `${title}（正文里没找到对应的链接写法，从卡片边缘出发）`,
-          ...(geometry.fromLink && geometry.leadPath !== ''
-            ? { leadPath: geometry.leadPath, leadFrom: geometry.anchor }
+          ...(geometry.fromLink && leadPath !== ''
+            ? { leadPath, leadFrom: geometry.anchor }
             : {}),
         })
       }
@@ -916,6 +1016,7 @@ export function GraphCanvas() {
     currentRect,
     tension,
     edgeFromLink,
+    ringRouting,
     measure,
     tick,
     hoveredLink,
@@ -1989,6 +2090,16 @@ export function GraphCanvas() {
               </button>
               <button
                 type="button"
+                className={`mn-graph__chip${ringRouting ? ' mn-graph__chip--active' : ''}`}
+                aria-pressed={ringRouting}
+                data-graph-action="toggle-ring-routing"
+                title="同环的连线沿环外弧走、跨环的线朝外鼓：线不再横穿圆心那块最挤的地方（关掉 = 两点一条曲线）"
+                onClick={() => useGraphStore.getState().setRingRouting(!ringRouting)}
+              >
+                沿环走线
+              </button>
+              <button
+                type="button"
                 className={`mn-graph__chip${floating ? ' mn-graph__chip--active' : ''}`}
                 aria-pressed={floating}
                 data-graph-action="toggle-floating"
@@ -2082,6 +2193,19 @@ export function GraphCanvas() {
               <span className="mn-graph__legend-item">
                 <i className="mn-graph__legend-line mn-graph__legend-line--dashed" />
                 虚线 = 环与环之间
+              </span>
+              {/* 语义色相与权重（ADR-0028）：图例只说这两句，具体数值不写死在这里 */}
+              <span className="mn-graph__legend-item">
+                <i className="mn-graph__legend-line mn-graph__legend-line--out" />
+                暖色 = 我指向它
+              </span>
+              <span className="mn-graph__legend-item">
+                <i className="mn-graph__legend-line mn-graph__legend-line--in" />
+                冷色 = 它指向我
+              </span>
+              <span className="mn-graph__legend-item">
+                <i className="mn-graph__legend-dot" />
+                越远越细越淡 = 牵到第几跳
               </span>
             </>
           ) : (

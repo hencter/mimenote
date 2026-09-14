@@ -377,6 +377,13 @@ interface StoredPrefs {
    * 与 `mode`/`depth` 同属一份偏好存储，不按 Vault 分。
    */
   titleOnly?: boolean
+  /**
+   * 连线是否走**环向走线**（同环的线沿环外弧走、跨环的线朝外鼓，ADR-0028）。
+   *
+   * 缺省 `true`（新的默认观感）；关掉就退回"两点一条贝塞尔"的老画法。
+   * 做成可关不只是为了对比：这是纯观感的选择，而观感这件事没有"对所有人都是对的答案"。
+   */
+  ringRouting?: boolean
 }
 
 function isStoredPrefs(value: unknown): value is StoredPrefs {
@@ -401,6 +408,7 @@ function readPrefs(): StoredPrefs {
     edgeFromLink: stored.edgeFromLink !== false,
     floating: stored.floating !== false,
     titleOnly: stored.titleOnly === true,
+    ringRouting: stored.ringRouting !== false,
     forcePreset: stored.forcePreset ?? DEFAULT_FORCE_PRESET,
     // 整份力度：没有存过就用预设那一套（`null` 表示"没存过/存坏了"）
     forceParams: readForceParams(stored.forceParams) ?? forcePreset(stored.forcePreset ?? DEFAULT_FORCE_PRESET).params,
@@ -607,6 +615,14 @@ interface GraphState {
    */
   titleOnly: boolean
   setTitleOnly: (on: boolean) => void
+  /**
+   * 连线是否走环向走线（ADR-0028）：同环的线沿环外弧走、跨环的线朝外鼓，都不再横穿圆心。
+   *
+   * 关掉就退回"两点一条贝塞尔"（ADR-0023 的老画法）—— 保留它是为了能当场对比，
+   * 也因为"线长什么样"是观感偏好，不该由代码替用户拍板。
+   */
+  ringRouting: boolean
+  setRingRouting: (on: boolean) => void
 
   // ---------------------------------------------------------------------------
   // 浮动笔记面板（ADR-0023）
@@ -731,6 +747,7 @@ interface PrefsSource {
   forcePreset: string
   forceParams: ForceParams
   titleOnly: boolean
+  ringRouting: boolean
 }
 
 /** 把当前状态收成一份可落盘的偏好（所有 setter 共用，避免各自漏写一个字段）。 */
@@ -744,6 +761,7 @@ function prefsOf(source: PrefsSource): StoredPrefs {
     forcePreset: source.forcePreset,
     forceParams: { ...source.forceParams },
     titleOnly: source.titleOnly,
+    ringRouting: source.ringRouting,
   }
 }
 
@@ -859,6 +877,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   forceParams: readPrefs().forceParams ?? forcePreset(readPrefs().forcePreset ?? DEFAULT_FORCE_PRESET).params,
   floating: readPrefs().floating !== false,
   titleOnly: readPrefs().titleOnly === true,
+  ringRouting: readPrefs().ringRouting !== false,
   floatingPanes: [],
   pins: new Map<string, Point>(),
 
@@ -1290,6 +1309,12 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     if (get().titleOnly === on) return
     saveJson(PREFS_KEY, prefsOf({ ...get(), titleOnly: on }))
     set({ titleOnly: on })
+  },
+
+  setRingRouting: (on) => {
+    if (get().ringRouting === on) return
+    saveJson(PREFS_KEY, prefsOf({ ...get(), ringRouting: on }))
+    set({ ringRouting: on })
   },
 
   // -------------------------------------------------------------------------

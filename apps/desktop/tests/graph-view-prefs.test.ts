@@ -127,6 +127,13 @@ describe('张力与浮动态的偏好', () => {
     expect(prefs()['floating']).toBe(false)
   })
 
+  it('「沿环走线」开关落盘（缺省开：同环的线沿环外弧走）', () => {
+    expect(useGraphStore.getState().ringRouting).toBe(true)
+    useGraphStore.getState().setRingRouting(false)
+
+    expect(useGraphStore.getState().ringRouting).toBe(false)
+    expect(prefs()['ringRouting']).toBe(false)
+  })
   it('「仅标题」开关落盘（缺省关：卡片正面保持完整正文）', () => {
     expect(useGraphStore.getState().titleOnly).toBe(false)
     useGraphStore.getState().setTitleOnly(true)

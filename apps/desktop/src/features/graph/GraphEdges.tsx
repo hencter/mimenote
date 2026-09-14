@@ -64,6 +64,9 @@ export interface GraphEdgesProps {
 function edgeClassName(visual: GraphEdgeVisual): string {
   const classes = ['mn-graph-edge']
   if (visual.style.dashed) classes.push('mn-graph-edge--dashed')
+  // 语义色相（ADR-0028）：出链暖、入链冷、环间中性。写在 highlight 之前声明，
+  // 于是"与中心/选中相关"的 accent 仍然压得住它（CSS 同权重时后者胜）
+  if (visual.style.hue !== undefined) classes.push(`mn-graph-edge--${visual.style.hue}`)
   if (visual.style.highlight) classes.push('mn-graph-edge--highlight')
   if (visual.style.dim) classes.push('mn-graph-edge--dim')
   return classes.join(' ')
@@ -90,7 +93,26 @@ function leadDashAttributes(visual: GraphEdgeVisual): {
   return { strokeDasharray: dashArray, strokeDashoffset: dashOffset }
 }
 
-const ARROW_VARIANTS = ['default', 'highlight', 'dim'] as const
+/** 箭头的三种状态（与 `EdgeStyle` 的三条语义对应）。 */
+const ARROW_STATES = ['default', 'highlight', 'dim'] as const
+
+/**
+ * 箭头变体的 id：`<色相>-<状态>`。
+ *
+ * 为什么要按色相分：箭头的颜色**不能**用 `currentColor`（marker 里的 `path` 不继承引用方的
+ * stroke），过去靠三档固定颜色糊过去 —— 加了"出链暖 / 入链冷"之后，暖色的线顶上画一个灰箭头
+ * 会立刻露馅。所以变体数 = 色相数 × 状态数（最多 9 个），每个变体一个 marker 定义。
+ */
+const ARROW_HUES = ['out', 'in', 'context'] as const
+
+function arrowVariant(visual: GraphEdgeVisual): string {
+  const state: (typeof ARROW_STATES)[number] = visual.style.highlight
+    ? 'highlight'
+    : visual.style.dim
+      ? 'dim'
+      : 'default'
+  return `${visual.style.hue ?? 'context'}-${state}`
+}
 
 export const GraphEdges = memo(function GraphEdges({
   visuals,
@@ -99,14 +121,9 @@ export const GraphEdges = memo(function GraphEdges({
 }: GraphEdgesProps) {
   // 同一页面可能出现多个画布（未来分屏）：marker 的 id 必须唯一，否则后一个会覆盖前一个
   const uid = useId().replaceAll(/[^a-zA-Z0-9_-]/g, '')
-  const markerId = (variant: (typeof ARROW_VARIANTS)[number]): string =>
-    `mn-graph-arrow-${variant}-${uid}`
+  const markerId = (variant: string): string => `mn-graph-arrow-${variant}-${uid}`
 
-  const arrowFor = (visual: GraphEdgeVisual): string => {
-    if (visual.style.highlight) return markerId('highlight')
-    if (visual.style.dim) return markerId('dim')
-    return markerId('default')
-  }
+  const arrowFor = (visual: GraphEdgeVisual): string => markerId(arrowVariant(visual))
 
   // 两层的分工见文件头：箭头（marker）只有卡片外那段用得到，引线层里不生成 <defs>
   const withLead = layer !== 'span'
@@ -122,12 +139,14 @@ export const GraphEdges = memo(function GraphEdges({
     >
       {withSpan && (
         <defs>
-          {/* 箭头用 currentColor 取不到 stroke 的颜色，因此按三种状态各定义一个 marker */}
-          {ARROW_VARIANTS.map((variant) => (
+          {/* 箭头用 currentColor 取不到 stroke 的颜色，因此按"色相 × 状态"各定义一个 marker */}
+          {ARROW_HUES.flatMap((hue) =>
+            ARROW_STATES.map((state) => ({ hue, state, variant: `${hue}-${state}` })),
+          ).map(({ hue, state, variant }) => (
             <marker
               key={variant}
               id={markerId(variant)}
-              className={`mn-graph-arrow mn-graph-arrow--${variant}`}
+              className={`mn-graph-arrow mn-graph-arrow--${state} mn-graph-arrow--hue-${hue}`}
               viewBox="0 0 10 10"
               refX="9"
               refY="5"
@@ -172,6 +191,13 @@ export const GraphEdges = memo(function GraphEdges({
               className={edgeClassName(visual)}
               d={visual.d}
               strokeLinecap="butt"
+              /*
+                线宽与不透明度**写成属性**（而不是交给 CSS 类）：它们按"这条边牵到第几跳"连续变化，
+                用类表达就得为每个跳数各写一条规则。CSS 里仍然留着同一组属性的规则 —— 全库视图
+                不填这两个字段，它继续由 CSS 说了算（两套语义各自完整，不互相猜）。
+              */
+              {...(visual.style.width === undefined ? {} : { strokeWidth: visual.style.width })}
+              {...(visual.style.opacity === undefined ? {} : { opacity: visual.style.opacity })}
               markerEnd={`url(#${arrowFor(visual)})`}
             >
               <title>{visual.title}</title>

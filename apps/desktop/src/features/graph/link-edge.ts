@@ -283,6 +283,17 @@ export function linkZones(input: {
   return zones
 }
 
+/**
+ * 引线那一段的 `d`（从链接文字到卡片边界上的某一点）。
+ *
+ * 导出它是因为**换锚点**的场合（环向走线把锚点从"朝目标"换成"朝外"，见 `edge-routing.ts`）
+ * 需要按同一套口径重画这一段 —— 分界点必须逐坐标相同（ADR-0023 的硬保证），
+ * 而"不取整 + 非有限值写 0"这两条纪律只有一份才不会分家。
+ */
+export function leadPathBetween(anchor: Point, exit: Point): string {
+  return `M ${num(anchor.x)} ${num(anchor.y)} L ${num(exit.x)} ${num(exit.y)}`
+}
+
 /** 一段 wikilink 文字在卡片里的矩形热区（卡片内坐标，见 `linkZones`）。 */
 export interface LinkZone {
   x: number

@@ -709,6 +709,23 @@ export interface EdgeStyle {
   dim: boolean
   /** 强调：与选中卡片直接相关。 */
   highlight: boolean
+  /**
+   * **语义色相**（只有关系图会填，ADR-0028）：
+   * `out` = 圆心指向别人（我提到它）、`in` = 别人指向圆心（它提到我）、
+   * `context` = 环与环之间（既不碰圆心、也不碰当前选中，属于上下文）。
+   *
+   * 为什么做成可选：全库视图有自己的两条语义（入链虚线 / 出链实线，见 `edgeStyle()`），
+   * 它不该被这里的色相规则影响 —— 缺省（`undefined`）时颜色完全由 CSS 类决定。
+   */
+  hue?: 'out' | 'in' | 'context'
+  /**
+   * 线宽与不透明度（世界像素 / 0..1，缺省由 CSS 决定）。
+   *
+   * 关系图按"这条边最远牵到第几跳"给一组数：越远越细越淡。
+   * 同样做成可选：全库视图那一套（统一细线 + 选中强调）继续走 CSS。
+   */
+  width?: number
+  opacity?: number
 }
 
 export function edgeStyle(edge: GraphEdge, selected: string | null): EdgeStyle {

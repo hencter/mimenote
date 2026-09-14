@@ -64,6 +64,29 @@
   stroke-dasharray: 5 4;
 }
 
+/*
+ * 语义色相（ADR-0028）：**以当前笔记为参照** —— 圆心指向别人是出链（暖），
+ * 别人指向圆心是入链（冷），既不碰圆心也不碰选中的是环与环之间（中性）。
+ *
+ * 两个令牌名是**新引入的、可选的**（`--mn-edge-out` / `--mn-edge-in`）：主题可以定义它们
+ * 来微调，没定义时落到既有的 `--mn-warning`（暖）与 `--mn-link`（冷）——
+ * 因此**不改任何主题 JSON 也不需要**：`REQUIRED_TOKENS` 增项会让所有用户自定义主题报警。
+ *
+ * ⚠️ 这三条必须写在 `--highlight` **之前**：同权重时后者胜，于是"与中心/选中相关"的
+ * accent 仍然压得住色相（那才是"当前这一条"最强的信号）。
+ */
+.mn-graph-edge--out {
+  stroke: var(--mn-edge-out, var(--mn-warning));
+}
+
+.mn-graph-edge--in {
+  stroke: var(--mn-edge-in, var(--mn-link));
+}
+
+.mn-graph-edge--context {
+  stroke: var(--mn-fg-subtle);
+}
+
 /* 与选中卡片相关的边：提亮 + 加粗 */
 .mn-graph-edge--highlight {
   stroke: var(--mn-accent);
@@ -89,6 +112,21 @@
 .mn-graph-arrow--dim path {
   fill: var(--mn-fg-subtle);
   opacity: 0.2;
+}
+
+/*
+ * 箭头跟着它的边一起上色（ADR-0028）：marker 里的 `path` **不继承**引用方的 stroke
+ * （`currentColor` 在这里取不到边的颜色），所以色相只能按变体各写一条。
+ * 只覆盖 `default` 那一档：强调档是 accent、淡化档是中性的灰，两者都不该被色相改掉。
+ */
+.mn-graph-arrow--hue-out.mn-graph-arrow--default path {
+  fill: var(--mn-edge-out, var(--mn-warning));
+  opacity: 0.9;
+}
+
+.mn-graph-arrow--hue-in.mn-graph-arrow--default path {
+  fill: var(--mn-edge-in, var(--mn-link));
+  opacity: 0.9;
 }
 
 .mn-graph-phantom {
@@ -528,6 +566,16 @@
 
 .mn-graph__legend-line--dashed {
   border-top-style: dashed;
+}
+
+/* 图例里的色相样本：与 `.mn-graph-edge--out/--in` 同一组令牌（两处各写一遍是因为
+   "图例是 CSS 画的色块、边是 SVG 描边"，能共用的只有令牌名） */
+.mn-graph__legend-line--out {
+  border-top-color: var(--mn-edge-out, var(--mn-warning));
+}
+
+.mn-graph__legend-line--in {
+  border-top-color: var(--mn-edge-in, var(--mn-link));
 }
 
 .mn-graph__legend-dot {
