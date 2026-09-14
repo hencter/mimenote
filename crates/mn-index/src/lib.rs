@@ -123,6 +123,18 @@ pub struct LinkIndex {
     by_path: HashMap<String, String>,
     /// 小写文件名主干 → 相对路径列表（支持 `[[只写文件名]]`）。
     by_stem: HashMap<String, Vec<String>>,
+    /// 归一化路径的**每一段后缀** → 拥有该后缀的相对路径（`a/b/c` 贡献 `a/b/c`、`b/c`、`c`）。
+    ///
+    /// 为什么需要它：解析链接时有一条"用户只写了路径的一部分"的兜底 ——
+    /// `[[子目录/笔记]]` 而实际在 `更深的/子目录/笔记.md`。原来这条兜底是**全库扫描**
+    /// `by_path`，而**悬空链接**（`[[还没写的计划]]`）走的正是这条兜底：几千条这样的链接
+    /// 会让图谱/反链构建到几百毫秒（`architecture.md` §8 第 16 条记录了这个尾巴）。
+    /// 把后缀预先建成表之后，命中与**不命中都是 O(1)**：不需要额外的"负缓存"，
+    /// 也就不需要一套失效逻辑 —— 它和 `by_path` 在同一处被维护，不可能各自漂移。
+    ///
+    /// 代价是内存：每个路径贡献"段数"个条目（1 万篇、平均 3 段约 2–3 MB），
+    /// 换来的是解析成本与"有没有这条链接的目标"无关。
+    by_suffix: HashMap<String, Vec<String>>,
     /// 目标相对路径 → 指向它的链接（惰性重建的缓存）。
     backlinks: HashMap<String, Vec<BacklinkRef>>,
     /// `backlinks` 是否需要重建。
@@ -167,6 +179,7 @@ impl LinkIndex {
         self.files.clear();
         self.by_path.clear();
         self.by_stem.clear();
+        self.by_suffix.clear();
         self.backlinks.clear();
         self.tags.clear();
         self.titles.clear();
@@ -235,6 +248,7 @@ impl LinkIndex {
         }
 
         self.by_path.insert(normalize_target(&rel), rel.clone());
+        self.index_suffixes(&rel);
         if let Some(stem) = stem_of(&rel) {
             self.by_stem
                 .entry(stem.to_lowercase())
@@ -243,6 +257,33 @@ impl LinkIndex {
         }
         self.files.insert(rel, parsed.links);
         self.dirty = true;
+    }
+
+    /// 把一个相对路径的**全部后缀**记进 `by_suffix`（与 [`Self::by_path`] 同一处调用）。
+    fn index_suffixes(&mut self, rel: &str) {
+        for suffix in suffixes_of(&normalize_target(rel)) {
+            self.by_suffix
+                .entry(suffix)
+                .or_default()
+                .push(rel.to_string());
+        }
+    }
+
+    /// 撤销 [`Self::index_suffixes`]（与 [`Self::by_path`] 的删除同一处调用）。
+    fn unindex_suffixes(&mut self, rel: &str) {
+        for suffix in suffixes_of(&normalize_target(rel)) {
+            if let Some(list) = self.by_suffix.get_mut(&suffix) {
+                list.retain(|candidate| candidate != rel);
+                if list.is_empty() {
+                    self.by_suffix.remove(&suffix);
+                }
+            }
+        }
+    }
+
+    /// "路径以 `key` 结尾（或就是 `key`）"的那些笔记 —— **O(1)**，见 [`Self::by_suffix`]。
+    fn suffix_matches(&self, key: &str) -> Vec<String> {
+        self.by_suffix.get(key).cloned().unwrap_or_default()
     }
 
     /// 只清内存（不动落盘数据）：`upsert` 与 `remove` 共用。
@@ -254,6 +295,7 @@ impl LinkIndex {
             return;
         }
         self.by_path.remove(&normalize_target(rel));
+        self.unindex_suffixes(rel);
         if let Some(stem) = stem_of(rel) {
             let key = stem.to_lowercase();
             if let Some(list) = self.by_stem.get_mut(&key) {
@@ -555,15 +597,9 @@ impl LinkIndex {
                     return (Some(real.clone()), false);
                 }
             }
-            // 后缀匹配：用户常写 `[[子目录/笔记]]` 而实际在更深一层
-            let suffix = format!("/{key}");
-            let matches: Vec<String> = self
-                .by_path
-                .iter()
-                .filter(|(normalized, _)| normalized.ends_with(&suffix))
-                .map(|(_, real)| real.clone())
-                .collect();
-            return pick_candidate(matches, from_rel);
+            // 后缀匹配：用户常写 `[[子目录/笔记]]` 而实际在更深一层（`by_suffix` 的 O(1) 查表，
+            // 命中与不命中一样快 —— 悬空链接走的正是这一条，见该字段的文档）
+            return pick_candidate(self.suffix_matches(&key), from_rel);
         }
 
         // 只有文件名（或主干）
@@ -571,14 +607,8 @@ impl LinkIndex {
         let mut matches = self.by_stem.get(&stem_key).cloned().unwrap_or_default();
 
         if matches.is_empty() {
-            // 兜底：当作路径后缀（例如目标是 `某目录/笔记` 但被上面的分支漏掉）
-            let suffix = format!("/{key}");
-            matches = self
-                .by_path
-                .iter()
-                .filter(|(normalized, _)| *normalized == &key || normalized.ends_with(&suffix))
-                .map(|(_, real)| real.clone())
-                .collect();
+            // 兜底：当作路径后缀（例如目标是 `某目录/笔记` 但被上面的分支漏掉，或带了扩展名）
+            matches = self.suffix_matches(&key);
         }
 
         pick_candidate(matches, from_rel)
@@ -668,6 +698,23 @@ fn pick_candidate(mut matches: Vec<String>, from_rel: &str) -> (Option<String>, 
             (best.cloned(), true)
         }
     }
+}
+
+/// 一个归一化路径键的**全部后缀**（含它自己）：`a/b/c` → `a/b/c`、`b/c`、`c`。
+///
+/// 这是 [`LinkIndex::by_suffix`] 的建表口径，也是"用户只写了路径的一部分"这条解析兜底的
+/// 全部可能形态：`[[子目录/笔记]]` 能匹配到的，必须正好是某个路径以 `/子目录/笔记` 结尾
+/// （或者路径本身就是 `子目录/笔记`）。空键返回空 —— 它代表 `[[#小节]]`，由调用方另行处理。
+fn suffixes_of(key: &str) -> Vec<String> {
+    if key.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(4);
+    out.push(key.to_string());
+    for (index, _) in key.match_indices('/') {
+        out.push(key[index + 1..].to_string());
+    }
+    out
 }
 
 fn parent_of(rel_path: &str) -> String {
@@ -1253,6 +1300,167 @@ mod tests {
         assert_eq!(
             links.outbound[0].resolved_rel_path.as_deref(),
             Some("很深的目录/项目/设计.md")
+        );
+    }
+
+    /// 后缀表的口径：一个路径键贡献"它自己 + 每个 `/` 之后的部分"。
+    #[test]
+    fn suffixes_are_every_tail_of_a_path_key() {
+        assert_eq!(
+            suffixes_of("a/b/c"),
+            vec!["a/b/c".to_string(), "b/c".to_string(), "c".to_string()]
+        );
+        assert_eq!(suffixes_of("顶层"), vec!["顶层".to_string()]);
+        // 空键代表 `[[#小节]]`，由调用方另行处理 —— 这里不能给出一个空后缀条目
+        assert!(suffixes_of("").is_empty());
+    }
+
+    /// 后缀表与 `by_path` / `by_stem` 在同处维护：增、删、再增之后解析结果都要跟着变。
+    ///
+    /// 这条测试防的是"引入一张新表但忘了在某一处同步" —— 那种 bug 的表现是
+    /// "新建的笔记链接不上、删掉的笔记还解析得到"，而且只在特定操作顺序下出现。
+    #[test]
+    fn suffix_table_follows_insert_and_forget() {
+        let mut index = LinkIndex::new();
+        assert!(
+            index.resolve("引用.md", "深层/目标").is_none(),
+            "空索引里解析不到"
+        );
+
+        index.upsert("深层/目标.md", "# 目标");
+        assert_eq!(
+            index.resolve("引用.md", "深层/目标").as_deref(),
+            Some("深层/目标.md"),
+            "刚加进来的笔记要能被后缀解析到"
+        );
+
+        index.remove("深层/目标.md");
+        assert!(
+            index.resolve("引用.md", "深层/目标").is_none(),
+            "删掉之后不该还解析得到（后缀表忘了同步就会这样）"
+        );
+
+        index.upsert("深层/目标.md", "# 目标");
+        assert_eq!(
+            index.resolve("引用.md", "深层/目标").as_deref(),
+            Some("深层/目标.md"),
+            "重新加回来要能解析（重复条目会让 pick_candidate 变成歧义）"
+        );
+
+        index.clear();
+        assert!(
+            index.resolve("引用.md", "深层/目标").is_none(),
+            "clear 之后后缀表也得空掉"
+        );
+    }
+
+    /// 悬空链接的解析**不再扫描全库**：同样的解析结果，代价与库的大小无关。
+    ///
+    /// 为什么值得一个基准而不是单测：这条路径的旧实现是 `by_path.iter()` 全扫，
+    /// 而悬空链接（"还没写的计划"）恰恰走的就是它 —— 用户 Vault 越大越慢，
+    /// 且慢在**图谱/反链构建**这种批量场景里（架构 §8 第 16 条记录过这个尾巴）。
+    /// 这里同时量"现在的查表"和"旧的全扫"（在测试里保留一份参考实现），
+    /// 让"快了多少"是个可复核的数字，而不是"感觉快了"。
+    #[test]
+    #[ignore]
+    fn bench_resolve_dangling_links() {
+        // 4000 篇、路径深度与真实 Vault 接近（`目录/子目录/笔记`）；其中前 2000 篇各指向一个
+        // **还不存在的笔记**（"计划中的笔记"），另外各带一条能解析的链接（让图谱有真实的边）
+        let notes: Vec<(String, String)> = (0..4_000)
+            .map(|i| {
+                let rel = format!("dir{:03}/子目录/note{:03}.md", i / 40, i % 40);
+                let body = if i < 2_000 {
+                    format!("看 [[还没写的计划{i:04}]] 与 [[note000]]")
+                } else {
+                    "看 [[note000]]".to_string()
+                };
+                (rel, body)
+            })
+            .collect();
+        let refs: Vec<(&str, &str)> = notes
+            .iter()
+            .map(|(rel, body)| (rel.as_str(), body.as_str()))
+            .collect();
+        let index = index_of(&refs);
+
+        // 2000 个**互不相同**的悬空目标：这正是"计划中的笔记"的真实形态，
+        // 也是旧实现里最坏的情况（每个键都要全扫一遍，而全扫结果都是空）
+        let dangling: Vec<String> = (0..2_000).map(|i| format!("还没写的计划{i:04}")).collect();
+
+        let started = Instant::now();
+        let mut resolved = 0usize;
+        for target in &dangling {
+            if index.resolve("引用.md", target).is_some() {
+                resolved += 1;
+            }
+        }
+        let map_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+        // 旧实现（保留在测试里做对照）：把目标当路径后缀，全扫 by_path
+        let started = Instant::now();
+        let mut scanned = 0usize;
+        for target in &dangling {
+            let key = mn_core::links::normalize_target(target);
+            let suffix = format!("/{key}");
+            let matches: Vec<String> = index
+                .by_path
+                .iter()
+                .filter(|(normalized, _)| *normalized == &key || normalized.ends_with(&suffix))
+                .map(|(_, real)| real.clone())
+                .collect();
+            if !matches.is_empty() {
+                scanned += 1;
+            }
+        }
+        let scan_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+        // 端到端对照：图谱构建里最吃解析的就是"每篇都指向一个还不存在的笔记"这种形态。
+        // 两个变体只差"有没有那 2000 条悬空链接"：差值就是**悬空解析**在 graph_data 里的实际开销。
+        let graph_started = Instant::now();
+        let graph = index.graph_data(crate::graph::MAX_GRAPH_NODES);
+        let graph_ms = graph_started.elapsed().as_secs_f64() * 1000.0;
+
+        let clean: Vec<(String, String)> = notes
+            .iter()
+            .map(|(rel, _)| (rel.clone(), "看 [[note000]]".to_string()))
+            .collect();
+        let clean_refs: Vec<(&str, &str)> = clean
+            .iter()
+            .map(|(rel, body)| (rel.as_str(), body.as_str()))
+            .collect();
+        let clean_index = index_of(&clean_refs);
+        let clean_started = Instant::now();
+        let clean_graph = clean_index.graph_data(crate::graph::MAX_GRAPH_NODES);
+        let clean_ms = clean_started.elapsed().as_secs_f64() * 1000.0;
+
+        eprintln!(
+            "解析 {} 条悬空链接（库 {} 篇）：\n\
+             \x20 查后缀表：{map_ms:.1} ms（{:.4} ms/条）\n\
+             \x20 旧的全扫：{scan_ms:.1} ms（{:.4} ms/条）\n\
+             \x20 提速：{:.1}×（两者都解析不到任何东西：{resolved} / {scanned}）\n\
+             \x20 graph_data（含 2000 条悬空）：{graph_ms:.1} ms（{} 节点 / {} 边）\n\
+             \x20 graph_data（同规模、无悬空）：{clean_ms:.1} ms（{} 节点 / {} 边）\n\
+             \x20 ⇒ 两者差 {:.1} ms：**不全是**解析的功劳（边也多了 2000 条），解析本身按上一行算\n\
+             \x20 ⇒ 2000 条悬空链接的解析成本：改前 {scan_ms:.1} ms → 改后 {map_ms:.1} ms",
+            dangling.len(),
+            index.by_path.len(),
+            map_ms / dangling.len() as f64,
+            scan_ms / dangling.len() as f64,
+            scan_ms / map_ms.max(0.001),
+            graph.nodes.len(),
+            graph.edges.len(),
+            clean_graph.nodes.len(),
+            clean_graph.edges.len(),
+            graph_ms - clean_ms
+        );
+
+        // 对照必须"都没有解析到"，否则量的是两件不同的事
+        assert_eq!(resolved, 0);
+        assert_eq!(scanned, 0);
+        assert!(
+            scan_ms > map_ms * 5.0,
+            "查表应当明显快于全扫（实测 {map_ms:.1} ms vs {scan_ms:.1} ms）——\
+             如果差距没了，说明全扫被谁改回来了，或者后缀表没建起来"
         );
     }
 

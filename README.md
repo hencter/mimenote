@@ -290,6 +290,7 @@ macOS 上 `Ctrl` 自动换成 `Cmd`（`Mod`）。命令表在 `src/app/builtin-c
 | `cargo run -p mn-core --release --example scan_bench` | 1 万文件 + 100 目录：**143 ms**（预算 800 ms） |
 | `cargo test -p mn-index --release -- --ignored bench_move_directory` | 1000 篇目录搬迁：50 篇被引用 **2.0 s** / 700 个文件被改写 **8.3–10.4 s**（搬树本身 **2 ms**，瓶颈是逐文件 fsync） |
 | `cargo test -p mn-index --release -- --ignored --nocapture bench_optimize_after_incremental` | 1 万篇 / 30 万行的库跑 20 轮增量后：段数 **11–18 → 1**，搜索查询平均 **76.9 ms → 45.8 ms**（1.68×；另一批次 2.2×），合并自身 **876–937 ms**；**文件大小不变**（ADR-0008「后续修订」第 4 节） |
+| `cargo test -p mn-index --release -- --ignored --nocapture bench_resolve_dangling_links` | 4000 篇库 + 2000 条互不相同的悬空链接：解析 **0.0471 → 0.0005 ms/条（96.7×）**；`graph_data`（4000 节点 / 6000 边）**69.8 ms**，其中悬空解析只占 **1.4 ms**（架构 §8 第 16 条） |
 | `cargo test -p mimenote --release -- --ignored --nocapture bench_watch_latency` | 1 万笔记 Vault 的一次外部改动：落盘 → 事件 **502–510 ms**（静默期 500ms）/ 重扫 **107 ms** / 复用构建 **105 ms**（复用 9999 篇）→ **宿主侧端到端 ≈ 714 ms**（ADR-0016） |
 | `cargo test -p mimenote --release -- --ignored --nocapture bench_watcher_overhead` | 监听常驻开销（配合外部脚本采样）：**4 个句柄 + 2 个线程 + 约 0.5 MB 工作集**，停掉后回到基线（ADR-0016） |
 
