@@ -1341,3 +1341,51 @@ describe.skipIf(!supported)('真实应用：标签重命名 / 合并（真实磁
     )
   }, 120_000)
 })
+
+/**
+ * 自绘标题栏（`decorations: false` + 我们自己的窗口按钮）。
+ *
+ * 为什么必须在**真实应用**这一层验：这组行为一半在 Rust 侧（窗口装饰、能力声明），
+ * 一半在前端（拖动区、按钮、最大化状态订阅）—— Mock 适配器与 jsdom 都没有真实窗口，
+ * 单测只能验证"按钮调了哪个 API"，只有真实 Tauri 窗口能回答"点了真的会最大化、图标真的会跟着变"。
+ * 顺带把「系统标题栏已经关掉」这件事钉住：标题栏里必须有一条可拖动的自绘栏 + 三个窗口按钮。
+ */
+describe.skipIf(!supported)('真实应用：自绘标题栏与窗口按钮', () => {
+  let app: LaunchedApp
+  let vault: TempVault
+
+  beforeAll(async () => {
+    vault = await createTempVault({ 'README.md': '# 标题栏\n' })
+    app = await launchApp({ vaultPath: vault.path })
+    await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
+  }, 120_000)
+
+  afterAll(async () => {
+    if (app !== undefined) await app.close()
+    if (vault !== undefined) await vault.cleanup()
+  })
+
+  it('标题栏是自绘的（可拖动 + 三个窗口按钮），最大化按钮与真实窗口状态同步', async () => {
+    // 1) 自绘标题栏存在，并且带着 Tauri 的拖动区属性（Tauri 注入的脚本按它发起拖动）
+    const dragRegion = app.page.locator('.mn-titlebar[data-tauri-drag-region="deep"]')
+    await waitUntil(async () => (await dragRegion.count()) === 1, 10_000, '标题栏是可拖动区')
+
+    // 2) 三个窗口按钮在真实 Tauri 环境里必须可见（拿不到窗口 API 时它们整组不渲染）
+    const minimize = app.page.getByLabel('最小化')
+    const maximize = app.page.getByLabel('最大化')
+    const closeButton = app.page.getByLabel('关闭窗口')
+    await waitUntil(async () => (await minimize.count()) === 1, 10_000, '最小化按钮可见')
+    expect(await maximize.count()).toBe(1)
+    expect(await closeButton.count()).toBe(1)
+
+    // 3) 点最大化 → 真实窗口最大化 → 按钮自己变成「还原」（状态是从窗口读回来的，不是本地猜的）
+    await maximize.click()
+    const restore = app.page.getByLabel('还原')
+    await waitUntil(async () => (await restore.count()) === 1, 10_000, '最大化后按钮变成还原')
+    expect(await restore.getAttribute('aria-pressed')).toBe('true')
+
+    // 4) 再点一次还原 → 回到最大化按钮（可逆，不是单向开关）
+    await restore.click()
+    await waitUntil(async () => (await app.page.getByLabel('最大化').count()) === 1, 10_000, '还原后按钮变回最大化')
+  }, 120_000)
+})

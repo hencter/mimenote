@@ -22,7 +22,9 @@
         "center": true,
         "resizable": true,
         "dragDropEnabled": false,
-        "zoomHotkeysEnabled": false
+        "zoomHotkeysEnabled": false,
+        "decorations": false,
+        "shadow": true
       }
     ],
     "security": {

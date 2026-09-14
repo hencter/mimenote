@@ -95,6 +95,14 @@
 | 附件目录 | `attachment_save` 的 `dirRel`（粘贴/拖入图片落盘处） | 值是 **Vault 内相对目录**，所以换 Vault 仍然指向"那个 Vault 里的同名目录" |
 | 阅读视图字号 | `--mn-font-size-reading`（阅读正文、导出件、打印容器共用） | 它**不是主题令牌**：主题 JSON 里没有它，因此不会被换主题覆盖；导出件额外读一次这个变量（`readExportTokens`），因为导出件是给人**读**的 |
 
+**标题栏就是窗口本身**（ADR-0017）：宿主的 `tauri.conf.json` 关掉了系统装饰（`decorations: false`），
+所以 `App.tsx` 里那条 `.mn-titlebar` 不是"应用内部的一条工具栏"，而是**唯一的标题栏**。
+配套的三件事必须记住：① 它是拖动区（`data-tauri-drag-region="deep"`，Tauri 注入脚本负责拖动与
+**双击最大化**，并自动跳过按钮/输入框这类可点击元素，因此不需要 `stopPropagation`）；
+② 关窗口只能靠我们自己的按钮（`features/window/`），能力集里那 6 条 `core:window:allow-*`
+就是为此而开；③ 最大化图标**从真实窗口读回来**（`isMaximized` + `onResized` 订阅），不自己做本地开关
+—— 双击标题栏、`Win+↑`、拖到屏幕上沿都会改变窗口状态，本地开关必然与之脱节。
+
 ## 3. 接口与数据流
 
 ### 3.1 IPC 契约
@@ -200,6 +208,8 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | [ADR-0014](adr/0014-persisted-link-tag-index.md) | 链接/标签索引与 FTS 落进同一个缓存库、共用同一份 `(path, mtime, size)` 判定键，写穿透挂在 `LinkIndex::upsert/remove` 内部 | 已采纳 |
 | [ADR-0015](adr/0015-directory-rename-and-move.md) | **目录重命名与目录移动**（连同整棵子树的链接改写）：复用单篇搬迁的候选集/span 改写机制 + 前缀映射；整棵目录一次原子 `rename`；复用 `RenameOutcome`、不新增错误码 | 已采纳 |
 | [ADR-0016](adr/0016-file-watching.md) | **文件监听**（Vault 外部改动的自动同步）：`notify` 只加在宿主；判定"是不是新闻"用**条目表 vs 磁盘**对账（自己写的文件天然被排除）；去抖 500ms / 硬上限 2s 合并风暴；不做按文件精细增量，走既有的去抖后重扫 + 增量索引构建；监听生命周期挂在 `set_vault` / `clear_vault` | 已采纳 |
+| [ADR-0017](adr/0017-custom-title-bar.md) | **自绘标题栏**：关掉系统装饰（`decorations: false`），界面上那条 34px 的栏就是唯一标题栏 —— 拖动与双击最大化交给 Tauri 的拖动区，三个窗口按钮自己做且**状态从真实窗口读回来** | 已采纳 |
+
 
 ## 5. 安全模型
 

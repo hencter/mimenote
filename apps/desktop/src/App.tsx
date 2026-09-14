@@ -26,6 +26,7 @@ import { Splitter } from '@/components/Splitter'
 import { Toasts } from '@/components/Toasts'
 import { MarkdownEditor } from '@/features/editor/MarkdownEditor'
 import { ExportButton } from '@/features/export/ExportButton'
+import { WindowControls } from '@/features/window/WindowControls'
 import { ExportDialog } from '@/features/export/ExportDialog'
 import { GraphCanvas } from '@/features/graph/GraphCanvas'
 import { LinksPanel } from '@/features/links/LinksPanel'
@@ -184,7 +185,12 @@ export function App() {
 
   return (
     <div className="mn-app">
-      <header className="mn-titlebar">
+      {/*
+        自绘标题栏：`decorations: false` 之后它就是**唯一的**标题栏（见 features/window 的文档）。
+        `data-tauri-drag-region="deep"` 让整条栏都能拖动窗口、双击即最大化 —— Tauri 注入的脚本
+        会自动跳过 button/input/a 这类可点击元素，所以菜单与窗口按钮照常可用。
+      */}
+      <header className="mn-titlebar" data-tauri-drag-region="deep">
         <AppMenu />
         <div className="mn-titlebar__brand">
           <Icon name="sparkle" size={15} />
@@ -198,6 +204,7 @@ export function App() {
           {info.truncated && ' · 已截断'}
         </div>
         <ExportButton />
+        <WindowControls />
       </header>
 
       <ConflictBanner />

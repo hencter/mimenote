@@ -1,7 +1,18 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "主窗口的最小能力集：核心 API + 对话框（打开目录 / 保存导出文件）+ 设置窗口标题。不授予文件系统/Shell/HTTP 权限——所有文件访问都经自定义 IPC 命令与路径防护。dialog:allow-save 是导出功能的有意扩张：导出必须让用户在系统保存对话框里选目标路径（宿主侧的 export_write_html 只允许写 .html/.htm）。core:window:allow-set-title 让窗口标题跟着当前笔记走：它是纯窗口属性写入，不触碰文件系统。",
+  "description": "主窗口的最小能力集：核心 API + 对话框（打开目录 / 保存导出文件）+ 窗口自身的那几个操作（改标题、拖动、最小化/最大化/关闭）。不授予文件系统/Shell/HTTP 权限——所有文件访问都经自定义 IPC 命令与路径防护。dialog:allow-save 是导出功能的有意扩张：导出必须让用户在系统保存对话框里选目标路径（宿主侧的 export_write_html 只允许写 .html/.htm）。窗口那一组是**自绘标题栏**的必要配套：应用关掉了系统装饰（tauri.conf.json 的 decorations: false），所以拖动窗口（allow-start-dragging，data-tauri-drag-region 走它）、双击标题栏最大化（allow-internal-toggle-maximize）与三个窗口按钮（allow-minimize / allow-toggle-maximize / allow-close / allow-is-maximized）都只能由前端发起；它们全是纯窗口属性操作，不触碰文件系统，也无法读写 Vault 内容。",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-save", "core:window:allow-set-title"]
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "core:window:allow-set-title",
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized",
+    "core:window:allow-close"
+  ]
 }
