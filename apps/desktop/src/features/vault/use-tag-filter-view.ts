@@ -21,9 +21,11 @@ import {
   countMarkdownEntries,
   countTagHitNotes,
   countVisibleNotes,
-  expandTagKeys,
+  descendantTagKeys,
+  isTagFilterQueryEmpty,
   tagFilterSignature,
   tagFilterVisiblePaths,
+  type TagFilterQuery,
 } from '@/domain/tag-filter'
 import { useNoteStore } from '@/state/note-store'
 import { tagFilterErrorMessage, useTagFilterStore } from '@/state/tag-filter-store'
@@ -36,8 +38,12 @@ export interface TagFilterView {
   /** 命中集合已经与当前选择对上 —— 只有此时树上才是收窄的。 */
   applied: boolean
   keys: readonly string[]
+  /** 「不含」那一组（"有 A 且没有 B"里的 B）。 */
+  excludeKeys: readonly string[]
   /** 选中键的人类可读写法（`tags_list` 里的首次出现写法；拿不到就退回键）。 */
   labels: readonly string[]
+  /** 「不含」那一组的可读写法。 */
+  excludeLabels: readonly string[]
   includeSubtags: boolean
   /** 选中键一共展开出多少个子标签（0 = 这个开关当前是空操作）。 */
   subtagCount: number
@@ -48,6 +54,13 @@ export interface TagFilterView {
   totalNoteCount: number
   /** 命中集合里的笔记数（用来区分"命中为空"与"命中的都不在树里"）。 */
   hitCount: number
+  /**
+   * 这个 Vault 里"有标签的笔记"总数（宿主 `tag_filter` 一并回报）。
+   *
+   * 用来把"这些条件下没有笔记"与"这个 Vault 里还没有带标签的笔记"分开说 ——
+   * 空态文案含糊是用户最容易误判成"我的笔记丢了"的地方。
+   */
+  taggedTotal: number
   status: 'idle' | 'loading' | 'ready' | 'error'
   error: MimenoteError | null
   errorText: string
@@ -67,6 +80,7 @@ export function useTagFilterView(options: { autoRefresh?: boolean } = {}): TagFi
   const autoRefresh = options.autoRefresh === true
 
   const keys = useTagFilterStore((state) => state.keys)
+  const excludeKeys = useTagFilterStore((state) => state.excludeKeys)
   const includeSubtags = useTagFilterStore((state) => state.includeSubtags)
   const hits = useTagFilterStore((state) => state.hits)
   const hitsSignature = useTagFilterStore((state) => state.hitsSignature)
@@ -75,6 +89,7 @@ export function useTagFilterView(options: { autoRefresh?: boolean } = {}): TagFi
   const summary = useTagFilterStore((state) => state.summary)
   const summaryStatus = useTagFilterStore((state) => state.summaryStatus)
   const summaryError = useTagFilterStore((state) => state.summaryError)
+  const taggedTotal = useTagFilterStore((state) => state.taggedTotal)
   const syncWithVault = useTagFilterStore((state) => state.syncWithVault)
 
   const entries = useVaultStore((state) => state.entries)
@@ -86,10 +101,14 @@ export function useTagFilterView(options: { autoRefresh?: boolean } = {}): TagFi
     syncWithVault(tree)
   }, [autoRefresh, tree, syncWithVault])
 
+  /** 当前条件（含 / 不含 + 层级）：指纹、是否生效、是否有内容都从它派生。 */
+  const query: TagFilterQuery = useMemo(
+    () => ({ any: keys, none: excludeKeys, includeChildren: includeSubtags }),
+    [keys, excludeKeys, includeSubtags],
+  )
+
   const applied =
-    status === 'ready' &&
-    hitsSignature !== '' &&
-    hitsSignature === tagFilterSignature(keys, includeSubtags)
+    status === 'ready' && hitsSignature !== '' && hitsSignature === tagFilterSignature(query)
 
   const visiblePaths = useMemo(
     () => (applied ? tagFilterVisiblePaths(hits) : null),
@@ -108,6 +127,12 @@ export function useTagFilterView(options: { autoRefresh?: boolean } = {}): TagFi
     [keys, summary],
   )
 
+  /** 「不含」那一组的可读写法。 */
+  const excludeLabels = useMemo(
+    () => excludeKeys.map((key) => summary.find((item) => item.key === key)?.tag ?? key),
+    [excludeKeys, summary],
+  )
+
   /**
    * 「含子标签」当前会多查几个键：0 表示选中键没有子标签（开关是空操作）。
    * 界面据此把开关置灰并说明原因 —— 一个点了没反应的开关比禁用更难懂。
@@ -115,7 +140,7 @@ export function useTagFilterView(options: { autoRefresh?: boolean } = {}): TagFi
   const subtagCount = useMemo(() => {
     if (keys.length === 0) return 0
     const allKeys = summary.map((item) => item.key)
-    return expandTagKeys(keys, allKeys, true).length - keys.length
+    return keys.reduce((total, key) => total + descendantTagKeys(allKeys, key).length, 0)
   }, [keys, summary])
 
   const missingKeys = useMemo(() => {
@@ -124,16 +149,19 @@ export function useTagFilterView(options: { autoRefresh?: boolean } = {}): TagFi
   }, [keys, summary, summaryStatus])
 
   return {
-    active: keys.length > 0,
+    active: !isTagFilterQueryEmpty(query),
     applied,
     keys,
+    excludeKeys,
     labels,
+    excludeLabels,
     includeSubtags,
     subtagCount,
     visiblePaths,
     visibleNoteCount,
     totalNoteCount,
     hitCount,
+    taggedTotal,
     status,
     error,
     errorText: tagFilterErrorMessage(error),

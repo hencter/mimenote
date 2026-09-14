@@ -460,12 +460,21 @@ export function FileTree() {
      */
     if (tagVisible !== null) {
       const labels = tagView.labels.map((label) => `#${label}`).join('、')
+      const excludedLabels = tagView.excludeLabels.map((label) => `#${label}`).join('、')
+      const wanted =
+        labels === ''
+          ? `不含 ${excludedLabels}`
+          : excludedLabels === ''
+            ? `使用 ${labels}`
+            : `使用 ${labels} 且不含 ${excludedLabels}`
       const reason =
         tagView.hitCount === 0
-          ? `没有笔记使用 ${labels}`
+          ? tagView.taggedTotal === 0
+            ? '这个 Vault 里还没有带标签的笔记'
+            : `没有笔记${wanted}`
           : tagView.visibleNoteCount > 0
             ? `标签命中的 ${tagView.visibleNoteCount} 篇笔记都被文本过滤排除了`
-            : `命中 ${labels} 的 ${tagView.hitCount} 篇笔记都不在当前文件树里`
+            : `命中（${wanted}）的 ${tagView.hitCount} 篇笔记都不在当前文件树里`
       return (
         <div className="mn-tree mn-tree--empty" role="tree" aria-label="文件树">
           <p className="mn-empty__text" data-tag-filter-empty>

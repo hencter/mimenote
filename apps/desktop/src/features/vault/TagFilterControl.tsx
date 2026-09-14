@@ -42,6 +42,7 @@ export function TagFilterControl() {
   const view = useTagFilterView()
   const toggleKey = useTagFilterStore((state) => state.toggleKey)
   const setIncludeSubtags = useTagFilterStore((state) => state.setIncludeSubtags)
+  const toggleExcludeKey = useTagFilterStore((state) => state.toggleExcludeKey)
   const clear = useTagFilterStore((state) => state.clear)
   const ensureSummary = useTagFilterStore((state) => state.ensureSummary)
   const reload = useTagFilterStore((state) => state.reload)
@@ -194,6 +195,30 @@ export function TagFilterControl() {
               </li>
             ))}
           </ul>
+          {/*
+            「不含」是单独一组胶囊：它与「含」的语义相反，混在同一行里会让"这行到底要什么"
+            变得要靠颜色去猜。加号/减号在视觉上分开，读屏也念得清（`aria-label` 带"不含"）。
+          */}
+          {view.excludeKeys.length > 0 ? (
+            <ul className="mn-tag-filter__chips mn-tag-filter__chips--exclude" data-tag-filter-exclude-chips>
+              {view.excludeKeys.map((key, index) => (
+                <li key={key} className="mn-tag-filter__chip mn-tag-filter__chip--exclude">
+                  <span className="mn-tag-filter__chip-label">
+                    不含 #{view.excludeLabels[index] ?? key}
+                  </span>
+                  <button
+                    type="button"
+                    className="mn-tag-filter__chip-remove"
+                    data-tag-filter-exclude-chip-remove={key}
+                    aria-label={`取消排除 ${view.excludeLabels[index] ?? key}`}
+                    onClick={() => toggleExcludeKey(key)}
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           <button
             type="button"
             className={`mn-tag-filter__subtags${
@@ -216,9 +241,10 @@ export function TagFilterControl() {
       ) : null}
 
       {view.active ? (
-        <p className="mn-tag-filter__hint" data-tag-filter-hint="or">
-          多选 = <strong>任一</strong>标签命中即显示（并集）；「含子标签」= 把 <code>#父/子</code>{' '}
-          也算进 <code>#父</code>。过滤期间拖拽仍可用，但落点只能是看得见的行。
+        <p className="mn-tag-filter__hint" data-tag-filter-hint="any-not-none">
+          多选 = <strong>含任意一个</strong>即显示（并集）；用「排除」把某一类剔出去 =
+          <strong>有 A 且没有 B</strong>；「含子标签」= 把 <code>#父/子</code> 也算进{' '}
+          <code>#父</code>。过滤期间拖拽仍可用，但落点只能是看得见的行。
         </p>
       ) : null}
 
@@ -253,13 +279,6 @@ export function TagFilterControl() {
         <p className="mn-tag-filter__note" data-tag-filter-outside-tree>
           命中的 {view.hitCount} 篇都不在当前文件树里（Vault 刚被重扫或改名？），
           点「重新过滤」再算一次。
-        </p>
-      ) : null}
-      {view.active && view.includeSubtags && view.summaryStatus === 'error' ? (
-        // 层级展开要靠全库标签键。概览读不到时只能按标签本身上报结果 —— 不说出来的话，
-        // 用户会以为"含子标签"根本没生效（而它明明开着）
-        <p className="mn-tag-filter__note mn-tag-filter__note--warn" data-tag-filter-subtags-degraded>
-          读不到全库标签，「含子标签」这次只按标签本身算（没有把 <code>#父/子</code> 合并进来）。
         </p>
       ) : null}
       {view.openNoteHidden && view.openRelPath !== null ? (
@@ -332,8 +351,9 @@ export function TagFilterControl() {
             >
               {options.rows.map((item, index) => {
                 const selected = view.keys.includes(item.key)
+                const excluded = view.excludeKeys.includes(item.key)
                 return (
-                  <li key={item.key}>
+                  <li key={item.key} className="mn-tag-filter__option-row">
                     <button
                       type="button"
                       id={optionId(item.key)}
@@ -343,14 +363,33 @@ export function TagFilterControl() {
                       aria-selected={selected}
                       className={`mn-tag-filter__option${
                         index === activeIndex ? ' mn-tag-filter__option--active' : ''
-                      }${selected ? ' mn-tag-filter__option--selected' : ''}`}
+                      }${selected ? ' mn-tag-filter__option--selected' : ''}${
+                        excluded ? ' mn-tag-filter__option--excluded' : ''
+                      }`}
                       data-tag-filter-option={item.key}
-                      title={`#${item.tag} · ${item.count} 篇`}
+                      data-tag-filter-option-excluded={excluded ? 'true' : 'false'}
+                      title={`#${item.tag} · ${item.count} 篇（点 = 含它；右边的「排除」= 不含它）`}
                       onClick={() => toggleKey(item.key)}
                     >
                       <span className="mn-tag-filter__option-name">#{item.tag}</span>
                       <span className="mn-tag-filter__option-count">{item.count}</span>
                       {selected ? <Icon name="check" size={12} /> : null}
+                    </button>
+                    {/*
+                      「排除」是行内第二个动作：它把"有 A 且没有 B"做成一次点击，
+                      而不是让用户去别处找一个排除输入框。同一个键不会同时在两组里
+                      （store 负责互斥），所以这两个按钮是互斥的开关。
+                    */}
+                    <button
+                      type="button"
+                      className={`mn-tag-filter__exclude${excluded ? ' mn-tag-filter__exclude--on' : ''}`}
+                      data-tag-filter-option-exclude={item.key}
+                      aria-pressed={excluded}
+                      aria-label={excluded ? `不再排除 #${item.tag}` : `排除 #${item.tag}`}
+                      title={excluded ? `不再排除 #${item.tag}` : `排除 #${item.tag}（只看不含它的笔记）`}
+                      onClick={() => toggleExcludeKey(item.key)}
+                    >
+                      {excluded ? '−' : '排除'}
                     </button>
                   </li>
                 )

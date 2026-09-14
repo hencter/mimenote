@@ -68,6 +68,9 @@ pub fn run() {
             commands::note_tags,
             commands::tags_list,
             commands::tag_notes,
+            // 组合过滤（含任意一个 / 不含任何一个，可带后代）：文件树的标签过滤走它，
+            // 一次往返算完 —— 前端逐个标签问会变成 N 次 IPC
+            commands::tag_filter,
             commands::search_query,
             assets::asset_authorize,
             // 导出：图片内嵌（只读，走同一套路径防护）与导出落盘（唯一允许写 Vault 之外的写命令，

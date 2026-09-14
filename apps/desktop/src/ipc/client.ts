@@ -26,6 +26,7 @@ import type {
   SearchResult,
   SetTagsOutcome,
   SnippetFile,
+  TagFilterResult,
   TagNotes,
   TagRenameOutcome,
   TagSummary,
@@ -194,6 +195,15 @@ export const ipc = {
   tagsList: () => call<TagSummary[]>('tags_list'),
   /** 某个标签下的笔记（`key` 为归一化键）。 */
   tagNotes: (key: string) => call<TagNotes>('tag_notes', { key }),
+  /**
+   * 组合过滤：含 `any` 里任意一个（空数组 = 全部有标签的笔记）且**不含** `none` 里任何一个。
+   *
+   * 一次往返出结果 —— 层级标签的"含子标签"与"有 A 且没有 B"都由宿主在索引上算
+   * （前端逐个标签问会变成 N 次 IPC，见 `commands.rs` 里 `tag_filter` 的文档）。
+   * `includeChildren` 打开时 `父` 也匹配 `父/子`、`父/子/孙`（按 `/` 切段比较）。
+   */
+  tagFilter: (any: readonly string[], none: readonly string[], includeChildren: boolean) =>
+    call<TagFilterResult>('tag_filter', { any: [...any], none: [...none], includeChildren }),
 
   /**
    * **标签重命名 / 合并**：把全库所有笔记里的 `from` 换成 `to`。

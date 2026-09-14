@@ -139,6 +139,16 @@ export interface RestoreSummary {
   needsRescan: boolean
 }
 
+/** `tag_filter` 的结果：含 any 里任意一个、不含 none 里任何一个的那些笔记。 */
+export interface TagFilterResult {
+  /** 命中的笔记（Vault 相对路径，**字典序**）。 */
+  paths: string[]
+  /** 命中数（= `paths.length`）。 */
+  matched: number
+  /** 这个索引里"有标签的笔记"总数（空态文案用："这个 Vault 还没有带标签的笔记"）。 */
+  tagged: number
+}
+
 /** 用户 CSS 片段。 */
 export interface SnippetFile {
   name: string

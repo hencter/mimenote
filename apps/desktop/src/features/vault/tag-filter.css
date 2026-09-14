@@ -271,3 +271,52 @@
   display: flex;
   gap: 8px;
 }
+
+/*
+ * 「不含」那一组胶囊 + 选项行里的「排除」按钮（"有 A 且没有 B"）。
+ *
+ * 视觉上刻意与「含」区分：含是普通胶囊，不含用虚线边框 + 减法色（`--mn-danger` 太吵，
+ * 用弱化过的前景色），这样一眼就能看出"这一组是要什么、那一组是不要什么"，
+ * 而不必逐字去读前缀。选项行是两列：主按钮占满，末尾一个固定宽度的「排除」。
+ */
+.mn-tag-filter__chips--exclude {
+  margin-top: 2px;
+}
+
+.mn-tag-filter__chip--exclude {
+  border-style: dashed;
+  color: var(--mn-fg-muted);
+}
+
+.mn-tag-filter__option-row {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.mn-tag-filter__option--excluded {
+  opacity: 0.55;
+}
+
+.mn-tag-filter__exclude {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  font-family: var(--mn-font-ui);
+  font-size: 11px;
+  color: var(--mn-fg-subtle);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: default;
+}
+
+.mn-tag-filter__exclude:hover {
+  background: var(--mn-hover);
+  color: var(--mn-fg);
+}
+
+.mn-tag-filter__exclude--on {
+  border-color: var(--mn-border);
+  border-style: dashed;
+  color: var(--mn-fg-muted);
+}

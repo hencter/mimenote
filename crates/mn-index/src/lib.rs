@@ -526,6 +526,24 @@ impl LinkIndex {
         self.tags.notes_of(key)
     }
 
+    /// 组合过滤：含 `any` 里任意一个（空 = 全部有标签的笔记）且不含 `none` 里任何一个。
+    ///
+    /// 语义与实现都在 [`crate::tags::TagIndex::filter_notes`]；这里只是转发，
+    /// 让宿主不必知道标签索引的内部结构（与 [`Self::notes_with_tag`] 同一姿态）。
+    pub fn filter_tags(
+        &self,
+        any: &[String],
+        none: &[String],
+        include_children: bool,
+    ) -> Vec<String> {
+        self.tags.filter_notes(any, none, include_children)
+    }
+
+    /// 有标签的笔记数（"共 N 篇"里的 N）。没有标签的笔记不计入。
+    pub fn tagged_note_count(&self) -> usize {
+        self.tags.note_count()
+    }
+
     /// 不同标签的个数。
     pub fn tag_count(&self) -> usize {
         self.tags.key_count()

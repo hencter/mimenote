@@ -128,6 +128,93 @@ impl TagIndex {
             .unwrap_or_default()
     }
 
+    /// 组合过滤：**含 `any` 里任意一个**（`any` 为空 = 全部笔记）**且不含 `none` 里任何一个**。
+    ///
+    /// 为什么把这件事放到索引层而不是让前端一个个标签问：
+    /// "有 A 且没有 B" 这类查询在前端只能拆成"取 A 的笔记集合、再取 B 的、相减" ——
+    /// 一次查询 N 次 IPC，而层级标签还要把 `父` 展开成"父 + 每个后代"（真实 Vault 里
+    /// 一个父标签挂 200 个子标签就是 201 次往返）。这里一次遍历就出结果。
+    ///
+    /// `include_children = true` 时，`父` 也匹配 `父/子`、`父/子/孙`（分隔符按 `/` 切段比较，
+    /// 因此 `父老`、`父辈` **不**算后代 —— 与 `TagRename` 的口径一致）。
+    ///
+    /// 返回**字典序**的路径列表（契约：同样的查询每次结果一致，前端不需要再排一次）。
+    pub fn filter_notes(
+        &self,
+        any: &[String],
+        none: &[String],
+        include_children: bool,
+    ) -> Vec<String> {
+        let any_keys: Vec<String> = any
+            .iter()
+            .map(|key| normalize_tag(key))
+            .filter(|key| !key.is_empty())
+            .collect();
+        let none_keys: Vec<String> = none
+            .iter()
+            .map(|key| normalize_tag(key))
+            .filter(|key| !key.is_empty())
+            .collect();
+
+        // 命中集合：`any` 为空 = 全库；否则是各键（含后代）笔记集合的并集
+        let mut matched: BTreeSet<String> = if any_keys.is_empty() {
+            self.by_note
+                .iter()
+                .filter(|(_, tags)| !tags.is_empty())
+                .map(|(note, _)| note.clone())
+                .collect()
+        } else {
+            let mut set = BTreeSet::new();
+            for key in &any_keys {
+                set.extend(self.notes_under(key, include_children));
+            }
+            set
+        };
+
+        // 排除：`none` 的每一个键（含后代）整体减掉
+        for key in &none_keys {
+            for note in self.notes_under(key, include_children) {
+                matched.remove(&note);
+            }
+        }
+
+        matched.into_iter().collect()
+    }
+
+    /// 某个键（可选含后代）下的笔记。
+    ///
+    /// `by_key` 是 `BTreeMap`，所以"前缀扫描"是一次 range + take_while：
+    /// 命中区间是 `[key, key + '/')` 这一段连续键，不必遍历全库所有标签。
+    fn notes_under(&self, key: &str, include_children: bool) -> Vec<String> {
+        let Some(notes) = self.by_key.get(key) else {
+            // 键本身不存在时，仍可能有它的后代（`父` 从未被直接写过、只写过 `父/子`）
+            return if include_children {
+                self.child_notes(key)
+            } else {
+                Vec::new()
+            };
+        };
+        let mut out: Vec<String> = notes.iter().cloned().collect();
+        if include_children {
+            out.extend(self.child_notes(key));
+        }
+        out
+    }
+
+    /// 键的所有**后代**（`key/…`）下的笔记。
+    fn child_notes(&self, key: &str) -> Vec<String> {
+        let prefix = format!("{key}/");
+        let mut out = Vec::new();
+        // `range` 从 `prefix` 起：所有以它开头的键都紧跟在后面（BTreeMap 是字典序）
+        for (child_key, notes) in self.by_key.range(prefix.clone()..) {
+            if !child_key.starts_with(&prefix) {
+                break;
+            }
+            out.extend(notes.iter().cloned());
+        }
+        out
+    }
+
     /// 全库标签概览：`count` 降序 → `key` 字典序升序。
     pub fn summary(&self) -> Vec<TagSummary> {
         let mut out: Vec<TagSummary> = self
@@ -194,6 +281,148 @@ mod tests {
         index.tags_of(rel).into_iter().map(|tag| tag.tag).collect()
     }
 
+    // -- 组合过滤（含 / 不含，可带后代）-----------------------------------------
+
+    /// 测试夹具：一张覆盖"层级 + 排除"的小图。
+    ///
+    /// ```text
+    /// 项目/甲.md      #项目   #项目/前端
+    /// 项目/乙.md      #项目/后端
+    /// 归档/甲.md      #归档   #项目      （同时有 项目 与 归档，用来验证排除）
+    /// 其它.md         #其它
+    /// 无标签.md       （没有标签）
+    /// 父老.md         #父老      （用来验证"按 / 切段"，不是字符串前缀）
+    /// 深层.md         #父/子/孙
+    /// ```
+    fn filter_fixture() -> TagIndex {
+        index_of(&[
+            ("项目/甲.md", "# 甲\n\n#项目 #项目/前端\n"),
+            ("项目/乙.md", "# 乙\n\n#项目/后端\n"),
+            ("归档/甲.md", "# 旧\n\n#归档 #项目\n"),
+            ("其它.md", "# 其它\n\n#其它\n"),
+            ("无标签.md", "# 没有标签\n"),
+            ("父老.md", "# 父老\n\n#父老\n"),
+            ("深层.md", "# 深层\n\n#父/子/孙\n"),
+        ])
+    }
+
+    #[test]
+    fn filter_without_any_tag_returns_every_note_that_has_tags() {
+        let index = filter_fixture();
+        let all = index.filter_notes(&[], &[], false);
+        // 没有标签的那篇**不进**结果集（它不属于任何标签视图）
+        assert!(!all.contains(&"无标签.md".to_string()));
+        assert_eq!(all.len(), 6);
+        // 字典序（契约：同一查询结果稳定，前端不必再排一次）
+        assert_eq!(all, {
+            let mut sorted = all.clone();
+            sorted.sort();
+            sorted
+        });
+    }
+
+    #[test]
+    fn filter_any_is_a_union_and_none_subtracts() {
+        let index = filter_fixture();
+
+        // 含 项目 或 其它（**严格等于**：只写了 `#项目/后端` 的那篇不算"有 项目"）
+        let any = index.filter_notes(&["项目".into(), "其它".into()], &[], false);
+        assert_eq!(
+            any,
+            vec![
+                "其它.md".to_string(),
+                "归档/甲.md".into(),
+                "项目/甲.md".into()
+            ]
+        );
+
+        // 含 项目 但**不含** 归档 —— 这条就是"有 A 且没有 B"
+        let none = index.filter_notes(&["项目".into()], &["归档".into()], false);
+        assert_eq!(none, vec!["项目/甲.md".to_string()]);
+    }
+
+    #[test]
+    fn filter_can_include_descendants_and_respects_segment_boundaries() {
+        let index = filter_fixture();
+
+        // 只看 `项目` 本身（严格等于）：两篇子标签的都不算
+        let strict = index.filter_notes(&["项目".into()], &[], false);
+        assert_eq!(strict, vec!["归档/甲.md".to_string(), "项目/甲.md".into()]);
+
+        // 含后代：`项目/前端`、`项目/后端` 都进来。
+        // 顺序按**码点**：`乙`(U+4E59) < `甲`(U+7532)，所以 `项目/乙` 排在 `项目/甲` 前面 ——
+        // 这正是"字典序"的字面含义，前端不会再排一次（契约写在 `filter_notes` 的文档里）。
+        let with_children = index.filter_notes(&["项目".into()], &[], true);
+        assert_eq!(
+            with_children,
+            vec![
+                "归档/甲.md".to_string(),
+                "项目/乙.md".into(),
+                "项目/甲.md".into()
+            ]
+        );
+
+        // `父` 从未被直接写过，只写过 `父/子/孙`：含后代时仍然能命中
+        assert_eq!(
+            index.filter_notes(&["父".into()], &[], true),
+            vec!["深层.md".to_string()]
+        );
+        assert!(index.filter_notes(&["父".into()], &[], false).is_empty());
+
+        // 按 `/` 切段比较：`父老` 不是 `父` 的后代
+        let children = index.filter_notes(&["父".into()], &[], true);
+        assert!(!children.contains(&"父老.md".to_string()));
+    }
+
+    #[test]
+    fn filter_excludes_descendants_and_tolerates_raw_spellings() {
+        let index = filter_fixture();
+
+        // 排除时同样支持"含后代"
+        let without_project = index.filter_notes(&[], &["项目".into()], true);
+        assert_eq!(
+            without_project,
+            vec!["其它.md".to_string(), "深层.md".into(), "父老.md".into()]
+        );
+
+        // 传原始写法（大小写、带 `#`）也能命中：与其它标签接口同一把尺子
+        assert_eq!(
+            index.filter_notes(&["#项目".into()], &["归档".into()], false),
+            vec!["项目/甲.md".to_string()]
+        );
+        // ⚠️ 层级语义的坑：只写 `#项目/后端` 的笔记**不算**"有 `#项目`"（严格等于），
+        // 而界面上「含子标签」默认开着，所以用户看到的是"含后代"的那一档
+        assert_eq!(index.filter_notes(&["#项目".into()], &[], true).len(), 3);
+
+        // 空键与纯 `#` 一律忽略（不是"匹配所有"，也不是报错）
+        assert_eq!(
+            index
+                .filter_notes(&["".into(), "#".into()], &[], false)
+                .len(),
+            6
+        );
+        assert_eq!(
+            index
+                .filter_notes(&["项目".into()], &["".into()], false)
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn filter_on_missing_tags_returns_nothing() {
+        let index = filter_fixture();
+        assert!(index
+            .filter_notes(&["不存在的标签".into()], &[], true)
+            .is_empty());
+        // 排除一个不存在的键什么都不减
+        assert_eq!(
+            index
+                .filter_notes(&["项目".into()], &["不存在".into()], true)
+                .len(),
+            3
+        );
+    }
     #[test]
     fn indexes_frontmatter_and_inline_tags_with_source_and_line() {
         let index = index_of(&[(

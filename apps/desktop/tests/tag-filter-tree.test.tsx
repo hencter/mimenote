@@ -223,6 +223,61 @@ describe('选一个标签：只留命中笔记与祖先目录', () => {
     expect(dom.text('[data-tag-filter-count]')).toBe('仅显示 4/5 篇')
   })
 
+  it('「排除」= 有 A 且没有 B：把某一类剔出去，且只发一次宿主查询', async () => {
+    const dom = new TreeDom(renderSidebar())
+    await chooseTag(dom, '项目')
+    await expectRows(dom, WITH_SUBTAGS)
+
+    // 记下这一刻之后的调用：排除之后应当是**一次** `tag_filter`（而不是"再问一遍再相减"）
+    let tagFilterCalls = 0
+    const base = adapter
+    setIpcAdapter({
+      kind: 'test',
+      invoke: (method: string, args?: Record<string, unknown>): Promise<never> => {
+        if (method === 'tag_filter') tagFilterCalls += 1
+        return base.invoke(method, args) as Promise<never>
+      },
+    })
+
+    // 排除 `项目/进行中`（只有 `日记/2025-01-01.md` 用了它）→ 含子标签的命中里应当少掉那一篇
+    const excludeButton = '[data-tag-filter-option-exclude="项目/进行中"]'
+    await waitFor(() => expect(dom.has(excludeButton)).toBe(true))
+    fireEvent.click(dom.node(excludeButton))
+
+    await waitFor(() => {
+      expect(dom.rows()).not.toContain('日记/2025-01-01.md')
+    })
+    expect(dom.rows()).toContain('项目/设计.md')
+    expect(tagFilterCalls).toBe(1)
+
+    // 「不含」那一组在胶囊里看得见，且能单独取消
+    expect(dom.has('[data-tag-filter-exclude-chips]')).toBe(true)
+    expect(dom.text('[data-tag-filter-exclude-chips]')).toContain('不含 #项目/进行中')
+    fireEvent.click(dom.node('[data-tag-filter-exclude-chip-remove="项目/进行中"]'))
+    await waitFor(() => {
+      expect(dom.rows()).toContain('日记/2025-01-01.md')
+    })
+  })
+
+  it('同一个标签不会同时出现在「含」与「不含」里（互斥）', async () => {
+    const dom = new TreeDom(renderSidebar())
+    await chooseTag(dom, '项目')
+    await expectRows(dom, WITH_SUBTAGS)
+
+    // 对**已经含**的标签点「排除」：它应当从「含」移到「不含」
+    fireEvent.click(dom.node('[data-tag-filter-option-exclude="项目"]'))
+    await waitFor(() => {
+      expect(dom.text('[data-tag-filter-exclude-chips]')).toContain('不含 #项目')
+    })
+    expect(dom.has('[data-tag-filter-chip-remove="项目"]')).toBe(false)
+    // 「含」空了 → 只剩下"不含项目"：所有**有标签但不是项目**的笔记（含子标签语义下
+    // `项目/进行中` 也算项目，所以它也被排除）
+    await waitFor(() => {
+      expect(dom.rows()).not.toContain('项目/设计.md')
+    })
+    expect(dom.rows()).not.toContain('日记/2025-01-01.md')
+  })
+
   it('多选是并集（界面上也写着），不是交集', async () => {
     const dom = new TreeDom(renderSidebar())
     await chooseTag(dom, '项目')
@@ -235,9 +290,12 @@ describe('选一个标签：只留命中笔记与祖先目录', () => {
     // 并集：3 篇（交集会是 0 篇，那才是"看不出来是过滤坏了还是真没有"）
     await expectRows(dom, ['根笔记.md', '项目', '项目/设计.md', '日记', '日记/2025-01-01.md'])
     expect(dom.text('[data-tag-filter-count]')).toBe('仅显示 3/5 篇')
-    // 语义写在界面上，不给用户猜的余地
-    expect(dom.node('[data-tag-filter-hint]').getAttribute('data-tag-filter-hint')).toBe('or')
-    expect(dom.text('[data-tag-filter-hint]')).toContain('任一')
+    // 语义写在界面上，不给用户猜的余地：并集 + 排除都要说清
+    expect(dom.node('[data-tag-filter-hint]').getAttribute('data-tag-filter-hint')).toBe('any-not-none')
+    const hint = dom.text('[data-tag-filter-hint]') ?? ''
+    expect(hint).toContain('含任意一个')
+    expect(hint).toContain('有 A 且没有 B')
+    expect(hint).toContain('并集')
   })
 })
 
@@ -273,9 +331,12 @@ describe('层级标签：「含子标签」是一对一的开关', () => {
 
 describe('任何"树看起来不对"的情况都要有交代', () => {
   it('命中为空：空态与控件分别说明，而不是一片空白', async () => {
-    // 让宿主对这个标签返回空集（等价于"这个标签下确实没有笔记"）
+    // 让宿主返回空集（等价于"这些条件下确实没有笔记"）。`tagged` 给非 0：
+    // 否则文案会走"这个 Vault 里还没有带标签的笔记"那一档（那是另一条用例）
     useAdapterOverride((method) =>
-      method === 'tag_notes' ? Promise.resolve({ key: '项目', notes: [] }) : null,
+      method === 'tag_filter'
+        ? Promise.resolve({ paths: [], matched: 0, tagged: 5 })
+        : null,
     )
     const dom = new TreeDom(renderSidebar())
     await chooseTag(dom, '项目')
@@ -303,7 +364,7 @@ describe('任何"树看起来不对"的情况都要有交代', () => {
 
   it('读取失败：不收窄（树上仍是全量）并说明原因 + 可重试', async () => {
     useAdapterOverride((method) =>
-      method === 'tag_notes' ? Promise.reject(new Error('索引正在重建')) : null,
+      method === 'tag_filter' ? Promise.reject(new Error('索引正在重建')) : null,
     )
     const dom = new TreeDom(renderSidebar())
     await chooseTag(dom, '项目')
@@ -316,21 +377,23 @@ describe('任何"树看起来不对"的情况都要有交代', () => {
     expect(dom.text('[data-tag-filter-count]')).toBe('过滤未生效')
   })
 
-  it('读不到全库标签时说明「含子标签」这次没生效，而不是静默少算几篇', async () => {
+  it('读不到全库标签时：过滤照常（层级由宿主算），只是没法再挑新标签', async () => {
     useAdapterOverride((method) =>
       method === 'tags_list' ? Promise.reject(new Error('索引还没就绪')) : null,
     )
     const dom = new TreeDom(renderSidebar())
-    // 直接给出选择（正常路径上要能从选择器里点，而选择器本身就依赖这份概览）
+    // 直接给出选择（正常路径上要能从选择器里点，而选择器本身就依赖那份概览）
     useTagFilterStore.setState({ keys: ['项目'] })
     await useTagFilterStore.getState().reload()
 
-    // 层级展开拿不到键 → 只能按标签本身上报（`项目/子项目`、`项目/进行中` 暂时算不进来）
-    await expectRows(dom, WITHOUT_SUBTAGS)
+    // **含子标签照常生效**：层级展开现在是宿主 `tag_filter` 的 `includeChildren` 干的，
+    // 不再依赖前端拿得到全库键 —— 所以这里得到的是 WITH_SUBTAGS（这条断言是本轮改动的关键回归网）
+    await expectRows(dom, WITH_SUBTAGS)
+    // 选择器自己会说明读不到概览
+    fireEvent.click(dom.node('[data-tag-filter-toggle]'))
     await waitFor(() => {
-      expect(dom.has('[data-tag-filter-subtags-degraded]')).toBe(true)
+      expect(dom.text('[data-tag-filter-popover]')).toContain('读不到全库标签')
     })
-    expect(dom.text('[data-tag-filter-subtags-degraded]')).toContain('含子标签')
   })
 
   it('当前打开的笔记不在结果里时提醒一句', async () => {

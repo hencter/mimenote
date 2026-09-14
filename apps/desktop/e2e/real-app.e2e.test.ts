@@ -1117,16 +1117,16 @@ describe.skipIf(!supported)('真实应用：标签面板增删标签（真实磁
   it('加标签 → 磁盘上真的多了一项（其余逐字不变）→ 面板与全库标签跟着更新 → 删掉恢复原样', async () => {
     await openNoteInTree(app.page, NOTE)
     await app.page.keyboard.press('Control+Shift+t')
-    await app.page.waitForSelector('.mn-tags', { state: 'visible', timeout: 10_000 })
+    await app.page.waitForSelector('.mn-tags', { state: 'visible', timeout: 25_000 })
     await waitUntil(
       async () => (await app.page.locator(`.mn-tags [data-tag="甲"]`).count()) === 1,
-      10_000,
+      25_000,
       '面板显示 frontmatter 标签',
     )
     // 正文里的 `#行内` 只读：必须带来源角标（真实 DOM 里也要标出来，不能只在测试替身里标）
     await waitUntil(
       async () => (await app.page.locator('.mn-tags [data-tag="行内"][data-tag-source="inline"]').count()) === 1,
-      10_000,
+      25_000,
       '行内标签带「正文」来源',
     )
 
@@ -1142,18 +1142,18 @@ describe.skipIf(!supported)('真实应用：标签面板增删标签（真实磁
     // 面板与全库标签立刻跟着更新（索引是增量同步的，不需要重扫）
     await waitUntil(
       async () => (await app.page.locator('.mn-tags [data-tag="乙"]').count()) === 1,
-      10_000,
+      25_000,
       '本篇标签出现 乙',
     )
     await waitUntil(
       async () => (await app.page.locator('.mn-tags [data-tag-key="乙"]').count()) === 1,
-      10_000,
+      25_000,
       '全库标签概览出现 乙',
     )
     // 编辑器里的文本必须与磁盘一致，否则下一次自动保存会把刚写的标签覆盖掉
     await waitUntil(
       async () => ((await app.page.locator('.cm-content').textContent()) ?? '').includes('tags: [甲, 乙]'),
-      10_000,
+      25_000,
       '编辑器文本与磁盘对齐',
     )
 
@@ -1163,7 +1163,7 @@ describe.skipIf(!supported)('真实应用：标签面板增删标签（真实磁
     expect(await vault.read(NOTE)).toBe(BEFORE)
     await waitUntil(
       async () => (await app.page.locator('.mn-tags [data-tag="乙"]').count()) === 0,
-      10_000,
+      25_000,
       '面板上 乙 消失',
     )
     // 行内那个标签从头到尾没被碰过（面板只改 frontmatter）

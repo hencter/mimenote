@@ -1122,6 +1122,59 @@ pub async fn tag_notes(state: State<'_, Arc<AppState>>, key: String) -> Result<T
     run_blocking(move || tag_notes_in(&app, &query)).await
 }
 
+/// 组合过滤的结果。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagFilterResult {
+    /// 命中的笔记（Vault 相对路径，**字典序**）。
+    pub paths: Vec<String>,
+    /// 命中数（= `paths.len()`，单独给出来是因为前端要显示"M / 共 N 篇"里的 M）。
+    pub matched: usize,
+    /// 这一轮索引里"有标签的笔记"总数（显示 N 用）。
+    pub tagged: usize,
+}
+
+/// 组合过滤：**含 `any` 里任意一个**（`any` 为空 = 全部有标签的笔记）**且不含 `none` 里任何一个**。
+///
+/// ## 为什么放到宿主一次算，而不是让前端一个个标签问
+///
+/// "有 A 且没有 B"在前端只能拆成两次查询再相减；而**层级标签**还要把 `父` 展开成
+/// "父 + 每个后代各一次查询" —— 真实 Vault 里一个父标签挂 200 个子标签就是 201 次 IPC
+/// （自己的实现里踩到过：`tag_notes` 不支持层级参数）。这里一次遍历索引就出结果，
+/// 前端只需要一次往返。
+///
+/// `include_children` 打开时 `父` 也匹配 `父/子`、`父/子/孙`（按 `/` 切段比较，
+/// 所以 `父老`、`父辈` **不**算后代 —— 与 `tag_rename` 的层级口径一致）。
+///
+/// 空串与纯 `#` 一律忽略（不是"匹配所有"，也不是报错）：它们没有匹配意义，
+/// 只会在界面上留一个点了没反应的胶囊。
+#[tauri::command]
+pub fn tag_filter(
+    state: State<'_, Arc<AppState>>,
+    any: Vec<String>,
+    none: Vec<String>,
+    include_children: bool,
+) -> TagFilterResult {
+    tag_filter_in(&state, &any, &none, include_children)
+}
+
+/// [`tag_filter`] 的主体（可单测；纯内存索引，不碰文件）。
+fn tag_filter_in(
+    state: &AppState,
+    any: &[String],
+    none: &[String],
+    include_children: bool,
+) -> TagFilterResult {
+    let index = state.index_write();
+    let paths = index.filter_tags(any, none, include_children);
+    let tagged = index.tagged_note_count();
+    TagFilterResult {
+        matched: paths.len(),
+        paths,
+        tagged,
+    }
+}
+
 /// **标签重命名 / 合并**：把全库所有笔记里的 `甲` 换成 `乙`。
 ///
 /// ## 为什么不复用 `note_set_tags` 逐篇调用
@@ -4168,8 +4221,55 @@ mod tests {
         (truncated, full)
     }
 
-    // -- 回收站（trash_list / note_restore）------------------------------------
+    // -- 标签组合过滤（tag_filter）---------------------------------------------
 
+    /// 组合过滤的契约：并集、排除、层级、以及"共 N 篇"的口径。
+    #[test]
+    fn tag_filter_combines_any_none_and_children() {
+        let (_dir, state) = state_with(&[
+            ("项目/甲.md", "# 甲\n\n#项目 #项目/前端\n"),
+            ("项目/乙.md", "# 乙\n\n#项目/后端\n"),
+            ("归档/旧.md", "# 旧\n\n#归档 #项目\n"),
+            ("其它.md", "# 其它\n\n#其它\n"),
+            ("无标签.md", "# 没有标签\n"),
+        ]);
+
+        // 含 项目（严格等于）：只有那两篇同时写了 `#项目` 的
+        let strict = tag_filter_in(&state, &["项目".into()], &[], false);
+        assert_eq!(
+            strict.paths,
+            vec!["归档/旧.md".to_string(), "项目/甲.md".into()]
+        );
+        assert_eq!(strict.matched, 2);
+        assert_eq!(strict.tagged, 4, "有标签的笔记共 4 篇（无标签那篇不算）");
+
+        // 含 项目 的后代（界面上「含子标签」默认开的那一档）
+        let with_children = tag_filter_in(&state, &["项目".into()], &[], true);
+        assert_eq!(with_children.matched, 3, "`#项目/后端` 也要算进来");
+
+        // 有 项目 且**没有** 归档 —— 本轮新增的那一类查询
+        let excluded = tag_filter_in(&state, &["项目".into()], &["归档".into()], true);
+        assert_eq!(
+            excluded.paths,
+            vec!["项目/乙.md".to_string(), "项目/甲.md".into()]
+        );
+
+        // `any` 为空 = 全部有标签的笔记；只排除（"没有归档的笔记"）
+        let all = tag_filter_in(&state, &[], &[], false);
+        assert_eq!(all.matched, 4);
+        let without_archive = tag_filter_in(&state, &[], &["归档".into()], false);
+        assert_eq!(without_archive.matched, 3);
+
+        // 空串与纯 `#` 忽略（不是"匹配所有"）
+        let ignored = tag_filter_in(&state, &["".into(), "#".into()], &[], false);
+        assert_eq!(ignored.matched, 4, "空键被忽略 → 等价于 any 为空");
+
+        // 原始写法（大小写、带 `#`）与归一化键同一把尺子
+        let raw = tag_filter_in(&state, &["#项目".into()], &[], false);
+        assert_eq!(raw.matched, strict.matched);
+    }
+
+    // -- 回收站（trash_list / note_restore）------------------------------------
     #[test]
     fn trash_list_reports_records_whose_file_is_gone() {
         let (dir, state) = state_with(&[("笔记/甲.md", "# 甲\n")]);

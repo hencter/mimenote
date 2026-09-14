@@ -1,12 +1,18 @@
 /**
- * 标签过滤状态：文件树的"收窄视图"（选中哪些标签 → 命中哪些笔记）。
+ * 标签过滤状态：文件树的"收窄视图"（含哪些标签 → 命中哪些笔记，且**不含**哪些）。
+ *
+ * ## 命中集合从哪来：宿主一次算完
+ * `ipc.tagFilter({ any, none, includeChildren })` → 命中的路径列表（字典序）+ 计数。
+ * 在此之前这里是一个**IPC 扇出**：把"含子标签"展开成"父 + 每个后代"，逐个 `tag_notes` 并起来
+ * （并发 8）—— 200 个子标签就是 201 次往返，而且"有 A 且没有 B"根本做不了（只能两次查询相减）。
+ * 现在规则只有一处（`mn-index` 的 `TagIndex::filter_notes`，宿主命令 `tag_filter`），
+ * 这里只负责状态、竞态与文案。
  *
  * ## 为什么单独一个 store，而不是塞进 `vault-store`
  * `vault-store` 里的字段回答的是"**这个 Vault 长什么样**"（条目表、树、展开状态、文本过滤），
  * 换 Vault 时整体重置；标签过滤回答的是"**我现在只想看哪一类笔记**"，它的生命周期跟着
- * 自己那个控件走。混在一起会让"谁把它重置掉了"变得难追踪（也容易与另一个在改标签的
- * 改动打架）。这里与 `vault-store` 没有写关系：条目表变化由调用方通过
- * {@link TagFilterActions.syncWithVault} 通知，本 store 不订阅、不写别人的字段。
+ * 自己那个控件走。混在一起会让"谁把它重置掉了"变得难追踪。这里与 `vault-store` 没有写关系：
+ * 条目表变化由调用方通过 {@link TagFilterState.syncWithVault} 通知，本 store 不订阅、不写别人的字段。
  *
  * ## 为什么不持久化（与"知识图谱的折叠状态"同一取舍）
  * 过滤条件是**临时视图**，不是偏好：
@@ -26,49 +32,48 @@
 
 import { create } from 'zustand'
 
-import {
-  TAG_MATCH_MODE,
-  expandTagKeys,
-  mergeTagHits,
-  tagFilterSignature,
-} from '@/domain/tag-filter'
+import { isTagFilterQueryEmpty, tagFilterSignature, type TagFilterQuery } from '@/domain/tag-filter'
 import { ipc } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
 import type { TagSummary } from '@/ipc/types'
 
-/**
- * 并发上限：子标签要一个一个问（宿主没有批量接口），限并发既保护宿主
- * （每次 `tag_notes` 都是一次 `spawn_blocking` + 索引读），也不至于把总时长拉成串行。
- */
-const TAG_QUERY_PARALLELISM = 8
-
 export type TagFilterStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type TagSummaryStatus = 'idle' | 'loading' | 'ready' | 'error'
 
+/** 控件里那两个分组的人话（多选语义的**唯一出处**，界面文字与它同源）。 */
+export const TAG_FILTER_HINT = '含任意一个 · 不含任何一个'
+
 interface TagFilterState {
-  /** 选中的标签键（**宿主归一化后的写法**，来自 `tags_list`）。顺序 = 用户点选的顺序。 */
+  /** 「含」的标签键（**宿主归一化后的写法**，来自 `tags_list`）。顺序 = 用户点选的顺序。 */
   keys: readonly string[]
+  /** 「不含」的标签键。与 {@link keys} 同时生效 = "有 A 且没有 B"。 */
+  excludeKeys: readonly string[]
   /** 选 `#父` 时是否把 `#父/子` 也算进来（层级标签的明确选择，界面上一对一）。 */
   includeSubtags: boolean
-  /** 命中笔记（各标签结果**合并后**的路径集合，已去重排序）。 */
+  /** 命中笔记（宿主算好的路径集合，已去重排序）。 */
   hits: readonly string[]
   /** {@link hits} 是对哪一组条件算出来的（与当前条件不一致 = 还没生效）。 */
   hitsSignature: string
+  /** 全库"有标签的笔记"总数（宿主回报，用于"这个 Vault 还没有带标签的笔记"这类空态）。 */
+  taggedTotal: number
   status: TagFilterStatus
   error: MimenoteError | null
 
-  /** 全库标签概览：选择器的选项 + 层级展开 + "这个标签还在不在"的判据。 */
+  /** 全库标签概览：选择器的选项 + 层级提示 + "这个标签还在不在"的判据。 */
   summary: TagSummary[]
   summaryStatus: TagSummaryStatus
   summaryError: MimenoteError | null
 
+  /** 点标签：在「含」里加入/移出。 */
   toggleKey: (key: string) => void
+  /** 点「排除」：在「不含」里加入/移出。同一个键不会同时在两组里（加进一组会从另一组移出）。 */
+  toggleExcludeKey: (key: string) => void
   setIncludeSubtags: (includeSubtags: boolean) => void
   /** 一键回到全量（Esc / 控件上的「清除」都走这里）。 */
   clear: () => void
   /** 取一次全库标签概览（已经拿到就不重复问，`force` 用于重扫后刷新）。 */
   ensureSummary: (force?: boolean) => Promise<void>
-  /** 重新计算命中集合（选中的标签变了、条目表变了、用户点了「重新过滤」）。 */
+  /** 重新计算命中集合（条件变了、条目表变了、用户点了「重新过滤」）。 */
   reload: () => Promise<void>
   /**
    * 条目表换了"身份"就重算一次（同一棵树不重复问）。
@@ -83,16 +88,27 @@ interface TagFilterState {
 /** 上一次同步过的条目表（树）的引用：用来识别"真的换了一棵树"。 */
 let lastTreeToken: unknown = null
 
-/** 命中集合请求序号：快速改选择时只采纳最后一次（与 tags-store 同一套做法）。 */
+/** 命中集合请求序号：快速改条件时只采纳最后一次（与 tags-store 同一套做法）。 */
 let hitSeq = 0
 /** 标签概览请求序号（与命中集合分开：两者互不阻塞）。 */
 let summarySeq = 0
 
+/** 当前条件（从状态里取，避免每处都手写一遍）。 */
+function queryOf(state: {
+  keys: readonly string[]
+  excludeKeys: readonly string[]
+  includeSubtags: boolean
+}): TagFilterQuery {
+  return { any: state.keys, none: state.excludeKeys, includeChildren: state.includeSubtags }
+}
+
 export const useTagFilterStore = create<TagFilterState>((set, get) => ({
   keys: [],
+  excludeKeys: [],
   includeSubtags: true,
   hits: [],
   hitsSignature: '',
+  taggedTotal: 0,
   status: 'idle',
   error: null,
   summary: [],
@@ -102,10 +118,22 @@ export const useTagFilterStore = create<TagFilterState>((set, get) => ({
   toggleKey: (key) => {
     const current = get().keys
     const next = current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
-    set({ keys: next })
-    if (next.length === 0) {
-      // 取消最后一个标签 = 回到全量：连"上一次的命中集合"也一并丢掉，
-      // 免得下游（以及测试）读到一份没人用的旧数据
+    // 同一个键不会同时出现在两组里：加进「含」就从「不含」移出
+    const exclude = get().excludeKeys.filter((item) => item !== key)
+    set({ keys: next, excludeKeys: exclude })
+    if (next.length === 0 && exclude.length === 0) {
+      get().clear()
+      return
+    }
+    void get().reload()
+  },
+
+  toggleExcludeKey: (key) => {
+    const current = get().excludeKeys
+    const next = current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
+    const include = get().keys.filter((item) => item !== key)
+    set({ excludeKeys: next, keys: include })
+    if (next.length === 0 && include.length === 0) {
       get().clear()
       return
     }
@@ -115,13 +143,20 @@ export const useTagFilterStore = create<TagFilterState>((set, get) => ({
   setIncludeSubtags: (includeSubtags) => {
     if (get().includeSubtags === includeSubtags) return
     set({ includeSubtags })
-    if (get().keys.length > 0) void get().reload()
+    if (!isTagFilterQueryEmpty(queryOf({ ...get(), includeSubtags }))) void get().reload()
   },
 
   clear: () => {
     // 序号往前推：在途的响应回来时会被丢弃，不会把过滤又"复活"
     hitSeq += 1
-    set({ keys: [], hits: [], hitsSignature: '', status: 'idle', error: null })
+    set({
+      keys: [],
+      excludeKeys: [],
+      hits: [],
+      hitsSignature: '',
+      status: 'idle',
+      error: null,
+    })
   },
 
   ensureSummary: async (force = false) => {
@@ -140,25 +175,26 @@ export const useTagFilterStore = create<TagFilterState>((set, get) => ({
   },
 
   reload: async () => {
-    const keys = get().keys
-    if (keys.length === 0) {
+    const state = get()
+    const query = queryOf(state)
+    if (isTagFilterQueryEmpty(query)) {
       set({ hits: [], hitsSignature: '', status: 'idle', error: null })
       return
     }
-    // 层级展开要全库标签键：没有概览就先取一次，否则「含子标签」会**静默**退化成只查自己
-    // （那正是"界面说含子标签、结果却不含"的那种错）
-    if (get().includeSubtags && get().summaryStatus !== 'ready') {
-      await get().ensureSummary()
-    }
 
-    const includeSubtags = get().includeSubtags
-    const signature = tagFilterSignature(keys, includeSubtags)
+    const signature = tagFilterSignature(query)
     const seq = ++hitSeq
     set({ status: 'loading', error: null })
     try {
-      const hits = await fetchHits(keys, includeSubtags, get().summary)
+      const result = await ipc.tagFilter(query.any, query.none, query.includeChildren)
       if (seq !== hitSeq) return // 已被更新的一次选择取代
-      set({ hits, hitsSignature: signature, status: 'ready', error: null })
+      set({
+        hits: result.paths,
+        hitsSignature: signature,
+        taggedTotal: result.tagged,
+        status: 'ready',
+        error: null,
+      })
     } catch (cause) {
       if (seq !== hitSeq) return
       // 失败 = 不放行任何收窄：清掉命中集合（`hitsSignature` 置空 → 树上仍是全量），
@@ -175,55 +211,37 @@ export const useTagFilterStore = create<TagFilterState>((set, get) => ({
   syncWithVault: (tree) => {
     if (tree === lastTreeToken) return
     lastTreeToken = tree
-    if (get().keys.length === 0) return
+    if (isTagFilterQueryEmpty(queryOf(get()))) return
     void (async () => {
-      // 重扫之后标签概览也会过期（标签被增删），选择器用过它就一并刷新，
-      // 否则"含子标签"会按一份旧概览算，漏掉新出现的子标签
+      // 重扫之后标签概览也会过期（标签被增删），选择器用过它就一并刷新
       if (get().summaryStatus !== 'idle') await get().ensureSummary(true)
       await get().reload()
     })()
   },
 }))
 
-/** 取一组标签键的命中笔记（含子标签时先展开成"精确键"再并起来）。 */
-async function fetchHits(
-  keys: readonly string[],
-  includeSubtags: boolean,
-  summary: readonly TagSummary[],
-): Promise<string[]> {
-  const allKeys = summary.map((item) => item.key)
-  const effective = expandTagKeys(keys, allKeys, includeSubtags)
-  const lists = await mapLimit(effective, TAG_QUERY_PARALLELISM, async (key) => {
-    const result = await ipc.tagNotes(key)
-    return result.notes
+/** 关闭 Vault / 换 Vault 时复位（调用方负责；`lastTreeToken` 也要清）。 */
+export function resetTagFilterStore(): void {
+  lastTreeToken = null
+  hitSeq += 1
+  summarySeq += 1
+  useTagFilterStore.setState({
+    keys: [],
+    excludeKeys: [],
+    includeSubtags: true,
+    hits: [],
+    hitsSignature: '',
+    taggedTotal: 0,
+    status: 'idle',
+    error: null,
+    summary: [],
+    summaryStatus: 'idle',
+    summaryError: null,
   })
-  return mergeTagHits(lists, TAG_MATCH_MODE)
 }
 
-/** 并发受限的 map（保持结果顺序）。 */
-async function mapLimit<T, R>(
-  items: readonly T[],
-  limit: number,
-  run: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array<R>(items.length)
-  let cursor = 0
-  const workerCount = Math.max(1, Math.min(limit, items.length))
-  const workers = Array.from({ length: workerCount }, async () => {
-    for (;;) {
-      const index = cursor
-      cursor += 1
-      if (index >= items.length) return
-      const item = items[index]
-      if (item === undefined) continue
-      results[index] = await run(item)
-    }
-  })
-  await Promise.all(workers)
-  return results
-}
-
-/** 报错文案（控件直接显示，不解析 message）。 */
+/** 稳定错误码 → 一句人话（控件与测试共用；不吞错误细节）。 */
 export function tagFilterErrorMessage(error: MimenoteError | null): string {
-  return error === null ? '' : describeError(error, '读取标签下的笔记失败')
+  if (error === null) return '标签过滤未生效'
+  return describeError(error, '标签过滤未生效（树仍是全量）')
 }

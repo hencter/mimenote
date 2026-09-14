@@ -33,6 +33,7 @@ import type {
   SearchHit,
   SearchResult,
   SetTagsOutcome,
+  TagFilterResult,
   TagNotes,
   TagRef,
   TagRenameFile,
@@ -2303,6 +2304,51 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
             .sort()
           const payload: TagNotes = { key, notes }
           return payload as T
+        }
+        case 'tag_filter': {
+          // 与宿主 `TagIndex::filter_notes` 同口径：含任意一个（空 = 全部有标签的笔记）
+          // 且不含任何一个；`includeChildren` 按 `/` 切段匹配后代（`父老` 不是 `父` 的后代）。
+          const anyKeys = (Array.isArray(a.any) ? a.any : [])
+            .map((key) => mockNormalizeTag(String(key)))
+            .filter((key) => key !== '')
+          const noneKeys = (Array.isArray(a.none) ? a.none : [])
+            .map((key) => mockNormalizeTag(String(key)))
+            .filter((key) => key !== '')
+          const includeChildren = a.includeChildren === true
+
+          const keysOf = (path: string): Set<string> => {
+            const note = files.get(path)
+            if (note === undefined) return new Set()
+            return new Set(
+              mockExtractTags(note.text)
+                .map((tag) => mockNormalizeTag(tag.tag))
+                .filter((key) => key !== ''),
+            )
+          }
+          /** 这组键是否命中某个想要的条件（含后代时按 `/` 切段比较）。 */
+          const hits = (keys: Set<string>, wanted: string): boolean => {
+            if (keys.has(wanted)) return true
+            if (!includeChildren) return false
+            const prefix = `${wanted}/`
+            for (const key of keys) {
+              if (key.startsWith(prefix)) return true
+            }
+            return false
+          }
+
+          let tagged = 0
+          const paths: string[] = []
+          for (const path of [...files.keys()].sort()) {
+            const keys = keysOf(path)
+            if (keys.size === 0) continue
+            tagged += 1
+            const included = anyKeys.length === 0 ? true : anyKeys.some((key) => hits(keys, key))
+            if (!included) continue
+            if (noneKeys.some((key) => hits(keys, key))) continue
+            paths.push(path)
+          }
+          const result: TagFilterResult = { paths, matched: paths.length, tagged }
+          return result as T
         }
         case 'search_query': {
           const query = String(a.query ?? '')

@@ -1382,7 +1382,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       '2',
     )
     // 多选语义与「含子标签」都写在界面上（不留歧义）
-    expect(await page.locator('[data-tag-filter-hint]').textContent()).toContain('任一')
+    expect(await page.locator('[data-tag-filter-hint]').textContent()).toContain('含任意一个')
     const subtags = page.locator('[data-tag-filter-subtags]')
     expect(await subtags.textContent()).toContain('含子标签')
     // Mock 里没有 `项目/…` 子标签 → 开关禁用并说明原因（点了没反应比禁用更难懂）
@@ -1429,6 +1429,61 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       '回到全量后没有标签的笔记可见',
     )
     expect(await treeRow(page, '随手记.md').count()).toBe(1)
+  })
+
+  it('标签过滤支持「排除」：有 A 且没有 B，一次查询算完（含子标签也由宿主算）', async () => {
+    if ((await page.locator('.mn-gate').count()) > 0) {
+      await page.getByText('打开文件夹作为 Vault').click()
+      await page.waitForSelector('.mn-tree-row', { state: 'visible' })
+    }
+    await resetTagFilter(page)
+    await page.locator('.mn-search-field__input').fill('')
+
+    // 含 `#项目`（Mock 里命中 设计.md 与 标签示例.md）
+    await page.locator('[data-tag-filter-toggle]').click()
+    await page.locator('[data-tag-filter-search]').fill('项')
+    await waitUntil(
+      async () => (await page.locator('[data-tag-filter-option="项目"]').count()) === 1,
+      5_000,
+      '出现「项目」选项',
+    )
+    await page.locator('[data-tag-filter-option="项目"]').click()
+    await waitUntil(
+      async () => (await page.locator('.mn-tree-row').count()) === 3,
+      10_000,
+      '先收窄到 #项目 的命中',
+    )
+
+    // 再**排除** `#进行中`（Mock 里只有 `项目/标签示例.md` 用它）
+    // —— 这一条就是"有 A 且没有 B"，而它只花**一次**宿主查询就出结果
+    await page.locator('[data-tag-filter-search]').fill('进行')
+    const excludeButton = page.locator('[data-tag-filter-option-exclude="进行中"]')
+    await excludeButton.waitFor({ state: 'visible' })
+    await excludeButton.click()
+
+    await waitUntil(
+      async () => (await page.locator('.mn-tree-row').count()) === 2,
+      10_000,
+      '排除之后只剩 设计.md 与祖先目录',
+    )
+    expect(await treeRow(page, '项目/标签示例.md').count()).toBe(0)
+    expect(await treeRow(page, '项目/设计.md').count()).toBe(1)
+    // 「不含」那一组在胶囊里明说，不靠颜色猜
+    expect(await page.locator('[data-tag-filter-exclude-chips]').textContent()).toContain('不含 #进行中')
+
+    // 取消排除 → 回到只含 #项目 的那一档（可逆）
+    await page.locator('[data-tag-filter-exclude-chip-remove="进行中"]').click()
+    await waitUntil(
+      async () => (await page.locator('.mn-tree-row').count()) === 3,
+      10_000,
+      '取消排除后回到 3 行',
+    )
+    expect(await page.locator('[data-tag-filter-exclude-chips]').count()).toBe(0)
+
+    // 收拾干净：清搜索词、收起浮层、清过滤（本文件共用一个页面，别把状态留给后面的用例）
+    await page.locator('[data-tag-filter-search]').fill('')
+    await page.locator('[data-tag-filter-toggle]').click()
+    await resetTagFilter(page)
   })
 
   it('标签过滤期间拖拽只能落在看得见的行上：树的空白处明确拒绝并说明原因', async () => {
