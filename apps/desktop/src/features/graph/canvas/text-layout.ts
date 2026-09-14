@@ -359,7 +359,35 @@ function layoutWithin(
   width: number,
   inset: number,
 ): LaidOutBlock[] {
-  return blocks.map((block) => layoutOne(block, metrics, measure, width, inset))
+  return blocks.map((block, index) =>
+    layoutOne(block, metrics, measure, width, inset, gapAfterFor(blocks, index, metrics)),
+  )
+}
+
+/**
+ * 每个块下面留多少间距。
+ *
+ * **相邻的两个列表项之间不留块间距**：列表在阅读视图里是 `<ul><li>…`（`li` 没有外边距），
+ * 行距是唯一的间隔；画布上若给每一项都加上一个 `blockGap`，一列 `- 甲 / - 乙 / - 丙`
+ * 看起来就像"每项之间都空了一行" —— 用户反馈的原话就是"列表换行出现多换行"。
+ * 其他块之间照旧用 `blockGap`：段落、标题、代码块之间本来就该有段间距。
+ *
+ * 判据只看"相邻两个都是列表项"，**不看缩进**：嵌套列表（`- 甲` 后跟 `  - 乙`）与
+ * 从嵌套退回父级（`  - 乙` 后跟 `- 丙`）在阅读视图里同样没有额外空行。
+ *
+ * 已知的简化：**松散列表**（项之间隔了空行）在阅读视图里每个 `<li>` 内部是段落、有段间距，
+ * 而画布上仍然按紧凑排（`blocks.ts` 不区分松散与紧凑）。这是刻意的 —— 卡片本来就窄，
+ * 再给每项加段间距会让一屏放不下几项，而"列表是一组"这个信息比"作者在源文件里插了空行"重要。
+ */
+function gapAfterFor(
+  blocks: readonly DrawBlock[],
+  index: number,
+  metrics: LayoutMetrics,
+): number {
+  const current = blocks[index]
+  const next = blocks[index + 1]
+  if (current?.kind === 'list-item' && next?.kind === 'list-item') return 0
+  return metrics.blockGap
 }
 
 /**
@@ -383,13 +411,13 @@ function layoutOne(
   measure: MeasureText,
   width: number,
   inset: number,
+  gapAfter: number = metrics.blockGap,
 ): LaidOutBlock {
   // `inset` 是容器给的（提示框正文），`indentFor` 是块类型自己的（列表/引用的层级）——
   // 两者相加才是内容的左偏移。上限夹在 `width - 1`：嵌套得再深也要留 1px 给文字，
   // 否则会出现零宽（甚至负宽）的正文，那种块画出来是一片空白却占着高度。
   const indent = Math.min(inset + indentFor(block, metrics), Math.max(0, width - 1))
   const contentWidth = Math.max(1, width - indent)
-  const gapAfter = metrics.blockGap
 
   switch (block.kind) {
     case 'code': {

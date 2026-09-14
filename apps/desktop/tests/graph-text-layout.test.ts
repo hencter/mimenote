@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import type { CalloutBlock, DrawBlock, InlineRun } from '@/features/graph/canvas/blocks'
+import { toDrawBlocks, type CalloutBlock, type DrawBlock, type InlineRun } from '@/features/graph/canvas/blocks'
 import {
   DEFAULT_METRICS,
   fontFor,
@@ -504,6 +504,59 @@ describe('提示框', () => {
     )
     expect(layout.map((item) => item.height)).toEqual([62, 20])
     expect(totalHeight(layout)).toBe(62 + 6 + 20)
+  })
+})
+
+describe('列表项之间的间距', () => {
+  /**
+   * 用户报过一条："有序/无序列表换行出现多换行（2 次换行）"。
+   *
+   * 读起来像编辑器的问题，实际是**卡片预览**：阅读视图里的列表是 `<ul><li>…`（`li` 没有外边距），
+   * 行距就是唯一的间隔；而画布上每个块下面都被加了 `blockGap`，于是一列 `- 甲 / - 乙`
+   * 看起来像"每项之间空了一行"。修法是"相邻两个列表项之间不留块间距"（见 `gapAfterFor`），
+   * 这几条把它钉住 —— 同时确认**别的块之间的间距没有被顺手改掉**。
+   */
+  function listItem(text: string, depth = 0): DrawBlock {
+    return { kind: 'list-item', runs: [{ text }], ordered: false, depth, index: 1 }
+  }
+
+  it('相邻的两个列表项之间没有间距（列表是"一组"，不是两段）', () => {
+    const layout = layoutBlocks([listItem('甲'), listItem('乙'), listItem('丙')], metrics(), TEN_PER_CHAR)
+
+    expect(layout.map((item) => item.gapAfter)).toEqual([0, 0, 6])
+    // 总高 = 三行文字（**最后一块之后那一个间距不计入**，`totalHeight` 的既有口径）
+    expect(totalHeight(layout)).toBe(20 + 20 + 20)
+  })
+
+  it('嵌套与退回父级同样不留间距（阅读视图里也没有多余空行）', () => {
+    const nested = layoutBlocks(
+      [listItem('甲'), listItem('乙', 1), listItem('丙')],
+      metrics(),
+      TEN_PER_CHAR,
+    )
+    expect(nested.map((item) => item.gapAfter)).toEqual([0, 0, 6])
+  })
+
+  it('列表后面接段落：间距照旧（列表与正文是两段不同的内容）', () => {
+    const layout = layoutBlocks([listItem('甲'), paragraph('正文')], metrics(), TEN_PER_CHAR)
+    expect(layout.map((item) => item.gapAfter)).toEqual([6, 6])
+  })
+
+  it('段落之间、列表项与别的块之间都不受影响（只动"列表项接列表项"这一种组合）', () => {
+    const layout = layoutBlocks(
+      [paragraph('前'), listItem('甲'), listItem('乙'), paragraph('后')],
+      metrics(),
+      TEN_PER_CHAR,
+    )
+    expect(layout.map((item) => item.gapAfter)).toEqual([6, 0, 6, 6])
+  })
+
+  it('提示框里的列表子块也走同一条规则（子块共用 `layoutWithin`）', () => {
+    const callout = toDrawBlocks('> [!note] 标题\n> - 甲\n> - 乙')
+    const layout = layoutBlocks(callout, metrics(), TEN_PER_CHAR)
+    const children = layout[0]?.children ?? []
+    expect(children).toHaveLength(2)
+    expect(children.map((item) => item.gapAfter)).toEqual([0, 6])
   })
 })
 
