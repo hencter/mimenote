@@ -38,7 +38,17 @@ export function imagePlaceholderHtml(src: string, alt: string, assetRel?: string
 }
 
 const PURIFY_CONFIG = {
-  FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'link', 'meta', 'base'],
+  /**
+   * 禁用标签：不给笔记内容（以及将来可能引入的渲染插件）留下任何"能骗到一次交互"的东西 ——
+   * 脚本、样式、内嵌框架、以及**能提交数据的表单**。
+   *
+   * ⚠️ `input` 从这里被**单独放开**了（它是唯一一个例外），理由只有一个：任务列表的复选框。
+   * 那不是"我们信任 `<input>`"，而是"这一条禁令无法表达我们真正要的那件事"：
+   * 白名单只能表达"允许 input 出现"，表达不了"只允许 disabled 的 checkbox"。
+   * 于是那条不变量交给下面的 {@link installDisabledCheckboxOnly} 钩子在同一次遍历里强制 ——
+   * 也就是说，放开的仍然只是"**禁用的复选框**"这一个小格子，而不是 `<input>` 这个标签。
+   */
+  FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form', 'button', 'link', 'meta', 'base'],
   FORBID_ATTR: ['srcset', 'formaction', 'ping', 'onerror', 'onload'],
   ALLOW_DATA_ATTR: false,
   // wikilink 的 data-* 与图片的 data-mn-* 是我们自己渲染的（ALLOW_DATA_ATTR=false 会一律剥掉，因此显式放行）。
@@ -66,6 +76,32 @@ const PURIFY_CONFIG = {
   ALLOWED_URI_REGEXP:
     /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|asset):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
 }
+
+/**
+ * 把 `input` 的放行收窄到"**禁用的复选框**"这一种。
+ *
+ * 为什么需要这个钩子（而不是在 `PURIFY_CONFIG` 里配一下了事）：DOMPurify 的白名单是
+ * "标签/属性允许出现吗"这种一维判断，表达不了"允许 input，但只有当它是
+ * `<input type="checkbox" disabled>` 时"。而 `FORBID_TAGS` 里那条 `input` 禁令本来服务的是
+ * **纵深防御** —— 挡住将来某个渲染插件（或一次手滑）产出表单控件。
+ * 直接把它删掉，等于为了一行 Markdown 语法把这层防御整片撤掉。
+ *
+ * 所以这里把不变量**钉死**：凡是不是"禁用的复选框"的 `input`，当场从结果里移走。
+ * 代价是一次 O(元素数) 的钩子调用（`nodeName` 一次比较，非 input 立即返回），
+ * 换来的是"阅读视图里不存在任何可交互控件"这件事由净化器保证，而不是由渲染器的自觉保证。
+ *
+ * ⚠️ 钩子在 DOMPurify 上是**全局**的，模块加载时注册一次即可：
+ * 本文件是 `sanitizeHtml` 的唯一入口，而且这条不变量对全应用的净化结果都成立。
+ */
+function installDisabledCheckboxOnly(): void {
+  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+    if (node.nodeName !== 'INPUT') return
+    const interactive = node.getAttribute('type') !== 'checkbox' || !node.hasAttribute('disabled')
+    if (interactive) node.remove()
+  })
+}
+
+installDisabledCheckboxOnly()
 
 /** 净化一段 HTML。 */
 export function sanitizeHtml(html: string): string {

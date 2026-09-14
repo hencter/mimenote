@@ -75,6 +75,8 @@ const NOTES = [
   },
   // 未知类型：按 note 渲染但保留用户写的名字，并留下 `mn-callout--unknown` 的痕迹
   { relPath: '笔记/未知提示框.md', text: '# 未知提示框\n\n> [!摘录]\n> 一段话。\n' },
+  // 任务列表：导出件是"另一台浏览器里的阅读视图"，复选框必须原样跟着出去（含只读语义）
+  { relPath: '笔记/待办.md', text: '# 待办\n\n- [ ] 未完成的事\n- [x] 已完成的事\n' },
 ]
 
 /** 记录导出相关的 IPC 调用，其余命令原样转发给 Mock。 */
@@ -243,6 +245,28 @@ describe('导出为自包含 HTML', () => {
     expect(html).toContain('mn-callout--unknown')
     // 标题保留用户写的那个词（不是被静默改成"笔记"）
     expect(html).toContain('mn-callout__label">摘录<')
+  })
+
+  it('任务列表（`- [ ]` / `- [x]`）在导出件里是**禁用的**真复选框，且样式内联', async () => {
+    const spy = await setup('笔记/待办.md')
+
+    await exportNoteHtml()
+    const html = spy.writes[0]?.html ?? ''
+
+    // 1) 结构就是阅读视图那一套（同一条渲染管线）：li 上的状态类名 + 原生 input
+    expect(html).toContain('class="mn-task-item"')
+    expect(html).toContain('mn-task-item--done')
+    expect(html).toContain('type="checkbox"')
+    expect(html).toContain('checked')
+    // 2) 复选框必须是**禁用**的：导出件同样是只读的，点它不该看起来像能改东西
+    expect(html).toMatch(/<input[^>]*\bdisabled\b/)
+    // 3) 标记本身不再作为可见文字出现（否则复选框旁边还留着一份 `[ ]`）
+    expect(html).not.toContain('[ ] 未完成的事')
+    expect(html).not.toContain('[x] 已完成的事')
+    expect(html).toContain('未完成的事')
+    // 4) 样式内联进导出件：导出件离开应用后没有 app.css，也不会去读站点的 site.css
+    expect(html).toContain('.mn-task-item__box')
+    expect(html).toContain('accent-color')
   })
 
   it('frontmatter 不进正文，标题优先取 frontmatter 的 title', async () => {

@@ -51,6 +51,7 @@
 
 import { CALLOUT_TYPES, FALLBACK_CALLOUT_TYPE, type CalloutType } from '@/domain/callouts'
 import { numericAttr, parseMarkdownTokens, type MarkdownToken } from '@/domain/markdown-core'
+import { TASK_CHECKED_ATTR, taskCheckedFromAttr } from '@/domain/task-list'
 
 // ---------------------------------------------------------------------------
 // 绘制块
@@ -220,6 +221,13 @@ interface ItemAccumulator {
   runs: InlineRun[]
   /** 已经有过内容：同一项里的第二段要用**强制换行**接上（而不是另起一条带符号的条目）。 */
   hasContent: boolean
+  /**
+   * 任务列表：`undefined` = 不是任务项。
+   *
+   * 值来自**上游的结论**（`list_item_open` 上的属性，见下面 `list_item_open` 分支），
+   * 而不是在这里自己判一遍 —— 判据只有 `domain/task-list.ts` 那一份。
+   */
+  checked: boolean | undefined
 }
 
 /**
@@ -375,6 +383,10 @@ function walkTokens(tokens: readonly MarkdownToken[], state: WalkState): void {
           depth: Math.max(0, state.lists.length - 1),
           runs: [],
           hasContent: false,
+          // 任务标记的判据**不在这一层**：`domain/markdown-core.ts` 的 `mn_task_list` 核心规则
+          // 已经用 `domain/task-list.ts` 判过，并把结论写在 `list_item_open` 上、把标记从文字里删掉。
+          // 这里只读结论 —— 画布这一侧原先自己写的那份判据已经删掉（理由见 `flushItem` 的说明）。
+          checked: taskCheckedFromAttr(tokenAttr(token, TASK_CHECKED_ATTR)),
         }
         if (frame !== undefined) frame.next += 1
         index += 1
@@ -531,62 +543,42 @@ function emitRuns(state: WalkState, runs: InlineRun[]): void {
  *
  * 空文字的普通条目**不产出块**（`-` 后面什么都没有的写法在 markdown 里合法但没意义）；
  * 任务项即使文字为空也保留 —— 画布上至少还有一个勾选框可画，扔掉它等于把用户写下的待办删了。
+ *
+ * ⚠️ `checked` 与 `runs` 一样是"**这一段**的状态"，收尾时必须一起清空：
+ * 图片会把条目切断（`- [x] 看图 ![](图.png)` → 任务项 + 图片块），
+ * 后一次 `flushItem`（`list_item_close` 触发）若还带着 `checked`，就会凭空多出一个只画勾选框的空条目。
+ *
+ * ## 这里**曾经**有一份自己的任务标记判据，已经删了
+ *
+ * 原先这里调 `stripTaskMarker(runs)`：一条 `/^\[([ xX])\](?:\s+|$)/` 加"只看第一个 run、
+ * 且它不能是粗体/斜体/代码/链接"。删掉它正是因为被删的那段注释里自己写下的那句话 ——
+ * "将来阅读视图接上插件时，两边的判据应当合并成一份"：那个将来到了。核心规则现在用唯一一份判据
+ * （`domain/task-list.ts` 的 `parseTaskMarker`）判定任务项，把结论写在 `list_item_open` 的属性上，
+ * 并把标记从文字里删掉。于是这一层**不可能**再自己判一次（文字里已经没有 `[ ]` 了，
+ * 同一份正则再跑只会得出"这不是任务项"），只能读那份结论。
+ *
+ * 附带的好处是判据变准了：原先"第一个 run 不能是粗体"只是"标记必须出现在最前面"的近似写法，
+ * 现在由上游一句"第一个行内 token 必须是普通文字"直接说清（`- **[x]** 手写` 不是任务项），
+ * 靠的是 token 类型，而不是从 run 的样式反推。
  */
 function flushItem(state: WalkState): void {
   const item = state.item
   if (item === null) return
 
-  const task = stripTaskMarker(item.runs)
-  if (task.runs.length > 0 || task.checked !== undefined) {
+  if (item.runs.length > 0 || item.checked !== undefined) {
     emit(state, {
       kind: 'list-item',
       ordered: item.ordered,
       index: item.index,
       depth: item.depth,
-      runs: task.runs,
-      checked: task.checked,
+      runs: item.runs,
+      checked: item.checked,
     })
   }
   item.runs = []
   item.hasContent = false
+  item.checked = undefined
 }
-
-/**
- * 识别任务列表的 `[ ]` / `[x]` 前缀。
- *
- * ⚠️ **为什么这件事落在这里**：`markdown-it` 的默认 preset **没有** task-list 插件（我们也没装），
- * 所以 `- [ ] 待办` 在 token 流里就是一段纯文本 `[ ] 待办`，阅读视图据此画出来的是**字面的方括号**。
- * 画布这边把它识别成勾选框是**有意的差异**：知识图谱卡片上"清单"要读起来像清单。
- * 将来阅读视图接上插件时，两边的判据应当合并成一份（那时这里的正则就该删掉，改成读 token 属性）。
- *
- * 只看**第一个 run**：`- [x] **重要**` 的第一个 run 是普通文本 `[x] `，
- * 而 `- **[x]** 手写` 的第一个 run 是粗体，不该被当成任务标记（用户手写的方括号是有含义的文字）。
- */
-function stripTaskMarker(runs: readonly InlineRun[]): {
-  runs: InlineRun[]
-  checked: boolean | undefined
-} {
-  const first = runs[0]
-  if (
-    first === undefined ||
-    first.bold === true ||
-    first.italic === true ||
-    first.code === true ||
-    first.link === true
-  ) {
-    return { runs: [...runs], checked: undefined }
-  }
-
-  const match = TASK_MARKER.exec(first.text)
-  if (match === null) return { runs: [...runs], checked: undefined }
-
-  const rest = first.text.slice(match[0].length)
-  const remaining = rest === '' ? runs.slice(1) : [{ ...first, text: rest }, ...runs.slice(1)]
-  return { runs: remaining, checked: (match[1] ?? ' ') !== ' ' }
-}
-
-/** `[ ]` / `[x]` / `[X]`，后面必须跟空白或就是行尾（`[x]yz` 是普通文字）。 */
-const TASK_MARKER = /^\[([ xX])\](?:\s+|$)/
 
 /** 围栏/缩进代码块。语言标签只取 info 的**第一个词**（` ```ts {1} ` 的语言是 `ts`）。 */
 function codeBlock(info: string, content: string): DrawBlock {

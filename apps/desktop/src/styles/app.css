@@ -671,6 +671,44 @@ kbd {
   margin: 0.24em 0;
 }
 
+/* ---------------------------------------------------------------------------
+   任务列表（`- [ ] 待办` / `- [x] 已完成`）
+   ---------------------------------------------------------------------------
+   复选框是**真的 `<input type="checkbox" disabled>`**，为什么不用 `<span>` 画一个：
+   见 `domain/markdown-core.ts` 的 `taskCheckboxHtml`（没有样式表时原生控件照样画得出来，
+   而且读屏软件原生认识它）。这里只是它的外观。
+
+   ⚠️ **这份规则有两处，必须逐条对齐**：这一处服务阅读视图，
+   `features/export/export-html.ts` 的 `contentRules` 服务导出件 / 应用内打印 / 静态站点
+   （三者共用那一份）。任何一边改了，另一边要跟着改，否则"导出的和看到的不一样"。
+   --------------------------------------------------------------------------- */
+
+.mn-preview__body li.mn-task-item {
+  /* 项目符号让位给复选框：不这么做会变成"圆点 + 勾选框"两个符号并排 */
+  list-style: none;
+}
+
+.mn-preview__body .mn-task-item__box {
+  /* 负外边距把复选框推进"项目符号那一栏"，文字于是与同级的普通条目**对齐**。
+     尺子就是上面那条 `ul/ol { padding-left: 1.6em }`：1.6em = 复选框宽 1em + 右边距 0.6em，
+     改成别的数值之前先看一眼那一条。 */
+  margin: 0 0.6em 0 -1.6em;
+  width: 1em;
+  height: 1em;
+  /* 与设置页 / 图谱面板的复选框同一个强调色令牌；主题没给值时退回链接色 */
+  accent-color: var(--mn-accent, var(--mn-link));
+  vertical-align: middle;
+  /* 只读：在这里勾选不会改文档（改文档的唯一通道是编辑器），所以连鼠标指针都不该是"可点"的样子 */
+  cursor: default;
+}
+
+/* 已完成：文字**变暗**。
+   刻意**不用** `text-decoration: line-through` —— 删除线在 Markdown 里已经是 `~~` 的含义，
+   借用它会让"我删掉了这句话"和"我做完了这件事"在视觉上分不出来。 */
+.mn-preview__body li.mn-task-item--done {
+  color: var(--mn-fg-muted);
+}
+
 .mn-image-placeholder {
   display: inline-flex;
   align-items: center;

@@ -223,8 +223,9 @@ describe('列表', () => {
   })
 
   it('任务列表识别 `[ ]` / `[x]`，并把标记从文字里去掉', () => {
-    // markdown-it 默认 preset **没有** task-list 插件，`[ ]` 在 token 里就是普通文字；
-    // 这里主动识别它（有意的差异：卡片上的清单要读起来像清单）
+    // 判据只有一份（`domain/task-list.ts`），判定发生在渲染层的核心规则里
+    // （`domain/markdown-core.ts` 的 `mn_task_list`）：它把结论写在 `list_item_open` 上、
+    // 顺手把标记从文字里删掉，画布这一层只读那份结论（原先它自己有一份正则，已经删了）
     expect(toDrawBlocks('- [ ] 未完成\n- [x] 已完成\n- [X] 大写也算')).toEqual([
       item({ runs: [{ text: '未完成' }], checked: false }),
       item({ runs: [{ text: '已完成' }], checked: true }),
@@ -233,10 +234,17 @@ describe('列表', () => {
   })
 
   it('用户手写的方括号文字不会被当成任务标记', () => {
-    // 第一个 run 是**粗体**，所以即使它长得像 `[x]` 也不认（用户手写的方括号是有含义的文字）；
+    // 方括号被写进了粗体里 ⇒ 上游看到的第一个行内 token 是 `strong_open` 而不是普通文字，
+    // 于是根本不判（用户手写的方括号是有含义的文字）；
     // 接下来那一段普通文字属于同一个条目，因此照样留在文字里
     expect(toDrawBlocks('- **[x]** 这是手写文字')).toEqual([
       item({ runs: [{ text: '[x]', bold: true }, { text: ' 这是手写文字' }] }),
+    ])
+  })
+
+  it('任务标记不在最前面时不算（句子中间的方括号是正文）', () => {
+    expect(toDrawBlocks('- 我选 [x] 这一项')).toEqual([
+      item({ runs: [{ text: '我选 [x] 这一项' }] }),
     ])
   })
 

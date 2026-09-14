@@ -18,6 +18,12 @@ import MarkdownIt from 'markdown-it'
 import { isImageAssetTarget, parseImageSize } from './assets'
 import { CALLOUT_TYPES, calloutTitle, parseCallout } from './callouts'
 import { splitWikilink, wikilinkDisplayText } from './links'
+import {
+  TASK_CHECKED_ATTR,
+  parseTaskMarker,
+  taskCheckedFromAttr,
+  taskCheckedValue,
+} from './task-list'
 
 const md = new MarkdownIt({
   html: false,
@@ -524,6 +530,120 @@ md.core.ruler.push('mn_callout', (state) => {
     }
   }
 })
+
+/**
+ * 任务列表：`- [ ] 待办` / `- [x] 已完成` → 真正带复选框的列表项。
+ *
+ * markdown-it 的默认 preset **没有** task-list 插件（我们也不引第三方依赖），所以在这条规则之前，
+ * `- [ ] 待办` 在 token 流里就是一个普通列表项、正文是纯文本 `[ ] 待办` ——
+ * 阅读视图据此画出来的是"项目符号 + 字面的方括号"，也就是用户报的那个问题。
+ *
+ * 判据只有一份（`domain/task-list.ts` 的 `parseTaskMarker`），这里只做三件事：
+ * 1. 认出**任务项**（看下面两个 `continue` 处的说明）；
+ * 2. 把标记从文字里**去掉**（否则复选框旁边还会再留一份 `[ ]`）；
+ * 3. 把结论写到 `list_item_open` 上 —— 渲染器据此出复选框，知识图谱画布据此画勾选框
+ *    （`features/graph/canvas/blocks.ts` 只读 token，看不到 HTML），两边读同一个属性。
+ *
+ * ⚠️ 只改 token、不拼 HTML 字符串：与 `mn_callout` 同一条纪律 —— 自己拼 HTML 就等于把
+ * markdown-it 已经算好的块级结构再实现一遍（引用块里可能有整篇子文档，列表项也一样）。
+ */
+md.core.ruler.push('mn_task_list', (state) => {
+  const tokens = state.tokens
+  for (let index = 0; index < tokens.length; index += 1) {
+    const item = tokens[index]
+    if (item === undefined || item.type !== 'list_item_open') continue
+
+    // 标记必须出现在**这一项第一段的开头**。markdown-it 保证：段落若是列表项的第一个块，
+    // 它就紧跟在 `list_item_open` 后面，而段落里恒有且只有一个 `inline`。
+    // 为什么不"往下找第一个段落"：`- 前言\n\n  - [x] 子项` 里内层的 `list_item_open`
+    // 会被同一趟循环各判一次（各看各的第一段），往下搜会让**父条目**认领子条目的标记。
+    const paragraph = tokens[index + 1]
+    const inline = tokens[index + 2]
+    if (paragraph === undefined || paragraph.type !== 'paragraph_open') continue
+    if (inline === undefined || inline.type !== 'inline') continue
+
+    // 第一个行内 token 必须是**普通文字**：`- **[x]** 手写` 的第一个孩子是 `strong_open`，
+    // 那说明方括号被用户写进了粗体（或任何别的行内元素）里 —— 那是有含义的正文，不是标记。
+    // 同理 `- [[链接]] [x] 后面` 的第一个孩子是 `html_inline`（wikilink），也不算。
+    const first = inline.children?.[0]
+    if (first === undefined || first.type !== 'text') continue
+
+    // ⚠️ 判据喂的是**段落原文**（`inline.content`），不是已解析出来的文字：
+    // `- \[x\] 不是任务` 里 markdown-it 已经把 `\[` 变成了普通文字 `[`，
+    // 只看文字的话"它本来带反斜杠"这件事已经无从分辨，会把用户**显式转义**的方括号认成任务项。
+    const marker = parseTaskMarker(inline.content)
+    if (marker === null) continue
+    // 同一份判据再用在文字上：只有确认这个 token 真的以标记开头，才知道从哪儿切。
+    // 两个结果必然一致（看的是同一段开头）；不一致只可能出在"token 流被别的规则改过"上，
+    // 那种情况下什么都不做 —— 少画一个复选框远好过把用户的文字切掉一截。
+    const leading = parseTaskMarker(first.content)
+    if (leading === null) continue
+
+    first.content = leading.rest
+    item.attrSet(TASK_CHECKED_ATTR, taskCheckedValue(marker.checked))
+  }
+})
+
+/** 任务项的类名（与 `styles/app.css` / 导出样式里的选择器是同一份契约）。 */
+const TASK_ITEM_CLASS = 'mn-task-item'
+/** 已完成的修饰类名（"文字变暗"挂在这个类名上，不是挂在复选框上）。 */
+const TASK_ITEM_DONE_CLASS = 'mn-task-item--done'
+
+/**
+ * 任务列表里那个复选框的 HTML。
+ *
+ * 为什么用真的 `<input type="checkbox" disabled>` 而不是画一个 `<span>`：
+ *
+ * 1. **没有样式表也长得对**。静态站点是"一个目录"（ADR-0019）：某个页面被单独拷出去、
+ *    `assets/site.css` 没跟上时，`<span>` 画法会**整个消失**（它只是一块背景色/边框），
+ *    而原生复选框由浏览器绘制，样式全丢也照样看得出"这里有个勾选框、勾没勾上"。
+ * 2. **读屏软件原生认识它**。`role="checkbox"` 挂在一个不可聚焦的 `<span>` 上是 ARIA 滥用
+ *    （它宣称自己是个可操作控件，用户却点不动它）；而原生 input 的"复选框，已选中，已禁用"
+ *    是浏览器与读屏软件之间早就有的约定，不需要我们自己编一套。
+ *
+ * `disabled` 是**语义的一部分**，不是图省事：阅读视图 / 导出件 / 打印 / 静态站点都是**只读**的，
+ * 勾选意味着改文档，而改文档的唯一通道是编辑器（那边的复选框是另一套实现，
+ * 见 `features/editor/cm/live-preview/widgets.ts` 的 `TaskCheckboxWidget`）。
+ * 一个点得动的复选框在这里只会让人以为"点了就会存下来"，而它点下去什么都不发生。
+ * 这条不变量在 `domain/markdown.ts` 的净化钩子里还会被**再钉一遍**（任何不是"禁用复选框"的
+ * `input` 一律移除）—— 因为净化器的白名单只能表达"允许 input 出现"，表达不了"必须是禁用的"。
+ *
+ * `aria-label` 说的是**状态**：禁用的表单控件在部分读屏软件的浏览模式下会被跳过，
+ * 那时至少让"已完成/未完成"这几个字作为文本读得出来。
+ */
+function taskCheckboxHtml(checked: boolean): string {
+  return (
+    '<input type="checkbox" class="mn-task-item__box" disabled' +
+    (checked ? ' checked' : '') +
+    ` aria-label="${checked ? '已完成' : '未完成'}" />`
+  )
+}
+
+/**
+ * 任务项的 `<li>` 与它开头那个复选框。
+ *
+ * 复选框由**渲染器**追加在 `<li>` 之后，而不是塞一个 `html_inline` 令牌进段落里：
+ * 复选框属于"列表项"这件结构，不属于段落的行内内容 —— 塞进 children 会让所有读 token 的人
+ * （画布就是其中之一）在自己的行内循环里遇到一个与文字无关的令牌。
+ *
+ * `self.renderToken` 负责拼 `<li>` 本身（属性转义由它保证，这里不自己拼字符串），
+ * 本规则只做两件它不会做的事：写状态类名、在后面接上复选框。
+ */
+md.renderer.rules.list_item_open = (tokens, idx, options, _env, self) => {
+  const token = tokens[idx]
+  // `attrGet` 的静态类型把数字也算了进来（markdown-it 给 `ordered_list_open` 的 `start` 返回的就是数字），
+  // 而这个属性只有 `'1'`/`'0'` 两种写法：先收敛成字符串再交给读端
+  const raw = token?.attrGet(TASK_CHECKED_ATTR)
+  const checked = raw === undefined || raw === null ? undefined : taskCheckedFromAttr(String(raw))
+  if (token === undefined || checked === undefined) return self.renderToken(tokens, idx, options)
+
+  // ⚠️ 内部属性到此为止：它是"token 消费者之间"的通信，不该出现在 HTML 里。
+  // 渲染规则改 token 是允许的（上面的 `link_open` 也在改，markdown-it 自己的规则同样如此），
+  // 而且每个 token 流只服务一次渲染（`md.render` 每次重新解析）。
+  token.attrs = (token.attrs ?? []).filter(([name]) => name !== TASK_CHECKED_ATTR)
+  token.attrSet('class', checked ? `${TASK_ITEM_CLASS} ${TASK_ITEM_DONE_CLASS}` : TASK_ITEM_CLASS)
+  return self.renderToken(tokens, idx, options) + taskCheckboxHtml(checked)
+}
 
 md.renderer.rules.image = (tokens, idx, _options, env, _self) => {
   const token = tokens[idx]

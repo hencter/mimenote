@@ -286,6 +286,31 @@ ${scope} li {
   margin: 0.24em 0;
 }
 
+/* 任务列表（- [ ] 待办 / - [x] 已完成）：**与 styles/app.css 里同名的那几条逐条相同** ——
+   阅读视图、应用内打印、导出件、静态站点用的是同一条渲染管线，样式也只有一份口径。
+   复选框本身是渲染层产出的原生 input[type=checkbox][disabled]（理由见
+   domain/markdown-core.ts 的 taskCheckboxHtml）：导出件里没有可点的东西，
+   所以连"看起来能点"的样子都不给它。 */
+${scope} li.mn-task-item {
+  list-style: none;
+}
+
+${scope} .mn-task-item__box {
+  /* 负外边距把复选框推进"项目符号那一栏"（ul/ol 的 padding-left 是 1.6em，见上一条），
+     文字于是与同级的普通条目对齐 */
+  margin: 0 0.6em 0 -1.6em;
+  width: 1em;
+  height: 1em;
+  accent-color: var(--mn-accent, var(--mn-link));
+  vertical-align: middle;
+  cursor: default;
+}
+
+/* 已完成：文字变暗。**不用**删除线 —— 那在 Markdown 里已经是 ~~ 的含义 */
+${scope} li.mn-task-item--done {
+  color: var(--mn-fg-muted);
+}
+
 /* 图片：导出件里没有灯箱可以放大，因此**不做高度封顶**（应用内封顶是为了配合点击看原图），
    只保证不撑破页面宽度；封顶反而会在纸上/窄窗口里把大图压成一条。 */
 ${scope} img.mn-image {
@@ -400,6 +425,12 @@ ${overrides}
   ${scope} a {
     color: #000000;
     text-decoration: underline;
+  }
+
+  /* 复选框的填充色同样要强制变深：--mn-accent 来自**屏幕上的**主题（深色主题下常常是亮蓝），
+     打到纸上会发灰，"勾没勾上"就看不出来了 */
+  ${scope} .mn-task-item__box {
+    accent-color: #000000;
   }
 
   ${scope} img.mn-image {

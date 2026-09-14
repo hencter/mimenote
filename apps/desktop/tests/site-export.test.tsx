@@ -53,12 +53,13 @@ const NOTES = [
     ].join('\n'),
   },
   { relPath: '笔记/乙.md', text: '# 乙\n\n回到 [[甲]]，并跳到 [[甲#小节]]。\n' },
-  // 丙 没有链接（索引/反链的用例依赖这一点），但它带着两个 callout：
-  // 静态站点是 callout 的第四个渲染面（ADR-0022），结构与颜色都要与阅读视图一致。
-  // 刻意**不新增一篇笔记**：这个文件的几条用例逐字断言了"共 N 篇""每篇读一次"这类计数。
+  // 丙 没有链接（索引/反链的用例依赖这一点），但它带着两个 callout 与一个任务列表：
+  // 静态站点是 callout 的第四个渲染面（ADR-0022），任务列表同理 —— 结构与颜色/样式都要与阅读视图一致。
+  // 刻意**不新增一篇笔记**：这个文件的几条用例逐字断言了"共 N 篇""每篇读一次"这类计数；
+  // 任务列表也顺带塞进 丙，于是"不新增笔记"这条纪律在这里继续保持。
   {
     relPath: '笔记/丙.md',
-    text: '丙没有任何链接。\n\n> [!warning] 小心\n> 提示框的正文。\n\n> [!摘录]\n> 未知类型。\n',
+    text: '丙没有任何链接。\n\n> [!warning] 小心\n> 提示框的正文。\n\n> [!摘录]\n> 未知类型。\n\n- [ ] 未完成\n- [x] 已完成\n',
   },
   { relPath: '附件/图.png', text: IMAGE_TEXT },
 ]
@@ -253,6 +254,28 @@ describe('整库导出：写出来的目录里到底有什么', () => {
     expect(css).toContain('.mn-callout')
     expect(css).toContain('.mn-callout--warning')
     expect(css).not.toContain('asset:')
+  })
+
+  it('任务列表也进了静态站点：页面里是原生复选框，样式在整站共享的那份 CSS 里', async () => {
+    const spy = await setup()
+    await exportVaultSite()
+
+    const files = writtenFiles(spy)
+    const page = files.get('笔记/丙.html') ?? ''
+    const css = files.get('assets/site.css') ?? ''
+
+    // 1) 页面结构与阅读视图同构（同一条渲染管线 + 同一个 DOMPurify 净化）
+    expect(page).toContain('class="mn-task-item"')
+    expect(page).toContain('mn-task-item--done')
+    expect(page).toContain('type="checkbox"')
+    expect(page).toMatch(/<input[^>]*\bdisabled\b/)
+    // 2) 标记本身不再是可见文字
+    expect(page).not.toContain('[ ] 未完成')
+    expect(page).not.toContain('[x] 已完成')
+    // 3) 样式在整站共享的那一份 CSS 里（页面自己不带样式；静态站点还要能在没有本应用时打开）
+    expect(css).toContain('.mn-task-item__box')
+    expect(css).toContain('.mn-task-item--done')
+    expect(css).toContain('accent-color')
   })
 
   it('共享样式表：整站一份，每页按自身深度引用它', async () => {
