@@ -34,7 +34,7 @@ import {
 import { toggleTaskChange } from '@/features/editor/cm/live-preview/task'
 import { MD, livePreviewThemeSpec } from '@/features/editor/cm/live-preview/theme'
 import type { LivePreviewContext } from '@/features/editor/cm/live-preview/types'
-import { ImageWidget } from '@/features/editor/cm/live-preview/widgets'
+import { ImageWidget, ListMarkWidget } from '@/features/editor/cm/live-preview/widgets'
 import { createEditorExtensions } from '@/features/editor/cm/setup'
 import { setIpcAdapter, makeEntry } from '@/ipc/client'
 import { createMockAdapter } from '@/ipc/mock-adapter'
@@ -378,12 +378,21 @@ describe('块级：标题 / 引用 / 列表 / 分隔线 / 代码块', () => {
     ])
   })
 
-  it('列表符号退让：保留 `-` 但挂淡色类名（不隐藏）', () => {
-    const source = '- 甲\n- 乙'
-    const items = decosOf(stateOf(source, 1))
+  it('列表标记换成了渲染出来的项目符号（原先"保留 `-` 只挂淡色类名"的决定被用户否掉了）', () => {
+    // 这条用例原先断言的是"保留 `-`、挂淡色类名、不隐藏"，理由写在 build.ts 里：
+    // "标记是结构，不是语法噪音"。但用户的真实反馈是"实时渲染里有/无序列表前面的符号
+    // 都没有进行渲染"——把 `-` 原样染淡，读起来就是没渲染。现在的口径改成**整段替换**：
+    // 标记区间的原文不再留在展示里，取而代之的是一个画着项目符号 / 序号的 widget。
+    // 细则（嵌套字形、序号怎么算、光标露原文）见 `tests/editor-list-mark.test.tsx`。
+    const source = '- 甲\n- 乙\n\n尾'
+    const items = decosOf(stateOf(source, at(source, '尾')))
 
-    expect(hiddens(items)).toEqual([])
-    expect(marks(items).filter((item) => classOf(item) === MD.listMark)).toHaveLength(2)
+    const bullets = widgets(items)
+    expect(bullets).toHaveLength(2)
+    expect(bullets.map(widgetName)).toEqual(['ListMarkWidget', 'ListMarkWidget'])
+    expect((widgetOf(bullets[0] as Deco) as ListMarkWidget).toDOM().textContent).toBe('•')
+    // 被替换的标记不再产出"淡色 mark"这种装饰
+    expect(marks(items).filter((item) => classOf(item) === MD.listMark)).toEqual([])
   })
 
   it('分隔线渲染成一条线：整段换成 widget', () => {
@@ -456,7 +465,10 @@ describe('任务列表', () => {
 
   it('光标在该行：保留 `- [ ]` 原文（可编辑）', () => {
     const items = decosOf(stateOf(source, at(source, '未完成')))
-    expect(widgets(items)).toHaveLength(1) // 只剩"已完成"那一行的复选框
+    // 只剩"已完成"那一行的复选框。这里按 **widget 类型**数而不是数全部 widget：
+    // 非任务项的 `- 甲` 现在也会产出一个项目符号 widget（见 "列表标记换成了渲染出来的
+    // 项目符号"），而本用例真正要钉的是"任务项在光标进入时不换复选框"。
+    expect(widgets(items).filter((item) => widgetName(item) === 'TaskCheckboxWidget')).toHaveLength(1)
   })
 
   it('点击切换写回 `- [x]`（纯函数 + state.update）', () => {

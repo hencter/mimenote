@@ -99,6 +99,59 @@ export class ImageWidget extends WidgetType {
 }
 
 /**
+ * 列表标记：`-` / `*` / `+` 换成项目符号，`1.` 换成**算出来的**序号。
+ *
+ * 为什么整段替换而不是"给原文挂个类名"：留着的原文是 `-`，无论怎么上色都还是 `-`。
+ * 用户要的是"标记被渲染出来"——项目符号与序号**在文档里根本不存在**，只能由 widget 画。
+ * 代价是这一段不能再被选中（原文已被替换，见 theme.ts 里 `userSelect: none` 的说明）。
+ *
+ * `eq()` 只比三样东西（字形、是不是序号栏、栏宽）：装饰是**每次按键**都重算的，
+ * 少比一样就会在"内容没变"时重建 DOM —— 那是每次输入都丢一次文本节点、顺带把
+ * IME 组合中的光标位置打回原形的经典病根。
+ *
+ * `ignoreEvent()` 必须是 `false`（基类默认 `true`）：点标记要能把光标放进这一行，
+ * 而"光标进入该行 → 整行露原文"是本层的通行出口（与 {@link HorizontalRuleWidget} 一致）。
+ * 返回 `true` 的话，点在 `•` 上等于点在一块石头上 —— 那一行永远进不去。
+ */
+export class ListMarkWidget extends WidgetType {
+  constructor(
+    /** 渲染出来的标记文本：项目符号或序号（含分隔符）。 */
+    private readonly text: string,
+    /**
+     * 序号栏的最小宽度（单位 `ch`）；无序列表传 `null`（项目符号只有一个字形，不需要栏）。
+     *
+     * 用 `ch` 而不是 `px`：`ch` 是**当前字体**里 `0` 的宽度，而这段文字是等宽的
+     * （`--mn-font-mono`），于是"几位数字 = 几个 `ch`"精确成立，字号随设置变化也不用改数字。
+     */
+    private readonly minWidthCh: number | null,
+  ) {
+    super()
+  }
+
+  override eq(other: WidgetType): boolean {
+    return (
+      other instanceof ListMarkWidget &&
+      other.text === this.text &&
+      other.minWidthCh === this.minWidthCh
+    )
+  }
+
+  override toDOM(): HTMLElement {
+    const mark = document.createElement('span')
+    mark.className =
+      this.minWidthCh === null ? `${MD.listMark} ${MD.listBullet}` : `${MD.listMark} ${MD.listNumber}`
+    if (this.minWidthCh !== null) mark.style.minWidth = `${this.minWidthCh}ch`
+    mark.textContent = this.text
+    return mark
+  }
+
+  /** 见类文档：点标记要把光标放进这一行（于是整行露出 `- ` / `1. ` 原文，方便改）。 */
+  override ignoreEvent(): boolean {
+    return false
+  }
+}
+
+/**
  * 任务列表复选框。
  *
  * 为什么不用真的 `<input type="checkbox">`：它位于 `contenteditable` 的正文里，

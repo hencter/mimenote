@@ -34,6 +34,7 @@ import {
   CalloutMarkerWidget,
   HorizontalRuleWidget,
   ImageWidget,
+  ListMarkWidget,
   TableWidget,
   TaskCheckboxWidget,
   type TableWidgetLink,
@@ -142,6 +143,13 @@ interface Build {
   collapsed: Set<number>
   /** 文档开头的 frontmatter 行区间（1 起、闭区间）；那里的 Markdown 语法不渲染。 */
   frontmatter: { first: number; last: number } | null
+  /**
+   * 有序列表的编号表（键 = `OrderedList` 节点的起点）。
+   *
+   * 为什么缓存：算一个列表的编号要沿它的 `ListItem` 走一遍（见 {@link orderedNumbering}），
+   * 而同一屏里一个列表会命中好几个标记 —— 一次重算里每个列表只算一次。
+   */
+  listNumbering: Map<number, ListNumbering>
 }
 
 /**
@@ -234,6 +242,7 @@ export function buildLivePreview(
     callouts: new Map<number, { callout: LiveCallout; position: CalloutLinePosition }>(),
     collapsed: new Set<number>(),
     frontmatter: frontmatterLines(state),
+    listNumbering: new Map<number, ListNumbering>(),
   }
 
   const blocks: Collected[] = []
@@ -481,22 +490,151 @@ function emitQuoteLines(build: Build): void {
   }
 }
 
+/**
+ * 列表标记：把 `-` / `*` / `+` 换成项目符号、把 `1.` 换成**算出来的**序号。
+ *
+ * 三件事写在这里，改之前先读：
+ *
+ * 1. **整段替换，而不是给原文挂类名**。这里曾经只是给标记区间挂一个淡色（"标记是结构"），
+ *    结果就是用户看到的那一幕：实时渲染里的列表符号"没有被渲染"，只是源码里的 `-` 被染淡了。
+ *    项目符号与序号在**文档里根本不存在**，只能由 widget 画出来（见 `ListMarkWidget`）。
+ * 2. **有序序号按"第一项写的数 + 第几项"算**，而不是照抄源码里的数字：源码写
+ *    `1. 1. 1.` 要显示成 `1. 2. 3.`，写 `3.` 开头的要显示 `3. 4. 5.` ——
+ *    这与阅读视图完全一致（markdown-it 只把起始值写进 `<ol start>`，浏览器按项递增）。
+ *    分隔符统一画 `.`：阅读视图里的 `<ol>` 也是浏览器画的十进制点号。
+ * 3. **任务项（`- [ ] x`）本函数一概不管**（照旧只把标记让给复选框）。任务项的语义是
+ *    "待办"，它的标记已经由 `TaskCheckboxWidget` 承担；再画一个项目符号是两套标记打架。
+ */
 function emitListMark(build: Build, entry: Collected): void {
   const doc = build.state.doc
   const line = doc.lineAt(entry.from)
   if (!lineVisible(build, line)) return
 
-  const parent = entry.node.parent
-  const isTask = parent !== null && parent.getChild('Task') !== null
-  if (!isTask) {
-    // 普通列表：符号**退让**（淡色）而不是隐藏 —— 它是结构，不是语法噪音
-    build.collection.add(entry.from, entry.to, Decoration.mark({ class: MD.listMark }))
+  const item = entry.node.parent
+  const list = item === null ? null : item.parent
+  const isTask = item !== null && item.getChild('Task') !== null
+  if (isTask) {
+    // 任务项：`- ` 让位给复选框（复选框由 emitTaskMarker 负责）
+    if (cursorOnLine(build.state, entry.from)) return
+    build.collection.replace(entry.from, entry.to, HIDDEN)
     return
   }
 
-  // 任务项：`- ` 让位给复选框（复选框由 emitTaskMarker 负责）
+  // 光标在这一行（或选中了这一行）：不给 widget，**整行**露原文。
+  // 这一条对本层是通用的（见文件头的说明），对列表尤其必要：标记本身就是要编辑的东西
+  // （`-` ↔ `1.`、改层级），藏起来等于不让人改。
   if (cursorOnLine(build.state, entry.from)) return
-  build.collection.replace(entry.from, entry.to, HIDDEN)
+
+  let text: string
+  let minWidthCh: number | null
+  if (list !== null && list.name === 'OrderedList') {
+    const numbering = orderedNumbering(build, list)
+    // 兜底取源码里的数字：正常情况下编号表里一定有这一项（同一个列表的标记不会凭空出现）
+    const number =
+      numbering.numbers.get(entry.from) ?? parseOrderedStart(doc.sliceString(entry.from, entry.to))
+    text = `${number}.`
+    minWidthCh = numbering.widthCh
+  } else {
+    // 层级只数**列表祖先**：引用块里的列表仍然是一层（引用有自己的竖线，不参与列表层级）
+    text = bulletGlyph(listDepth(entry.node))
+    minWidthCh = null
+  }
+
+  build.collection.replace(
+    entry.from,
+    entry.to,
+    Decoration.replace({ widget: new ListMarkWidget(text, minWidthCh) }),
+  )
+}
+
+/** 项目符号：一层 `•`、二层 `◦`、三层及以上 `▪`（再深也不换字形，靠缩进区分层级）。 */
+const BULLETS = ['•', '◦', '▪'] as const
+
+function bulletGlyph(depth: number): string {
+  const index = Math.min(Math.max(depth, 1), BULLETS.length) - 1
+  return BULLETS[index] ?? '•'
+}
+
+/**
+ * 列表的嵌套层级（最外层是 1）：数祖先里有几个 `BulletList` / `OrderedList`。
+ *
+ * 从 `ListMark` 往上数就够：`ListMark → ListItem → BulletList/OrderedList → …`，
+ * 嵌套列表是**内层 ListItem 的孩子**，于是内层的标记自然多一个列表祖先。
+ */
+function listDepth(node: SyntaxNodeLike): number {
+  let depth = 0
+  for (let parent = node.parent; parent !== null; parent = parent.parent) {
+    if (parent.name === 'BulletList' || parent.name === 'OrderedList') depth += 1
+  }
+  return depth
+}
+
+/** 一个有序列表的编号（见 {@link orderedNumbering}）。 */
+interface ListNumbering {
+  /**
+   * 序号栏的宽度（单位 `ch`）。
+   *
+   * 取这个列表里**最宽**的那个序号，于是列表内每一项的序号栏一样宽 —— 这正是
+   * "正文左边界齐平"的前提（只右对齐、栏宽还随内容变，`9.` 与 `10.` 的内容照样错开）。
+   */
+  widthCh: number
+  /**
+   * `ListMark` 起点 → 显示序号。
+   *
+   * 键用**位置**而不是节点对象：`SyntaxNode` 是语法树上的游标视图，同一个节点在不同时刻
+   * 取到的对象不保证是全等的，拿它当键会静默失配（表现就是"偶尔又退回源码里的数字"）。
+   */
+  numbers: Map<number, number>
+}
+
+/**
+ * 算出一个有序列表的显示序号。
+ *
+ * 只走**这个列表自己的孩子**（`ListItem`，数量与该列表的项数同阶）：`ListMark` 的坐标
+ * 是现成的，不需要为了拿编号而解析一遍文档 —— 那会把"装饰只按视口算"（O(可视)）变成 O(全文)。
+ * 同一个列表在一次重算里只算一次，因此整篇的代价是 O(视口内出现过的列表的项数之和)。
+ */
+function orderedNumbering(build: Build, list: SyntaxNodeLike): ListNumbering {
+  const cached = build.listNumbering.get(list.from)
+  if (cached !== undefined) return cached
+
+  const doc = build.state.doc
+  const numbers = new Map<number, number>()
+  let start = 1
+  let count = 0
+  for (let item = list.firstChild; item !== null; item = item.nextSibling) {
+    if (item.name !== 'ListItem') continue
+    const mark = item.firstChild
+    if (mark === null || mark.name !== 'ListMark') continue
+    // 起始值只有**第一项**说了算；之后一律按"第几项"递增（理由见 emitListMark 第 2 条）
+    if (count === 0) start = parseOrderedStart(doc.sliceString(mark.from, mark.to))
+    count += 1
+    numbers.set(mark.from, start + count - 1)
+  }
+
+  const numbering: ListNumbering = {
+    numbers,
+    // `count` 为 0 只可能出现在"树被截断、一个 ListItem 都没读到"的极端情况：
+    // 那时按一位数字给宽度，至少不会画出一个比内容窄的栏
+    widthCh: String(start + Math.max(count, 1) - 1).length + 1,
+  }
+  build.listNumbering.set(list.from, numbering)
+  return numbering
+}
+
+/**
+ * 有序列表标记里的起始序号（`3.` → 3、`0.` → 0）；读不出数字时按 CommonMark 的默认值 1。
+ *
+ * 为什么不读 `OrderedList` 的属性：`@lezer/markdown`（1.7）把起始值只喂给了上下文的 hash
+ * （`CompositeBlock.value`），**没有**挂成 `NodeProp`，节点上取不到。
+ * 于是退回"第一项的 `ListMark` 文本"——它就在同一棵树里，坐标现成。
+ */
+function parseOrderedStart(mark: string): number {
+  const digits = /^(\d{1,9})/u.exec(mark)?.[1]
+  if (digits === undefined) return 1
+  const value = Number(digits)
+  // `0.` 是合法的起始值（CommonMark 允许从 0 起算），所以判据是 `>= 0` 而不是 `> 0`
+  return Number.isInteger(value) && value >= 0 ? value : 1
 }
 
 function emitTaskMarker(build: Build, entry: Collected): void {

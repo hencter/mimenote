@@ -40,7 +40,17 @@ export const MD = {
   calloutGlyph: 'mn-md-callout-glyph',
   calloutLabel: 'mn-md-callout-label',
   calloutFold: 'mn-md-callout-fold',
+  /** 列表标记 widget 的公共类名（有序 / 无序共用；具体字形与宽度见下面两个类）。 */
   listMark: 'mn-md-list-mark',
+  /** 无序列表的**项目符号**（`•` / `◦` / `▪`，按嵌套层级换字形）。 */
+  listBullet: 'mn-md-list-bullet',
+  /**
+   * 有序列表的**序号栏**（`1.`、`10.`）。
+   *
+   * 与 `listBullet` 分开是因为它多了一条排版要求：等宽数字 + 右对齐，序号栏宽度一致时
+   * 正文左边界才在一条线上（宽度由 widget 按"这个列表里最宽的序号"算出来，见 widgets.ts）。
+   */
+  listNumber: 'mn-md-list-number',
   task: 'mn-md-task',
   taskDone: 'mn-md-task--done',
   collapsedLine: 'mn-md-collapsed-line',
@@ -176,8 +186,29 @@ export const livePreviewThemeSpec: { [selector: string]: { [property: string]: s
     fontSize: '0.85em',
   },
 
-  /* ── 列表：符号"退让"（淡色、不加粗），让正文和标题说话 ── */
-  '.mn-md-list-mark': { color: 'var(--mn-fg-subtle)', fontWeight: '400' },
+  /* ── 列表：标记是**渲染出来的**（`•` / `1.`），不是淡色的 `-` ──
+     这里曾经是"保留 `-` 只给它一个淡色"（当时的理由：标记是结构、不是语法噪音），
+     但用户的真实反馈是"实时渲染中有序列表前面的符号都没有进行渲染"——
+     原样的 `-` 再加一层极淡的灰，读起来就是"没渲染"。现在标记由 `ListMarkWidget`
+     整段替换：无序画分层级的项目符号、有序画**算出来的**序号，观感与阅读视图
+     （浏览器给 `<ul>`/`<ol>` 画的原生标记）对齐。
+     颜色取 `--mn-fg-muted` 而**不是** `--mn-fg-subtle`：后者在深色主题下几乎与背景同色，
+     正是"看不见"这条反馈的来源。 */
+  '.mn-md-list-mark': { color: 'var(--mn-fg-muted)', fontWeight: '400' },
+  /* 项目符号不进选区：它在文档里没有对应文本（原文的 `-` 已被替换掉），
+     能选中一片"不属于文档的字符"只会让复制结果与看到的对不上 */
+  '.mn-md-list-bullet': { userSelect: 'none' },
+  /* 序号栏：右对齐 + 等宽数字。两者缺一不可 —— `tabular-nums` 保证 `1` 与 `0` 同宽，
+     右对齐让 `9.` 与 `10.` 的**小数点**对齐，于是正文左边界齐平。
+     栏宽（`min-width`）由 widget 按"这个列表里最宽的序号"用 `ch` 给出：见 widgets.ts 的
+     ListMarkWidget（与 TableWidget 的 `min-width` 同一个理由：这个数字只有算过编号的人知道）。 */
+  '.mn-md-list-number': {
+    display: 'inline-block',
+    textAlign: 'right',
+    fontFamily: 'var(--mn-font-mono)',
+    fontVariantNumeric: 'tabular-nums',
+    userSelect: 'none',
+  },
 
   /* 已勾选的任务：整行淡出（用 opacity 而不是 color，否则行内的粗体/链接会各自保留颜色） */
   '.cm-line.mn-md-task--done': { opacity: '0.62' },
