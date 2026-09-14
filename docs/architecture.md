@@ -67,10 +67,12 @@
 | `cm/flash-line.ts` | "命中行"的一次性高亮（搜索跳转、大纲跳转共用） | §8 第 4 条 |
 | `cm/table-format.ts` | 光标所在 Markdown 表格的对齐格式化（纯函数在 `domain/table-format.ts`） | 走**命令表**（`note.formatTable`，`Mod+Alt+F`）而不是编辑器私有 keymap，因此命令面板里也能搜到；只改空白与竖线位置 |
 | `line-jump.ts` | 把光标落到第 N 行（打开 + 定位的两半，另一半在 `app/actions.openNoteAt`） | §8 第 4 条 |
+| （**上游**）`markdown()` 自带的 `pasteURLAsLink` | 把 URL 粘到**选中的文字**上 → 包成 `[文字](url)`；`www.` 自动补 `https://`，也认 `mailto:`/`xmpp:`；选区落在行内代码/链接/图片里或跨越语法节点时不动手 | **默认就开着**，所以这里没有我们的实现：曾经手写过一份等价扩展（`url-paste.ts`），调试中发现两份会互相抢先、真实生效的始终是上游那份（它的语法树守卫还更稳），于是把自写版删掉、改为**用测试把上游行为钉住**（`tests/paste-url-link.test.tsx`） |
 
-两条纪律（踩过坑）：
+三条纪律（踩过坑）：
 1. **全局快捷键装在捕捉阶段**，注册过的组合键赢过编辑器自己的绑定 —— 否则 `Ctrl+G` 会被编辑器侧吃掉（见 `app/keymap.ts` 的注释）；
-2. **弹层不进 `.cm-content`**：`wiki-complete` 的浮层挂在 `.cm-editor` 下当兄弟节点，否则它会被当成文档内容参与排版测量。
+2. **弹层不进 `.cm-content`**：`wiki-complete` 的浮层挂在 `.cm-editor` 下当兄弟节点，否则它会被当成文档内容参与排版测量；
+3. **动手前先查上游有没有已经做过**：`@codemirror/lang-markdown` / `@codemirror/view` 这类包里，常见输入体验（URL 粘贴成链接、表格里的 Tab、列表续行）往往已经内置且默认开启。重复实现不只是白写 —— 两个 DOM 事件处理器会互相抢先，表现为"行为随机地由其中一个决定"，排查成本极高。判断方法：在自己的扩展里临时打一条 `dispatch` 栈，看真正改文档的是谁。
 
 ### 2.2 设置页与应用菜单的接线
 

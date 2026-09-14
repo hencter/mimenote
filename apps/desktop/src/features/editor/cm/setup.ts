@@ -170,6 +170,12 @@ export function createEditorExtensions(
     // CodeMirror 内置粘贴之前，返回 `true` 才吃掉事件，返回 `false` 时文本粘贴原样落到默认实现
     // （完整理由见 `image-input.ts` 的模块文档）
     ...imageInputExtensions(),
+    // 注意：**"把 URL 粘到选中的文字上 → Markdown 链接"不需要我们自己实现** ——
+    // `markdown()` 默认就装了 `pasteURLAsLink`（`@codemirror/lang-markdown`，默认值 true），
+    // 它做的正是这件事，而且比手写版更稳：会先确认选区在 Markdown 正文里（不在行内代码/链接/
+    // 图片等节点中、也不跨越节点边界），`www.` 前缀会自动补成 `https://`，还认 `mailto:`/`xmpp:`。
+    // 这里刻意不再加第二个处理器：两份实现会互相抢先（上游那个先跑），行为反而说不清。
+    // 回归测试见 `tests/paste-url-link.test.tsx`。
     // "跳到第 N 行"的短暂高亮（搜索结果 / 反向链接的落点）：同样是纯装饰，不改文档
     ...flashLineExtensions(),
     EditorView.updateListener.of((update) => {
