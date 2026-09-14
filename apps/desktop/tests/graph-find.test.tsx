@@ -19,7 +19,7 @@ import {
   findGraphMatches,
 } from '@/features/graph/find'
 import { GraphCanvas } from '@/features/graph/GraphCanvas'
-import { CARD_HEIGHT, CARD_WIDTH } from '@/features/graph/layout'
+import { CARD_HEIGHT, CARD_WIDTH, buildLayout } from '@/features/graph/layout'
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter } from '@/ipc/mock-adapter'
 import type { GraphNode } from '@/ipc/types'
@@ -132,10 +132,41 @@ describe('定位候选（纯函数）', () => {
 })
 
 describe('画布上的定位输入框', () => {
+  /**
+   * 焦点视图（默认）的圆心是"当前打开的笔记"，这里没有打开任何笔记 ⇒ 画布是空态。
+   * 定位/折叠这两件事属于**整个 Vault** 视图（ADR-0021），所以这几条用例先切过去。
+   */
+  function renderVaultView(): HTMLElement {
+    useGraphStore.setState({ mode: 'vault' })
+    const { container } = render(<GraphCanvas />)
+    return container
+  }
+
+  /** 画布交给画笔的卡片数（卡片本身画在 canvas 上，DOM 里没有节点可数）。 */
+  function paintedCards(): number {
+    return Number(document.querySelector('canvas.mn-graph__canvas')?.getAttribute('data-mn-cards') ?? '0')
+  }
+
+  /**
+   * 当前**真实**布局里有哪几张卡片。
+   *
+   * 为什么不能拿测试自己的 `NODES` 去算：画布挂载时会按 `rootPath` 拉一次数据
+   * （`load()`），Mock 适配器返回的是它自己那套 Vault —— 于是进入画布之后数据是**它**的，
+   * 不是这里的 NODES。断言必须对着画布真正在画的那份布局做，否则量的是另一个世界。
+   */
+  function layoutNow(): { paths: string[]; card: (relPath: string) => { x: number; y: number; width: number; height: number } | undefined } {
+    const state = useGraphStore.getState()
+    const cards = buildLayout(state.data?.nodes ?? [], state.collapsed).cards
+    return {
+      paths: cards.map((card) => card.relPath),
+      card: (relPath) => cards.find((candidate) => candidate.relPath === relPath),
+    }
+  }
+
   it('输入后列出候选，点一条把卡片选中并把它摆到视口中央', async () => {
-    render(<GraphCanvas />)
+    renderVaultView()
     await waitFor(() => {
-      expect(document.querySelectorAll('.mn-graph-card').length).toBeGreaterThan(0)
+      expect(paintedCards()).toBeGreaterThan(0)
     })
 
     const input = document.querySelector<HTMLInputElement>('.mn-graph__find-input')
@@ -158,24 +189,18 @@ describe('画布上的定位输入框', () => {
     // 定位完成后清空查询串（否则下一次找别的东西还得先删掉上一次的输入）
     expect(document.querySelector<HTMLInputElement>('.mn-graph__find-input')?.value).toBe('')
 
-    // 卡片真的进入了可视区（裁剪后仍然被渲染出来）
-    const card = await waitFor(() => {
-      const node = document.querySelector<HTMLElement>(
-        '.mn-graph-card[data-rel-path="项目/子项目/细节.md"]',
-      )
-      expect(node).not.toBeNull()
-      return node as HTMLElement
-    })
-
-    // 卡片中心落在视口中心：屏幕位置 = 世界坐标 × 缩放 + 偏移
+    // 卡片中心落在视口中心：屏幕位置 = 世界坐标 × 缩放 + 偏移。
+    // 卡片画在 canvas 上，没有 DOM 节点可读坐标 —— 所以直接问**布局**要那张卡片的矩形，
+    // 再用与画布同一套换算算一遍（这正是"点得中"的前提）。
     const { view, viewport } = useGraphStore.getState()
-    const left = Number.parseFloat(card.style.left)
-    const top = Number.parseFloat(card.style.top)
-    expect(left * view.zoom + view.x + (CARD_WIDTH / 2) * view.zoom).toBeCloseTo(
+    const rect = layoutNow().card('项目/子项目/细节.md')
+    expect(rect).toBeDefined()
+    const box = rect as { x: number; y: number; width: number; height: number }
+    expect(box.x * view.zoom + view.x + (box.width / 2) * view.zoom).toBeCloseTo(
       viewport.width / 2,
       0,
     )
-    expect(top * view.zoom + view.y + (CARD_HEIGHT / 2) * view.zoom).toBeCloseTo(
+    expect(box.y * view.zoom + view.y + (box.height / 2) * view.zoom).toBeCloseTo(
       viewport.height / 2,
       0,
     )
@@ -183,14 +208,15 @@ describe('画布上的定位输入框', () => {
 
   it('卡片在折叠的容器里时：先展开祖先，再自动补做定位', async () => {
     useGraphStore.setState({ collapsed: new Set(['项目/子项目']) })
-    render(<GraphCanvas />)
+    renderVaultView()
     await waitFor(() => {
-      expect(document.querySelectorAll('.mn-graph-card').length).toBeGreaterThan(0)
+      expect(paintedCards()).toBeGreaterThan(0)
     })
-    // 折叠状态下那张卡片不在布局里
-    expect(
-      document.querySelector('.mn-graph-card[data-rel-path="项目/子项目/细节.md"]'),
-    ).toBeNull()
+    // 折叠状态下那张卡片不在布局里（画布上自然也没有它）
+    const folded = layoutNow()
+    expect(folded.paths).not.toContain('项目/子项目/细节.md')
+    const total = (useGraphStore.getState().data?.nodes ?? []).length
+    expect(paintedCards()).toBeLessThan(total)
 
     const input = document.querySelector<HTMLInputElement>('.mn-graph__find-input')
     await act(async () => {
@@ -207,12 +233,17 @@ describe('画布上的定位输入框', () => {
     await waitFor(() => {
       expect(useGraphStore.getState().selected).toBe('项目/子项目/细节.md')
     })
+    // 展开之后它真的回到画布上（卡片数跟着回来）
+    await waitFor(() => {
+      expect(layoutNow().paths).toContain('项目/子项目/细节.md')
+      expect(paintedCards()).toBe(total)
+    })
   })
 
   it('输入框里按 Esc 只清空查询（画布自己的 Esc 处理不该起来）', async () => {
-    render(<GraphCanvas />)
+    renderVaultView()
     await waitFor(() => {
-      expect(document.querySelectorAll('.mn-graph-card').length).toBeGreaterThan(0)
+      expect(paintedCards()).toBeGreaterThan(0)
     })
 
     const input = document.querySelector<HTMLInputElement>('.mn-graph__find-input')
@@ -227,9 +258,9 @@ describe('画布上的定位输入框', () => {
   })
 
   it('没有匹配时给出空态说明而不是"按了没反应"', async () => {
-    render(<GraphCanvas />)
+    renderVaultView()
     await waitFor(() => {
-      expect(document.querySelectorAll('.mn-graph-card').length).toBeGreaterThan(0)
+      expect(paintedCards()).toBeGreaterThan(0)
     })
 
     const input = document.querySelector<HTMLInputElement>('.mn-graph__find-input')

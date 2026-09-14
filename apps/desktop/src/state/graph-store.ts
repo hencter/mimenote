@@ -36,6 +36,7 @@ import {
   zoomAround as zoomAroundPure,
   type GraphView,
   type Point,
+  type Rect,
   type Size,
 } from '@/features/graph/layout'
 import { ipc } from '@/ipc/client'
@@ -48,6 +49,38 @@ import { useUiStore } from './ui-store'
 
 /** 手工位置的存储键：`{ [Vault 根]: { [relPath]: {x, y} } }`。 */
 export const POSITIONS_KEY = 'mimenote.graph.positions.v1'
+
+/**
+ * 视图偏好的存储键（模式与跳数）。
+ *
+ * 为什么**不按 Vault 分**：它们是"我怎么看图"的偏好，不是"这个 Vault 长什么样"的数据。
+ * 换一个 Vault 还要重新选一遍自我中心视图，只会让人以为这个开关坏了。
+ */
+export const PREFS_KEY = 'mimenote.graph.prefs.v1'
+
+/** 图谱的两种视图（ADR-0021）。 */
+export type GraphMode = 'focus' | 'vault'
+
+/** 自我中心视图的跳数范围：与宿主（`mn_index::graph`）的 `depth.clamp(1, 5)` 逐字一致。 */
+export const MIN_EGO_DEPTH = 1
+export const MAX_EGO_DEPTH = 5
+
+/**
+ * 进入自我中心视图的默认跳数：**1 跳**。
+ *
+ * 用户的诉求是"进入后只有先关联的" —— 那就先给直接相关的那一圈（1 跳），
+ * 想看更远的自己往上加。默认给 2 或 3 会在几十个邻居的笔记上立刻变成一屏乱线，
+ * 而那正是这次要修掉的东西。
+ */
+export const DEFAULT_EGO_DEPTH = 1
+
+/**
+ * 一次 `notes_read_batch` 要几篇正文。
+ *
+ * 宿主逐篇读文件（本地磁盘），40 篇一批在 SSD 上是几毫秒级；批太大只会让"第一张卡片出现"
+ * 的时间变长（我们要等这一批回来才排版），批太小则多几轮 IPC 往返。
+ */
+const TEXT_BATCH_SIZE = 40
 
 /** 拖动时每次 pointermove 都写 localStorage 是浪费（一次 JSON.stringify 可能是几千项），
  *  因此合并成一次延迟写入；窗口关闭前的最后一次拖动仍在 400ms 内落盘。 */
@@ -73,7 +106,40 @@ const STALE_SUFFIX = '（当前显示的是上一次的结果）'
 
 export type GraphStatus = 'idle' | 'loading' | 'ready' | 'error'
 
+/** 自我中心视图的三样东西：根、跳数、数据（前两者换掉即作废）。 */
+export interface EgoSnapshot {
+  /** 圆心那一篇（Vault 相对路径）。 */
+  root: string
+  /** 算这份数据时用的跳数：它也是"能不能保留视角"的判据之一。 */
+  depth: number
+  data: GraphData
+}
+
 type StoredPositions = Record<string, Record<string, Point>>
+
+interface StoredPrefs {
+  mode: GraphMode
+  depth: number
+}
+
+function isStoredPrefs(value: unknown): value is StoredPrefs {
+  if (typeof value !== 'object' || value === null) return false
+  const record = value as { mode?: unknown; depth?: unknown }
+  return (
+    (record.mode === 'focus' || record.mode === 'vault') && typeof record.depth === 'number'
+  )
+}
+
+function readPrefs(): StoredPrefs {
+  const stored = loadJson<StoredPrefs>(PREFS_KEY, { mode: 'focus', depth: DEFAULT_EGO_DEPTH }, isStoredPrefs)
+  return { mode: stored.mode, depth: clampEgoDepth(stored.depth) }
+}
+
+/** 跳数归一化：非法值一律回到范围内（宿主也会再夹一次，前端不做"等宿主纠正"的假设）。 */
+export function clampEgoDepth(depth: number): number {
+  if (!Number.isFinite(depth)) return DEFAULT_EGO_DEPTH
+  return Math.min(MAX_EGO_DEPTH, Math.max(MIN_EGO_DEPTH, Math.round(depth)))
+}
 
 /** 画布视口的像素尺寸。 */
 export interface GraphViewport {
@@ -173,6 +239,47 @@ interface GraphState {
   /** 已经自动"适应窗口"过的键（`Vault 根 + 尺寸是否已知`）。 */
   fitKey: string | null
 
+  // ---------------------------------------------------------------------------
+  // 自我中心视图（ADR-0021）
+  // ---------------------------------------------------------------------------
+
+  /** 当前是哪一种视图：`focus` = 以当前笔记为圆心的子图，`vault` = 整个 Vault。 */
+  mode: GraphMode
+  /** 自我中心视图的跳数（1..5，双向）。 */
+  depth: number
+  /** 自我中心子图（`null` = 还没拿到过；`status` 说明当前在干什么）。 */
+  ego: EgoSnapshot | null
+  egoStatus: GraphStatus
+  egoError: MimenoteError | null
+  /**
+   * 圆心那一篇的正文（节点卡片画的是**完整 Markdown 预览**，不是摘要行）。
+   *
+   * 键是 Vault 相对路径。每次重载子图时**整体替换**：一篇笔记保存后，正文变了，
+   * 旧的那份必须一起失效 —— 增量合并会让画布上留着上一次保存前的内容。
+   */
+  texts: ReadonlyMap<string, string>
+
+  /**
+   * 焦点视图当前布局的包围盒（由组件交进来）。
+   *
+   * 为什么放在 store 而不是组件里：`Ctrl+0`（`graph.fit` 命令）走的是全局命令表 →
+   * `fitToWindow()`，那条路拿不到组件的 state。"适应窗口"必须对**当前正在看的那幅图**成立，
+   * 否则在关系图里按 `Ctrl+0` 会去适应全库的包围盒（镜头被甩到一片空地上）。
+   */
+  egoBounds: Rect | null
+  /** 组件上报焦点视图的包围盒（`null` = 没有可适应的内容）。 */
+  setEgoBounds: (bounds: Rect | null) => void
+
+  setMode: (mode: GraphMode) => void
+  /** 调节跳数（会立刻重拉子图；视角保留）。 */
+  setDepth: (depth: number) => void
+  /** 拉一次自我中心子图（`relPath` 为 `null` = 没有打开的笔记，清空）。 */
+  loadEgo: (relPath: string | null, options?: { keepView?: boolean }) => Promise<void>
+  /** 把自我中心布局的包围盒交给 store 做"适应窗口"（尺寸只有组件量得出来）。 */
+  fitToBounds: (bounds: Rect) => void
+  /** 首次拿到某个 (圆心, 跳数) 的布局时自动适应一次；同一个键只做一次（跨挂载记账）。 */
+  autoFitBounds: (key: string, bounds: Rect) => void
+
   load: (rootPath: string | null, options?: GraphLoadOptions) => Promise<void>
   clear: () => void
 
@@ -209,12 +316,23 @@ interface GraphState {
 /** 加载请求序号：连续切换 Vault / 手动刷新时只采纳最后一次。 */
 let loadSeq = 0
 
+/** 自我中心子图的请求序号（与全库那份**各算各的**：两种视图可以同时在途）。 */
+let egoSeq = 0
+
 /** 当前视口下的"适应窗口"结果；没有可适应内容时返回 `null`。 */
 function computeFit(state: {
+  mode: GraphMode
   data: GraphData | null
   collapsed: ReadonlySet<string>
   viewport: GraphViewport
+  egoBounds: Rect | null
 }): GraphView | null {
+  if (state.mode === 'focus') {
+    // 焦点视图的几何只有组件知道（卡片高度取决于正文排完有多高），所以用它交进来的包围盒
+    const bounds = state.egoBounds
+    if (bounds === null || bounds.width <= 0 || bounds.height <= 0) return null
+    return fitView(bounds, { width: state.viewport.width, height: state.viewport.height }, FIT_PADDING)
+  }
   const data = state.data
   if (data === null || data.nodes.length === 0) return null
   // 手工位置不参与：它只改卡片坐标，不改"整块画布的边界"（`buildLayout` 的 bounds）
@@ -243,6 +361,13 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   refreshing: false,
   refreshNotice: null,
   fitKey: null,
+  mode: readPrefs().mode,
+  depth: readPrefs().depth,
+  ego: null,
+  egoStatus: 'idle',
+  egoError: null,
+  texts: new Map<string, string>(),
+  egoBounds: null,
 
   load: async (rootPath, options = {}) => {
     if (rootPath === null) {
@@ -431,18 +556,143 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     set({ manual: new Map<string, Point>() })
     flushPositions(get().rootPath, new Map<string, Point>())
   },
+
+  setMode: (mode) => {
+    const current = get()
+    if (current.mode === mode) return
+    saveJson(PREFS_KEY, { mode, depth: current.depth } satisfies StoredPrefs)
+    // 换视图 = 换一套布局，视角与选中都属于上一个上下文：清掉"已适应过"的记账，
+    // 让新视图自己适应一次（否则从全库切到某篇笔记的关系图时，镜头可能停在空地上）。
+    // 包围盒也要清：它属于上一个视图的几何，留着会让"适应窗口"对着一幅已经不存在的图算。
+    set({ mode, fitKey: null, selected: null, egoBounds: null })
+  },
+
+  setDepth: (depth) => {
+    const next = clampEgoDepth(depth)
+    const current = get()
+    if (current.depth === next) return
+    saveJson(PREFS_KEY, { mode: current.mode, depth: next } satisfies StoredPrefs)
+    // 深度变了 = 环的半径全变了：保留平移缩放没有意义（用户是在"要看得更远"），
+    // 因此清掉适应记账，由组件在新的布局上重新适应一次。
+    // 至于"要重新拉数据"：`loadEgo` 会拿 `ego.depth` 跟当前 `depth` 比，因此它自己
+    // 就知道这是一幅**新的图**（不进保留视角那条路），这里不必抢先改状态。
+    set({ depth: next, fitKey: null })
+  },
+
+  loadEgo: async (relPath, options = {}) => {
+    if (relPath === null) {
+      egoSeq += 1
+      set({ ego: null, egoStatus: 'idle', egoError: null, texts: new Map<string, string>() })
+      return
+    }
+
+    const seq = ++egoSeq
+    const depth = get().depth
+    const previous = get().ego
+    // 保留视角的刷新（保存成功 / 索引就绪）不进 `loading`：画布继续用旧数据渲染（不闪白）。
+    // **换圆心或改跳数则相反** —— 那是一幅新的图，留着旧的只会让人以为按钮没反应；
+    // 判据放在这里而不是调用方：只有 store 同时知道"旧的这份数据是谁的、用的几跳"。
+    const keepView =
+      options.keepView === true && previous !== null && previous.root === relPath && previous.depth === depth
+    if (!keepView) set({ egoStatus: 'loading', egoError: null })
+
+    try {
+      const data = await ipc.graphEgo(relPath, depth)
+      if (seq !== egoSeq) return
+      // 正文是**卡片正面**的内容：与子图一起换，避免"节点换了一批、卡片还写着上一批的正文"
+      const texts = await readTexts(data.nodes.map((node) => node.relPath))
+      if (seq !== egoSeq) return
+      set({
+        ego: { root: relPath, depth, data },
+        egoStatus: 'ready',
+        egoError: null,
+        texts,
+        ...(keepView ? {} : { selected: null }),
+      })
+    } catch (cause) {
+      if (seq !== egoSeq) return
+      if (keepView) {
+        // 刷新失败：留住旧数据，只记一条提示（与全库视图同一条纪律）
+        set({ refreshNotice: `${describeError(MimenoteError.from(cause), '刷新关系图失败')}${STALE_SUFFIX}` })
+        return
+      }
+      set({ egoStatus: 'error', egoError: MimenoteError.from(cause), ego: null })
+    }
+  },
+
+  fitToBounds: (bounds) => {
+    const { viewport } = get()
+    if (bounds.width <= 0 || bounds.height <= 0) return
+    set({ view: fitView(bounds, { width: viewport.width, height: viewport.height }, FIT_PADDING) })
+  },
+
+  setEgoBounds: (bounds) => {
+    const current = get().egoBounds
+    // 尺寸没变就不写 state：这个 effect 会跟着布局走，写多余的状态只会让整棵画布重渲染
+    if (current === bounds) return
+    if (current !== null && bounds !== null && current.x === bounds.x && current.y === bounds.y && current.width === bounds.width && current.height === bounds.height) {
+      return
+    }
+    set({ egoBounds: bounds })
+  },
+
+  autoFitBounds: (key, bounds) => {
+    const state = get()
+    if (state.fitKey === key) return
+    if (bounds.width <= 0 || bounds.height <= 0) return
+    set({
+      fitKey: key,
+      view: fitView(bounds, { width: state.viewport.width, height: state.viewport.height }, FIT_PADDING),
+    })
+  },
 }))
 
 /**
+ * 批量读一批笔记的正文（节点卡片正面画的就是它）。
+ *
+ * 两件事刻意这样做：
+ *
+ * 1. **分批**：一次 IPC 读 300 篇正文会让第一张卡片出现得很晚，而且任何一篇读失败都可能
+ *    把整批拖成错误；按 `TEXT_BATCH_SIZE` 切开，前几批回来就能开始排版。
+ * 2. **失败不抛**：读不到正文的节点退化成"只画标题/标签/度数"的紧凑卡片 —— 图谱的结构
+ *    仍然完整可读，比整幅画布变成错误层好得多（宿主那边 `notes_read_batch` 本来就会把
+ *    跳过的东西放在 `skipped` 里，不是异常）。
+ */
+async function readTexts(relPaths: readonly string[]): Promise<Map<string, string>> {
+  const texts = new Map<string, string>()
+  for (let start = 0; start < relPaths.length; start += TEXT_BATCH_SIZE) {
+    const batch = relPaths.slice(start, start + TEXT_BATCH_SIZE)
+    if (batch.length === 0) continue
+    try {
+      const result = await ipc.notesReadBatch(batch)
+      for (const item of result.items) texts.set(item.relPath, item.text)
+    } catch {
+      // 整批失败就跳过这一批：剩下的批次照旧读（一篇坏文件不该让其余卡片没有正文）
+      continue
+    }
+  }
+  return texts
+}
+
+/**
  * 拉一次"保留视角的刷新"（`startGraphAutoRefresh` 的两条信号都走它，测试也直接用它）。
+ *
+ * **两种视图各刷各的**：全库视图刷 `graph_data`，自我中心视图刷它自己那张子图
+ * （圆心 = 当前打开的笔记）。刷新图谱与"当前在看哪一种图"无关，用户不需要知道这件事。
  *
  * 拿不到 rootPath（还没打开过 Vault）时什么都不做：那说明画布根本没有数据，
  * 也就没有"刷新"可言。
  */
 export async function refreshGraphData(): Promise<void> {
-  const rootPath = useGraphStore.getState().rootPath
-  if (rootPath === null) return
-  await useGraphStore.getState().load(rootPath, {
+  const state = useGraphStore.getState()
+  if (state.rootPath === null) return
+  if (state.mode === 'focus') {
+    const focus = useNoteStore.getState().doc?.relPath ?? null
+    if (focus === null) return
+    await state.loadEgo(focus, { keepView: true })
+    return
+  }
+  await state.load(state.rootPath, {
     keepView: true,
     indexBuilding: useLinksStore.getState().status.phase === 'building',
   })

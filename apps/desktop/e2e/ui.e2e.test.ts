@@ -143,6 +143,238 @@ async function showReadView(page: Page): Promise<void> {
   await page.waitForSelector('.mn-preview__body', { state: 'visible' })
 }
 
+// ---------------------------------------------------------------------------
+// 知识图谱（ADR-0021 起卡片画在 canvas 上）
+//
+// 卡片不再是 DOM：既没有 `.mn-graph-card` 可以 `count()`，也没有元素可以 `click()`。
+// 于是这一节的断言工具全部建立在"画布把事实写在界面上"这件事上：
+//
+// 1. **`data-graph-*` 属性**（写在宿主 `div.mn-graph` 上）：当前视图、跳数、
+//    `屏幕 = 世界 × scale + offset` 的三个数、这一帧交给画笔的卡片数；
+// 2. **像素**：卡片是**不透明底 + 边框**（`paint.ts` 的 `drawCard` 先 `fill` 再 `stroke`），
+//    画布每帧 `clearRect`，所以卡片之外是透明的 —— "画了没有、卡片多高"都能从
+//    `getImageData` 里量出来，不必去猜；
+// 3. **几何命中**：命中判的是世界坐标矩形（+4px 屏幕宽容度），而世界原点的屏幕位置就是
+//    `(offsetX, offsetY)`；关系图里圆心那一篇正好以世界原点为中心，于是"点圆心卡片"
+//    就是点那个坐标。
+//
+// 连线（`.mn-graph-edge*`）与文件夹容器（`.mn-graph-folder*`）**仍然是 DOM**，
+// 所以它们照旧用选择器断言。
+// ---------------------------------------------------------------------------
+
+/** 读宿主上的一个数字属性（缺失或读不出数字一律报错，不静默变成 NaN）。 */
+async function graphNumber(page: Page, name: string): Promise<number> {
+  const raw = await page.locator('.mn-graph').getAttribute(name)
+  const value = raw === null ? Number.NaN : Number(raw)
+  if (!Number.isFinite(value)) throw new Error(`图谱属性 ${name} 读不到数字：${String(raw)}`)
+  return value
+}
+
+/** 这一帧交给画笔的卡片数（`data-graph-canvas-cards`，与 canvas 上的 `data-mn-cards` 同源）。 */
+function graphCardCount(page: Page): Promise<number> {
+  return graphNumber(page, 'data-graph-canvas-cards')
+}
+
+/**
+ * 等到"世界 → 屏幕"的换算稳定，再返回它。
+ *
+ * 为什么必须等：进入/切换视图后画布会自动"适应窗口"一次（`autoFitBounds`），那一帧之后
+ * `data-graph-scale` 与两个 offset 才会定下来。拿中途的偏移去算点击位置会点到卡片外面，
+ * 而失败信号只会是"预览没出现"——离真正的原因很远。
+ */
+async function settledGraphTransform(page: Page): Promise<{ scale: number; x: number; y: number }> {
+  let signature = ''
+  await waitUntil(
+    async () => {
+      const now = [
+        await graphNumber(page, 'data-graph-scale'),
+        await graphNumber(page, 'data-graph-offset-x'),
+        await graphNumber(page, 'data-graph-offset-y'),
+      ].join('|')
+      const stable = now === signature
+      signature = now
+      return stable
+    },
+    10_000,
+    '画布的缩放与偏移稳定下来',
+  )
+  return {
+    scale: await graphNumber(page, 'data-graph-scale'),
+    x: await graphNumber(page, 'data-graph-offset-x'),
+    y: await graphNumber(page, 'data-graph-offset-y'),
+  }
+}
+
+/** 宿主在视口里的左上角（点击坐标以它为原点，与组件里 `toWorld` 用的矩形同一口径）。 */
+async function graphBoxOrigin(page: Page): Promise<{ x: number; y: number }> {
+  const box = await page.locator('.mn-graph').boundingBox()
+  if (box === null) throw new Error('图谱画布还没有布局盒（不可见？）')
+  return { x: box.x, y: box.y }
+}
+
+/**
+ * 点一下**圆心那张卡片**（= 当前打开的笔记）。
+ *
+ * 卡片是几何命中，而世界原点的屏幕位置就是 `(offsetX, offsetY)` —— 圆心那一篇正好以
+ * 世界原点为中心，所以这一个坐标点下去命中的必然是它。这也是宿主把
+ * `data-graph-scale/offset-x/offset-y` 写在界面上的原因（见 `GraphCanvas.tsx` 的注释）。
+ */
+async function clickGraphCenterCard(page: Page): Promise<void> {
+  const transform = await settledGraphTransform(page)
+  const origin = await graphBoxOrigin(page)
+  await page.mouse.click(origin.x + transform.x, origin.y + transform.y)
+}
+
+/**
+ * 画布上"上了墨"的像素占比（0..1）——用来证明这一帧**真的被画过**，而不是一块空白。
+ *
+ * 局限：它只说明"画布上有不透明的东西"，不说明画的是什么（透明/不透明的判据对形状、
+ * 文字、底色一视同仁）。更强的证据见 `readCenterCardHeight`。
+ */
+function canvasInkRatio(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const canvas = document.querySelector('canvas.mn-graph__canvas')
+    if (!(canvas instanceof HTMLCanvasElement)) return -1
+    const context = canvas.getContext('2d')
+    if (context === null) return -1
+    if (canvas.width === 0 || canvas.height === 0) return 0
+    const data = context.getImageData(0, 0, canvas.width, canvas.height).data
+    let inked = 0
+    for (let index = 3; index < data.length; index += 4) {
+      if ((data[index] ?? 0) > 0) inked += 1
+    }
+    return inked / (canvas.width * canvas.height)
+  })
+}
+
+/**
+ * 量"圆心那张卡片"被画出来的高度（**世界坐标**）。
+ *
+ * 做法：卡片中心在世界原点 ⇒ 屏幕上就是 `(offsetX, offsetY)`；沿那一列上下扫
+ * `alpha > 0` 的**连续区间**，量到的就是卡片本身的高度（卡片是不透明底 + 边框，
+ * 卡片之外被 `clearRect` 清成透明）。再除以 `dpr × scale` 换算回世界坐标，
+ * 于是这个数与缩放、DPR 都无关，可以在两篇不同的笔记之间直接比。
+ */
+function readCenterCardHeight(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const host = document.querySelector('.mn-graph')
+    const canvas = document.querySelector('canvas.mn-graph__canvas')
+    if (!(host instanceof HTMLElement) || !(canvas instanceof HTMLCanvasElement)) return -1
+    const context = canvas.getContext('2d')
+    if (context === null) return -1
+    const scale = Number(host.getAttribute('data-graph-scale'))
+    if (!Number.isFinite(scale) || scale <= 0) return -1
+    // 画布按 dpr 放大（`canvasSize` 把 dpr 封顶在 3）：设备像素 = CSS 像素 × dpr
+    const dpr = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1
+    const column = Math.round(Number(host.getAttribute('data-graph-offset-x')) * dpr)
+    const center = Math.round(Number(host.getAttribute('data-graph-offset-y')) * dpr)
+    if (column < 0 || column >= canvas.width || center < 0 || center >= canvas.height) return 0
+    const data = context.getImageData(0, 0, canvas.width, canvas.height).data
+    const opaque = (row: number): boolean =>
+      row >= 0 && row < canvas.height && (data[(row * canvas.width + column) * 4 + 3] ?? 0) > 0
+    if (!opaque(center)) return 0
+    let top = center
+    while (opaque(top - 1)) top -= 1
+    let bottom = center
+    while (opaque(bottom + 1)) bottom += 1
+    return (bottom - top + 1) / (dpr * scale)
+  })
+}
+
+/**
+ * 等到圆心卡片的高度**稳定**再返回它。
+ *
+ * `differFrom` 用来跳过"上一幅图还留在画布上"的过渡帧：换笔记、换跳数时 store 里那份
+ * 旧快照会一直画到新的子图回来为止（这正是"刷新不闪白"的设计），此时量到的高度与上一幅
+ * 一模一样 —— 不等它变，测到的就是旧数据。
+ */
+async function settledCenterCardHeight(page: Page, differFrom = -1): Promise<number> {
+  let last = -1
+  await waitUntil(
+    async () => {
+      const height = await readCenterCardHeight(page)
+      const stable = height > 0 && Math.abs(height - last) < 1 && Math.abs(height - differFrom) > 1
+      last = height
+      return stable
+    },
+    15_000,
+    '圆心卡片的高度稳定下来',
+  )
+  return last
+}
+
+/**
+ * 画布上第一个"确实什么都没画"的点（**视口坐标**），用于"点空白处关掉预览"这一类交互。
+ *
+ * 为什么不写死一个坐标："右下角大约是空的"这种假设迟早会落到某张卡片上 —— 卡片位置
+ * 取决于每篇正文排版后的高度。直接读像素，把"这里确实什么都没画"变成事实。
+ */
+async function findBlankCanvasPoint(page: Page): Promise<{ x: number; y: number }> {
+  const point = await page.evaluate(() => {
+    const host = document.querySelector('.mn-graph')
+    const canvas = document.querySelector('canvas.mn-graph__canvas')
+    if (!(host instanceof HTMLElement) || !(canvas instanceof HTMLCanvasElement)) return null
+    const context = canvas.getContext('2d')
+    if (context === null) return null
+    const width = canvas.clientWidth
+    const height = canvas.clientHeight
+    if (width === 0 || height === 0) return null
+    const dpr = canvas.width / width
+    const data = context.getImageData(0, 0, canvas.width, canvas.height).data
+    const opaque = (cssX: number, cssY: number): boolean => {
+      const px = Math.round(cssX * dpr)
+      const py = Math.round(cssY * dpr)
+      if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return true
+      return (data[(py * canvas.width + px) * 4 + 3] ?? 0) > 0
+    }
+    const box = host.getBoundingClientRect()
+    // 从下缘往上、从左往右扫：HUD 在左上角、预览面板贴着右侧，底部那条横带是两者都到不了的地方
+    for (let y = height - 20; y > height / 2; y -= 6) {
+      for (let x = 20; x < width - 20; x += 6) {
+        if (opaque(x, y)) continue
+        const element = document.elementFromPoint(box.left + x, box.top + y)
+        // HUD 与预览面板都带 `data-mn-graph-nopan`：点在它们身上不算"点空白处"
+        if (element === null || element.closest('[data-mn-graph-nopan]') !== null) continue
+        return { x: box.left + x, y: box.top + y }
+      }
+    }
+    return null
+  })
+  if (point === null) throw new Error('画布上找不到空白的落点（卡片把整块画布铺满了？）')
+  return point
+}
+
+/**
+ * 确保当前在「关系图」。
+ *
+ * 为什么需要它：视图是**持久化偏好**（`mimenote.graph.prefs.v1`），"进入图谱是哪个模式"
+ * 取决于上一条用例把它留成了什么。依赖关系图的用例显式切一次 —— 已经在关系图里时这个
+ * 点击是幂等的（`setMode` 遇到同一个模式直接返回），所以用例彼此独立、也不必依赖执行顺序。
+ */
+async function ensureGraphFocusMode(page: Page): Promise<void> {
+  await page.locator('[data-graph-action="mode-focus"]').click()
+  await waitUntil(
+    async () => (await page.locator('.mn-graph').getAttribute('data-graph-mode')) === 'focus',
+    10_000,
+    '处于关系图',
+  )
+}
+
+/**
+ * 把关系图的跳数拨回 1（`data-graph-action="depth-down"`，到底了按钮是 disabled 的）。
+ *
+ * 为什么需要：跳数同样是持久化偏好，用例之间会互相影响。需要精确跳数的用例先调回已知的
+ * 起点，才不必依赖"我前面那条用例刚好把它设成了几"。调用前必须先处于关系图（深度那一栏
+ * 只在关系图里渲染）。
+ */
+async function resetGraphDepthToOne(page: Page): Promise<void> {
+  for (let guard = 0; guard < 6; guard += 1) {
+    if ((await graphNumber(page, 'data-graph-depth')) <= 1) return
+    await page.locator('[data-graph-action="depth-down"]').click()
+  }
+  throw new Error('跳数没有回到 1（深度按钮没生效？）')
+}
+
 describe('UI 层（Edge + dist + Mock Vault）', () => {
   let server: StaticServer
   let browser: Browser
@@ -655,26 +887,131 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(await page.locator('.mn-palette').count()).toBe(0)
   })
 
-  it('知识图谱：卡片画布、文件夹成组、点卡片预览、入链虚线/出链实线', async () => {
+  it('知识图谱：默认是「关系图」（圆心 = 当前打开的笔记、1 跳），「深度 +」真的重拉子图', async () => {
+    // ⚠️ 这条用例断言的是**默认值**，因此它必须是本文件里第一次进入图谱的用例。
+    // 视图与跳数是持久化偏好（`mimenote.graph.prefs.v1`），一旦有别的用例先改过它们，
+    // "默认 1 跳"就不再成立 —— 所以把"还没有任何偏好"这个前提显式断言出来，
+    // 而不是默默依赖用例顺序（换个顺序时失败信息要能直接说明原因）。
+    expect(await page.evaluate(() => localStorage.getItem('mimenote.graph.prefs.v1'))).toBeNull()
+
+    // 圆心 = 当前打开的笔记，所以先钉住文档（不先打开，圆心就是上一条用例留下的偶然状态）
+    await openNoteInTree(page, '项目/路线图.md')
     await page.keyboard.press('Control+g')
     await page.waitForSelector('.mn-graph', { state: 'visible' })
     expect(await page.locator('.mn-pane--graph').count()).toBe(1)
 
-    // 卡片 = 笔记（Mock Vault 里每篇 Markdown 一张），文件夹自动成组
+    expect(await page.locator('.mn-graph').getAttribute('data-graph-mode')).toBe('focus')
+    expect(await graphNumber(page, 'data-graph-depth')).toBe(1)
+    expect((await page.locator('[data-graph-depth-value]').textContent()) ?? '').toContain('1')
+    // 关系图里那个"以当前笔记为圆心"的说明也在可访问性树上（`role="application"` 的 aria-label）
+    expect(await page.locator('.mn-graph').getAttribute('aria-label')).toContain('1 跳')
+
+    // 圆心这一篇在画布上确实被画了出来（卡片在 canvas 里，只能读"交给画笔的卡片数"）
+    await page.waitForSelector('canvas.mn-graph__canvas', { state: 'visible' })
+    const before = await graphCardCount(page)
+    expect(before).toBeGreaterThan(0)
+
+    // "深度 +"：跳数从 1 变 2，并且**画布上的子图必须跟着重拉**（跳数只是 HUD 上的意图，
+    // 卡片才是结果 —— 这条路要走 HUD → store → graph_ego → 排版 → 绘制，只有端到端能证明）
+    await page.locator('[data-graph-action="depth-up"]').click()
     await waitUntil(
-      async () => (await page.locator('.mn-graph-card').count()) > 5,
+      async () => (await graphNumber(page, 'data-graph-depth')) === 2,
       10_000,
-      '画布上出现笔记卡片',
+      '跳数变成 2',
     )
-    await page.waitForSelector('.mn-graph-card[data-rel-path="项目/设计.md"]', { state: 'visible' })
+    expect((await page.locator('[data-graph-depth-value]').textContent()) ?? '').toContain('2')
+
+    // 断言"卡片数不减"：深度只可能让子图**变大**（BFS 的第 2 跳是在第 1 跳的结果上继续走），
+    // 所以"变少"一定意味着画布画错了。这里刻意不写死张数（正文变长变短、Mock Vault 增删笔记
+    // 都不该让这条用例红），但要**等它稳定**再读：同一帧里连读两次一致才说明新的子图已经回来，
+    // 否则可能在"depth 已经变了、子图还在途中"的那一帧上通过，等于什么都没测到。
+    await waitUntil(
+      async () => {
+        const first = await graphCardCount(page)
+        await delay(150)
+        const second = await graphCardCount(page)
+        return first === second && second >= before
+      },
+      10_000,
+      '深度 2 的子图画出来并且稳定',
+    )
+    expect(await graphCardCount(page)).toBeGreaterThanOrEqual(before)
+
+    // 回到编辑视图（后续用例与"默认视图"保持一致）
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+  })
+
+  it('知识图谱：卡片画在 canvas 上，点圆心卡片就地预览、点空白处关掉预览', async () => {
+    await openNoteInTree(page, '项目/设计.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    expect(await page.locator('.mn-pane--graph').count()).toBe(1)
+    expect(await page.locator('.mn-graph').getAttribute('data-graph-mode')).toBe('focus')
+
+    // 卡片 = 笔记，但它们**不在 DOM 里**（`.mn-graph-card` 这个选择器已经不存在了）。
+    // 于是断言分三层：canvas 存在 → 画笔被喂了卡片 → 画布真的被画过（像素非空）。
+    // 圆心是 设计.md，它的两条出链（[[路线图]] 与 [[细节]]）也该在画布上，所以至少 3 张。
+    await page.waitForSelector('canvas.mn-graph__canvas', { state: 'visible' })
+    await waitUntil(async () => (await graphCardCount(page)) >= 3, 10_000, '关系图画出圆心与它的邻居')
+    expect(await canvasInkRatio(page)).toBeGreaterThan(0.02)
+
+    // 单击卡片 → 就地预览正文。卡片是**几何命中**（世界坐标矩形 + 4px 屏幕宽容度），
+    // 所以这里按 `屏幕 = 世界 × scale + offset` 反算：世界原点就是圆心那张卡片的中心。
+    await clickGraphCenterCard(page)
+    await page.waitForSelector('.mn-graph-preview', { state: 'visible' })
+    expect(await page.locator('.mn-graph-preview').getAttribute('aria-label')).toBe('预览 设计')
+    await waitUntil(
+      async () => ((await page.locator('.mn-graph-preview').textContent()) ?? '').includes('文件层'),
+      10_000,
+      '预览里出现笔记正文',
+    )
+
+    // Esc 关掉预览（命令表里的 `graph.closePreview`）
+    await page.locator('.mn-graph').press('Escape')
+    await waitUntil(async () => (await page.locator('.mn-graph-preview').count()) === 0, 5_000, 'Esc 关掉预览')
+
+    // 再点一次卡片，改在**空白处**单击：画布上"单击空白 = 关掉预览"与"空白拖动 = 平移"
+    // 共用同一套指针状态，是这次 canvas 化必须自己实现的那部分交互
+    await clickGraphCenterCard(page)
+    await page.waitForSelector('.mn-graph-preview', { state: 'visible' })
+    const blank = await findBlankCanvasPoint(page)
+    await page.mouse.click(blank.x, blank.y)
+    await waitUntil(
+      async () => (await page.locator('.mn-graph-preview').count()) === 0,
+      5_000,
+      '点空白处关掉预览',
+    )
+
+    // 回到编辑视图（后续用例与"默认视图"保持一致）
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+  })
+
+  it('知识图谱：切到「整个 Vault」后文件夹成组、收起容器卡片变少、入链虚线/出链实线', async () => {
+    await openNoteInTree(page, '项目/设计.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    await page.locator('[data-graph-action="mode-vault"]').click()
+    await waitUntil(
+      async () => (await page.locator('.mn-graph').getAttribute('data-graph-mode')) === 'vault',
+      10_000,
+      '切到整个 Vault',
+    )
+
+    // 全库视图：卡片 = 每一篇 Markdown（Mock Vault 里 8 篇），文件夹自动成组。
+    // 文件夹容器**仍然是 DOM**（它可点、可折叠，留在 DOM 里是对的），所以照旧用选择器断言。
+    await waitUntil(async () => (await graphCardCount(page)) > 5, 10_000, '画布上出现全库的卡片')
     await page.waitForSelector('.mn-graph-folder[data-folder="项目"]', { state: 'visible' })
 
-    // 单击卡片 → 就地预览正文（不需要按 Ctrl、不需要悬停）
-    await page.locator('.mn-graph-card[data-rel-path="项目/设计.md"]').click()
+    // 选中 设计.md：这里用「定位笔记」而不是猜坐标 —— 全库视图的卡片位置由装箱算法决定，
+    // 硬编码一个屏幕坐标迟早会落到别的卡片上（只有关系图保证圆心在世界原点）。
+    await page.locator('.mn-graph__find-input').fill('设计')
+    await page.waitForSelector('[data-find-path="项目/设计.md"]', { state: 'visible' })
+    await page.locator('[data-find-path="项目/设计.md"]').click()
     await page.waitForSelector('.mn-graph-preview', { state: 'visible' })
     await waitUntil(
-      async () =>
-        ((await page.locator('.mn-graph-preview').textContent()) ?? '').includes('文件层'),
+      async () => ((await page.locator('.mn-graph-preview').textContent()) ?? '').includes('文件层'),
       10_000,
       '预览里出现笔记正文',
     )
@@ -684,6 +1021,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     const highlighted = await page
       .locator('.mn-graph-edge--highlight')
       .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('class') ?? ''))
+    expect(highlighted.length).toBeGreaterThanOrEqual(2)
     expect(highlighted.some((name) => name.includes('mn-graph-edge--dashed'))).toBe(true)
     expect(highlighted.some((name) => !name.includes('mn-graph-edge--dashed'))).toBe(true)
 
@@ -691,21 +1029,188 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.locator('.mn-graph').press('Escape')
     await waitUntil(async () => (await page.locator('.mn-graph-preview').count()) === 0, 5_000, '预览关闭')
 
-    // 文件夹可以收起（收起后它变成紧凑的文件夹卡片），再点展开
+    // 文件夹可以收起：收起后容器变成紧凑的"文件夹卡片"，里面的卡片不再画在画布上
     const folder = page.locator('.mn-graph-folder[data-folder="项目"]')
-    const before = await page.locator('.mn-graph-card').count()
-    await folder.locator('button').first().click()
+    const before = await graphCardCount(page)
+    await folder.locator('.mn-graph-folder__header').click()
     await waitUntil(
-      async () => (await page.locator('.mn-graph-card').count()) < before,
+      async () => (await graphCardCount(page)) < before,
       5_000,
-      '收起文件夹后内部卡片消失',
+      '收起文件夹后画布上的卡片变少',
     )
-    await folder.locator('button').first().click()
     await waitUntil(
-      async () => (await page.locator('.mn-graph-card').count()) === before,
+      async () => ((await folder.getAttribute('class')) ?? '').includes('mn-graph-folder--chip'),
       5_000,
-      '再点一次展开回来',
+      '收起后容器变成紧凑卡片',
     )
+    await folder.locator('.mn-graph-folder__header').click()
+    await waitUntil(async () => (await graphCardCount(page)) === before, 5_000, '再点一次展开回来')
+
+    // 切回关系图再离开：视图是持久化偏好，给后面的用例留一个"默认视图"的状态
+    await ensureGraphFocusMode(page)
+
+    // 回到编辑视图（后续用例与"默认视图"保持一致）
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+  })
+
+  it('知识图谱：「整个 Vault」与「关系图」互切，视图状态与文件夹容器都跟着变', async () => {
+    // 为什么值得端到端测：两个视图走的是**两条不同的数据路径**（全库 = `graph_data`，
+    // 关系图 = `graph_ego` + 逐篇正文），并且可见的层也不一样（文件夹容器只在全库视图渲染）。
+    // 单测能分别验证两边的 store 逻辑，但"切过去之后屏幕上真的换了那一套"只有这里能证明。
+    await openNoteInTree(page, '项目/设计.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    // 视图是持久化偏好，"进来是哪个模式"取决于上一条用例 —— 这里不假设它，显式切到关系图
+    await ensureGraphFocusMode(page)
+    // 关系图里没有文件夹容器（圆环本身就是结构），深度那一栏只在关系图说得通
+    await page.waitForSelector('[data-graph-depth-value]', { state: 'visible' })
+    expect(await page.locator('.mn-graph-folder').count()).toBe(0)
+
+    await page.locator('[data-graph-action="mode-vault"]').click()
+    await waitUntil(
+      async () => (await page.locator('.mn-graph').getAttribute('data-graph-mode')) === 'vault',
+      10_000,
+      '切到整个 Vault',
+    )
+    await waitUntil(async () => (await page.locator('.mn-graph-folder').count()) > 0, 10_000, '出现文件夹容器')
+    // 高亮跟着走：两个按钮而不是一个开关，就是为了让"我现在看的是哪一种图"一眼可见
+    expect(await page.locator('.mn-graph__mode--active').textContent()).toContain('整个 Vault')
+    expect(await page.locator('[data-graph-depth-value]').count()).toBe(0)
+    expect(await graphCardCount(page)).toBeGreaterThan(0)
+
+    await page.locator('[data-graph-action="mode-focus"]').click()
+    await waitUntil(
+      async () => (await page.locator('.mn-graph').getAttribute('data-graph-mode')) === 'focus',
+      10_000,
+      '切回关系图',
+    )
+    await waitUntil(async () => (await page.locator('.mn-graph-folder').count()) === 0, 10_000, '文件夹容器消失')
+    expect(await page.locator('.mn-graph__mode--active').textContent()).toContain('关系图')
+    expect(await page.locator('[data-graph-depth-value]').count()).toBe(1)
+    expect(await graphCardCount(page)).toBeGreaterThan(0)
+
+    // 回到编辑视图
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+  })
+
+  it('知识图谱：关系图里卡片的正面画的是**正文**（像素级证据：正文越长，卡片画得越高）', async () => {
+    // 这是本次交付最核心的诉求（"每个节点是完整的 markdown 预览"）。卡片已经不在 DOM 里，
+    // 读不到任何文字节点，所以证据只能来自画布本身：圆心卡片是**不透明底 + 边框**，
+    // 沿它中心那一列扫 alpha > 0 的连续区间，量出来的就是卡片被**真正画出来**的高度。
+    //
+    // 为什么用"两篇正文长度差很多的笔记比高度"而不是写死一个像素阈值：
+    // 高度是排版的结果（标题 + 段落 + 列表 + 代码块累加起来的高度）。只画标题的那种
+    // 紧凑卡片在两篇上会得到同一个高度 —— 所以"高度随正文变"正是"正面画的是正文"的证据，
+    // 而且不需要任何魔法数字。
+    //
+    // 局限（写清楚，免得被当成都测过了）：**像素读不回文字**。它证明"画了一张随正文变高的
+    // 卡片"，不证明"画出来的字正好是那句话"；字面正确由 `layoutCard` / `paintGraph` 的
+    // 单元测试覆盖（那里能拿到逐块逐行的排版结果）。两者互补，不重叠。
+    //
+    // 两篇都刻意选**没有任何链接**的笔记：它们的子图只有圆心一张卡片，量中心那一列才不会
+    // 撞上第 1 跳的邻居（那会让"高度"变成两张卡片的并集）。
+    await openNoteInTree(page, '随手记.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('canvas.mn-graph__canvas', { state: 'visible' })
+    await ensureGraphFocusMode(page)
+    await waitUntil(async () => (await graphCardCount(page)) === 1, 10_000, '随手记的关系图只有圆心一张')
+    const short = await settledCenterCardHeight(page)
+
+    // 换一篇正文长得多的（多级标题 + 段落 + 代码块）—— 文档换了圆心就跟着换，子图重新拉
+    await openNoteInTree(page, '项目/大纲.md')
+    await waitUntil(async () => (await graphCardCount(page)) === 1, 10_000, '大纲的关系图也只有圆心一张')
+    // `differFrom = short`：跳过"随手记那张卡片还留在画布上"的过渡帧
+    const tall = await settledCenterCardHeight(page, short)
+
+    expect(short).toBeGreaterThan(0)
+    expect(tall).toBeGreaterThan(short)
+
+    // 顺带把"画布真的被画过"也钉住（非透明像素占比）：上面量的是**一列**，这里量整块画布
+    expect(await canvasInkRatio(page)).toBeGreaterThan(0.05)
+
+    // 回到编辑视图
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+  })
+
+  it('知识图谱：卡片不在 Tab 序列里，方向键仍能在画布上换选中（画布自己实现的那一半）', async () => {
+    // 卡片搬到 canvas 之后，Tab 键再也走不到它们身上（`GraphCanvas` 的键盘注释把这件事
+    // 写成了必须自己补回来的一半）。这条用例守的就是"键盘用户还能选中并预览卡片"：
+    // 画布自己带 `role="application"` + `tabIndex=0`，方向键按**几何**找同一方向上最近的卡片。
+    await openNoteInTree(page, '项目/设计.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    await ensureGraphFocusMode(page)
+    await waitUntil(async () => (await graphCardCount(page)) >= 3, 10_000, '关系图画出圆心与它的邻居')
+
+    // 画布是可聚焦的：焦点落进画布之后，方向键才由画布处理
+    await page.locator('.mn-graph').focus()
+    expect(
+      await page.evaluate(() => document.activeElement === document.querySelector('.mn-graph')),
+    ).toBe(true)
+
+    // 没有任何选中项时，方向键选中卡片数组里的**第一张** —— 圆心那一张（`layoutEgo` 先放圆心）
+    await page.keyboard.press('ArrowRight')
+    await page.waitForSelector('.mn-graph-preview', { state: 'visible' })
+    expect(await page.locator('.mn-graph-preview').getAttribute('aria-label')).toBe('预览 设计')
+
+    // 再按一次：从圆心出发，同一方向上最近的**另一张**卡片接过选中项。圆心自己会被跳过
+    // （判据是"前进方向上的投影 > 0"），所以换到的一定是另一篇 —— 证明方向键在**移动**选中项，
+    // 而不是"按一下就把圆心选中了"。这里不指定是哪一篇：环上的位置取决于两张卡片的排版尺寸，
+    // 写死"应该是细节"会把一条布局细节变成回归门禁（那属于 `layout-ego` 的单测）。
+    await page.keyboard.press('ArrowRight')
+    await waitUntil(
+      async () => {
+        const label = await page.locator('.mn-graph-preview').getAttribute('aria-label')
+        return label !== null && label !== '预览 设计'
+      },
+      10_000,
+      '方向键把选中项换到另一张卡片',
+    )
+    expect(await page.locator('.mn-graph-preview').getAttribute('aria-label')).toMatch(/^预览 .+/)
+
+    // 回到编辑视图
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+  })
+
+  it('知识图谱：跳数是持久化偏好，刷新页面之后仍然生效（localStorage）', async () => {
+    // 为什么值得端到端测：偏好是在 `useGraphStore` 的 `create()`（也就是**模块初始化**）
+    // 里被读回来的，所以"刷新之后还是 3 跳"这件事只有真的重新加载一次页面才能被证明 ——
+    // 单测里改 store 永远走不到那条路。同时这条用例也守住了"偏好不按 Vault 分"这个决定：
+    // 刷新后 Vault 可能还没打开，偏好却必须还在。
+    await openNoteInTree(page, '项目/设计.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    // 深度那一栏只在关系图里渲染，而且跳数是持久化偏好 —— 先切到关系图再拨回 1 这个已知起点
+    await ensureGraphFocusMode(page)
+    await resetGraphDepthToOne(page)
+    await page.locator('[data-graph-action="depth-up"]').click()
+    await page.locator('[data-graph-action="depth-up"]').click()
+    await waitUntil(async () => (await graphNumber(page, 'data-graph-depth')) === 3, 10_000, '跳数调到 3')
+
+    const stored = await page.evaluate(() => localStorage.getItem('mimenote.graph.prefs.v1'))
+    expect(stored).not.toBeNull()
+    expect(JSON.parse(stored ?? '{}')).toEqual({ mode: 'focus', depth: 3 })
+
+    await page.reload()
+    // 刷新之后应用会从 localStorage 恢复上次打开的 Vault（`mimenote.vault.last`），
+    // 所以正常不该停在门闸页；万一停在门闸页（第一次运行时手动打开过）就补点一次。
+    await page.waitForSelector('.mn-tree-row, .mn-gate', { state: 'visible', timeout: 20_000 })
+    if ((await page.locator('.mn-gate').count()) > 0) {
+      await page.getByText('打开文件夹作为 Vault').click()
+    }
+    await page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
+
+    await openNoteInTree(page, '项目/设计.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    expect(await graphNumber(page, 'data-graph-depth')).toBe(3)
+    expect((await page.locator('[data-graph-depth-value]').textContent()) ?? '').toContain('3')
+    // 关系图仍然是默认视图（同一份偏好里的 `mode`）
+    expect(await page.locator('.mn-graph').getAttribute('data-graph-mode')).toBe('focus')
 
     // 回到编辑视图（后续用例与"默认视图"保持一致）
     await page.locator('button[aria-label="编辑（所见即所得）"]').click()

@@ -70,10 +70,57 @@ async function ensureTreeRow(page: Page, relPath: string): Promise<void> {
 }
 
 /**
+ * 图谱宿主（`.mn-graph`）上的一个数字属性。
+ *
+ * 卡片从 ADR-0021 起画在 `<canvas>` 上（`.mn-graph-card` 这个选择器已经不存在了），
+ * 所以"这一帧画了几张卡片""世界怎么换算到屏幕"只能从这几个 `data-graph-*` 上读 ——
+ * 它们不是测试专用的后门，而是画布把"这次到底怎么算的"如实写在界面上（见 `GraphCanvas.tsx`）。
+ */
+async function graphNumber(page: Page, name: string): Promise<number> {
+  const raw = await page.locator('.mn-graph').getAttribute(name)
+  const value = raw === null ? Number.NaN : Number(raw)
+  if (!Number.isFinite(value)) throw new Error(`图谱属性 ${name} 读不到数字：${String(raw)}`)
+  return value
+}
+
+/**
+ * 点一下**圆心那张卡片**（= 当前打开的笔记）。
+ *
+ * 卡片是几何命中（世界坐标矩形 + 4px 屏幕宽容度），而世界原点的屏幕位置就是
+ * `(data-graph-offset-x, data-graph-offset-y)` —— 关系图里圆心那一篇正好以世界原点为中心。
+ * 与 UI 层 E2E 里的同名辅助函数是同一套做法（两层各自留一份：它们的底座刻意互不依赖）。
+ */
+async function clickGraphCenterCard(page: Page): Promise<void> {
+  const box = await page.locator('.mn-graph').boundingBox()
+  if (box === null) throw new Error('图谱画布还没有布局盒（不可见？）')
+  // 进图谱后画布会自动"适应窗口"一次：拿中途的偏移去点会点到卡片外面，
+  // 而失败信号只会是"预览没出现"，离真正的原因很远 —— 所以先等换算稳定。
+  let signature = ''
+  await waitUntil(
+    async () => {
+      const now = [
+        await graphNumber(page, 'data-graph-scale'),
+        await graphNumber(page, 'data-graph-offset-x'),
+        await graphNumber(page, 'data-graph-offset-y'),
+      ].join('|')
+      const stable = now === signature
+      signature = now
+      return stable
+    },
+    10_000,
+    '画布的缩放与偏移稳定下来',
+  )
+  await page.mouse.click(
+    box.x + (await graphNumber(page, 'data-graph-offset-x')),
+    box.y + (await graphNumber(page, 'data-graph-offset-y')),
+  )
+}
+
+/**
  * M3 的三块新功能：所见即所得编辑、知识图谱、设置页 —— 真实二进制 + 真实 IPC。
  *
  * 这一层能抓到单元测试抓不到的东西：装饰在真实 WebView 里是否真的生效、图谱的
- * `graph_data` 真实往返是否返回了卡片、设置页是否真的能打开并改到东西。
+ * `graph_data` / `graph_ego` 真实往返是否返回了卡片、设置页是否真的能打开并改到东西。
  */
 describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设置（M3）', () => {
   let app: LaunchedApp
@@ -120,18 +167,52 @@ describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设
     )
   })
 
-  it('知识图谱：真实 graph_data 渲染卡片、文件夹成组、点卡片就地预览', async () => {
+  it('知识图谱：真实 graph_ego / graph_data 画出卡片、文件夹成组、点卡片就地预览', async () => {
+    // 上一条用例把 甲.md 留在了编辑器里 —— 关系图的圆心就是"当前打开的笔记"，
+    // 所以这里不必再开一次，但要把"默认进来的是关系图、1 跳"这件事先钉住（ADR-0021）。
     await app.page.keyboard.press('Control+g')
     await app.page.waitForSelector('.mn-graph', { state: 'visible' })
+    expect(await app.page.locator('.mn-graph').getAttribute('data-graph-mode')).toBe('focus')
+    expect(await app.page.locator('.mn-graph').getAttribute('data-graph-depth')).toBe('1')
+
+    // 关系图：卡片画在 canvas 上，所以"真实 graph_ego 往返回来了没有"只能看
+    // `data-graph-canvas-cards`（宿主交给画笔的卡片数）。甲的出链 [[乙]] 必须把它带进来，
+    // 因此至少 2 张 —— 这一条覆盖的是 Rust 侧 `mn_index::graph` 的 select_ego 真实往返，
+    // 与 UI 层 E2E 的 Mock 镜像互补。
+    await app.page.waitForSelector('canvas.mn-graph__canvas', { state: 'visible' })
     await waitUntil(
-      async () => (await app.page.locator('.mn-graph-card').count()) >= 3,
+      async () => (await graphNumber(app.page, 'data-graph-canvas-cards')) >= 2,
       15_000,
-      '图谱渲染出卡片',
+      '关系图画出圆心与它的邻居',
     )
-    await app.page.waitForSelector('.mn-graph-card[data-rel-path="甲.md"]', { state: 'visible' })
+
+    // 单击**圆心那张卡片** → 就地预览正文（不需要按 Ctrl、不需要悬停）。
+    // 卡片没有 DOM 节点可点：命中判的是世界坐标矩形，世界原点的屏幕位置就是那两个 offset。
+    await clickGraphCenterCard(app.page)
+    await app.page.waitForSelector('.mn-graph-preview', { state: 'visible' })
+    expect(await app.page.locator('.mn-graph-preview').getAttribute('aria-label')).toBe('预览 甲')
+    await waitUntil(
+      async () => ((await app.page.locator('.mn-graph-preview').textContent()) ?? '').includes('粗体'),
+      15_000,
+      '预览里出现笔记正文',
+    )
+    await app.page.keyboard.press('Escape')
+    await waitUntil(async () => (await app.page.locator('.mn-graph-preview').count()) === 0, 5_000, '预览关闭')
+
+    // 换到"整个 Vault"：文件夹容器与悬空链接的虚影标签都留在 DOM 里（只有卡片搬进了 canvas）
+    await app.page.locator('[data-graph-action="mode-vault"]').click()
+    await waitUntil(
+      async () => (await app.page.locator('.mn-graph').getAttribute('data-graph-mode')) === 'vault',
+      15_000,
+      '切到整个 Vault',
+    )
+    await waitUntil(
+      async () => (await graphNumber(app.page, 'data-graph-canvas-cards')) >= 3,
+      15_000,
+      '全库视图把三篇笔记都画出来',
+    )
     // 子目录自动成组
     await app.page.waitForSelector('.mn-graph-folder[data-folder="子"]', { state: 'visible' })
-
     // 悬空链接的目标名字直接标出来（toRawTarget）
     await waitUntil(
       async () =>
@@ -140,19 +221,18 @@ describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设
       '悬空链接标出用户写下的目标名',
     )
 
-    // 单击卡片 → 就地预览正文（不需要按 Ctrl）
-    await app.page.locator('.mn-graph-card[data-rel-path="甲.md"]').click()
+    // 入链虚线、出链实线：甲 有出链到乙，也有入链来自乙。
+    // 全库视图里卡片位置由装箱算法决定，所以用「定位笔记」把 甲 选中，而不是猜一个屏幕坐标
+    // —— 只有关系图才保证圆心落在世界原点上。
+    await app.page.locator('.mn-graph__find-input').fill('甲')
+    await app.page.waitForSelector('[data-find-path="甲.md"]', { state: 'visible' })
+    await app.page.locator('[data-find-path="甲.md"]').click()
     await app.page.waitForSelector('.mn-graph-preview', { state: 'visible' })
-    await waitUntil(
-      async () =>
-        ((await app.page.locator('.mn-graph-preview').textContent()) ?? '').includes('粗体'),
-      15_000,
-      '预览里出现笔记正文',
-    )
-    // 入链虚线、出链实线（甲 有出链到乙，也有入链来自乙）
+    // 注意 SVG 元素的 `className` 是 `SVGAnimatedString` 对象，必须读属性
     const classes = await app.page
       .locator('.mn-graph-edge--highlight')
       .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('class') ?? ''))
+    expect(classes.length).toBeGreaterThanOrEqual(2)
     expect(classes.some((name) => name.includes('mn-graph-edge--dashed'))).toBe(true)
     expect(classes.some((name) => !name.includes('mn-graph-edge--dashed'))).toBe(true)
 

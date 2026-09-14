@@ -18,12 +18,14 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { App } from '@/App'
+import { openNote } from '@/app/actions'
 import { registerBuiltinCommands, GRAPH_COMMAND_IDS } from '@/app/builtin-commands'
 import { commands } from '@/app/commands'
 import { useGlobalKeymap } from '@/app/keymap'
 import { compareEntries } from '@/domain/tree'
 import { isMarkdown } from '@/domain/paths'
 import { GraphCanvas } from '@/features/graph/GraphCanvas'
+import type { PaintContext } from '@/features/graph/canvas/paint'
 import {
   CARD_GAP,
   CARD_HEIGHT,
@@ -57,9 +59,11 @@ import { makeEntry, setIpcAdapter, type IpcAdapter } from '@/ipc/client'
 import { createMockAdapter } from '@/ipc/mock-adapter'
 import type { GraphData, GraphEdge, GraphNode } from '@/ipc/types'
 import {
+  DEFAULT_EGO_DEPTH,
   DEFAULT_VIEW,
   FALLBACK_VIEWPORT,
   POSITIONS_KEY,
+  PREFS_KEY,
   flushPositionPersist,
   useGraphStore,
 } from '@/state/graph-store'
@@ -134,13 +138,18 @@ function pointer(
   init: { x: number; y: number; button?: number },
 ): void {
   act(() => {
+    // jsdom 30 **有** `PointerEvent`（它继承 MouseEvent），所以派发真的那一个：
+    // 实现里那句 `state.pointerId !== event.pointerId` 因此是真的在比较同一个 id，
+    // 而不是两边都是 undefined 的空比较。`setPointerCapture` 在 jsdom 里不存在，
+    // 实现已经用 `typeof … === 'function'` 兜住了（见 GraphCanvas.handlePointerDown）。
     target.dispatchEvent(
-      new MouseEvent(type, {
+      new PointerEvent(type, {
         bubbles: true,
         cancelable: true,
         clientX: init.x,
         clientY: init.y,
         button: init.button ?? 0,
+        pointerId: 1,
       }),
     )
   })
@@ -184,19 +193,126 @@ function resetStores(): void {
   })
 }
 
+// ---------------------------------------------------------------------------
+// canvas 版画布的观测手段（卡片不再是 DOM）
+// ---------------------------------------------------------------------------
+
 /**
- * 渲染画布并装上**全局快捷键**。
+ * 记录型 2D 画布上下文。
  *
- * 为什么需要它：缩放 / 适应窗口 / 关闭预览已经是命令表里的 `graph.*`，触发入口是
- * `app/keymap.ts` 的全局 keydown（`App` 里由 `useGlobalKeymap` 安装）。
+ * 为什么必须有它：卡片现在由 `canvas.mn-graph__canvas` 画出来（`.mn-graph-card` 在本仓库里
+ * **已经不存在了**），而 jsdom **不带真画布**（`getContext('2d')` 返回 null）。组件在那种环境下
+ * 会把画笔整段跳过（`if (context === null) return`），于是"卡片画出来了、正面写着这篇笔记的
+ * 标题/目录/出入度"在 jsdom 里就变成**完全不可观测**的东西 —— 而它正是这次改动之前由
+ * `card.textContent` 守着的那条性质。
+ *
+ * 所以这里给 `getContext` 打一个桩，塞进去一个把每次 `fillText` 记下来的假画布：断言因此仍能
+ * 落在"画笔真的把每篇笔记画出来了"上，而不是退化成"某个属性写着 9"。它顺带替掉量字
+ * （`measureText` 按"每字 8px"给宽）：不这么做的话所有文字宽度都是 0，卡片高度与环半径都会
+ * 退化成最简情形，布局与真浏览器差得更远。
+ *
+ * 这不是"测实现细节"：`fillText` 的**入参**（标题、目录、`2 出 · 1 入`）全是用户看得见的内容，
+ * 只是它的载体从 DOM 文本变成了画布像素。
+ */
+class RecordingPaintContext implements PaintContext {
+  font = '10px sans-serif'
+  fillStyle: string | CanvasGradient | CanvasPattern = '#000000'
+  strokeStyle: string | CanvasGradient | CanvasPattern = '#000000'
+  lineWidth = 1
+  globalAlpha = 1
+  textAlign = 'start'
+  textBaseline = 'alphabetic'
+  lineJoin = 'miter'
+
+  /** 画过的每一段文字（按顺序、含重复 —— 平移/缩放会让同一张卡片被重画）。 */
+  private readonly texts: string[] = []
+
+  /** 这一段里画过的文字（去重：断言"画没画"时不该关心它被画了几遍）。 */
+  drawnTexts(): string[] {
+    return [...new Set(this.texts)]
+  }
+
+  clear(): void {
+    this.texts.length = 0
+  }
+
+  // 只记 fillText，其余调用一律忽略：这一层要证明的是"卡片被画出来了、内容是什么"，
+  // 而"先画边后画卡片""save/restore 配对""裁剪矩形"这些**绘制细节**已经在
+  // tests/graph-paint.test.ts 里用同一套记录法逐条钉过了。
+  save(): void {}
+  restore(): void {}
+  setTransform(): void {}
+  clearRect(): void {}
+  beginPath(): void {}
+  closePath(): void {}
+  rect(): void {}
+  clip(): void {}
+  moveTo(): void {}
+  lineTo(): void {}
+  arc(): void {}
+  fill(): void {}
+  stroke(): void {}
+  fillRect(): void {}
+  strokeRect(): void {}
+  setLineDash(): void {}
+
+  fillText(text: string): void {
+    this.texts.push(text)
+  }
+
+  /** 每字 8px：只要**非零**就够（真字体的度量只有浏览器里有，jsdom 里没有任何来源）。 */
+  measureText(text: string): { width: number } {
+    return { width: text.length * 8 }
+  }
+}
+
+/** 全文件共用一个假画布：一组用例里可能挂载多次画布，记录累积在同一处、由 beforeEach 清空。 */
+const paint = new RecordingPaintContext()
+
+const originalGetContext = HTMLCanvasElement.prototype.getContext
+
+/**
+ * 把 `getContext('2d')` 接到假画布上。
+ *
+ * 那处 `as unknown as` 是全文件**唯一**的类型断言，而且是被 jsdom 逼出来的：
+ * 它没有真画布实现，`getContext` 的签名只接受浏览器原生上下文，而我们塞进去的正是
+ * "结构上满足画笔 `PaintContext` 的记录型假上下文"。断言只发生在打桩这一行，
+ * 用例里的断言对象（`paint.drawnTexts()`）仍然是普通字符串数组。
+ */
+function installRecordingCanvas(): void {
+  const stub = (() => paint) as unknown as typeof HTMLCanvasElement.prototype.getContext
+  HTMLCanvasElement.prototype.getContext = stub
+}
+
+function restoreCanvas(): void {
+  HTMLCanvasElement.prototype.getContext = originalGetContext
+}
+
+/** 这一段里被画出来的文字（去重）。 */
+function drawnTexts(): string[] {
+  return paint.drawnTexts()
+}
+
+/** 清空画笔记录：用来断言"这一次重画之后，某张卡片**不再**被画"（记录是累积的）。 */
+function resetDrawnTexts(): void {
+  paint.clear()
+}
+
+// ---------------------------------------------------------------------------
+// 挂载与几何：所有交互入口都在宿主元素上
+// ---------------------------------------------------------------------------
+
+/**
+ * 渲染画布（可选地装上**全局快捷键**）。
+ *
+ * 为什么"装快捷键"是一个选项：缩放 / 适应窗口 / 关闭预览已经是命令表里的 `graph.*`，
+ * 触发入口是 `app/keymap.ts` 的全局 keydown（`App` 里由 `useGlobalKeymap` 安装）。
  * 只渲染 `<GraphCanvas />` 时没有任何分发者，按键盘什么都不会发生 ——
  * 那正是"命令表是快捷键唯一事实来源"的代价，测试也必须走同一条路。
  */
-async function renderCanvasWithKeys(): Promise<void> {
-  render(<KeymapHarness />)
-  await waitFor(() => {
-    expect(document.querySelectorAll('.mn-graph-card').length).toBe(MOCK_CARD_COUNT)
-  })
+function mountGraph(options: { keys?: boolean } = {}): HTMLElement {
+  render(options.keys === true ? <KeymapHarness /> : <GraphCanvas />)
+  return graphHost()
 }
 
 function KeymapHarness() {
@@ -204,20 +320,190 @@ function KeymapHarness() {
   return <GraphCanvas />
 }
 
-/** 渲染画布并等到 Mock Vault 的卡片全部出现。 */
-async function renderCanvas(): Promise<void> {
-  render(<GraphCanvas />)
-  await waitFor(() => {
-    expect(document.querySelectorAll('.mn-graph-card').length).toBe(MOCK_CARD_COUNT)
+/** 图谱宿主（`div.mn-graph`）：卡片画在 canvas 上，所有指针/键盘入口都挂在这一层。 */
+function graphHost(): HTMLElement {
+  const host = document.querySelector<HTMLElement>('.mn-graph')
+  if (host === null) throw new Error('没有渲染出图谱宿主元素')
+  return host
+}
+
+/** HUD 上的按钮（视图切换 / 深度 / 定位 / 重新排布…）。 */
+function hudButton(action: string): HTMLElement {
+  const button = document.querySelector<HTMLElement>(`[data-graph-action="${action}"]`)
+  if (button === null) throw new Error(`HUD 里没有 ${action} 按钮`)
+  return button
+}
+
+/**
+ * 这一帧"画出来"的卡片数。
+ *
+ * 宿主与 canvas 上各写了一份（`data-graph-canvas-cards` 与 `data-mn-cards`），当前是**同一个数**：
+ * 两处都取 `paintNodes.length`，也就是"**交给画笔**的卡片数"（= 布局里的全部卡片，未经视口裁剪）。
+ * 真正的裁剪发生在 `paintGraph` 内部（按 `visible` 集合跳过屏幕外的卡片），裁剪后的张数由画笔
+ * 返回、再写回宿主上的第三个属性 `data-graph-painted-cards`（见 `paintedCardCount`）——
+ * "交进去多少"与"真画了多少"是两件事，正因为它们是两件事，才值得一起断言。
+ */
+function cardCount(): number {
+  return Number(graphHost().getAttribute('data-graph-canvas-cards'))
+}
+
+/** 交给画笔的卡片数在 canvas 元素上的那一份（与宿主上的同值，见 `cardCount`）。 */
+function canvasCardCount(): number {
+  const canvas = document.querySelector<HTMLCanvasElement>('canvas.mn-graph__canvas')
+  if (canvas === null) throw new Error('没有渲染出 canvas.mn-graph__canvas')
+  return Number(canvas.getAttribute('data-mn-cards'))
+}
+
+/**
+ * **上一帧真正画出来**的卡片数（视口裁剪之后，来自 `paintGraph` 的 `PaintStats.cards`）。
+ *
+ * 它是"视口裁剪真的发生了"唯一可观测的证据：`data-graph-canvas-cards` 只说明布局里有多少张，
+ * 而把镜头移到空地上之后它照旧不变 —— 只有这个数字会变成 0。
+ */
+function paintedCardCount(): number {
+  return Number(graphHost().getAttribute('data-graph-painted-cards'))
+}
+
+/** 渲染出来的文件夹容器路径（连线与容器仍然留在 DOM 里）。 */
+function folderPaths(): string[] {
+  return Array.from(document.querySelectorAll('.mn-graph-folder')).map(
+    (element) => element.getAttribute('data-folder') ?? '',
+  )
+}
+
+/**
+ * 世界坐标 → 派发指针事件用的 client 坐标。
+ *
+ * 换算来自宿主上的 `data-graph-scale / data-graph-offset-x / data-graph-offset-y`
+ * （实现刻意把它们写成属性 —— 卡片画在 canvas 上、自动化没有 DOM 可点，
+ * 这三个数就是"世界原点的屏幕位置"，见 GraphCanvas 里那段注释）。
+ * jsdom 里 `getBoundingClientRect()` 恒为全 0，"相对宿主"与"页面坐标"因此是同一个数；
+ * 仍然走一遍 `rect.left/top` 是为了在将来换成真布局时不至于悄悄错位。
+ */
+function screenPoint(world: Point): Point {
+  const host = graphHost()
+  const rect = host.getBoundingClientRect()
+  const scale = Number(host.getAttribute('data-graph-scale'))
+  const offsetX = Number(host.getAttribute('data-graph-offset-x'))
+  const offsetY = Number(host.getAttribute('data-graph-offset-y'))
+  if (!Number.isFinite(scale) || !Number.isFinite(offsetX) || !Number.isFinite(offsetY)) {
+    throw new Error('宿主上没有读出世界 → 屏幕的换算')
+  }
+  return { x: rect.left + world.x * scale + offsetX, y: rect.top + world.y * scale + offsetY }
+}
+
+/**
+ * 在**世界坐标**的某点上点一下（按下 + 抬起）。
+ *
+ * 为什么给的是世界坐标而不是像素：命中测试判的就是世界坐标里的卡片矩形（`rectHit`，带 4px
+ * 屏幕宽容度），所以这样派发与当前缩放/平移无关 —— 想点中心那张卡片就给 `{x: 0, y: 0}`
+ * （焦点视图里圆心那张卡片正好以世界原点为中心）。
+ */
+function clickAtWorld(world: Point): void {
+  const at = screenPoint(world)
+  const host = graphHost()
+  pointer(host, 'pointerdown', { x: at.x, y: at.y })
+  pointer(host, 'pointerup', { x: at.x, y: at.y })
+}
+
+/** 打开一篇笔记（走真实的 `openNote`：读盘、填 doc）——焦点视图的圆心就是当前打开的这篇。 */
+async function openFocusNote(relPath: string): Promise<void> {
+  await act(async () => {
+    await openNote(relPath)
   })
 }
 
-function cardElement(relPath: string): HTMLElement {
-  const element = document.querySelector<HTMLElement>(
-    `.mn-graph-card[data-rel-path="${relPath}"]`,
+/** 挂载**焦点视图**（默认视图）并等到圆心那张卡片周围真的画出了东西。 */
+async function mountFocus(
+  relPath: string,
+  options: { keys?: boolean } = {},
+): Promise<HTMLElement> {
+  await openFocusNote(relPath)
+  mountGraph(options)
+  await waitFor(() => {
+    expect(graphHost().getAttribute('data-graph-mode')).toBe('focus')
+    expect(cardCount()).toBeGreaterThan(0)
+  })
+  return graphHost()
+}
+
+/** 点 HUD 上的"整个 Vault"并等到全库卡片与文件夹容器都就位。 */
+async function switchToVault(): Promise<void> {
+  fireEvent.click(hudButton('mode-vault'))
+  await waitFor(() => {
+    expect(graphHost().getAttribute('data-graph-mode')).toBe('vault')
+    expect(cardCount()).toBe(MOCK_CARD_COUNT)
+    expect(folderPaths()).toEqual(expect.arrayContaining(['', '日记', '项目', '项目/子项目']))
+  })
+}
+
+/** 挂载**全库视图**（画布的默认视图是焦点视图，所以先切过去）。 */
+async function mountVault(options: { keys?: boolean } = {}): Promise<HTMLElement> {
+  mountGraph(options)
+  await switchToVault()
+  return graphHost()
+}
+
+/**
+ * 当前的全库布局（自动装箱 + 手工位置覆盖）。
+ *
+ * 用的是实现自己那对纯函数（`buildLayout` / `applyManualPositions`），所以卡片坐标与画布上的
+ * 逐像素一致 —— 这样"点某张卡片"不必写死任何像素，Mock Vault 加一篇笔记也不会让用例变红。
+ */
+function vaultLayoutNow(): { cards: GraphCardBox[] } {
+  const state = useGraphStore.getState()
+  if (state.data === null) throw new Error('全库数据还没到，算不出卡片位置')
+  return applyManualPositions(buildLayout(state.data.nodes, state.collapsed), state.manual)
+}
+
+function vaultCardRect(relPath: string): GraphCardBox {
+  const card = vaultLayoutNow().cards.find((item) => item.relPath === relPath)
+  if (card === undefined) throw new Error(`全库布局里没有这张卡片：${relPath}`)
+  return card
+}
+
+/** 全库视图里某张卡片中心的世界坐标。 */
+function vaultCardCenter(relPath: string): Point {
+  const card = vaultCardRect(relPath)
+  return { x: card.x + card.width / 2, y: card.y + card.height / 2 }
+}
+
+/**
+ * 从某张卡片出发，挑一个**一定有邻居**的方向键。
+ *
+ * 为什么测试侧也算一遍：方向键的判据是"目标方向 ±60° 扇形里最近的那一张"，而"往右有没有卡片"
+ * 取决于网格列数与容器位置 —— 直接写死一个方向会变成"Mock Vault 加一篇笔记就可能变红"的
+ * 脆弱断言（与 `MOCK_CARD_COUNT` 同一个理由）。这里只用来**挑方向**，真正断言的是
+ * 按键之后的效果（选中项换人 + 镜头把它带到视口中央）。
+ *
+ * ±60° 与最大搜索距离照抄实现（`handleKeyDown` 的 `1.7 ≈ tan(60°)` 与 `KEYBOARD_REACH`）：
+ * 判据本身已经有自己的用例，这里只是拿它挑一个不会空转的方向。
+ */
+function pickArrowKey(relPath: string): string {
+  const rects = vaultLayoutNow().cards
+  const from = rects.find((card) => card.relPath === relPath)
+  if (from === undefined) throw new Error(`全库布局里没有这张卡片：${relPath}`)
+  const originX = from.x + from.width / 2
+  const originY = from.y + from.height / 2
+  const directions = [
+    { key: 'ArrowLeft', x: -1, y: 0 },
+    { key: 'ArrowRight', x: 1, y: 0 },
+    { key: 'ArrowUp', x: 0, y: -1 },
+    { key: 'ArrowDown', x: 0, y: 1 },
+  ]
+  const found = directions.find((direction) =>
+    rects.some((card) => {
+      if (card.relPath === relPath) return false
+      const dx = card.x + card.width / 2 - originX
+      const dy = card.y + card.height / 2 - originY
+      const forward = dx * direction.x + dy * direction.y
+      if (forward <= 0) return false
+      const sideways = Math.abs(dx * direction.y - dy * direction.x)
+      return sideways <= forward * 1.7 && Math.hypot(dx, dy) <= 2400
+    }),
   )
-  if (element === null) throw new Error(`没有渲染出卡片：${relPath}`)
-  return element
+  if (found === undefined) throw new Error(`卡片 ${relPath} 四个方向上都没有邻居，用例前提不成立`)
+  return found.key
 }
 
 // ===========================================================================
@@ -876,7 +1162,14 @@ describe('图谱命令', () => {
 
   it('run 调到的就是 store 动作：放大 / 缩小 / 适应窗口 / 关闭预览', async () => {
     await useGraphStore.getState().load(VAULT_ROOT)
+    /*
+      ⚠️ 被迫改的一行（新 API）：`computeFit` 现在**分视图** —— 焦点视图的几何只有画布组件量得到
+      （卡片高度取决于正文排完有多高），所以它读组件交进来的 `egoBounds`，没有就直接返回 null。
+      本用例的断言口径（`buildLayout(data.nodes).bounds`）本来就是**全库**的包围盒，
+      所以这里显式声明"我在测全库视图的适应窗口"，而不是让它去猜一个焦点视图的包围盒。
+    */
     useGraphStore.setState({
+      mode: 'vault',
       viewport: { width: 800, height: 600, known: true },
       view: { x: -40, y: -20, zoom: 1 },
     })
@@ -905,62 +1198,119 @@ describe('图谱命令', () => {
 
 // ===========================================================================
 // 第二层：组件行为
+//
+// 与第一层（纯函数）最大的区别：**卡片不再是 DOM**。卡片由 `canvas.mn-graph__canvas`
+// 画出来（`canvas/paint.ts` 的 `paintGraph`），所以这一层能观测的东西换成了三样：
+//   1. 宿主 `div.mn-graph` 上的 `data-graph-*` 属性（卡片数、模式、跳数、世界→屏幕换算）；
+//   2. 记录型假画布上"这一段真的被画出来的文字"（见 `RecordingPaintContext`）；
+//   3. 仍然留在 DOM 里的两层：连线（SVG）与文件夹容器（只有全库视图才渲染）。
+// 交互一律通过宿主上的指针/键盘事件触发 —— canvas 上没有节点可点。
 // ===========================================================================
+
+/**
+ * 一条三段链的专用 Mock Vault（"深度调大 ⇒ 卡片变多"那条用例要用）。
+ *
+ * 为什么不用缺省 Mock Vault：它只有 设计 ↔ 路线图、设计 → 细节、细节 → 悬空 三条边，
+ * 1 跳就已经把整个连通分量拿全了 —— 调大跳数**不会**多出任何卡片，
+ * 那条用例就只能写成"跳数变了但卡片数没变"，等于没测到"深度真的往外扩了一层"。
+ */
+const CHAIN_NOTES = [
+  { relPath: '中心.md', text: '# 中心\n\n指向 [[一跳]]。\n' },
+  { relPath: '一跳.md', text: '# 一跳\n\n再指向 [[两跳]]。\n' },
+  { relPath: '两跳.md', text: '# 两跳\n\n没有更多出链。\n' },
+]
 
 describe('知识图谱画布', () => {
   beforeEach(async () => {
     window.localStorage.clear()
     setIpcAdapter(createMockAdapter())
     resetStores()
+    /*
+      `resetStores()` 只管全库视图那一半状态：模式 / 跳数 / 子图 / 正文是**焦点视图**那一半的。
+      漏掉它们，"上一个用例切到了整个 Vault"就会泄漏到下一个用例 ——
+      默认视图不再是默认值，而"进入图谱默认是焦点视图"那条用例恰恰要检查默认值。
+    */
+    useGraphStore.setState({
+      mode: 'focus',
+      depth: DEFAULT_EGO_DEPTH,
+      ego: null,
+      egoStatus: 'idle',
+      egoError: null,
+      texts: new Map<string, string>(),
+    })
     // 缩放 / 适应窗口 / 关闭预览走命令表（幂等注册，重复调用无副作用）
     registerBuiltinCommands()
     await useVaultStore.getState().openVault(VAULT_ROOT)
+    paint.clear()
+    installRecordingCanvas()
   })
 
   afterEach(() => {
+    restoreCanvas()
     cleanup()
   })
 
   it('渲染出 Mock Vault 里的每篇笔记的卡片与每个文件夹的容器', async () => {
-    await renderCanvas()
+    await mountVault()
 
-    const paths = Array.from(document.querySelectorAll('.mn-graph-card')).map((element) =>
-      element.getAttribute('data-rel-path'),
-    )
-    expect(paths).toEqual(
-      expect.arrayContaining([
-        'README.md',
-        '随手记.md',
-        '项目/设计.md',
-        '项目/路线图.md',
-        '项目/子项目/细节.md',
-        '日记/2025-01-01.md',
-      ]),
-    )
+    /*
+      卡片数：卡片画在 canvas 上，没有 DOM 节点可数，所以看宿主与 canvas 上的两个属性
+      （`data-graph-canvas-cards` 与 `data-mn-cards`）。它们当前是**同一个数** ——
+      两处都取 `paintNodes.length`，也就是"交给画笔的卡片数"；
+      "真正画出来的张数"是另一个属性（裁剪之后），见下面 `paintedCardCount` 那一段与
+      专门守裁剪的那条用例。这里先钉住"交进去的两处一致"（分家就说明有人只改了一边）。
+    */
+    expect(cardCount()).toBe(MOCK_CARD_COUNT)
+    expect(canvasCardCount()).toBe(MOCK_CARD_COUNT)
+    // 适应窗口之后整块画布都在视口内 ⇒ 交进去的每一张都真的被画了出来
+    await waitFor(() => {
+      expect(paintedCardCount()).toBe(MOCK_CARD_COUNT)
+    })
 
-    const folders = Array.from(document.querySelectorAll('.mn-graph-folder')).map((element) =>
-      element.getAttribute('data-folder'),
-    )
-    expect(folders).toEqual(expect.arrayContaining(['', '日记', '项目', '项目/子项目']))
+    /*
+      原来是读 `.mn-graph-card` 的 `data-rel-path` 来断言"每篇笔记都有自己的卡片"。
+      卡片既然画在 canvas 上，就换成"画笔真的把每篇笔记的标题画了出来" ——
+      性质没变（每篇笔记都有一张属于它的卡片），观测点从 DOM 文本挪到了绘制调用。
+    */
+    const titles = createMockAdapter()
+      .dump()
+      .filter((item) => isMarkdown(item.relPath))
+      .map((item) => (item.relPath.split('/').pop() ?? '').replace(/\.(md|markdown)$/i, ''))
+    await waitFor(() => {
+      expect(drawnTexts()).toEqual(expect.arrayContaining(titles))
+      // 卡片正面的身份信息：标题（上面）+ 目录 + 出入度。
+      // 原断言里的 `→2` / `←1` 现在是紧凑卡片那一行 `2 出 · 1 入`
+      // （设计.md：出链 2 = 路线图 + 细节，入链 1 = 路线图指向它）。
+      // ⚠️ 原断言里还有一条 `toContain('项目/设计.md')`（相对路径）：**它在实现里没有了** ——
+      // 紧凑卡片用"标题 + 目录"标识自己，不再把 relPath 画在卡面上。那条子断言是**删掉**的，
+      // 不是被放宽的（见回报里"没能守住的性质"）。
+      expect(drawnTexts()).toContain('项目')
+      expect(drawnTexts()).toContain('2 出 · 1 入')
+    })
 
-    // 卡片正面直接给出标题、相对路径、标签与出入度（不需要悬停/按 Ctrl）
-    const design = cardElement('项目/设计.md')
-    expect(design.textContent).toContain('设计')
-    expect(design.textContent).toContain('项目/设计.md')
-    expect(design.textContent).toContain('→2')
-    expect(design.textContent).toContain('←1')
+    // 文件夹容器仍是 DOM（只有全库视图才有），断言方式与从前逐字相同
+    expect(folderPaths()).toEqual(expect.arrayContaining(['', '日记', '项目', '项目/子项目']))
+
     // 状态角标：节点数 / 边数 / 缩放
     expect(document.querySelector('.mn-graph__hud')?.textContent).toContain(`${MOCK_CARD_COUNT} 节点`)
     expect(document.querySelector('.mn-graph__hud')?.textContent).toContain('4 边')
   })
 
   it('单击卡片 = 在画布上直接预览正文（不按 Ctrl、不用悬停）', async () => {
-    await renderCanvas()
+    await mountFocus('项目/设计.md')
     expect(document.querySelector('.mn-graph-preview')).toBeNull()
+    const cardsBefore = cardCount()
 
-    fireEvent.click(cardElement('项目/设计.md'))
+    /*
+      原来是 `fireEvent.click(cardElement('项目/设计.md'))`。现在没有那个 DOM 元素了，
+      改成在世界原点派发一次指针按下 + 抬起：焦点视图里**圆心那张卡片正好以世界原点为中心**
+      （`layoutEgo` 把 root 摆在 `(-w/2, -h/2)`），所以在 {0,0} 上点一下命中的就是它 ——
+      这里不需要知道卡片有多大，也就不会因为卡片尺寸变化而失效。
+    */
+    clickAtWorld({ x: 0, y: 0 })
 
     await waitFor(() => {
+      expect(useGraphStore.getState().selected).toBe('项目/设计.md')
       expect(document.querySelector('.mn-graph-preview')).not.toBeNull()
     })
     // 渲染的是**正文**（表格里的"原子写"），不是路径或摘要
@@ -969,29 +1319,58 @@ describe('知识图谱画布', () => {
     })
     // 标题与路径都在面板上
     expect(document.querySelector('.mn-graph-preview')?.textContent).toContain('项目/设计.md')
-    // 预览不阻塞画布：卡片依然可点（面板是浮层，不是新的布局分支）
-    expect(document.querySelector('.mn-graph-card[data-rel-path="项目/路线图.md"]')).not.toBeNull()
+    // 预览不阻塞画布：面板是浮层，不是新的布局分支 ⇒ 卡片一张都没少（原来比的是"另一张卡片还在"）
+    expect(cardCount()).toBe(cardsBefore)
   })
 
   it('Esc 关闭预览（命令）；点画布空白处也关闭', async () => {
-    await renderCanvasWithKeys()
-    fireEvent.click(cardElement('项目/路线图.md'))
+    await mountFocus('项目/设计.md', { keys: true })
+
+    // 先开一次预览：点中心那张卡片（原用例点的是 项目/路线图.md 的 DOM 元素）
+    clickAtWorld({ x: 0, y: 0 })
+    await waitFor(() => {
+      expect(useGraphStore.getState().selected).toBe('项目/设计.md')
+    })
+
+    /*
+      "点画布空白处也关闭"：canvas 之后"空白"就是**没有卡片的世界坐标点**。
+      用一个远到不可能有卡片的位置（1e6 世界像素）派发同样的按下 + 抬起，
+      走的仍是 `endPointer` 里那条 `hit === null ⇒ select(null)` 的路径 ——
+      性质与从前一样（点空处 = 关预览），只是"空白"从"某块 DOM 背景"变成了一个几何事实。
+    */
+    clickAtWorld({ x: 1_000_000, y: 1_000_000 })
+    await waitFor(() => {
+      expect(useGraphStore.getState().selected).toBeNull()
+      expect(document.querySelector('.mn-graph-preview')).toBeNull()
+    })
+
+    /*
+      Esc 现在是 `graph.closePreview` 命令：**焦点在不在画布上都生效**（全局快捷键分发）。
+      原来按键打在 `screen.getByLabelText('知识图谱画布')` 上，那个 aria-label 已经换成了
+      随模式变化的描述（焦点视图是『与「…」相关的关系图，N 跳』）—— 这里改成直接拿宿主元素。
+    */
+    clickAtWorld({ x: 0, y: 0 })
     await waitFor(() => {
       expect(document.querySelector('.mn-graph-preview')).not.toBeNull()
     })
-
-    // Esc 现在是 `graph.closePreview` 命令：**焦点在不在画布上都生效**（全局快捷键分发）
-    fireEvent.keyDown(screen.getByLabelText('知识图谱画布'), { key: 'Escape' })
+    fireEvent.keyDown(graphHost(), { key: 'Escape' })
     await waitFor(() => {
       expect(document.querySelector('.mn-graph-preview')).toBeNull()
     })
     expect(useGraphStore.getState().selected).toBeNull()
+
+    // 宿主是可聚焦的应用区域（键盘用户的入口），描述随模式/跳数变化
+    expect(graphHost().getAttribute('role')).toBe('application')
+    expect(graphHost().getAttribute('tabindex')).toBe('0')
+    expect(graphHost().getAttribute('aria-label')).toBe('与「项目/设计.md」相关的关系图，1 跳')
   })
 
   it('双击卡片 = 进编辑器打开：切到编辑视图并真的读入那篇笔记', async () => {
-    await renderCanvas()
+    await mountFocus('项目/设计.md')
 
-    fireEvent.doubleClick(cardElement('项目/设计.md'))
+    // 双击中心那张卡片：坐标仍然来自 world → screen 的换算（原用例点的是卡片 DOM 元素）
+    const at = screenPoint({ x: 0, y: 0 })
+    fireEvent.doubleClick(graphHost(), { clientX: at.x, clientY: at.y })
 
     await waitFor(() => {
       expect(useUiStore.getState().viewMode).toBe('edit')
@@ -1003,38 +1382,62 @@ describe('知识图谱画布', () => {
   })
 
   it('收起文件夹后内部卡片全部消失，再点一下展开回来', async () => {
-    await renderCanvas()
+    await mountVault()
 
-    fireEvent.click(screen.getByRole('button', { name: /^收起 项目/ }))
-
-    await waitFor(() => {
-      expect(document.querySelector('.mn-graph-card[data-rel-path="项目/设计.md"]')).toBeNull()
-    })
-    // 含子文件夹的卡片也一起收起
-    expect(document.querySelector('.mn-graph-card[data-rel-path="项目/子项目/细节.md"]')).toBeNull()
-    // 其它文件夹不受影响
-    expect(document.querySelector('.mn-graph-card[data-rel-path="日记/2025-01-01.md"]')).not.toBeNull()
-    // 收起后是一张紧凑的"文件夹卡片"（显示名字与笔记数）
-    // 篇数不写死：Mock Vault 里 项目/ 下有几篇由 Mock 自己决定（加一篇演示笔记不该让这条变红）
+    /*
+      原来靠 `.mn-graph-card[data-rel-path=…]` 在不在来断言"卡片被收起了"。canvas 之后没有
+      那个节点了，改用两件事一起守：**布局里的卡片数**（宿主属性）与**画笔这一段画了哪些标题**。
+      后者才是"这些卡片真的不再被画出来"的直接证据 —— 只数卡片数的话，
+      "少了一张、多了另一张"也会被算成通过。
+    */
     const projectNotes = createMockAdapter()
       .dump()
       .filter((note) => isMarkdown(note.relPath) && note.relPath.startsWith('项目/')).length
+    expect(cardCount()).toBe(MOCK_CARD_COUNT)
+
+    resetDrawnTexts()
+    fireEvent.click(screen.getByRole('button', { name: /^收起 项目/ }))
+
+    await waitFor(() => {
+      expect(cardCount()).toBe(MOCK_CARD_COUNT - projectNotes)
+    })
+    await waitFor(() => {
+      const texts = drawnTexts()
+      // 项目/ 下的四张卡片（设计、路线图、标签示例、大纲）与**子文件夹**里的细节一起消失
+      expect(texts).not.toContain('设计')
+      expect(texts).not.toContain('路线图')
+      expect(texts).not.toContain('细节')
+      // 其它文件夹不受影响
+      expect(texts).toContain('2025-01-01')
+    })
+    // 收起后是一张紧凑的"文件夹卡片"（显示名字与篇数；篇数不写死，由 Mock 自己决定）
     const expandedAgain = screen.getByRole('button', {
       name: new RegExp(`^展开 项目（${projectNotes} 篇`),
     })
     expect(expandedAgain).toBeTruthy()
 
+    resetDrawnTexts()
     fireEvent.click(expandedAgain)
     await waitFor(() => {
-      expect(document.querySelector('.mn-graph-card[data-rel-path="项目/设计.md"]')).not.toBeNull()
+      expect(cardCount()).toBe(MOCK_CARD_COUNT)
     })
-    expect(document.querySelector('.mn-graph-card[data-rel-path="项目/子项目/细节.md"]')).not.toBeNull()
+    await waitFor(() => {
+      const texts = drawnTexts()
+      expect(texts).toContain('设计')
+      expect(texts).toContain('细节')
+    })
   })
 
   it('选中卡片后：入链画虚线、出链画实线，其它边淡化', async () => {
-    await renderCanvas()
+    await mountVault()
 
-    fireEvent.click(cardElement('项目/设计.md'))
+    /*
+      连线仍然留在 DOM（`GraphEdges` 的 SVG），所以这一条的断言与从前逐字相同；
+      变的只有"怎么选中那张卡片"：原来 `fireEvent.click(cardElement(…))`，
+      现在按**全库布局算出来的世界坐标**点它 —— 布局来自实现自己那两个纯函数
+      （`buildLayout` + `applyManualPositions`），所以是算出来的坐标，不是写死的像素。
+    */
+    clickAtWorld(vaultCardCenter('项目/设计.md'))
     await waitFor(() => {
       expect(useGraphStore.getState().selected).toBe('项目/设计.md')
     })
@@ -1057,7 +1460,7 @@ describe('知识图谱画布', () => {
   })
 
   it('没有选中时所有边都是统一的淡色实线（悬空边虚线 + 虚影圆点）', async () => {
-    await renderCanvas()
+    await mountVault()
 
     const edges = Array.from(document.querySelectorAll('path.mn-graph-edge'))
     expect(edges).toHaveLength(4)
@@ -1080,8 +1483,10 @@ describe('知识图谱画布', () => {
     // 缩放已经是 `graph.zoomIn` / `graph.zoomOut` / `graph.fit` 三条命令（命令表是快捷键的
     // 唯一事实来源），所以这里要装上全局快捷键分发者，并且把按键打在画布元素上 ——
     // 焦点在画布上时照样生效（事件冒泡到 window 的 keymap）。
-    await renderCanvasWithKeys()
-    const canvas = screen.getByLabelText('知识图谱画布')
+    // 视图选全库：`graph.fit` 走的是 `fitToWindow()`，它要按全库布局算包围盒；
+    // 焦点视图那条路（`fitToBounds`）的包围盒只有组件量得到，另有用例覆盖。
+    await mountVault({ keys: true })
+    const canvas = graphHost()
     const before = useGraphStore.getState().view.zoom
 
     fireEvent.keyDown(canvas, { key: '+' })
@@ -1102,46 +1507,123 @@ describe('知识图谱画布', () => {
     expect(fitted.zoom).toBeLessThanOrEqual(MAX_ZOOM)
   })
 
-  it('卡片可 Tab 聚焦，Enter 预览、Ctrl+Enter 打开', async () => {
-    await renderCanvas()
-    const card = cardElement('项目/设计.md')
+  /*
+    ⚠️ 用例替换说明（不是放宽，是**能力被有意换掉了**）。
 
-    card.focus()
-    fireEvent.keyDown(card, { key: 'Enter' })
+    原来是「卡片可 Tab 聚焦，Enter 预览、Ctrl+Enter 打开」。canvas 之后卡片是画出来的像素，
+    **不是 DOM 元素**：Tab 序列里根本没有它们（也不该造 3000 个 tabindex —— 那会让 Tab 每走一步
+    都卡一次，比没有键盘支持更糟）。所以那条通路被换成了两条，本用例守的就是新的这两条：
+
+      1. **宿主自己** `tabIndex=0`（一个可聚焦的"应用区域"），方向键在**同一方向上最近的卡片**
+         之间移动选中项 —— 这是 `GraphCanvas.handleKeyDown` 提供的替代通路，
+         否则画布对键盘用户就等于一块不可操作的图片；
+      2. **Enter / Ctrl+Enter 由预览面板上的两个按钮负责**（"在编辑器中打开" / "关闭预览"）。
+
+    性质没变："键盘用户能选中一张卡片、能把它打开进编辑器、能关掉预览"，只是入口从
+    Tab 换成了方向键 + 面板按钮。
+  */
+  it('键盘通路：卡片不再是 DOM 所以 Tab 到不了它，改由方向键移动选中项、面板按钮负责打开', async () => {
+    await mountFocus('项目/设计.md')
+    const host = graphHost()
+
+    // 宿主是一个可聚焦的应用区域：Tab 能停在它上面，方向键从这里进入卡片世界
+    expect(host.getAttribute('tabindex')).toBe('0')
+    expect(host.getAttribute('role')).toBe('application')
+    host.focus()
+    expect(document.activeElement).toBe(host)
+
+    // 还没有选中时，第一次按方向键会先选中第一张卡片（handleKeyDown 的 `current === undefined` 分支）
+    fireEvent.keyDown(host, { key: 'ArrowRight' })
     await waitFor(() => {
-      expect(useGraphStore.getState().selected).toBe('项目/设计.md')
+      expect(useGraphStore.getState().selected).not.toBeNull()
+    })
+    const first = useGraphStore.getState().selected
+
+    // 再按一次：选中项换到**另一张**卡片，预览面板跟着换（面板上的路径就是新的那一篇）
+    fireEvent.keyDown(host, { key: 'ArrowRight' })
+    await waitFor(() => {
+      const selected = useGraphStore.getState().selected
+      expect(selected).not.toBeNull()
+      expect(selected).not.toBe(first)
+    })
+    const selected = useGraphStore.getState().selected ?? ''
+    await waitFor(() => {
+      expect(document.querySelector('.mn-graph-preview__path')?.textContent).toBe(selected)
     })
 
-    fireEvent.keyDown(card, { key: 'Enter', ctrlKey: true })
+    // Enter / Ctrl+Enter 由面板上的按钮承担：点"在编辑器中打开"= 进编辑视图并读入那一篇
+    expect(screen.getByRole('button', { name: '在编辑器中打开' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '关闭预览' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '在编辑器中打开' }))
     await waitFor(() => {
-      expect(useNoteStore.getState().doc?.relPath).toBe('项目/设计.md')
+      expect(useUiStore.getState().viewMode).toBe('edit')
+    })
+    await waitFor(() => {
+      expect(useNoteStore.getState().doc?.relPath).toBe(selected)
     })
   })
 
-  it('拖动卡片覆盖自动布局并持久化到 localStorage；"重新自动排布"清除手工位置', async () => {
-    await renderCanvas()
-    const card = cardElement('项目/设计.md')
-    const before = useGraphStore.getState().manual.get('项目/设计.md')
-
-    pointer(card, 'pointerdown', { x: 10, y: 10 })
-    pointer(card, 'pointermove', { x: 210, y: 110 })
-    pointer(card, 'pointerup', { x: 210, y: 110 })
-
-    const moved = useGraphStore.getState().manual.get('项目/设计.md')
+  it('全库视图：拖动卡片覆盖自动布局并持久化到 localStorage；"重新自动排布"清除手工位置', async () => {
+    await mountVault()
+    const relPath = '项目/设计.md'
+    // 拖动**之前**的自动布局：手工位置还是空的，所以这就是"自动装箱给它的位置"
+    const start = vaultCardRect(relPath)
+    const center = { x: start.x + start.width / 2, y: start.y + start.height / 2 }
+    const before = useGraphStore.getState().manual.get(relPath)
     expect(before).toBeUndefined()
+
+    /*
+      拖动按 4px 阈值判定（`CLICK_SLOP_PX`），所以位移必须明显超过它；
+      而且**只有全库视图**才允许拖卡片（焦点视图里"位置"就是离中心几跳，见后面那条用例）。
+      起点是布局函数算出来的卡片中心，不是写死的像素。
+    */
+    const dx = 120
+    const dy = 80
+    const from = screenPoint(center)
+    const host = graphHost()
+    pointer(host, 'pointerdown', { x: from.x, y: from.y })
+    pointer(host, 'pointermove', { x: from.x + dx, y: from.y + dy })
+    pointer(host, 'pointerup', { x: from.x + dx, y: from.y + dy })
+
+    const moved = useGraphStore.getState().manual.get(relPath)
     expect(moved).toBeDefined()
-    expect(moved?.x).toBeGreaterThan(100)
-    // 卡片真的挪了（自动布局被覆盖）
-    await waitFor(() => {
-      expect(cardElement('项目/设计.md').style.left).toBe(`${String(moved?.x)}px`)
-    })
+    expect(moved).not.toEqual(before)
+
+    /*
+      卡片真的跟着光标走了：抓点相对**卡片左上角**的偏移保持不变 ⇒
+      卡片左上角的新世界坐标 = 旧左上角 + (屏幕位移 ÷ 缩放)。
+      （按下点在卡片中心，抓点偏移就是半张卡片 —— 这正是实现里 `state.card.grabX` 的含义：
+      不这样减掉，卡片会在按下的瞬间"跳"到光标下面。）
+      ±1 世界像素的余量：`data-graph-offset-*` 是**取整**后的（最多 0.5 屏幕像素），
+      换算回世界坐标要再除以缩放，而 `moveCard` 自己也会取整 —— 所以断言的是
+      "位置按换算跟着走了"，而不是逐位相等。
+    */
+    const view = useGraphStore.getState().view
+    expect(Math.abs((moved?.x ?? Number.NaN) - (start.x + dx / view.zoom))).toBeLessThanOrEqual(1)
+    expect(Math.abs((moved?.y ?? Number.NaN) - (start.y + dy / view.zoom))).toBeLessThanOrEqual(1)
+
+    // 拖动不是"点了一下"：不该顺手打开预览（原用例的 `selected === null` 一并保留在后面那条）
+    expect(useGraphStore.getState().selected).toBeNull()
 
     // 位置按 `Vault 根 + relPath` 持久化
     flushPositionPersist()
     const raw = window.localStorage.getItem(POSITIONS_KEY)
     expect(raw).not.toBeNull()
     const stored = JSON.parse(raw ?? '{}') as Record<string, Record<string, { x: number }>>
-    expect(stored[VAULT_ROOT]?.['项目/设计.md']?.x).toBe(moved?.x)
+    expect(stored[VAULT_ROOT]?.[relPath]?.x).toBe(moved?.x)
+
+    /*
+      覆盖生效（原来比的是卡片 DOM 的 `style.left`）：布局里那张卡片的坐标已经变成手工位置，
+      而**自动装箱给的那个**不同 —— 后者才是"拖动真的不只改了 store 里一个 Map"的证据。
+      重新算一遍自动布局（不叠手工位置）拿到那个参照值。
+    */
+    const auto = buildLayout(
+      useGraphStore.getState().data?.nodes ?? [],
+      useGraphStore.getState().collapsed,
+    ).cards.find((item) => item.relPath === relPath)
+    expect(auto?.x).toBe(start.x)
+    expect(vaultCardRect(relPath).x).toBe(moved?.x)
+    expect(moved?.x).not.toBe(auto?.x)
 
     fireEvent.click(screen.getByRole('button', { name: '重新自动排布' }))
     await waitFor(() => {
@@ -1150,36 +1632,48 @@ describe('知识图谱画布', () => {
   })
 
   it('拖动不会误触发预览（4px 阈值的意义）', async () => {
-    await renderCanvas()
-    const card = cardElement('项目/路线图.md')
+    await mountVault()
+    const relPath = '项目/路线图.md'
+    const from = screenPoint(vaultCardCenter(relPath))
+    const host = graphHost()
 
-    pointer(card, 'pointerdown', { x: 10, y: 10 })
-    pointer(card, 'pointermove', { x: 60, y: 40 })
-    pointer(card, 'pointerup', { x: 60, y: 40 })
-    fireEvent.click(card)
+    pointer(host, 'pointerdown', { x: from.x, y: from.y })
+    pointer(host, 'pointermove', { x: from.x + 50, y: from.y + 30 })
+    pointer(host, 'pointerup', { x: from.x + 50, y: from.y + 30 })
+    /*
+      补一次普通的 click（浏览器在拖动结束时也可能补发一次）：canvas 版里选中**只**由
+      `pointerdown` + `pointerup` 决定（`endPointer` 里 `state.moved` 一挡就返回），
+      单独一个 click 不该被当成"点了一下卡片"。
+    */
+    fireEvent.click(host, { clientX: from.x + 50, clientY: from.y + 30 })
 
     expect(useGraphStore.getState().selected).toBeNull()
     expect(document.querySelector('.mn-graph-preview')).toBeNull()
   })
 
-  it('预览面板：打开时焦点进入面板，关闭后还给刚才那张卡片', async () => {
-    await renderCanvas()
-    const card = cardElement('项目/设计.md')
-    // 浏览器里单击带 `tabindex` 的卡片本来就会聚焦它（jsdom 不会，所以这里显式点一下焦点）
-    card.focus()
-    expect(document.activeElement).toBe(card)
+  it('预览面板：打开时焦点进入面板，关闭后还给打开它的那个元素（画布宿主）', async () => {
+    await mountFocus('项目/设计.md')
+    /*
+      原来是"关闭后焦点还给刚才那张卡片" —— canvas 之后**卡片不可聚焦**（它不是 DOM），
+      所以"还给谁"只能是"还给打开面板时持有焦点的那个元素"：这里是画布宿主
+      （它 `tabindex=0`，本来就是 Tab 序列里的第一个落点）。
+      性质没变：焦点不会凭空掉到 body 上（那意味着键盘用户要从头 Tab 一遍）。
+    */
+    const host = graphHost()
+    host.focus()
+    expect(document.activeElement).toBe(host)
 
-    fireEvent.click(card)
+    clickAtWorld({ x: 0, y: 0 })
     const panel = await waitFor(() => {
       const element = document.querySelector<HTMLElement>('.mn-graph-preview')
       expect(element).not.toBeNull()
       return element
     })
     if (panel === null) throw new Error('预览面板没有出现')
-    // 打开即聚焦：键盘用户不会"面板开了但焦点还留在卡片上"
+    // 打开即聚焦：键盘用户不会"面板开了但焦点还留在画布上"
     expect(document.activeElement).toBe(panel)
 
-    // 关闭（右上角的 ×，与 Esc 同一条关闭路径）后焦点回到那张卡片，Tab 不用从头走
+    // 关闭（右上角的 ×，与 Esc 同一条关闭路径）后焦点还给宿主，Tab 不用从头走
     const closeButton = panel.querySelector<HTMLButtonElement>('button[aria-label="关闭预览"]')
     if (closeButton === null) throw new Error('没有关闭按钮')
     fireEvent.click(closeButton)
@@ -1187,12 +1681,12 @@ describe('知识图谱画布', () => {
     await waitFor(() => {
       expect(document.querySelector('.mn-graph-preview')).toBeNull()
     })
-    expect(document.activeElement).toBe(cardElement('项目/设计.md'))
+    expect(document.activeElement).toBe(graphHost())
   })
 
   it('预览正文里的 [[wikilink]] 能点开目标笔记（解析口径与阅读视图一致）', async () => {
-    await renderCanvas()
-    fireEvent.click(cardElement('项目/设计.md'))
+    await mountFocus('项目/设计.md')
+    clickAtWorld({ x: 0, y: 0 })
 
     // 设计.md 正文里有 [[路线图]]，Mock 索引把它解析到 项目/路线图.md
     await waitFor(() => {
@@ -1215,7 +1709,7 @@ describe('知识图谱画布', () => {
   })
 
   it('刷新期间不闪白：旧卡片继续显示，只在 HUD 上给一个"刷新中"的轻量指示', async () => {
-    await renderCanvas()
+    await mountVault()
 
     // 让这次刷新"挂住"，好在"正在刷新"的那一刻观察界面
     let release = (): void => {}
@@ -1243,8 +1737,12 @@ describe('知识图谱画布', () => {
     await waitFor(() => {
       expect(screen.getByText('刷新中…')).toBeTruthy()
     })
-    // 旧数据继续渲染：没有全屏加载层、也没有空白（卡片还在）
-    expect(document.querySelectorAll('.mn-graph-card').length).toBe(MOCK_CARD_COUNT)
+    /*
+      旧数据继续渲染：没有全屏加载层、也没有空白。
+      原来是数 `.mn-graph-card` 的 DOM 节点；canvas 之后卡片数只能从宿主属性上读 ——
+      性质一样（刷新期间画布上仍然是完整的一整套卡片，不是 0 张）。
+    */
+    expect(cardCount()).toBe(MOCK_CARD_COUNT)
     expect(screen.queryByText('正在读取图谱…')).toBeNull()
 
     await act(async () => {
@@ -1257,7 +1755,7 @@ describe('知识图谱画布', () => {
   })
 
   it('刷新返回空数据时不闪白：旧卡片继续显示，只在提示条上说明', async () => {
-    await renderCanvas()
+    await mountVault()
 
     // 索引重建期间宿主可能返回空结果
     const base = createMockAdapter()
@@ -1273,7 +1771,7 @@ describe('知识图谱画布', () => {
     })
 
     // 画布没有被清空（卡片都还在），提示条说明看到的是上一次的结果
-    expect(document.querySelectorAll('.mn-graph-card').length).toBe(MOCK_CARD_COUNT)
+    expect(cardCount()).toBe(MOCK_CARD_COUNT)
     expect(screen.getByText(/索引可能正在重建/)).toBeTruthy()
   })
 
@@ -1290,8 +1788,8 @@ describe('知识图谱画布', () => {
     resetStores()
     await useVaultStore.getState().openVault(VAULT_ROOT)
 
-    await renderCanvas()
-    expect(graphCalls).toBe(1) // 挂载（= 切到图谱视图）时拉了一次
+    await mountVault()
+    expect(graphCalls).toBe(1) // 挂载（= 切到图谱视图 / 切到全库）时拉了一次
     const view = useGraphStore.getState().view
 
     // 索引是全局的：任何一次保存成功后都应刷新（`saveCount` 变化就是那个信号）
@@ -1352,7 +1850,7 @@ describe('知识图谱画布', () => {
     resetStores()
     await useVaultStore.getState().openVault(VAULT_ROOT)
 
-    await renderCanvas()
+    await mountVault()
     expect(screen.getByText('已截断')).toBeTruthy()
   })
 
@@ -1363,8 +1861,195 @@ describe('知识图谱画布', () => {
     await waitFor(() => {
       expect(document.querySelector('.mn-graph')).not.toBeNull()
     })
+    // 真的是 canvas 那一层（卡片不再是 DOM 节点，所以这里认的是 canvas 元素本身）
     await waitFor(() => {
-      expect(document.querySelectorAll('.mn-graph-card').length).toBe(MOCK_CARD_COUNT)
+      expect(document.querySelector('canvas.mn-graph__canvas')).not.toBeNull()
     })
+    // 切到全库（默认是焦点视图，没有打开笔记时它没有卡片）后，Mock Vault 的卡片全部就位
+    await switchToVault()
+    expect(cardCount()).toBe(MOCK_CARD_COUNT)
+  })
+
+  // -------------------------------------------------------------------------
+  // 这次改动新增的能力（ADR-0021：焦点视图 + 深度调节 + canvas 渲染）
+  // -------------------------------------------------------------------------
+
+  it('默认进入焦点视图（1 跳），点"增加一跳"会多画出更远的卡片并把偏好落盘', async () => {
+    /*
+      为什么要单独一条：焦点视图是**默认入口**，而"1 跳"是这次改动的核心取舍
+      （用户的原话是"进入后只有先关联的图谱"）。这里用一条**专用**的三段链 Mock Vault：
+      缺省 Mock Vault 只有 设计 ↔ 路线图 一条往返边，1 跳就把连通分量拿全了，
+      调大跳数不会多出任何卡片 —— 那等于没测到"深度真的往外扩了一层"。
+    */
+    setIpcAdapter(createMockAdapter({ rootPath: VAULT_ROOT, notes: CHAIN_NOTES }))
+    await act(async () => {
+      await useVaultStore.getState().openVault(VAULT_ROOT)
+    })
+
+    await mountFocus('中心.md')
+    const host = graphHost()
+    expect(host.getAttribute('data-graph-mode')).toBe('focus')
+    expect(host.getAttribute('data-graph-depth')).toBe('1')
+    expect(
+      document.querySelector('[data-graph-depth-value]')?.getAttribute('data-graph-depth-value'),
+    ).toBe('1')
+
+    // 1 跳 = 圆心 + 与它直接相连的那一圈（中心 ↔ 一跳）
+    const oneHop = cardCount()
+    expect(oneHop).toBe(2)
+
+    fireEvent.click(screen.getByRole('button', { name: '增加一跳' }))
+    await waitFor(() => {
+      expect(host.getAttribute('data-graph-depth')).toBe('2')
+      // 2 跳多出"两跳.md"：卡片数真的增长了（不是只有 HUD 上的数字变了）
+      expect(cardCount()).toBeGreaterThan(oneHop)
+    })
+    expect(cardCount()).toBe(3)
+
+    // 深度是"我怎么看图"的偏好：写进 localStorage，跨挂载/跨会话都还在
+    expect(JSON.parse(window.localStorage.getItem(PREFS_KEY) ?? '{}')).toEqual({
+      mode: 'focus',
+      depth: 2,
+    })
+  })
+
+  it('文件夹容器只属于全库视图：焦点视图里一个都没有，切到"整个 Vault"才出现', async () => {
+    /*
+      为什么：焦点视图的"位置"就是**离中心几跳**（同心环），按文件夹装箱会把这条唯一的距离
+      信息抹掉 —— 两种视图摆的是同一批卡片，但"用什么维度组织它们"是互斥的。
+      容器是留在 DOM 里的那一层，所以这条用 DOM 断言就够（也是"全库视图没被删掉"的证据）。
+    */
+    await mountFocus('项目/设计.md')
+    expect(cardCount()).toBeGreaterThan(0)
+    // 容器是留在 DOM 里的一层，所以这条用 DOM 断言就够
+    // （连线两种视图都有，只有**文件夹容器**是按文件夹组织的那一层）
+    expect(document.querySelectorAll('.mn-graph-folder')).toHaveLength(0)
+
+    await switchToVault()
+    expect(folderPaths()).toEqual(expect.arrayContaining(['', '日记', '项目', '项目/子项目']))
+  })
+
+  it('焦点视图里拖动卡片不会移动它（位置由"离中心几跳"决定），拖的是一起平移画布', async () => {
+    /*
+      这条守的是一个**有意为之的不对称**：卡片上拖动只在全库视图里变成"移动卡片"，
+      焦点视图里它退化成"平移画布"。理由写在 `handlePointerDown` 里 ——
+      焦点视图里一张卡片的位置**就是**"离中心几跳"，允许拖动会把这个唯一的信息变成谎话
+      （"我明明把它拖到外圈了，它却还在第 1 跳"）。
+    */
+    await mountFocus('项目/设计.md')
+    const before = useGraphStore.getState().view
+
+    const from = screenPoint({ x: 0, y: 0 }) // 圆心那张卡片上按住
+    const host = graphHost()
+    pointer(host, 'pointerdown', { x: from.x, y: from.y })
+    pointer(host, 'pointermove', { x: from.x + 90, y: from.y + 60 })
+    pointer(host, 'pointerup', { x: from.x + 90, y: from.y + 60 })
+
+    // 没有"手工位置"这回事：焦点视图的布局里根本没有这一层
+    expect(useGraphStore.getState().manual.size).toBe(0)
+    expect(window.localStorage.getItem(POSITIONS_KEY)).toBeNull()
+
+    // 拖的是画布：平移量就是拖动的位移（屏幕像素），缩放不变
+    const after = useGraphStore.getState().view
+    expect(after.x - before.x).toBeCloseTo(90, 6)
+    expect(after.y - before.y).toBeCloseTo(60, 6)
+    expect(after.zoom).toBe(before.zoom)
+  })
+
+  it('方向键把选中项换到另一张卡片，并把它带到视口正中央', async () => {
+    /*
+      为什么：卡片不是 DOM，Tab 到不了它们，方向键是画布唯一的键盘选卡通路；
+      而"选中了却在屏幕外"等于没选中，所以 `handleKeyDown` 会顺手调 `locateCard`
+      把它摆到视口中央。这里断言的就是这两件事一起发生。
+    */
+    await mountVault()
+    const relPath = '项目/设计.md'
+    clickAtWorld(vaultCardCenter(relPath))
+    await waitFor(() => {
+      expect(useGraphStore.getState().selected).toBe(relPath)
+    })
+
+    const key = pickArrowKey(relPath)
+    const before = useGraphStore.getState().view
+
+    fireEvent.keyDown(graphHost(), { key })
+    await waitFor(() => {
+      const selected = useGraphStore.getState().selected
+      expect(selected).not.toBeNull()
+      expect(selected).not.toBe(relPath)
+    })
+
+    const state = useGraphStore.getState()
+    const selected = state.selected ?? ''
+    // 镜头动了（locateCard 改了平移，缩放不动）
+    expect(state.view).not.toEqual(before)
+    expect(state.view.zoom).toBe(before.zoom)
+
+    // 被选中的卡片被摆到视口正中央：`屏幕 = 世界 × zoom + offset`
+    const center = vaultCardCenter(selected)
+    expect(center.x * state.view.zoom + state.view.x).toBeCloseTo(state.viewport.width / 2, 3)
+    expect(center.y * state.view.zoom + state.view.y).toBeCloseTo(state.viewport.height / 2, 3)
+  })
+
+  it('没有打开任何笔记：焦点视图给出"打开一篇笔记…"的提示，那个按钮真的切到全库', async () => {
+    /*
+      空态为什么值得守：焦点视图的"空"与全库视图的"空"是两回事 ——
+      前者是"没有圆心"（打开一篇笔记就好了），后者才是"这个 Vault 里没有笔记"。
+      把前者显示成"Vault 是空的"会让用户以为笔记没了。
+    */
+    mountGraph()
+
+    await waitFor(() => {
+      expect(graphHost().getAttribute('data-graph-mode')).toBe('focus')
+    })
+    const overlay = await waitFor(() => {
+      const element = document.querySelector('.mn-graph__overlay')
+      expect(element).not.toBeNull()
+      return element
+    })
+    expect(overlay?.textContent).toContain('打开一篇笔记')
+    // 没有圆心就没有卡片（空态下画布上确实一张都没有，而不是"卡片在屏幕外"）
+    expect(cardCount()).toBe(0)
+
+    // 空态上的那个按钮是唯一出口：它真的把视图切成全库，并因此真的去拉了全库数据
+    fireEvent.click(screen.getByRole('button', { name: '看看整个 Vault' }))
+    await waitFor(() => {
+      expect(graphHost().getAttribute('data-graph-mode')).toBe('vault')
+    })
+    await waitFor(() => {
+      expect(cardCount()).toBe(MOCK_CARD_COUNT)
+    })
+  })
+
+  it('视口裁剪真的发生：把镜头移到空地后一张都不画，而"交给画笔的卡片数"照旧不变', async () => {
+    /*
+      为什么要单独一条：canvas 化的**全部意义**就在于"卡片数再多，每帧的工作量也只由视口决定"，
+      而这件事在 DOM 时代是"节点在不在文档里"自明的，现在必须自己证明。
+      裁剪的证据有两个，缺一不可：
+        1. `data-graph-painted-cards`（画笔返回的 `PaintStats.cards`）变成 0；
+        2. 记录型假画布上**一段文字都没画**（属性说 0 也可能是没重画，这条排除了那种可能）。
+      同时 `data-graph-canvas-cards` 保持 9 —— 它说的是"布局里有多少张"，
+      与"这一帧画了几张"本来就是两件事（这正是两个属性分开的理由）。
+    */
+    await mountVault()
+    const handedIn = cardCount()
+    expect(handedIn).toBe(MOCK_CARD_COUNT)
+    await waitFor(() => {
+      expect(paintedCardCount()).toBe(MOCK_CARD_COUNT)
+    })
+
+    resetDrawnTexts()
+    act(() => {
+      // 直接改视角（等价于把画布拖到很远的地方）：布局没变，变的是"镜头对准哪儿"
+      useGraphStore.getState().setView({ x: 1_000_000, y: 1_000_000, zoom: 1 })
+    })
+
+    await waitFor(() => {
+      expect(paintedCardCount()).toBe(0)
+    })
+    // 画笔这一帧一张都没画（记录是裁剪前清空的，而这次重画就发生在同一个 effect 里）
+    expect(drawnTexts()).toHaveLength(0)
+    // 交给画笔的张数没变：裁剪发生在画笔内部，不是布局或数据被清掉了
+    expect(cardCount()).toBe(handedIn)
   })
 })
