@@ -862,10 +862,12 @@ export function GraphCanvas() {
       }
       const direction = steps[event.key]
       if (direction === undefined) return
-      // 输入框与预览面板里的方向键属于它们自己（一个是要移动光标，一个是要滚正文）：
-      // 画布只在"焦点就在画布上"时接管
+      // 输入框里的方向键属于它自己（要在候选里上下选）：画布只在焦点不在文本输入处时接管。
+      //
+      // 为什么**不**排除预览面板：面板自己不消费方向键（它没有键盘滚动的实现），
+      // 排除掉就等于"预览打开时方向键是死键" —— 而画布是一块可键盘操作的整体，
+      // 换选中项是它最重要的键盘动作。要滚正文用滚轮（或先 `Esc` 关掉预览）。
       if (isTextEntryTarget(event.target)) return
-      if (event.target instanceof Element && event.target.closest('.mn-graph-preview') !== null) return
       const cards =
         mode === 'focus'
           ? (egoLayout?.layout.cards ?? []).map((card) => ({ relPath: card.relPath, rect: card.rect }))

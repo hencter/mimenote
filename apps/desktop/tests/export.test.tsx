@@ -68,6 +68,13 @@ const NOTES = [
   },
   // 图片：Mock 的条目表里有它，`createAssetResolver` 才能按相对路径解析到
   { relPath: '附件/图.png', text: IMAGE_TEXT },
+  // callout（ADR-0022）：导出件必须与阅读视图逐字同构，且颜色内联
+  {
+    relPath: '笔记/提示框.md',
+    text: '# 提示框\n\n> [!warning] 小心\n> 这里面有 **粗体** 与 `代码`。\n',
+  },
+  // 未知类型：按 note 渲染但保留用户写的名字，并留下 `mn-callout--unknown` 的痕迹
+  { relPath: '笔记/未知提示框.md', text: '# 未知提示框\n\n> [!摘录]\n> 一段话。\n' },
 ]
 
 /** 记录导出相关的 IPC 调用，其余命令原样转发给 Mock。 */
@@ -203,6 +210,39 @@ describe('导出为自包含 HTML', () => {
     await waitFor(() => {
       expect(useToastStore.getState().toasts.some((item) => item.message === '已导出到')).toBe(true)
     })
+  })
+
+  it('callout（`> [!warning] 小心`）在导出件里与阅读视图逐字同构，且强调色是内联的（ADR-0022）', async () => {
+    const spy = await setup('笔记/提示框.md')
+
+    const outcome = await exportNoteHtml()
+    expect(outcome).not.toBeNull()
+    const html = spy.writes[0]?.html ?? ''
+
+    // 1) 渲染出来的结构就是阅读视图那一套（同一条渲染管线）：类型类名 + 标题栏 + 图标字形
+    expect(html).toContain('class="mn-callout mn-callout--warning"')
+    expect(html).toContain('mn-callout__title')
+    expect(html).toContain('mn-callout__label">小心<')
+    expect(html).toContain('mn-callout__icon')
+
+    // 2) 样式内联进导出件（导出件离开应用后没有 app.css，也没有 `--mn-callout-*` 变量）
+    expect(html).toContain('.mn-callout--warning')
+    expect(html).toContain('--mn-callout-accent')
+    // 颜色是**具体值**：导出件不依赖任何外部样式表或变量定义
+    expect(html).toMatch(/--mn-callout-accent:\s*#ff9100/i)
+    expect(html).not.toContain('asset:')
+  })
+
+  it('未知类型的 callout 在导出件里带上 `mn-callout--unknown`（下游据此如实说明）', async () => {
+    const spy = await setup('笔记/未知提示框.md')
+
+    await exportNoteHtml()
+    const html = spy.writes[0]?.html ?? ''
+
+    expect(html).toContain('mn-callout--note')
+    expect(html).toContain('mn-callout--unknown')
+    // 标题保留用户写的那个词（不是被静默改成"笔记"）
+    expect(html).toContain('mn-callout__label">摘录<')
   })
 
   it('frontmatter 不进正文，标题优先取 frontmatter 的 title', async () => {

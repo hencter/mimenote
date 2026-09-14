@@ -53,7 +53,13 @@ const NOTES = [
     ].join('\n'),
   },
   { relPath: '笔记/乙.md', text: '# 乙\n\n回到 [[甲]]，并跳到 [[甲#小节]]。\n' },
-  { relPath: '笔记/丙.md', text: '丙没有任何链接。\n' },
+  // 丙 没有链接（索引/反链的用例依赖这一点），但它带着两个 callout：
+  // 静态站点是 callout 的第四个渲染面（ADR-0022），结构与颜色都要与阅读视图一致。
+  // 刻意**不新增一篇笔记**：这个文件的几条用例逐字断言了"共 N 篇""每篇读一次"这类计数。
+  {
+    relPath: '笔记/丙.md',
+    text: '丙没有任何链接。\n\n> [!warning] 小心\n> 提示框的正文。\n\n> [!摘录]\n> 未知类型。\n',
+  },
   { relPath: '附件/图.png', text: IMAGE_TEXT },
 ]
 
@@ -226,6 +232,27 @@ describe('整库导出：写出来的目录里到底有什么', () => {
     // 图片字节由宿主复制（不经过 IPC 的 base64 通道），这里只报了路径
     expect(spy.copied).toEqual(['附件/图.png'])
     expect(result?.assets).toBe(1)
+  })
+
+  it('callout 也进了静态站点：结构同构、颜色仍在内联样式里（ADR-0022 的第四处渲染面）', async () => {
+    const spy = await setup()
+    await exportVaultSite()
+
+    const files = writtenFiles(spy)
+    const page = files.get('笔记/丙.html') ?? ''
+    const css = files.get('assets/site.css') ?? ''
+
+    // 1) 页面里的结构就是阅读视图那一套（同一条渲染管线）
+    expect(page).toContain('class="mn-callout mn-callout--warning"')
+    expect(page).toContain('mn-callout__title')
+    expect(page).toContain('mn-callout__label">小心<')
+    // 2) 未知类型照样渲染、名字保留用户写的，并带上那个痕迹类名
+    expect(page).toContain('mn-callout--unknown')
+    expect(page).toContain('mn-callout__label">摘录<')
+    // 3) 样式在整站共享的那份 CSS 里（站点不开外网、也没有 app.css）
+    expect(css).toContain('.mn-callout')
+    expect(css).toContain('.mn-callout--warning')
+    expect(css).not.toContain('asset:')
   })
 
   it('共享样式表：整站一份，每页按自身深度引用它', async () => {
