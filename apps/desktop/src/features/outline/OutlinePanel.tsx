@@ -17,7 +17,7 @@
  * 不阻塞输入）。标题树变化只影响这个侧栏，落后一帧没有观感问题。
  */
 
-import { useCallback, useDeferredValue, useMemo } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react'
 
 import { useUiStore } from '@/state/ui-store'
 import { Icon } from '@/components/Icon'
@@ -26,7 +26,7 @@ import { jumpToLineInOpenNote } from '@/features/editor/line-jump'
 import { useCursorStore } from '@/state/cursor-store'
 import { useNoteStore } from '@/state/note-store'
 
-import { scrollPreviewToHeading } from './outline-scroll'
+import { scrollPreviewToHeading, subscribeVisibleHeading } from './outline-scroll'
 import './outline.css'
 
 /** 每一项的缩进步长（像素），与 `outline.css` 里的 padding 计算一致。 */
@@ -63,11 +63,26 @@ export function OutlinePanel() {
   const deferredText = useDeferredValue(text)
   const headings = useMemo(() => parseOutline(deferredText), [deferredText])
   const depths = useMemo(() => outlineDepths(headings), [headings])
-  // 阅读视图里没有光标，但"当前读到哪一节"同样有意义：用不上就先不高亮，
-  // 保持"高亮 = 光标所在章节"这一条语义（不猜、不装作知道）
+
+  /**
+   * 阅读视图里"读到哪一节"：视口顶部最后一个标题的序号（由滚动订阅回报）。
+   *
+   * 与编辑视图的"当前章节"是同一件事的两种来源：那边是光标行，这边是滚动位置。
+   * 语义因此统一为"你正看着的那一节"，而不是两个视图各说一套。
+   */
+  const [visibleOrdinal, setVisibleOrdinal] = useState(-1)
+  useEffect(() => {
+    if (viewMode !== 'read') {
+      setVisibleOrdinal(-1)
+      return
+    }
+    // 订阅放在 effect 里：切走阅读视图（或换笔记）时必须撤掉，否则滚动监听会越挂越多
+    return subscribeVisibleHeading(setVisibleOrdinal)
+  }, [viewMode, relPath, deferredText])
+
   const activeIndex = useMemo(
-    () => (viewMode === 'edit' ? currentHeadingIndex(headings, cursorLine) : -1),
-    [viewMode, headings, cursorLine],
+    () => (viewMode === 'read' ? visibleOrdinal : currentHeadingIndex(headings, cursorLine)),
+    [viewMode, visibleOrdinal, headings, cursorLine],
   )
 
   const jump = useCallback(

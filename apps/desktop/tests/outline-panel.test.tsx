@@ -295,7 +295,7 @@ describe('大纲面板', () => {
       )
     })
 
-    // 阅读视图没有光标：不高亮（不猜"读到哪一节"）
+    // 阅读视图**没有挂预览**时不高亮：那时"读到哪一节"没有任何依据（不猜）
     await act(async () => {
       useUiStore.getState().setViewMode('read')
     })
@@ -378,5 +378,81 @@ describe('大纲在阅读视图的滚动', () => {
     })
     const heading = document.querySelector('.mn-preview__body h1')
     expect(heading?.classList.contains(OUTLINE_FLASH_CLASS)).toBe(false)
+  })
+
+  it('按滚动位置判定"当前读到哪一节"：视口顶部最后一个标题（没有布局就返回 -1）', async () => {
+    const { visibleHeadingOrdinal } = await import('@/features/outline/outline-scroll')
+
+    // jsdom 不做布局：手工给出每个标题相对容器顶边的位置
+    const container = document.createElement('div')
+    const body = document.createElement('div')
+    body.className = 'mn-preview__body'
+    const stubRect = (element: Element, top: number): void => {
+      Object.defineProperty(element, 'getBoundingClientRect', {
+        value: () => ({ top }) as DOMRect,
+        // 可重定义：同一条用例里会改同一个元素的 top 来模拟滚动
+        configurable: true,
+      })
+    }
+    for (const top of [120, 320, 560]) {
+      const heading = document.createElement('h2')
+      stubRect(heading, top)
+      body.appendChild(heading)
+    }
+    container.appendChild(body)
+    stubRect(container, 100)
+
+    // 还没滚到第一个标题（120 > 100 + 8）
+    expect(visibleHeadingOrdinal(container)).toBe(-1)
+    // 第一个标题刚贴到顶边（≈ 容器顶边 + 余量）→ 算作"进入这一节"
+    const first = body.querySelector('h2') as HTMLElement
+    stubRect(first, 104)
+    expect(visibleHeadingOrdinal(container)).toBe(0)
+    // 滚过第二个标题 → 第 1 号（0 起算）是当前章节
+    const second = body.querySelectorAll('h2')[1] as HTMLElement
+    stubRect(second, 90)
+    expect(visibleHeadingOrdinal(container)).toBe(1)
+
+    expect(visibleHeadingOrdinal(null)).toBe(-1)
+  })
+
+  it('阅读视图里滚动预览：大纲的高亮跟着走（并且没有预览时不猜）', async () => {
+    render(
+      <>
+        <OutlinePanel />
+        <MarkdownPreview />
+      </>,
+    )
+    await openVault()
+    await open('笔记/大纲.md')
+    await act(async () => {
+      useUiStore.getState().setViewMode('read')
+    })
+    await waitFor(() => {
+      expect(document.querySelectorAll('.mn-preview__body h2').length).toBe(2)
+    })
+
+    // jsdom 不做布局：给滚动容器与四个标题手工安排位置
+    const scroller = document.querySelector<HTMLElement>('.mn-preview__scroller')
+    expect(scroller).not.toBeNull()
+    Object.defineProperty(scroller as HTMLElement, 'getBoundingClientRect', {
+      value: () => ({ top: 0 }) as DOMRect,
+    })
+    const headings = Array.from(document.querySelectorAll<HTMLElement>('.mn-preview__body h1, .mn-preview__body h2, .mn-preview__body h3'))
+    headings.forEach((heading, index) => {
+      // 第 3 个标题（`### 小节`，data-outline-line=10）已经滚过顶边，其余还在下面
+      const top = index <= 2 ? -20 + index * 10 : 300
+      Object.defineProperty(heading, 'getBoundingClientRect', { value: () => ({ top }) as DOMRect })
+    })
+
+    await act(async () => {
+      scroller?.dispatchEvent(new Event('scroll'))
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
+    })
+
+    await waitFor(() => {
+      const current = document.querySelector('.mn-outline__item--current')
+      expect(current?.getAttribute('data-outline-line')).toBe('10')
+    })
   })
 })
