@@ -54,22 +54,24 @@ export function visibleHeadingOrdinal(container: HTMLElement | null): number {
 /**
  * 订阅阅读视图的滚动，回报"当前章节"的序号；返回取消函数（**调用方必须在卸载时调用**）。
  *
- * 三处细节都是为了"滚动时不要每帧都让 React 重渲染"：
- * 1. 监听是 `passive` 的（不阻塞滚动）；
- * 2. 计算放在 `requestAnimationFrame` 里，一帧最多一次；
- * 3. 序号没变就不回调（滚过正文时序号变，但同一节里连续滚动能省掉大量重复帧）。
+ * 监听装在 **document 的捕获阶段**（而不是某个具体容器元素上）：
+ * 1. 预览的滚动容器可能因为视图切换/重新渲染而换成另一个元素，装在元素上的监听会静默失效
+ *    （表现就是"滚动了但大纲不动"）——捕获阶段能收到页面上**任何**滚动容器的滚动事件；
+ * 2. 因此每次计算时**重新查**容器与标题，不缓存元素引用；
+ * 3. 计算放在 `requestAnimationFrame` 里（一帧最多一次）、序号没变就不回调
+ *    （同一节里连续滚动能省掉大量重复渲染）。
  */
 export function subscribeVisibleHeading(onOrdinal: (ordinal: number) => void): () => void {
   if (typeof document === 'undefined') return () => undefined
-  const container = document.querySelector<HTMLElement>('.mn-preview__scroller')
-  if (container === null) return () => undefined
 
   let frame: number | null = null
   let last = -2
 
   const compute = (): void => {
     frame = null
-    const ordinal = visibleHeadingOrdinal(container)
+    const ordinal = visibleHeadingOrdinal(
+      document.querySelector<HTMLElement>('.mn-preview__scroller'),
+    )
     if (ordinal === last) return
     last = ordinal
     onOrdinal(ordinal)
@@ -83,11 +85,11 @@ export function subscribeVisibleHeading(onOrdinal: (ordinal: number) => void): (
         : (setTimeout(compute, 16) as unknown as number)
   }
 
-  container.addEventListener('scroll', schedule, { passive: true })
+  document.addEventListener('scroll', schedule, { passive: true, capture: true })
   // 挂载时先算一次：切到阅读视图时视口可能已经停在某一节上
   schedule()
   return () => {
-    container.removeEventListener('scroll', schedule)
+    document.removeEventListener('scroll', schedule, { capture: true })
     if (frame !== null) {
       if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame)
       else clearTimeout(frame)

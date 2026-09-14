@@ -854,8 +854,54 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       '阅读视图里对应标题被高亮',
     )
     expect(await page.locator('.mn-preview__body .mn-outline-flash').textContent()).toBe('第一节')
-    // 阅读视图里没有光标 ⇒ 刻意不高亮"当前章节"（不猜读到哪一节）
-    expect(await page.locator('.mn-outline__item--current').count()).toBe(0)
+
+    /*
+     * 阅读视图里的"当前章节"跟**滚动位置**走。
+     *
+     * 先把窗口缩矮，逼出真正的滚动条 —— 这篇 mock 笔记很短，1280×800 下整篇放得下，
+     * 那种情况下"滚动"是空话（任何断言都会因为滚不动而假通过或假失败）。
+     */
+    await page.setViewportSize({ width: 900, height: 360 })
+    await waitUntil(
+      async () =>
+        await page.evaluate(() => {
+          const scroller = document.querySelector('.mn-preview__scroller')
+          return scroller !== null && scroller.scrollHeight > scroller.clientHeight + 40
+        }),
+      5_000,
+      '预览变成可滚动',
+    )
+
+    // 断言"跟着滚动走"这个**关系**，而不是某个具体行号：这篇笔记很短，
+    // 最后一个标题根本滚不到顶（滚到底时视口顶部那一节是「小节」），写死行号只会把
+    // 布局细节焊进用例。
+    // 注意用 `evaluate` 读而不是 `locator().getAttribute()`：后者在元素不存在时会等满默认超时
+    // （15s），而"还没滚到第一个标题时本来就没有高亮"是合法状态。
+    const readCurrentLine = async (): Promise<number> =>
+      await page.evaluate(() => {
+        const node = document.querySelector('.mn-outline__item--current')
+        return node === null ? 0 : Number(node.getAttribute('data-outline-line') ?? 0)
+      })
+
+    const beforeScroll = await readCurrentLine()
+    await page.evaluate(() => {
+      const scroller = document.querySelector('.mn-preview__scroller')
+      if (scroller !== null) scroller.scrollTop = scroller.scrollHeight
+    })
+    await waitUntil(
+      async () => (await readCurrentLine()) > beforeScroll,
+      5_000,
+      '滚下去之后当前章节往后走了',
+    )
+    // 而且必须停在这篇笔记真正的标题上（不是随便一个行号）
+    expect(['1', '5', '9', '15']).toContain(String(await readCurrentLine()))
+
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await waitUntil(
+      async () => (await page.locator('.mn-preview__body').count()) === 1,
+      5_000,
+      '恢复窗口尺寸',
+    )
 
     // 再按一次收起面板
     await page.locator('button[aria-label="编辑（所见即所得）"]').click()
