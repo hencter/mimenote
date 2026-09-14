@@ -200,6 +200,28 @@ describe('渲染（与阅读视图/导出件同一条管线）', () => {
     expect(unknown).toContain('mn-callout--unknown')
   })
 
+  it('多个 callout 各自闭合：后面的 callout 与正文都不会被前一个吞进去（回归）', () => {
+    /*
+      真实缺陷：找"本块的闭合标签"时用的是 `tokens.findLastIndex(同层 blockquote_close)` ——
+      那是**整个 token 流里最后一个**同层闭合。多个 callout 同处一层时，第一个 callout 认领了
+      最后一个的闭合标签：它自己的 `</blockquote>` 留着不改，于是那个 `<div class="mn-callout">`
+      永远不闭合 —— 渲染出来就是"后面的 callout 嵌进前一个里面"，第一个 callout 把文档剩下的
+      部分全吞进去（用户报的"递归渲染"）。
+    */
+    const html = renderMarkdown('> [!note] 甲\n> 甲正文\n\n> [!tip] 乙\n> 乙正文\n\n普通段落\n')
+
+    // 结构层：两个 callout 与后面的普通段落必须是**三个兄弟**，没有互相嵌套。
+    // 这一条是关键判据 —— 字符串层会被净化器的容错解析"修好"，只有结构能看出真实嵌套。
+    const root = document.createElement('div')
+    root.innerHTML = html
+    const kinds = Array.from(root.children).map((element) =>
+      element.classList.contains('mn-callout')
+        ? (element.className.split(' ')[1] ?? '')
+        : element.tagName,
+    )
+    expect(kinds).toEqual(['mn-callout--note', 'mn-callout--tip', 'P'])
+  })
+
   it('普通引用块**一个字都不变**（不因为这条新语法而多出类名）', () => {    const html = renderMarkdown('> 只是引用\n')
     expect(html).toContain('<blockquote>')
     expect(html).not.toContain('mn-callout')

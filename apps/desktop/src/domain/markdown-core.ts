@@ -469,9 +469,24 @@ md.core.ruler.push('mn_callout', (state) => {
         ? `mn-callout mn-callout--${marker.type}`
         : `mn-callout mn-callout--${marker.type} mn-callout--unknown`,
     )
-    const close = tokens.findLastIndex(
-      (token, at) => at > index && token.type === 'blockquote_close' && token.level === open.level,
-    )
+    /*
+     * 本块自己的闭合标签：**从标记段往后**第一个同层 `blockquote_close`。
+     *
+     * 这里曾经用 `tokens.findLastIndex(...)` —— 那是整个 token 流里**最后一个**同层闭合。
+     * 一层里有多个引用块（多个 callout 是最常见的形态）时，第一个 callout 会认领最后一个的
+     * 闭合标签：它自己的 `</blockquote>` 留着不改，那个 `<div class="mn-callout">` 于是永远不闭合，
+     * 浏览器只能把后面的一切都塞进它里面 —— 表面上就是"多个 callout 递进嵌套"（用户报的"递归渲染"）。
+     * 同层的第一个闭合必然是本块自己的（CommonMark 的引用块正确嵌套，内层的闭合层级更高）。
+     */
+    let close = -1
+    for (let probe = inline + 1; probe < tokens.length; probe += 1) {
+      const token = tokens[probe]
+      if (token === undefined) break
+      if (token.type === 'blockquote_close' && token.level === open.level) {
+        close = probe
+        break
+      }
+    }
     if (close > index) {
       const closing = tokens[close]
       if (closing !== undefined) closing.tag = 'div'
