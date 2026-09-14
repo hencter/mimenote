@@ -30,9 +30,14 @@
  * ## 交互（canvas 之后必须自己实现的那部分）
  *
  * - 命中的是**世界坐标**里的卡片矩形（`cardAt` / `rectIndex`），因此缩放与平移不影响点击；
- * - 空白处拖动 = 平移画布，空白处单击 = 关掉预览；
+ * - 空白处拖动 = 平移画布，空白处单击 = 取消选中（同时松开被按住的卡片，见「失去焦点」那条）；
  * - 卡片上拖动 = 移动卡片（**只有全库视图**：焦点视图的位置就是"离中心几跳"，拖动会把它变成谎话）；
- * - 卡片上单击 = 选中并在右侧预览，双击 = 进编辑器打开；
+ *   焦点视图里拖动 = **把这张卡片按住**（力场不再移动它）；选中另一张或点空白处 = 它失去焦点，
+ *   随即被松开、继续漂浮（用户原话："聚焦后的失去焦点继续松开卡片，保持浮动"）；
+ * - 卡片上单击 = 选中（相关连线高亮 + HUD 出现它的高度档与「浮窗打开」）；**卡片正面就是完整
+ *   正文**，所以不再有侧边预览面板（ADR-0025 把它移除了）；双击 = 进编辑器打开；
+ * - 悬停在正文里某段 `[[链接]]` 上时，**对应的那条连线**提亮、那段文字也描边 ——
+ *   找线不再需要"从卡片边缘往回猜"。
  * - 焦点视图里"换圆心"不需要额外按钮：双击某张卡片就打开了它，圆心自然跟着当前笔记走。
  */
 
@@ -43,6 +48,7 @@ import { openNote } from '@/app/actions'
 import { GRAPH_COMMAND_IDS } from '@/app/builtin-commands'
 import { commands } from '@/app/commands'
 import { isTextEntryTarget } from '@/app/keymap'
+import { ContextMenu, type ContextMenuItem } from '@/components/ContextMenu'
 import { Icon } from '@/components/Icon'
 import { describeError, type GraphEdge, type GraphNode } from '@/ipc/types'
 import {
@@ -56,22 +62,24 @@ import { useNoteStore } from '@/state/note-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 import { GraphEdges } from './GraphEdges'
-import { GraphPreview } from './GraphPreview'
 import { ancestorFolders, buildGraphFindIndex, findGraphMatches } from './find'
 import {
   canvasMeasure,
+  cardChrome,
   createCardLayoutCache,
   layoutCard,
+  titleOnlyCardHeight,
   type CardLayout,
   type MeasureText,
 } from './canvas/measure'
 import { readPalette, type GraphPalette } from './canvas/palette'
 import { paintGraph, cardResizeHandleRect, type PaintNode } from './canvas/paint'
 import { createTokenReader } from './canvas/probe'
+import { DEFAULT_METRICS } from './canvas/text-layout'
 import { FORCE_PRESETS } from './force-presets'
 import { ForcePanel } from './ForcePanel'
 import { createForceSimulation, type ForceSimulation } from './force'
-import { linkEdgeGeometry } from './link-edge'
+import { linkEdgeGeometry, linkZones, normalizeLinkText, type LinkZone } from './link-edge'
 import { FloatingNote } from './FloatingNote'
 import {
   OVERSCAN,
@@ -169,8 +177,10 @@ const FLOAT_FPS = 20
 /**
  * 浮动面板的层级基数。
  *
- * 必须**高于**停靠面板（`.mn-graph-preview` 是 5）：浮窗是"我把这篇拎出来看"的动作，
- * 被停靠面板盖住就没有意义了。面板之间的顺序由 store 里的 `z` 决定（点一下置顶）。
+ * 面板之间的顺序由 store 里的 `z` 决定（点一下置顶）；基数本身要高于画布上的一切
+ * （HUD 3 / 引线 2 / 卡片 1）。曾经有一个 z-index 5 的停靠预览面板（`.mn-graph-preview`），
+ * 移除它之后这个基数保留不动：层级表是稳定的外部契约（CSS 与测试都在数它），
+ * 没必要为了"数值连续"去挪动其它层。
  */
 const FLOAT_PANE_Z = 6
 
@@ -180,17 +190,20 @@ function topPaneZ(panes: readonly { z: number }[]): number {
 }
 
 /**
- * "正文高度上限"的几档（HUD 上的四个小胶囊）。
+ * "正文高度上限"的几档（HUD 上的小胶囊）。
  *
  * 为什么给档位而不是一个滑块：卡片高度是**内容决定**的（短笔记撑不成高卡片），
  * 上限只在"这篇太长、我只要看开头"时才有意义；档位比连续滑块更容易一眼选中想要的那个量级。
- * `null` = 自动（回到默认上限）。
+ * `null` = 自动（回到默认上限）；`'full'` = **全文**（不截断，整篇都排进卡片 ——
+ * 长文的卡片会非常高，这正是用户要的"卡片完整展示全文"）。
+ * 想随手调就拖卡片右下角的把手（宽高同时改，见 `setCardSize`）。
  */
-const CARD_HEIGHT_CHOICES: readonly { label: string; value: number | null; hint: string }[] = [
+const CARD_HEIGHT_CHOICES: readonly { label: string; value: number | null | 'full'; hint: string }[] = [
   { label: '自动', value: null, hint: '按默认上限截断（长笔记会在末尾补一行 …）' },
   { label: '短', value: 400, hint: '只留开头几段（一屏能放下更多卡片）' },
   { label: '中', value: 900, hint: '中等长度笔记基本能看全' },
   { label: '长', value: 2000, hint: '尽量看全（卡片会很高）' },
+  { label: '全文', value: 'full', hint: '不截断：整篇笔记都画在卡片上（长文的卡片会非常高）' },
 ]
 
 /**
@@ -273,6 +286,27 @@ function edgeTargets(edge: GraphEdge, to: GraphNode): string[] {
   return [...new Set([edge.toRawTarget, to.title, basename, to.relPath].filter((text) => text !== ''))]
 }
 
+/**
+ * 两个悬停热区是否同一个（逐字段比较）。
+ *
+ * 为什么不能靠引用：`linkZones` 的返回每次 memo 重建都换对象引用，引用比较会让
+ * `setHoveredLink` 每个 pointermove 都触发一次重渲染 —— 而内容没变时一个像素都不该重画。
+ */
+function sameHoveredLink(
+  a: { relPath: string; zone: LinkZone; edgeKey: string } | null,
+  b: { relPath: string; zone: LinkZone; edgeKey: string } | null,
+): boolean {
+  if (a === null || b === null) return a === b
+  return (
+    a.relPath === b.relPath &&
+    a.edgeKey === b.edgeKey &&
+    a.zone.x === b.zone.x &&
+    a.zone.y === b.zone.y &&
+    a.zone.width === b.zone.width &&
+    a.zone.height === b.zone.height
+  )
+}
+
 interface PointerState {
   pointerId: number | undefined
   button: number
@@ -285,12 +319,14 @@ interface PointerState {
   /** 按在卡片上时：那张卡片的路径与"按下点相对卡片左上角"的偏移（拖动时保持不跳）。 */
   card: { relPath: string; grabX: number; grabY: number } | null
   /**
-   * 按在**右下角的缩放手柄**上时：那张卡片与"它当时的左边界"（世界坐标）。
+   * 按在**右下角的缩放手柄**上时：那张卡片与"它当时的左边界 / 上边界"（世界坐标）。
    *
    * 为什么与拖动分开记：两者的意图完全不同（一个搬位置、一个改大小），
    * 而手柄落在卡片**内部** —— 不先判它，拖手柄就会变成拖动卡片。
+   * 左边界与上边界都记：手柄拖动同时改**宽与高**（宽度 = 光标 − 左边界，
+   * 高度 = 光标 − 上边界；"只能调宽度"是用户报回来的缺陷）。
    */
-  resize: { relPath: string; left: number } | null
+  resize: { relPath: string; left: number; top: number } | null
 }
 
 /** 全库视图紧凑卡片的附加行：目录、出入度、标签。 */
@@ -321,6 +357,8 @@ export function GraphCanvas() {
   const cardSizes = useGraphStore((state) => state.cardSizes)
   const tension = useGraphStore((state) => state.tension)
   const edgeFromLink = useGraphStore((state) => state.edgeFromLink)
+  /** 纯标题卡片（只画文件名，不排正文；见 store 里 `titleOnly` 的说明）。 */
+  const titleOnly = useGraphStore((state) => state.titleOnly)
   const floatingPanes = useGraphStore((state) => state.floatingPanes)
   /** 力导向的预设 id 与"是否持续漂浮"（两个偏好，见 `features/graph/force-presets.ts`）。 */
   const forcePresetId = useGraphStore((state) => state.forcePreset)
@@ -342,6 +380,29 @@ export function GraphCanvas() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [panning, setPanning] = useState(false)
   const [hovered, setHovered] = useState<string | null>(null)
+  /**
+   * 悬停的 wikilink 热区（卡片 + 热区矩形 + 对应边的 key）。
+   *
+   * 一份状态喂两个消费者：SVG 连线层（提亮那条边）与 canvas 画笔（给那段文字描边）——
+   * 两边看同一份，"高亮的字"与"高亮的线"才永远指的是同一条边。
+   */
+  const [hoveredLink, setHoveredLink] = useState<{ relPath: string; zone: LinkZone; edgeKey: string } | null>(null)
+  /** 光标是否停在卡片的缩放手柄上（决定 nwse-resize 光标；手柄画在 canvas 上，光标只能自己来）。 */
+  const [overResizeHandle, setOverResizeHandle] = useState(false)
+  /**
+   * 最近一次指针位置（屏幕坐标）。漂浮开着时卡片持续在动，指针不动也会从"指着这段 [[链接]]"
+   * 变成"指着空白"—— 热区命中要按当前矩形重算（见 `tick` 那条 effect），重算需要这个点。
+   */
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null)
+  /**
+   * 卡片右键菜单（`null` = 没打开）。
+   *
+   * 卡片画在 canvas 上、命中测试是组件自己做的，所以右键也必须自己接：
+   * `onContextMenu` 里先按世界坐标找出是哪一张，再把菜单弹在光标处。
+   * 菜单项全部指向**既有入口**（`openNote` / `openFloating` / `unpinCards` / 尺寸档），
+   * 不在这里重写任何动作。
+   */
+  const [cardMenu, setCardMenu] = useState<{ relPath: string; x: number; y: number } | null>(null)
   /** 「力度管理」面板是否打开（瞬时状态，不持久化）。 */
   const [forcePanelOpen, setForcePanelOpen] = useState(false)
   /** 上一帧真正画出来的卡片数（视口裁剪之后）—— 只用于诊断属性，不参与渲染决策。 */
@@ -438,14 +499,24 @@ export function GraphCanvas() {
     const layouts = new Map<string, CardLayout>()
 
     for (const node of ego.data.nodes) {
+      const manual = cardSizes.get(node.relPath)
+      const width = manual?.width ?? EGO_CARD_WIDTH
+      // 纯标题模式：不排正文（layouts 里刻意没有它，画笔退成"只有标题行"的壳）。
+      // 高度由同一份壳几何推出（`titleOnlyCardHeight`），不手写数字；
+      // 正文排版（markdown 解析 + 折行）的开销这一模式下全省掉。
+      if (titleOnly) {
+        sizes.set(node.relPath, { width, height: titleOnlyCardHeight() })
+        continue
+      }
       const text = texts.get(node.relPath)
       if (text === undefined) {
         sizes.set(node.relPath, EGO_FALLBACK_SIZE)
         continue
       }
-      const manual = cardSizes.get(node.relPath)
-      const width = manual?.width ?? EGO_CARD_WIDTH
-      const maxHeight = manual?.height ?? EGO_CARD_MAX_HEIGHT
+      // 「全文」开关：不截断（`layoutCard` 对非有限上限按"不截断"处理，缓存键也随之分开）。
+      // 长文的卡片会非常高 —— 这正是用户要的效果（"卡片完整展示全文"）。
+      const maxHeight =
+        manual?.full === true ? Number.POSITIVE_INFINITY : (manual?.height ?? EGO_CARD_MAX_HEIGHT)
       const card = cache.get(
         { relPath: node.relPath, title: node.title, text, width, maxHeight },
         () =>
@@ -471,7 +542,7 @@ export function GraphCanvas() {
       fallbackSize: EGO_FALLBACK_SIZE,
     })
     return { layout, layouts }
-  }, [mode, ego, texts, measure, cardSizes])
+  }, [mode, ego, texts, measure, cardSizes, titleOnly])
 
   // -------------------------------------------------------------------------
   // 视口换算与"屏幕上有哪些卡片"
@@ -613,6 +684,7 @@ export function GraphCanvas() {
     return () => clearInterval(timer)
   }, [mode, floating, egoLayout, forceParams])
 
+
   /** 当前（可能是漂浮之后的）卡片矩形；没有模拟时退回布局给的确定性位置。 */
   const currentRect = useCallback(
     (relPath: string): Rect | null => {
@@ -658,6 +730,42 @@ export function GraphCanvas() {
     advanceSimulation(sim, DRAG_STEPS * 4)
   }, [advanceSimulation])
 
+  /**
+   * 松开"除 keep 之外"所有被按住的卡片（保持浮动：加热后重新交给力场）。
+   *
+   * 与 `releasePins` 的差别只在"留一张"：选中另一张卡片时，上一张失去焦点、该松开；
+   * 而新选中的这张若正被拖着，不该因为兄弟被松开而自己跳走。
+   */
+  const releasePinsExcept = useCallback(
+    (keep: string | null) => {
+      const held = [...useGraphStore.getState().pins.keys()].filter((relPath) => relPath !== keep)
+      if (held.length === 0) return
+      for (const relPath of held) useGraphStore.getState().unpinCards(relPath)
+      const sim = simRef.current
+      if (sim === null) return
+      for (const relPath of held) sim.unpin(relPath)
+      sim.heat(RELEASE_HEAT)
+      advanceSimulation(sim, DRAG_STEPS * 4)
+    },
+    [advanceSimulation],
+  )
+
+  /**
+   * 选中变化 = 上一张卡片"失去焦点"：松开它（们），让力场重新接管（用户原话：
+   * "聚焦后的失去焦点继续松开卡片，保持浮动"）。
+   *
+   * 判据放在这里而不是 `select` 里：选中也可能来自键盘方向键 / 「定位笔记」/ 命令 ——
+   * 无论哪条路换的选中，"上一张失去焦点就松开"都该成立。空看点空白处的松开在
+   * `endPointer` 里单独做（那一次选中可能没变 —— 比如拖完卡片后本来就没选中任何东西）。
+   */
+  const previousSelectedRef = useRef(selected)
+  useEffect(() => {
+    const previous = previousSelectedRef.current
+    previousSelectedRef.current = selected
+    if (previous === selected) return
+    releasePinsExcept(selected)
+  }, [selected, releasePinsExcept])
+
   const visibleCardsList = useMemo<EgoCardBox[] | GraphCardBox[]>(() => {
     if (mode === 'focus') {
       return egoLayout === null ? [] : visibleCards(egoLayout.layout.cards, visibleWorldRect)
@@ -702,8 +810,13 @@ export function GraphCanvas() {
         isRoot: card.relPath === root,
         hasFocus: card.relPath === root || card.relPath === selected,
         layout: egoLayout.layouts.get(card.relPath) ?? null,
-        // 正文读不到的那几篇退成紧凑卡片（标题 + 目录 + 度数），至少还能看出它是谁
-        ...(egoLayout.layouts.has(card.relPath) ? {} : { compactLines: compactLinesFor(card.node) }),
+        // 纯标题模式：正文区整段留空（连"目录/度数"都不画 —— 这个档位要的就是"只有标题"）；
+        // 否则正文读不到的那几篇退成紧凑卡片（标题 + 目录 + 度数），至少还能看出它是谁
+        ...(titleOnly
+          ? { compactLines: [] as readonly string[] }
+          : egoLayout.layouts.has(card.relPath)
+            ? {}
+            : { compactLines: compactLinesFor(card.node) }),
       }))
     }
     if (vaultLayout === null || mode !== 'vault') return []
@@ -717,7 +830,7 @@ export function GraphCanvas() {
       layout: null,
       compactLines: compactLinesFor(card.node),
     }))
-  }, [mode, egoLayout, ego, vaultLayout, selected, currentRect, tick, dragging])
+  }, [mode, egoLayout, ego, vaultLayout, selected, currentRect, tick, dragging, titleOnly])
 
   /**
    * 连线：两种视图都交给 SVG 层（正交折线、箭头、悬空虚影都已经在那里实现好了）。
@@ -744,11 +857,14 @@ export function GraphCanvas() {
         const touchesRoot = edge.fromRelPath === root || edge.toRelPath === root
         const touchesSelected =
           selected !== null && (edge.fromRelPath === selected || edge.toRelPath === selected)
+        const key = edgeKey(edge)
+        // 悬停正文里某段 [[链接]] 时，它对应的那条边提亮（哪怕它原本是"环与环之间"的淡虚线）
+        const hoveredEdge = hoveredLink !== null && hoveredLink.edgeKey === key
         const style: EdgeStyle = {
           // 与中心无关的边画虚线：环与环之间的横线是"这两篇也互相提到"，属于上下文，不是主角
           dashed: !touchesRoot,
-          dim: !touchesRoot && !touchesSelected,
-          highlight: touchesRoot || touchesSelected,
+          dim: !touchesRoot && !touchesSelected && !hoveredEdge,
+          highlight: touchesRoot || touchesSelected || hoveredEdge,
         }
         const title =
           edge.count > 1
@@ -768,7 +884,7 @@ export function GraphCanvas() {
           ...(measure === null ? {} : { measure }),
         })
         visuals.push({
-          key: edgeKey(edge),
+          key,
           edge,
           style,
           d: geometry.spanPath,
@@ -802,6 +918,7 @@ export function GraphCanvas() {
     edgeFromLink,
     measure,
     tick,
+    hoveredLink,
   ])
 
   const paletteRef = useRef<{
@@ -864,6 +981,10 @@ export function GraphCanvas() {
       mode,
       selected,
       hovered,
+      // 悬停的那段 [[链接]]（卡片内坐标）：画笔给它描一个强调色的框，
+      // 与 SVG 层"提亮对应连线"是同一个动作的两半
+      hoveredLink:
+        hoveredLink === null ? null : { relPath: hoveredLink.relPath, zone: hoveredLink.zone },
       visible: visibleSet,
       token: palette.token,
     })
@@ -881,6 +1002,7 @@ export function GraphCanvas() {
     mode,
     selected,
     hovered,
+    hoveredLink,
   ])
 
   // -------------------------------------------------------------------------
@@ -1033,12 +1155,10 @@ export function GraphCanvas() {
   const applyWheel = useCallback((event: WheelEvent): void => {
     const host = hostRef.current
     if (host === null) return
-    // 预览面板与浮动面板里的滚轮属于"滚正文"，不该把画布缩放掉。
-    // （HUD 没有可滚动内容，因此不在排除之列 —— 光标停在 HUD 上时滚轮照样平移/缩放画布。）
-    if (
-      event.target instanceof Element &&
-      event.target.closest('.mn-graph-preview, .mn-float-note') !== null
-    ) {
+    // 浮动面板里的滚轮属于"滚正文"，不该把画布缩放掉。
+    // （HUD 没有可滚动内容，因此不在排除之列 —— 光标停在 HUD 上时滚轮照样平移/缩放画布。
+    // 曾经的停靠预览面板 `.mn-graph-preview` 已随 ADR-0025 移除，只剩浮窗要排除。）
+    if (event.target instanceof Element && event.target.closest('.mn-float-note') !== null) {
       return
     }
     event.preventDefault()
@@ -1112,6 +1232,95 @@ export function GraphCanvas() {
     [mode, egoLayout, vaultLayout, transform.scale, currentRect],
   )
 
+  // -------------------------------------------------------------------------
+  // 悬停 wikilink → 高亮对应连线
+  // -------------------------------------------------------------------------
+
+  /**
+   * 每张卡片正文里的 wikilink 热区（**卡片内坐标**）。
+   *
+   * 为什么按卡片内坐标存而不是世界坐标：漂浮开着时卡片每帧都在动，世界坐标的热区
+   * 立刻就过期；卡片内坐标与排版一样是稳定的，命中测试时再用**当前**矩形换算 ——
+   * "看到的"和"悬停到的"永远是同一个位置（与 `hitCard` 用当前矩形同理）。
+   */
+  const linkZonesByCard = useMemo(() => {
+    const map = new Map<string, LinkZone[]>()
+    // 纯标题模式没有正文排版，自然没有热区可指（连线也如实退成"从卡片边界出发"）
+    if (mode !== 'focus' || titleOnly || egoLayout === null || measure === null) return map
+    for (const [relPath, layout] of egoLayout.layouts) {
+      map.set(relPath, linkZones({ layout, measure }))
+    }
+    return map
+  }, [mode, titleOnly, egoLayout, measure])
+
+  /**
+   * 卡片 → 它的出边（按"正文里可能写成的样子"归一化后索引）。
+   *
+   * 热区命中的是"一段文字"，要提亮的是"一条边"：两者的桥梁就是与 `matchRun`
+   * 同一套的候选写法（`edgeTargets` + `normalizeLinkText`）。匹配不上（悬空边、
+   * 或目标不在当前深度里）就如实不亮 —— 不拿猜出来的边去高亮。
+   */
+  const edgeKeysByCard = useMemo(() => {
+    const map = new Map<string, { keys: ReadonlySet<string>; key: string }[]>()
+    if (mode !== 'focus' || ego === null) return map
+    for (const edge of ego.data.edges) {
+      if (edge.toRelPath === null) continue
+      const to = nodesByPath.get(edge.toRelPath)
+      if (to === undefined) continue
+      const keys = new Set(edgeTargets(edge, to).map(normalizeLinkText))
+      const entry = { keys, key: edgeKey(edge) }
+      const list = map.get(edge.fromRelPath)
+      if (list === undefined) map.set(edge.fromRelPath, [entry])
+      else list.push(entry)
+    }
+    return map
+  }, [mode, ego, nodesByPath])
+
+  /**
+   * 世界坐标 → 悬停的 wikilink（卡片 + 热区 + 对应边的 key）；不在任何"有对应边"的
+   * 链接上时 `null`。指向图外的 `[[链接]]`（悬空 / 超出深度）不会提亮任何线，
+   * 也就**不**伪装成可悬停 —— 光标与描边只对"真的能高亮一条线"的段落出现。
+   */
+  const linkAt = useCallback(
+    (world: Point): { relPath: string; zone: LinkZone; edgeKey: string } | null => {
+      if (mode !== 'focus') return null
+      const hit = hitCard(world)
+      if (hit === null) return null
+      const zones = linkZonesByCard.get(hit.relPath)
+      if (zones === undefined || zones.length === 0) return null
+      const chrome = cardChrome(DEFAULT_METRICS)
+      const localX = world.x - (hit.rect.x + chrome.padding)
+      const localY = world.y - (hit.rect.y + chrome.bodyTop)
+      for (const zone of zones) {
+        if (localX < zone.x || localX > zone.x + zone.width) continue
+        if (localY < zone.y || localY > zone.y + zone.height) continue
+        const normalized = normalizeLinkText(zone.text)
+        const hrefNormalized = zone.href === undefined ? '' : normalizeLinkText(zone.href)
+        const match = (edgeKeysByCard.get(hit.relPath) ?? []).find(
+          (entry) =>
+            entry.keys.has(normalized) || (hrefNormalized !== '' && entry.keys.has(hrefNormalized)),
+        )
+        if (match === undefined) return null
+        return { relPath: hit.relPath, zone, edgeKey: match.key }
+      }
+      return null
+    },
+    [mode, hitCard, linkZonesByCard, edgeKeysByCard],
+  )
+
+  /**
+   * 漂浮开着时热区跟着卡片走：指针不动，悬停命中也要按**当前**矩形重算一次，
+   * 否则高亮会停在卡片已经离开的地方。`transform` 也在依赖里：滚轮平移/缩放
+   * 不会触发 pointermove，但同样改变世界坐标（"线突然指错了"比"不高亮"更难解释）。
+   */
+  useEffect(() => {
+    if (hoveredLink === null) return
+    const point = lastPointerRef.current
+    if (point === null) return
+    const next = linkAt(toWorld(transform, point))
+    if (!sameHoveredLink(hoveredLink, next)) setHoveredLink(next)
+  }, [tick, transform, hoveredLink, linkAt])
+
   const fitNow = useCallback(() => {
     const state = useGraphStore.getState()
     if (state.mode === 'focus') {
@@ -1144,8 +1353,16 @@ export function GraphCanvas() {
       // 手柄落在卡片**内部**，所以必须先判它：否则拖手柄会变成拖动卡片（焦点视图里那种"拖不动"的观感）
       const handle =
         hit !== null && mode === 'focus' && rectHit(cardResizeHandleRect(hit.rect), world, 2 / transform.scale)
-          ? { relPath: hit.relPath, left: hit.rect.x }
+          ? { relPath: hit.relPath, left: hit.rect.x, top: hit.rect.y }
           : null
+      // 记住指针位：漂浮时的热区重算（见 `tick` effect）从这次按下也要拿得到
+      {
+        const host = hostRef.current
+        if (host !== null) {
+          const rect = host.getBoundingClientRect()
+          lastPointerRef.current = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+        }
+      }
 
       const element = event.currentTarget
       if (typeof element.setPointerCapture === 'function') {
@@ -1186,9 +1403,26 @@ export function GraphCanvas() {
       const state = pointerRef.current
       // 没按下时只更新悬停（用于高亮与鼠标指针形状）
       if (state === null) {
+        {
+          const host = hostRef.current
+          if (host !== null) {
+            const rect = host.getBoundingClientRect()
+            lastPointerRef.current = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+          }
+        }
         const world = worldPointOf(event.clientX, event.clientY)
         const hit = world === null ? null : hitCard(world)
         setHovered((current) => (current === (hit?.relPath ?? null) ? current : (hit?.relPath ?? null)))
+        // 悬停在正文里某段 [[链接]] 上 → 高亮对应的那条连线（`linkAt` 的判据）；
+        // 停在右下角手柄上 → nwse-resize 光标（手柄画在 canvas 上，光标形状只能组件自己给）
+        const link = world === null ? null : linkAt(world)
+        setHoveredLink((current) => (sameHoveredLink(current, link) ? current : link))
+        setOverResizeHandle(
+          hit !== null &&
+            world !== null &&
+            mode === 'focus' &&
+            rectHit(cardResizeHandleRect(hit.rect), world, 2 / transform.scale),
+        )
         return
       }
       if (state.pointerId !== event.pointerId) return
@@ -1201,10 +1435,14 @@ export function GraphCanvas() {
       state.lastY = event.clientY
 
       if (state.resize !== null) {
-        // 拉宽卡片：右边界跟着光标走（左边界固定），宽度在 store 里夹好范围并落盘
+        // 右下角手柄：宽高**一起**跟着光标走（左边界与上边界固定），在 store 里夹好范围并落盘。
+        // 历史包袱：这里曾经只调宽度 —— "卡片不能调高度"是用户报回来的缺陷。
+        // 注意高度是**上限**：内容没那么高时卡片仍按内容收缩（它本来就是"最多多高"）。
         const world = worldPointOf(event.clientX, event.clientY)
         if (world === null) return
-        useGraphStore.getState().setCardWidth(state.resize.relPath, world.x - state.resize.left)
+        useGraphStore
+          .getState()
+          .setCardSize(state.resize.relPath, world.x - state.resize.left, world.y - state.resize.top)
         return
       }
 
@@ -1243,7 +1481,7 @@ export function GraphCanvas() {
       if (state.card !== null) return
       useGraphStore.getState().panBy(dx, dy)
     },
-    [hitCard, worldPointOf, mode, currentRect, advanceSimulation],
+    [hitCard, worldPointOf, mode, currentRect, advanceSimulation, linkAt, transform.scale],
   )
 
   const endPointer = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1274,11 +1512,16 @@ export function GraphCanvas() {
       }
       return // 拖动过：不改选中（拖卡片 / 拉宽 / 拖画布都不是"点了一下"）
     }
-    // 没拖动：点在卡片上 = 选中（右侧出现预览），点在空白 = 关掉预览
+    // 没拖动：点在卡片上 = 选中（相关连线高亮 + HUD 出现尺寸档），点在空白 = 取消选中。
+    // 点空白同时**松开所有被按住的卡片**：它们已经没有焦点了，继续钉着只会让人以为
+    // "漂浮坏了"（用户原话："失去焦点继续松开卡片，保持浮动"）。
+    // 选中没变化时这条也要走：拖完卡片后本来就什么都没选中，那一次点空白同样该松开。
     const world = { x: state.startWorldX, y: state.startWorldY }
     const hit = hitCard(world)
     useGraphStore.getState().select(hit?.relPath ?? null)
-  }, [hitCard])
+    if (hit === null) releasePinsExcept(null)
+  }, [hitCard, releasePinsExcept])
+
 
   /** 双击卡片 = 在编辑器里打开它（焦点视图里这也顺带把圆心换成了它）。 */
   const handleDoubleClick = useCallback(
@@ -1365,6 +1608,61 @@ export function GraphCanvas() {
     useUiStore.getState().setViewMode('edit')
     void openNote(relPath)
   }, [])
+  /**
+   * 右键卡片：命中哪一张就把菜单弹在光标处（空白处右键不弹 —— 画布本身没有"上下文"）。
+   *
+   * 顺带把这张卡片选中：菜单上的大多数动作（尺寸档、「浮窗打开」）作用于"当前选中的那一张"，
+   * 而右键不做这一步的话，用户会看到菜单里的操作作用在别处。
+   */
+  const handleContextMenu = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>): void => {
+      const world = worldPointOf(event.clientX, event.clientY)
+      const hit = world === null ? null : hitCard(world)
+      if (hit === null) return
+      event.preventDefault()
+      useGraphStore.getState().select(hit.relPath)
+      setCardMenu({ relPath: hit.relPath, x: event.clientX, y: event.clientY })
+    },
+    [hitCard, worldPointOf],
+  )
+
+  /** 卡片的右键菜单项（每一项都指向既有入口，见 `cardMenu` 的说明）。 */
+  const cardMenuItems = useCallback(
+    (relPath: string): ContextMenuItem[] => {
+      const pinned = useGraphStore.getState().pins.has(relPath)
+      return [
+        {
+          id: 'open',
+          label: '在编辑器中打开',
+          onSelect: () => handleOpenInEditor(relPath),
+        },
+        {
+          id: 'floating',
+          label: '浮窗打开',
+          onSelect: () => useGraphStore.getState().openFloating(relPath),
+        },
+        {
+          id: 'locate',
+          label: '居中显示',
+          onSelect: () => locateCard(relPath),
+        },
+        {
+          id: 'unpin',
+          label: '松开这张卡片',
+          disabled: !pinned,
+          separatorBefore: true,
+          onSelect: () => releasePinsExcept(null),
+        },
+        {
+          id: 'reset-size',
+          label: '恢复自动尺寸',
+          disabled: !useGraphStore.getState().cardSizes.has(relPath),
+          onSelect: () => useGraphStore.getState().resetCardSize(relPath),
+        },
+      ]
+    },
+    [handleOpenInEditor, locateCard, releasePinsExcept],
+  )
 
   const handleToggleFolder = useCallback((path: string) => {
     useGraphStore.getState().toggleFolder(path)
@@ -1380,9 +1678,7 @@ export function GraphCanvas() {
     void state.load(rootPath, { indexBuilding: useLinksStore.getState().status.phase === 'building' })
   }, [rootPath, focusRoot])
 
-  const selectedCard =
-    selected === null ? undefined : (focusCardByPath.get(selected) ?? cardsById.get(selected))
-  const selectedNode = selected === null ? undefined : nodesByPath.get(selected)
+
   /**
    * 圆心那张卡片**当前**的世界矩形（`x,y,w,h`）。
    *
@@ -1438,6 +1734,8 @@ export function GraphCanvas() {
     <div
       className={`mn-graph${panning ? ' mn-graph--panning' : ''}${
         hovered === null ? '' : ' mn-graph--over-card'
+      }${hoveredLink === null ? '' : ' mn-graph--over-link'}${
+        overResizeHandle ? ' mn-graph--over-resize' : ''
       } mn-graph--${mode}`}
       ref={hostRef}
       role="application"
@@ -1466,14 +1764,22 @@ export function GraphCanvas() {
       data-graph-card-rects={cardRectsAttr}
       /* 被按住的卡片数（漂浮时"我按住了几张"一眼可见） */
       data-graph-pinned={pins.size}
+      /* 当前选中的卡片（单击选中/空白取消；自动化据此断言"选中了谁"，画布上没有 DOM 可查） */
+      data-graph-selected={selected ?? ''}
       /* 当前布局里重叠的卡片对数（碰撞是硬约束时应当恒为 0） */
       data-graph-overlaps={overlaps}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={endPointer}
       onPointerCancel={endPointer}
-      onPointerLeave={() => setHovered(null)}
+      onPointerLeave={() => {
+        setHovered(null)
+        setHoveredLink(null)
+        setOverResizeHandle(false)
+        lastPointerRef.current = null
+      }}
       onDoubleClick={handleDoubleClick}
+      onContextMenu={handleContextMenu}
       onKeyDown={handleKeyDown}
     >
       {/* 连线与文件夹容器留在 DOM 里（同一套 CSS transform），卡片画在 canvas 上 */}
@@ -1673,6 +1979,16 @@ export function GraphCanvas() {
               </button>
               <button
                 type="button"
+                className={`mn-graph__chip${titleOnly ? ' mn-graph__chip--active' : ''}`}
+                aria-pressed={titleOnly}
+                data-graph-action="toggle-title-only"
+                title="只画标题（文件名），不排正文：一屏能看更多关系；此时连线改从卡片边界出发"
+                onClick={() => useGraphStore.getState().setTitleOnly(!titleOnly)}
+              >
+                仅标题
+              </button>
+              <button
+                type="button"
                 className={`mn-graph__chip${floating ? ' mn-graph__chip--active' : ''}`}
                 aria-pressed={floating}
                 data-graph-action="toggle-floating"
@@ -1711,11 +2027,14 @@ export function GraphCanvas() {
               </button>
             </div>
 
-            {selected !== null && (
+            {selected !== null && !titleOnly && (
               <div className="mn-graph__row">
                 <span className="mn-graph__row-label">高度</span>
                 {CARD_HEIGHT_CHOICES.map((choice) => {
-                  const current = cardSizes.get(selected)?.height ?? null
+                  const size = cardSizes.get(selected)
+                  // 「全文」与具体上限互斥：active 判据先看 full 开关，再比数值
+                  const current: number | null | 'full' =
+                    size?.full === true ? 'full' : (size?.height ?? null)
                   const active = current === choice.value
                   return (
                     <button
@@ -1723,10 +2042,11 @@ export function GraphCanvas() {
                       type="button"
                       className={`mn-graph__chip${active ? ' mn-graph__chip--active' : ''}`}
                       aria-pressed={active}
-                      data-card-height={choice.value ?? 'auto'}
+                      data-card-height={choice.value === null ? 'auto' : String(choice.value)}
                       title={choice.hint}
                       onClick={() => {
                         if (choice.value === null) useGraphStore.getState().resetCardSize(selected)
+                        else if (choice.value === 'full') useGraphStore.getState().setCardFull(selected, true)
                         else useGraphStore.getState().setCardHeight(selected, choice.value)
                       }}
                     >
@@ -1909,6 +2229,16 @@ export function GraphCanvas() {
         />
       ))}
 
+      {cardMenu !== null && (
+        <ContextMenu
+          items={cardMenuItems(cardMenu.relPath)}
+          x={cardMenu.x}
+          y={cardMenu.y}
+          ariaLabel={`${cardMenu.relPath} 的卡片菜单`}
+          onClose={() => setCardMenu(null)}
+        />
+      )}
+
       {/*
         顶部只留**一条**横幅：刷新提示与"索引构建中"说的是同一件事（画布上的数据可能不是最新），
         刷新的那条更具体（它直接说明"你看到的是上一次的结果"），所以同时成立时优先显示它 ——
@@ -1964,14 +2294,6 @@ export function GraphCanvas() {
         </div>
       )}
 
-      {selected !== null && (
-        <GraphPreview
-          relPath={selected}
-          title={selectedNode?.title ?? selectedCard?.node.title ?? selected}
-          onClose={() => useGraphStore.getState().closePreview()}
-          onOpenInEditor={handleOpenInEditor}
-        />
-      )}
     </div>
   )
 }

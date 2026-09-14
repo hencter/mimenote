@@ -200,9 +200,11 @@
 /*
  * 卡片里的**引线**（ADR-0023）：从正文里 `[[链接]]` 那段文字画到卡片边界的那一段虚线。
  *
- * 为什么细、淡：它指示的是"外面那条线是从这句话出来的"，而不是边本身 ——
- * 画得和卡片外那段一样重，卡片里就会多出一堆横穿正文的线，正文反而读不了。
- * 小圆点是引线的起点（文字的左侧）。
+ * 粗细与透明度的取舍史：最初是 1px / 0.55（"它是指示、不是边本身"），用户实测后的反馈是
+ * **太淡、看不见** —— 引线恰恰是"这条边从哪句话出来"的唯一证据，看不见就等于没有。
+ * 所以现在与卡外那段同粗（1.6），颜色升到 `--mn-fg-muted`、不透明度 0.85；
+ * 它仍然是**虚线**（图案与相位由 `leadDash()` 给），靠线型而不是靠淡来区分
+ * "指示"与"边本身"。小圆点是引线的起点（文字的左侧）。
  *
  * ⚠️ 这里**刻意不写** `stroke-dasharray`：虚线的图案与相位都要按**引线有多长**来定，
  * 好让最后一段实线正好收在卡片边界上（否则虚线会在离卡边 1~3px 的地方断在空隙里，
@@ -211,10 +213,22 @@
  * （属性会被 CSS 规则盖掉，因此这里必须留空 —— 两处都写才是真的会分家）。
  */
 .mn-graph-edge--lead {
-  stroke: var(--mn-fg-subtle);
-  stroke-width: 1;
-  opacity: 0.55;
+  stroke: var(--mn-fg-muted);
+  stroke-width: 1.6;
+  opacity: 0.85;
   fill: none;
+}
+
+/* 悬停正文里那段 [[链接]] 时，它的引线与起点圆点提到强调色（与卡外那段的高亮同一份判据） */
+.mn-graph-edge--lead--active {
+  stroke: var(--mn-accent);
+  stroke-width: 2;
+  opacity: 1;
+}
+
+.mn-graph-edge-lead-dot--active {
+  fill: var(--mn-accent);
+  opacity: 1;
 }
 
 /*
@@ -240,8 +254,8 @@
 }
 
 .mn-graph-edge-lead-dot {
-  fill: var(--mn-fg-subtle);
-  opacity: 0.7;
+  fill: var(--mn-fg-muted);
+  opacity: 0.9;
 }
 
 /* --------------------------------------------------------- HUD / 状态 */
@@ -271,6 +285,16 @@
 /* 悬停到卡片上：光标变成手型（"这里可以点"），拖动时是抓取 */
 .mn-graph--over-card {
   cursor: pointer;
+}
+
+/* 悬停在正文里某段 [[链接]] 上：它会高亮一条连线，光标仍是手型（与卡片一致） */
+.mn-graph--over-link {
+  cursor: pointer;
+}
+
+/* 停在右下角缩放手柄上：nwse 双向箭头（写在 over-card 之后，让这条更具体的赢） */
+.mn-graph--over-resize {
+  cursor: nwse-resize;
 }
 
 .mn-graph--panning {
@@ -654,74 +678,19 @@
 
 /* --------------------------------------------------------- 预览面板 */
 
-.mn-graph-preview {
-  position: absolute;
-  right: 12px;
-  top: 12px;
-  bottom: 12px;
-  z-index: 5;
-  display: flex;
-  flex-direction: column;
-  width: 380px;
-  max-width: calc(100% - 24px);
-  border: 1px solid var(--mn-border);
-  border-radius: 10px;
-  background: var(--mn-bg-elevated);
-  box-shadow: var(--mn-shadow);
-  overflow: hidden;
-}
-
-.mn-graph-preview__header {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 8px 8px 8px 12px;
-  border-bottom: 1px solid var(--mn-border);
-}
-
-.mn-graph-preview__heading {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.mn-graph-preview__title {
-  font-size: 13px;
-  font-weight: 600;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.mn-graph-preview__path {
-  color: var(--mn-fg-subtle);
-  font-size: 10px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.mn-graph-preview__body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  padding: 12px 14px 40px;
-}
-
-.mn-graph-preview__article {
-  font-size: 13px;
-}
-
-.mn-graph-preview__error {
-  color: var(--mn-danger);
-}
+/*
+ * 停靠在画布右侧的预览面板（`.mn-graph-preview`）已随 ADR-0025 移除：
+ * 卡片正面就是完整正文（还可以开「全文」档不截断），侧边再开一块预览成了第二份事实。
+ * 想看一篇的完整渲染请用「浮窗打开」（`.mn-float-note`，下面这套样式）。
+ */
 
 /* ------------------------------------------------------- 浮动笔记面板 */
 
 /*
- * 浮动面板（`.mn-float-note`）：与停靠预览同一套观感，但它是**多个、可拖动、可缩放**的浮窗。
+ * 浮动面板（`.mn-float-note`）：**多个、可拖动、可缩放**的浮窗（图谱里读一篇完整笔记的形态；
+ * 曾经的停靠预览面板已随 ADR-0025 移除，它顶替了那个角色）。
  *
- * 层级：停靠面板是 5（见上面 `.mn-graph-preview` 的注释），浮动面板必须**高于**它 ——
- * 用户是把这一篇"拎出来"看的，被停靠面板盖住就等于点不出来。这里给 6 当底线；
+ * 层级：6 当底线（高于 HUD 3 / 引线 2 / 卡片 1）；
  * 每个浮窗具体在哪一层由组件行内 `zIndex` 决定（点一下置顶 = 调用方把值往上加）。
  *
  * 位置与大小一律走行内样式（受控组件算出来的像素值），所以这一段只写"长什么样"，
@@ -820,8 +789,8 @@
 }
 
 /* 正文本体沿用阅读视图的 `.mn-preview__body`（同一套排版规则），只把字号压到 13px
-   —— 与停靠面板的 `.mn-graph-preview__article` 逐字对齐（浮窗更小，15px 正文一屏只放得下几行）。
-   与 `.mn-preview__body` 同权重、靠本文件在后面加载取胜，与停靠面板同理。 */
+   —— 浮窗比阅读视图小，15px 正文一屏只放得下几行。
+   与 `.mn-preview__body` 同权重、靠本文件在后面加载取胜。 */
 .mn-float-note__article {
   font-size: 13px;
 }

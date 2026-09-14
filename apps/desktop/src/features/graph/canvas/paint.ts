@@ -157,6 +157,12 @@ export interface PaintInput {
   mode: 'focus' | 'vault'
   selected: string | null
   hovered: string | null
+  /**
+   * 悬停的那段 `[[链接]]`（**卡片内坐标**：x 从内容左边界起算、y 从正文起点起算，
+   * 与 `link-edge.ts` 的热区口径一致）。画笔给它描一个强调色的框，
+   * 与 SVG 层"提亮对应连线"是同一个动作的两半；`null` / 缺省 = 没有悬停。
+   */
+  hoveredLink?: { relPath: string; zone: Rect } | null
   /** 只在世界坐标视口内的节点才画（由调用方用 `visibleCards` 算好也可以留空）。 */
   visible?: ReadonlySet<string>
   /** 排版用的几何参数；**必须**与 `layoutCard` 收到的那一份是同一份（见文件顶部的说明）。 */
@@ -246,6 +252,7 @@ export function paintGraph(context: PaintContext, input: PaintInput): PaintStats
     measure: input.measure,
     metrics,
     focused: focusedPaths(input),
+    hoveredLink: input.hoveredLink ?? null,
     accentOf: (type) => calloutAccent(tokenReader(input), type),
   }
 
@@ -285,6 +292,8 @@ interface PaintEnv {
   metrics: LayoutMetrics
   /** `hasFocus` / `selected` / `hovered` 三类"当前活跃"的 relPath 合集。 */
   focused: ReadonlySet<string>
+  /** 悬停的那段 `[[链接]]`（卡片内坐标；`null` = 没有）。 */
+  hoveredLink: { relPath: string; zone: Rect } | null
   /** callout 类型 → 强调色（见 `PaintInput.token` 与 `palette.calloutAccent`）。 */
   accentOf: (type: string) => string
 }
@@ -498,6 +507,28 @@ function drawCard(context: PaintContext, node: PaintNode, env: PaintEnv): void {
     drawCompactBody(context, node, contentLeft, bodyTop, env)
   } else {
     drawBody(context, layout.blocks, contentLeft, bodyTop, env)
+  }
+
+  // 悬停的那段 [[链接]]：强调色描边圈住它（与 SVG 层"提亮对应连线"是同一个动作的两半）。
+  // 画在正文**之后**（压得住文字），但在缩放手柄之前（手柄是控件，不能被装饰盖住）。
+  const hoveredLink = env.hoveredLink
+  if (hoveredLink !== null && hoveredLink.relPath === node.relPath) {
+    const pad = 2 * scale
+    const zone = hoveredLink.zone
+    context.setLineDash([])
+    context.strokeStyle = palette.edgeActive
+    context.lineWidth = Math.max(1, 1.4 * scale)
+    roundRectPath(
+      context,
+      {
+        x: contentLeft + zone.x * scale - pad,
+        y: bodyTop + zone.y * scale - pad,
+        width: zone.width * scale + pad * 2,
+        height: zone.height * scale + pad * 2,
+      },
+      3 * scale,
+    )
+    context.stroke()
   }
 
   // 右下角的缩放手柄：只在**活跃**的卡片上画（悬停或选中）。

@@ -45,10 +45,13 @@ function prefs(): Record<string, unknown> {
   return JSON.parse(window.localStorage.getItem(PREFS_KEY) ?? '{}') as Record<string, unknown>
 }
 
-function storedSizes(): Record<string, Record<string, { width: number; height: number | null }>> {
+function storedSizes(): Record<
+  string,
+  Record<string, { width: number; height: number | null; full?: boolean }>
+> {
   return JSON.parse(window.localStorage.getItem(CARD_SIZE_KEY) ?? '{}') as Record<
     string,
-    Record<string, { width: number; height: number | null }>
+    Record<string, { width: number; height: number | null; full?: boolean }>
   >
 }
 
@@ -73,6 +76,7 @@ beforeEach(async () => {
     tension: DEFAULT_TENSION,
     edgeFromLink: true,
     floating: true,
+    titleOnly: false,
     forcePreset: DEFAULT_FORCE_PRESET,
   })
   await useVaultStore.getState().openVault(VAULT_ROOT)
@@ -121,6 +125,14 @@ describe('张力与浮动态的偏好', () => {
 
     expect(prefs()['forcePreset']).toBe('airy')
     expect(prefs()['floating']).toBe(false)
+  })
+
+  it('「仅标题」开关落盘（缺省关：卡片正面保持完整正文）', () => {
+    expect(useGraphStore.getState().titleOnly).toBe(false)
+    useGraphStore.getState().setTitleOnly(true)
+
+    expect(useGraphStore.getState().titleOnly).toBe(true)
+    expect(prefs()['titleOnly']).toBe(true)
   })
 
   it('力度参数：逐项可调、夹范围、吸附步长、整份落盘', () => {
@@ -240,7 +252,12 @@ describe('卡片尺寸', () => {
     expect(size?.width).toBe(480)
     // 宽度变了换行就变了，旧的高度上限会让"拉宽了反而看着更短"——因此重置成自动
     expect(size?.height).toBeNull()
-    expect(storedSizes()[VAULT_ROOT]?.['中心.md']).toEqual({ width: 480, height: null })
+    // `full: false` 是显式写下的（"改宽度"与"看全文"是两个正交意图，不会互相抹掉）
+    expect(storedSizes()[VAULT_ROOT]?.['中心.md']).toEqual({
+      width: 480,
+      height: null,
+      full: false,
+    })
   })
 
   it('调高度上限：是"上限"而不是固定高度', () => {
@@ -280,6 +297,19 @@ describe('卡片尺寸', () => {
     expect(useGraphStore.getState().cardSizes.get('中心.md')?.width).toBe(460)
   })
 
+  it('焦点视图也会记下 Vault 根：卡片尺寸因此真的能落盘（回归）', async () => {
+    /*
+      真实踩过：`rootPath` 过去只由全库视图的 `load()` 写入，而默认入口是**关系图** ——
+      于是用户拖出来的卡片宽高"看着生效、重启就没了"，因为 `persistCardSizes` 在
+      `rootPath === null` 时直接返回。这条把"加载子图时补上 Vault 根"钉住。
+    */
+    useGraphStore.setState({ rootPath: null })
+    await useGraphStore.getState().loadEgo('中心.md')
+    expect(useGraphStore.getState().rootPath).toBe(VAULT_ROOT)
+
+    useGraphStore.getState().setCardSize('中心.md', 420, 360)
+    expect(storedSizes()[VAULT_ROOT]?.['中心.md']).toEqual({ width: 420, height: 360, full: false })
+  })
   it('落盘里的脏数据不会破坏布局（越界值被夹回来、非法项被丢掉）', async () => {
     window.localStorage.setItem(
       CARD_SIZE_KEY,
@@ -296,9 +326,51 @@ describe('卡片尺寸', () => {
     await useGraphStore.getState().loadEgo('中心.md')
 
     const loaded = useGraphStore.getState().cardSizes
-    expect(loaded.get('中心.md')).toEqual({ width: MAX_CARD_WIDTH, height: MIN_CARD_HEIGHT })
+    // `full` 缺省读成 false：老版本存下来的尺寸记录原样有效（截断形态不变）
+    expect(loaded.get('中心.md')).toEqual({
+      width: MAX_CARD_WIDTH,
+      height: MIN_CARD_HEIGHT,
+      full: false,
+    })
     expect(loaded.has('甲.md')).toBe(false)
     expect(loaded.has('坏数据.md')).toBe(false)
+  })
+
+  it('`setCardSize`（缩放手柄那条路）同时改宽与高，并把两个值一起落盘', () => {
+    /*
+      "卡片只能调宽度、不能调高度"是用户报回来的缺陷：手柄拖动曾经只写宽度，
+      而且顺手把高度重置成"自动"。手柄的语义是**圈定这张卡片的框**，两个方向都是显式意图。
+    */
+    useGraphStore.getState().setCardSize('甲.md', 480, 640)
+
+    const size = useGraphStore.getState().cardSizes.get('甲.md')
+    expect(size).toEqual({ width: 480, height: 640, full: false })
+    expect(storedSizes()[VAULT_ROOT]?.['甲.md']).toEqual({ width: 480, height: 640, full: false })
+  })
+
+  it('「全文」开关：与高度上限互斥、落盘、换 Vault 后能读回来', async () => {
+    useGraphStore.getState().setCardFull('中心.md', true)
+    const open = useGraphStore.getState().cardSizes.get('中心.md')
+    expect(open?.full).toBe(true)
+    // 全文态下"高度上限"没有意义：它被显式写成 null（不是留着某个旧上限）
+    expect(open?.height).toBeNull()
+    expect(storedSizes()[VAULT_ROOT]?.['中心.md']?.full).toBe(true)
+
+    // 换 Vault 再换回来：全文态按 Vault 读回（与宽度/高度同一条持久化链路）
+    await useVaultStore.getState().openVault(OTHER_VAULT)
+    useGraphStore.setState({ rootPath: OTHER_VAULT })
+    await useGraphStore.getState().loadEgo('中心.md')
+    expect(useGraphStore.getState().cardSizes.size).toBe(0)
+    await useVaultStore.getState().openVault(VAULT_ROOT)
+    useGraphStore.setState({ rootPath: VAULT_ROOT })
+    await useGraphStore.getState().loadEgo('中心.md')
+    expect(useGraphStore.getState().cardSizes.get('中心.md')?.full).toBe(true)
+
+    // 互斥：显式给一个数值上限 ⇒ 退出全文（两者是"这一篇怎么显示"的两种答案）
+    useGraphStore.getState().setCardHeight('中心.md', 900)
+    const limited = useGraphStore.getState().cardSizes.get('中心.md')
+    expect(limited?.full).toBe(false)
+    expect(limited?.height).toBe(900)
   })
 })
 

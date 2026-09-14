@@ -441,7 +441,9 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
   },
   {
     id: GRAPH_COMMAND_IDS.closePreview,
-    title: '图谱：关闭预览',
+    // 停靠预览面板已随 ADR-0025 移除；这条命令现在的语义是"先关最上面的浮窗，
+    // 没有浮窗才取消选中"（实现见 `graph-store.closePreview`，命令 id 与快捷键不变）
+    title: '图谱：关闭浮窗 / 取消选中',
     category: '图谱',
     keybinding: 'Escape',
     when: isGraphView,

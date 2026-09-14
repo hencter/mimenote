@@ -58,7 +58,6 @@
  * （例如画成既有的边缘连线），而不是拿着一个错的 `anchor` 当真的用。
  */
 
-import type { InlineRun } from './canvas/blocks'
 import type { CardLayout } from './canvas/measure'
 import { cardChrome } from './canvas/measure'
 import type {
@@ -139,11 +138,37 @@ interface AnchorCandidate {
   text: string
 }
 
-/** 一次遍历要用到的全部上下文（避免每层递归都重新编译 targets）。 */
+/**
+ * 遍历时遇到的一段 wikilink run 的几何（**卡片内坐标**，口径与 `findLinkAnchor` 的返回一致）。
+ *
+ * 为什么把它做成独立的中间产物：`findLinkAnchor`（按目标文字找锚点）与 `linkZones`
+ * （枚举全部 wikilink 的矩形，给"悬停高亮连线"做命中测试）走**同一套遍历与量宽** ——
+ * 几何只有一份，两个功能才不会各自漂移（真实教训：这一层任何一处自己算行高/内边距，
+ * 都会让引线落在与文字错开几个像素的地方）。
+ */
+interface WikiRunSpot {
+  /** 文字左边界（相对卡片内容左边界）。 */
+  x: number
+  /** 行盒中线（相对正文起点）：画笔 `fillText` 的那条线（`textBaseline = 'middle'`）。 */
+  centerY: number
+  /** 行盒高度（热区的高度 = 整行可点，不只是字形本身）。 */
+  height: number
+  /** 这条 run 的像素宽度（与画笔逐段量宽同一来源）。 */
+  width: number
+  /** run 的字体（合并 run 拆份时量单份宽度要用，见 `findLinkAnchor`）。 */
+  font: FontSpec
+  /** run 所在的行（摊派估计需要它，见 `estimateAdvance`）。 */
+  line: LaidOutLine
+  text: string
+  /** wikilink 的目标原文（`data-target`）；它是别名写法之外的另一条匹配线索。 */
+  href: string | undefined
+}
+
+/** 一次遍历的上下文（访问者模式：几何在这里，"遇到一段 wikilink 做什么"由调用方给）。 */
 interface WalkContext {
-  targets: readonly TargetText[]
   metrics: LayoutMetrics
   measure: MeasureText | undefined
+  visit: (spot: WikiRunSpot) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +223,20 @@ export function findLinkAnchor(input: {
   if (targets.length === 0) return null
 
   const found: AnchorCandidate[] = []
-  walkBlocks(input.layout.blocks, 0, 0, found, { targets, metrics, measure: input.measure })
+  walkBlocks(input.layout.blocks, 0, 0, {
+    metrics,
+    measure: input.measure,
+    visit: (spot) => {
+      const match = matchRun(spot, targets)
+      if (match === null) return
+      // 合并 run（`[[甲]][[甲]]` → `甲甲`）里每一份链接都要成为**独立**的候选：
+      // 同一条边的第 0 / 第 1 个 `count` 因此能落到两个不同的点上，而不是叠在一起
+      const advance = advanceOf(match.key, spot.font, spot.line, input.measure)
+      for (let copy = 0; copy < match.copies; copy += 1) {
+        found.push({ x: spot.x + copy * advance, y: spot.centerY, text: match.key })
+      }
+    },
+  })
   if (found.length === 0) return null
 
   const occurrence = Math.max(0, Math.floor(input.occurrence ?? 0))
@@ -206,6 +244,55 @@ export function findLinkAnchor(input: {
   const hit = found[occurrence] ?? found[0]
   if (hit === undefined) return null
   return { x: hit.x, y: hit.y, text: hit.text }
+}
+
+/**
+ * 卡片里**全部** wikilink 的矩形热区（卡片内坐标），给"悬停某段 `[[链接]]` 高亮对应连线"用。
+ *
+ * 与 `findLinkAnchor` 的分工：那一个按目标文字**找一个点**（画引线用），这一个**枚举所有段**
+ * 的矩形（命中测试用）。两者共用同一套遍历（`walkBlocks` + `WikiRunSpot`），所以"悬停高亮的
+ * 那段字"与"引线出发的那段字"必然是同一段 —— 不可能出现"高亮在甲处、线从乙处出发"。
+ *
+ * 合并 run（`[[甲]][[甲]]` → `甲甲`）在这里**不拆份**：悬停是"指向这段字"，整条 run 一个
+ * 热区即可，拆开不会让体验更准确（两者指向同一条边）。
+ */
+export function linkZones(input: {
+  layout: CardLayout
+  metrics?: LayoutMetrics
+  /** 量宽函数：给了热区宽度才逐像素准确（与 `findLinkAnchor` 同一约定）。 */
+  measure?: MeasureText
+}): LinkZone[] {
+  const zones: LinkZone[] = []
+  walkBlocks(input.layout.blocks, 0, 0, {
+    metrics: input.metrics ?? DEFAULT_METRICS,
+    measure: input.measure,
+    visit: (spot) => {
+      // 宽度为 0 的 run 画不出来也不该命中（空链接 `[[ ]]` 之类）
+      if (spot.width <= 0 || spot.height <= 0) return
+      zones.push({
+        x: spot.x,
+        // 热区从"行盒中线"翻成"行盒顶"：悬停命中的是整个行盒，不只是基线那一行像素
+        y: spot.centerY - spot.height / 2,
+        width: spot.width,
+        height: spot.height,
+        text: spot.text,
+        ...(spot.href === undefined ? {} : { href: spot.href }),
+      })
+    },
+  })
+  return zones
+}
+
+/** 一段 wikilink 文字在卡片里的矩形热区（卡片内坐标，见 `linkZones`）。 */
+export interface LinkZone {
+  x: number
+  y: number
+  width: number
+  height: number
+  /** 显示文字（按 `normalizeLinkText` 归一化后与边的候选写法比对）。 */
+  text: string
+  /** wikilink 的目标原文（`data-target`）：显示文字是别名时，它是另一条匹配线索。 */
+  href?: string
 }
 
 /**
@@ -240,12 +327,11 @@ function walkBlocks(
   blocks: readonly LaidOutBlock[],
   left: number,
   top: number,
-  sink: AnchorCandidate[],
   ctx: WalkContext,
 ): void {
   let cursor = top
   blocks.forEach((item, index) => {
-    walkOne(item, left, cursor, sink, ctx)
+    walkOne(item, left, cursor, ctx)
     cursor += item.height
     if (index < blocks.length - 1) cursor += item.gapAfter
   })
@@ -268,7 +354,6 @@ function walkOne(
   item: LaidOutBlock,
   left: number,
   top: number,
-  sink: AnchorCandidate[],
   ctx: WalkContext,
 ): void {
   if (item.block.kind === 'callout') {
@@ -278,7 +363,7 @@ function walkOne(
     const childLeft = left + item.indent + ctx.metrics.calloutPadding
     let cursor = top + geometry.bodyTop
     children.forEach((child, index) => {
-      walkOne(child, childLeft, cursor, sink, ctx)
+      walkOne(child, childLeft, cursor, ctx)
       cursor += child.height
       if (index < children.length - 1) cursor += child.gapAfter
     })
@@ -308,16 +393,23 @@ function walkOne(
     let cursor = textLeft
     for (const run of line.runs) {
       const font = fontOfRun(base, run)
-      const match = matchRun(run, ctx.targets)
-      if (match !== null) {
-        // 合并 run（`[[甲]][[甲]]` → `甲甲`）里每一份链接都要成为**独立**的候选：
-        // 同一条边的第 0 / 第 1 个 `count` 因此能落到两个不同的点上，而不是叠在一起
-        const advance = advanceOf(match.key, font, line, ctx.measure)
-        for (let copy = 0; copy < match.copies; copy += 1) {
-          sink.push({ x: cursor + copy * advance, y: centerY, text: match.key })
-        }
+      const width = advanceOf(run.text, font, line, ctx.measure)
+      // 只有 `[[…]]`（含 `![[…]]` 嵌入）才有"正文里的位置"这回事（判据与 `matchRun` 的第一条
+      // 同源）；这里的职责只到"算出几何并通知访问者"为止 —— "这段是不是这条边的锚点"
+      // （findLinkAnchor）还是"这是一段可悬停的链接"（linkZones）由访问者各自决定。
+      if (run.wikilink === true) {
+        ctx.visit({
+          x: cursor,
+          centerY,
+          height: lineHeight,
+          width,
+          font,
+          line,
+          text: run.text,
+          href: run.href,
+        })
       }
-      cursor += advanceOf(run.text, font, line, ctx.measure)
+      cursor += width
     }
   })
 }
@@ -360,12 +452,18 @@ function advanceOf(
  * 文字上，比"从卡片边缘出发"更糟 —— 线看起来是对的，实际指错了地方，而这种错没人会去查。
  * 上面四步没有一步是包含：1 / 2 / 4 是相等，3 要求整串**恰好**是整数份，所以 `甲虫` 既不是 `甲`
  * 的相等写法、也不是它的整数份重复。
+ *
+ * ⚠️ "这段 run 是不是 wikilink" 由**调用方**保证：`walkOne` 只为 `run.wikilink === true`
+ * 的 run 调用访问者（`![[甲]]` 嵌入也带这个标记，因此天然被覆盖；Markdown 链接
+ * `[文字](路径.md)` 的 run 只有 `link`，它连的是另一套东西，见降级规则）。
+ * 这里再判一次不仅多余，而且**会悄悄废掉整条链路** —— 曾经真的这么错过：
+ * 访问者收到的几何快照里没有 `wikilink` 字段，那句守卫于是恒真为 null，
+ * 表现是所有引线一夜之间退回"从卡片边缘出发"。
  */
-function matchRun(run: InlineRun, targets: readonly TargetText[]): RunMatch | null {
-  // 只有 `[[…]]`（含 `![[…]]` 嵌入）才有"正文里的位置"这回事：`![[甲]]` 产出的是同一条边，
-  // 它的 run 也带 `wikilink` —— 所以嵌入天然被覆盖，不需要额外分支。
-  // Markdown 链接 `[文字](路径.md)` 的 run 只有 `link`，它连的是另一套东西（见降级规则）。
-  if (run.wikilink !== true) return null
+function matchRun(
+  run: { text: string; href?: string | undefined },
+  targets: readonly TargetText[],
+): RunMatch | null {
 
   const text = run.text
   for (const target of targets) {
@@ -394,8 +492,14 @@ function matchRun(run: InlineRun, targets: readonly TargetText[]): RunMatch | nu
   return null
 }
 
-/** 归一化：去首尾空白、去 `.md` 后缀、忽略大小写（顺序：先 trim 再摘后缀再 trim，`甲.md ` 才不会漏）。 */
-function normalizeLinkText(text: string): string {
+/**
+ * 归一化：去首尾空白、去 `.md` 后缀、忽略大小写（顺序：先 trim 再摘后缀再 trim，`甲.md ` 才不会漏）。
+ *
+ * 导出它是因为"边的候选写法"与"悬停热区的文字"必须在**同一个**归一化口径下比对
+ * （`GraphCanvas` 把热区映射回边时要逐字用这一套）—— 两份各自实现的归一化，
+ * 迟早有一个边界（`甲.md` vs `甲`）对不上。
+ */
+export function normalizeLinkText(text: string): string {
   return text
     .trim()
     .replace(/\.md$/i, '')

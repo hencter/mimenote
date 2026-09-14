@@ -26,6 +26,8 @@
  * 而"卡片尺寸从哪里来"这个问题有两个答案（内容算出来的 / 布局收到的）时，必然有一处算错。
  */
 
+import { frontmatterBody } from '@/domain/frontmatter'
+
 import { toDrawBlocks, type DrawBlock } from './blocks'
 import {
   DEFAULT_METRICS,
@@ -166,6 +168,18 @@ export function cardChrome(metrics: LayoutMetrics): {
   return { padding, titleHeight, separatorY, bodyTop: separatorY + CARD_SEPARATOR_GAP }
 }
 
+/**
+ * 「纯标题」卡片的外框高度：标题行 + 分隔细线 + 上下内边距，没有正文。
+ *
+ * 为什么不手写一个数：标题行高是 `metrics.lineHeight × CARD_TITLE_SCALE`，分隔线的位置由
+ * `cardChrome` 定 —— 两处任何一个改了，手写的那份高度就会让卡片上下留白错位（这类错位正是
+ * `cardChrome` 存在的原因）。所以纯标题卡片的高度也由同一份壳几何推出来：`bodyTop + padding`
+ * 与 `layoutCard` 里"正文为空"时的高度是同一个算式。
+ */
+export function titleOnlyCardHeight(metrics: LayoutMetrics = DEFAULT_METRICS): number {
+  return cardChrome(metrics).bodyTop + CARD_PADDING
+}
+
 // ---------------------------------------------------------------------------
 // 卡片排版
 // ---------------------------------------------------------------------------
@@ -226,7 +240,22 @@ export function layoutCard(input: {
   const metrics: LayoutMetrics = { ...DEFAULT_METRICS, ...input.metrics, width: contentWidth }
   const chrome = cardChrome(metrics)
 
-  const laidOut = layoutBlocks(toDrawBlocks(input.text), metrics, input.measure)
+  /*
+   * 正文先过 `frontmatterBody`：YAML 头是**元数据**，不是正文。
+   *
+   * 为什么剥在这一层（而不是 `toDrawBlocks` 里）：`blocks.ts` 是"markdown → 块"的纯函数、
+   * 不该知道笔记文件的格式约定（它自己的注释也是这么写的）；而这里是"**一篇笔记文件** →
+   * 一张卡片排版"的唯一入口 —— 阅读视图 / 浮窗 / 导出件各自都在自己的入口处做同一件事，
+   * 判据（`domain/frontmatter.ts` 的 `frontmatterBody`）只有那一份。
+   *
+   * 不剥的后果是一眼可见的：卡片顶上多出一条分隔线加几行 `key: value`（`tags: [项目]` 之类），
+   * 而它恰恰是用户这一轮点名要求去掉的东西。
+   */
+  const laidOut = layoutBlocks(
+    toDrawBlocks(frontmatterBody(input.text)),
+    metrics,
+    input.measure,
+  )
   // `maxHeight: undefined` = 不截断；`NaN` 也按不截断处理（它更可能是"算错了"，而不是"要截成 0"）
   const limit =
     input.maxHeight === undefined || !Number.isFinite(input.maxHeight)

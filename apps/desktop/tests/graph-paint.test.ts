@@ -25,6 +25,7 @@ import {
   createCardLayoutCache,
   fontString,
   layoutCard,
+  titleOnlyCardHeight,
   type CardLayout,
   type MeasureText,
 } from '@/features/graph/canvas/measure'
@@ -627,6 +628,40 @@ describe('layoutCard', () => {
     expect(roomy.truncated).toBe(false)
     expect(textsOfLayout(roomy)).not.toContain('…')
   })
+
+  it('maxHeight 给 Infinity（「全文」档）：不截断，与"没给上限"逐块一致', () => {
+    /*
+      「全文」开关在布局层就是"不截断"（`layoutCard` 对非有限的上限按 Infinity 处理）。
+      这里把它与"根本没给 maxHeight"钉成逐块一致 —— 两条路若有一天分叉，
+      卡片就会出现"全文档与自动档排得不一样"这种谁也解释不了的差异。
+    */
+    const text = '# 标题\n\n第一段\n\n第二段'
+    const full = layoutCard({ relPath: 'a.md', title: '甲', text, width: 260, measure })
+    const unlimited = layoutCard({
+      relPath: 'a.md',
+      title: '甲',
+      text,
+      width: 260,
+      measure,
+      maxHeight: Number.POSITIVE_INFINITY,
+    })
+    expect(unlimited.truncated).toBe(false)
+    expect(unlimited.height).toBe(full.height)
+    expect(unlimited.blocks.map((item) => item.block.kind)).toEqual(
+      full.blocks.map((item) => item.block.kind),
+    )
+  })
+
+  it('titleOnlyCardHeight：与"空正文卡片"同一个高度（壳几何只有一份）', () => {
+    /*
+      纯标题卡片的高度不能手写一个数：标题行高 / 分隔线位置都由 `cardChrome` 决定。
+      这条把它与 `layoutCard` 的"空正文"结果钉成同一个数 —— 两处若分叉，
+      表现是"纯标题卡片与内容卡片的留白对不齐"。
+    */
+    const empty = layoutCard({ relPath: 'a.md', title: '甲', text: '', width: 260, measure })
+    expect(empty.blocks).toHaveLength(0)
+    expect(titleOnlyCardHeight()).toBe(empty.height)
+  })
 })
 
 /** 一份排版结果里所有行的纯文本（断言"没有省略号"用）。 */
@@ -1071,6 +1106,45 @@ describe('paintGraph：边与焦点', () => {
     ).toBeGreaterThanOrEqual(2)
     // 边框两笔都是圆角路径（arc 画四角），不是直角矩形
     expect(countOps(context, 'arc')).toBeGreaterThanOrEqual(8)
+  })
+
+  it('悬停的那段 [[链接]] 被强调色描边（与连线提亮是同一个动作的两半）', () => {
+    /*
+      悬停 wikilink → 高亮连线，在画布这一半的表现是"那段文字被一个强调色的框圈住"。
+      热区矩形是**卡片内坐标**（内容左边界起 / 正文起点起，与 link-edge 的口径一致），
+      画笔负责把它换算到屏幕 —— 这里只守"用了 edgeActive 那支笔、画了一圈圆角框"。
+    */
+    const zone = { x: 12, y: 3, width: 40, height: 16 }
+    const { context } = paint({
+      nodes: [noteCard({ relPath: 'note.md' })],
+      hoveredLink: { relPath: 'note.md', zone },
+    })
+    const strokes = context.ops.flatMap((op, position) =>
+      op.op === 'stroke' ? [context.stateAt(position)] : [],
+    )
+    expect(
+      strokes.some(
+        (state) => state.strokeStyle === palette.edgeActive && state['lineWidth'] === 1.4,
+      ),
+    ).toBe(true)
+
+    // 对照：没有 hoveredLink 时不该出现这个颜色的描边（否则上面的断言恒真）
+    const plain = paint({ nodes: [noteCard({ relPath: 'note.md' })] })
+    const plainStrokes = plain.context.ops.flatMap((op, position) =>
+      op.op === 'stroke' ? [plain.context.stateAt(position)] : [],
+    )
+    expect(plainStrokes.some((state) => state.strokeStyle === palette.edgeActive)).toBe(false)
+  })
+
+  it('悬停热区属于**另一张**卡片时不画（热区是卡片内坐标，张冠李戴会画到别人身上）', () => {
+    const { context } = paint({
+      nodes: [noteCard({ relPath: 'note.md' })],
+      hoveredLink: { relPath: '别家.md', zone: { x: 12, y: 3, width: 40, height: 16 } },
+    })
+    const strokes = context.ops.flatMap((op, position) =>
+      op.op === 'stroke' ? [context.stateAt(position)] : [],
+    )
+    expect(strokes.some((state) => state.strokeStyle === palette.edgeActive)).toBe(false)
   })
 })
 

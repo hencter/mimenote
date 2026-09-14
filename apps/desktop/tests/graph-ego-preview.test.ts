@@ -202,6 +202,46 @@ describe('关系图的卡片正面是完整预览', () => {
     expect(drawn).toContain('const answer = 42')
   })
 
+  it('frontmatter（YAML 头）不出现在卡片上：它是元数据，不是正文', async () => {
+    /*
+      真实观感问题：卡片正文直接从原始文件文本排版，于是 `---` / `tags: [项目]` 会在卡片顶上
+      画出一条分隔线加几行 `key: value`。阅读视图、浮窗、导出件都在各自的入口处剥掉它，
+      图谱这一侧的入口是 `layoutCard` —— 判据仍然只有 `domain/frontmatter.ts` 那一份。
+    */
+    setIpcAdapter(
+      createMockAdapter({
+        rootPath: VAULT_ROOT,
+        notes: [
+          {
+            relPath: '中心.md',
+            text: `---\ntags: [项目]\nstatus: 进行中\n---\n\n# 中心\n\n${UNIQUE}\n`,
+          },
+          { relPath: '甲.md', text: '# 甲\n\n[[中心]]\n' },
+        ],
+      }),
+    )
+    await useVaultStore.getState().openVault(VAULT_ROOT)
+    pretendOpenNote('中心.md', `---\ntags: [项目]\nstatus: 进行中\n---\n\n# 中心\n\n${UNIQUE}\n`)
+    await useGraphStore.getState().loadEgo('中心.md')
+
+    const { context, layouts } = paintFocusView()
+    const drawn = context.texts.join('\n')
+
+    // 正文照常（"剥掉头"不等于"什么都没画"）
+    expect(drawn).toContain(UNIQUE)
+    expect(drawn).toContain('中心')
+    // YAML 头一行都不在：键名、值与那两条 `---` 都不该被画出来
+    expect(drawn).not.toContain('tags')
+    expect(drawn).not.toContain('status')
+    expect(drawn).not.toContain('进行中')
+    expect(drawn).not.toContain('---')
+    // 排版结果里也没有它（块清单里不该有 frontmatter 那一块）
+    const card = layouts.get('中心.md')
+    const blockTexts = (card?.blocks ?? []).flatMap((item) =>
+      item.lines.map((line) => line.runs.map((run) => run.text).join('')),
+    )
+    expect(blockTexts.some((text) => text.includes('tags'))).toBe(false)
+  })
   it('子图只包含"直接相关"的那一圈：无关笔记既没有卡片也没有正文', async () => {
     pretendOpenNote('中心.md', NOTES[0]?.text ?? '')
     await useGraphStore.getState().loadEgo('中心.md')

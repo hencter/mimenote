@@ -187,9 +187,11 @@ export type ImageBlock = Extract<DrawBlock, { kind: 'image' }>
 /**
  * markdown 正文 → 绘制块清单（token 来源见 `domain/markdown-core` 的 `parseMarkdownTokens`）。
  *
- * ⚠️ 调用方应先过 `domain/frontmatter.ts` 的 `frontmatterBody` —— 图谱预览面板与阅读视图都是这么做的，
- * 否则 yaml 头会被当成正文画出来（一条分隔线加几行 `key: value`）。
+ * ⚠️ 调用方应先过 `domain/frontmatter.ts` 的 `frontmatterBody`，否则 yaml 头会被当成正文画出来
+ * （一条分隔线加几行 `key: value`）。
  * 这里**不**替调用方做这件事：本函数是"markdown → 块"的纯函数，不该知道笔记文件的格式约定。
+ * 图谱这一侧的调用方是 `measure.ts` 的 `layoutCard`（"一篇笔记文件 → 一张卡片"的唯一入口），
+ * 它已经在进来之前剥掉了 —— 与本函数保持"纯 markdown"的边界正是那样分工的理由。
  *
  * 不抛异常：任何 token（包括我们不认识的）都只会导致"少画一个块"，不会让整张卡片画不出来
  * （理由见文件末尾 `walkTokens` 的 default 分支）。

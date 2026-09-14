@@ -48,6 +48,7 @@ import { useLinksStore } from './links-store'
 import { useNoteStore } from './note-store'
 import { loadJson, saveJson } from './persist'
 import { useUiStore } from './ui-store'
+import { useVaultStore } from './vault-store'
 
 /** 手工位置的存储键：`{ [Vault 根]: { [relPath]: {x, y} } }`。 */
 export const POSITIONS_KEY = 'mimenote.graph.positions.v1'
@@ -260,6 +261,14 @@ export interface CardSize {
   width: number | null
   /** 正文高度上限；`null` = 用默认上限。 */
   height: number | null
+  /**
+   * `true` = **不截断**：整篇正文都排进卡片（忽略 `height` 上限）。
+   *
+   * 为什么是一个独立开关而不是"一个很大的 height"：用户要的是"这篇我要看全文"，
+   * 而不是"这篇的上限是 99999" —— 前者在内容变长之后依然成立，后者只是又一次截断。
+   * 缺省（字段不存在）= `false`，老版本存下来的尺寸记录因此原样有效。
+   */
+  full?: boolean
 }
 
 export const CARD_SIZE_KEY = 'mimenote.graph.sizes.v1'
@@ -361,6 +370,13 @@ interface StoredPrefs {
   floating?: boolean
   /** 手调过的力度参数（整份存下来，读回时逐项夹范围 + 吸附步长，见 `readForceParams`）。 */
   forceParams?: ForceParams
+  /**
+   * 纯标题卡片：焦点视图里只画标题（文件名），不排正文。
+   *
+   * 缺省 `false`（保留"卡片正面是完整预览"的默认形态）。这是"我怎么看图"的偏好，
+   * 与 `mode`/`depth` 同属一份偏好存储，不按 Vault 分。
+   */
+  titleOnly?: boolean
 }
 
 function isStoredPrefs(value: unknown): value is StoredPrefs {
@@ -384,6 +400,7 @@ function readPrefs(): StoredPrefs {
     // 缺省开：这条是用户明确要的（"虚线从对应的 wiki link 处引出"），不是可选装饰
     edgeFromLink: stored.edgeFromLink !== false,
     floating: stored.floating !== false,
+    titleOnly: stored.titleOnly === true,
     forcePreset: stored.forcePreset ?? DEFAULT_FORCE_PRESET,
     // 整份力度：没有存过就用预设那一套（`null` 表示"没存过/存坏了"）
     forceParams: readForceParams(stored.forceParams) ?? forcePreset(stored.forcePreset ?? DEFAULT_FORCE_PRESET).params,
@@ -541,6 +558,16 @@ interface GraphState {
   setCardWidth: (relPath: string, width: number) => void
   /** 调正文高度上限。 */
   setCardHeight: (relPath: string, height: number) => void
+  /**
+   * 同时调宽度与高度（右下角缩放手柄的拖动路径）。
+   *
+   * 为什么与 `setCardWidth` 分开：单独拉宽时"高度回到自动"是对的（换行变了，旧上限会让
+   * 人以为"拉宽反而变矮"）；但手柄拖动的语义是"我在圈定这张卡片的框"，两个方向都是
+   * 用户的显式意图 —— 这时再把高度重置回自动，就等于"高度永远调不了"（用户报的那个毛病）。
+   */
+  setCardSize: (relPath: string, width: number, height: number) => void
+  /** 「全文」开关：`true` = 不截断（整篇正文都排进卡片），`false` = 回到高度上限。 */
+  setCardFull: (relPath: string, full: boolean) => void
   /** 恢复一张卡片（或全部）的自动尺寸。 */
   resetCardSize: (relPath?: string) => void
 
@@ -571,6 +598,15 @@ interface GraphState {
   /** 是否让节点持续漂浮（false = 落定后静止，省电）。 */
   floating: boolean
   setFloating: (on: boolean) => void
+  /**
+   * 纯标题卡片：焦点视图只画标题（文件名），不排正文。
+   *
+   * 用户要它是为了"一屏看更多关系"：正文卡片动辄几百像素高，跳数一多整幅图就只剩
+   * 几张卡片；纯标题卡片把每篇压成一行高，环上的密度完全不同。正文没有了，连线也就
+   * 没有 `[[链接]]` 文字可指 —— 那种情况下引线如实降级成"从卡片边界出发"。
+   */
+  titleOnly: boolean
+  setTitleOnly: (on: boolean) => void
 
   // ---------------------------------------------------------------------------
   // 浮动笔记面板（ADR-0023）
@@ -615,7 +651,12 @@ interface GraphState {
   clear: () => void
 
   select: (relPath: string | null) => void
-  /** 关闭预览面板（`Esc` 命令走这里）。 */
+  /**
+   * `Esc`（`graph.closePreview` 命令）走这里：**先关最上面的浮窗，没有浮窗才取消选中**。
+   *
+   * 名字里的 "Preview" 是历史遗留：停靠在画布右侧的预览面板已随 ADR-0025 移除
+   * （卡片正面就是完整正文），命令 id 不变是为了不惊动快捷键与测试。
+   */
   closePreview: () => void
 
   toggleFolder: (path: string) => void
@@ -689,6 +730,7 @@ interface PrefsSource {
   floating: boolean
   forcePreset: string
   forceParams: ForceParams
+  titleOnly: boolean
 }
 
 /** 把当前状态收成一份可落盘的偏好（所有 setter 共用，避免各自漏写一个字段）。 */
@@ -701,6 +743,7 @@ function prefsOf(source: PrefsSource): StoredPrefs {
     floating: source.floating,
     forcePreset: source.forcePreset,
     forceParams: { ...source.forceParams },
+    titleOnly: source.titleOnly,
   }
 }
 
@@ -736,7 +779,7 @@ function topZ(panes: readonly FloatingPane[]): number {
 
 type StoredCardSizes = Record<
   string,
-  Record<string, { width: number | null; height: number | null }>
+  Record<string, { width: number | null; height: number | null; full?: boolean }>
 >
 
 function readStoredCardSizes(): StoredCardSizes {
@@ -776,6 +819,8 @@ function loadCardSizes(rootPath: string | null): Map<string, CardSize> {
     map.set(relPath, {
       width: width === null ? null : clampCardWidth(width),
       height: clampCardSizeHeight(size.height === undefined ? null : size.height),
+      // `full` 是老版本记录里没有的字段：缺省按 false（截断形态不变）
+      full: size.full === true,
     })
   }
   return map
@@ -813,6 +858,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
    */
   forceParams: readPrefs().forceParams ?? forcePreset(readPrefs().forcePreset ?? DEFAULT_FORCE_PRESET).params,
   floating: readPrefs().floating !== false,
+  titleOnly: readPrefs().titleOnly === true,
   floatingPanes: [],
   pins: new Map<string, Point>(),
 
@@ -949,9 +995,9 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   /**
    * `Esc`（`graph.closePreview` 命令）走这里。
    *
-   * **先关最上面的浮窗，没有浮窗才关停靠预览**：`Esc` 在用户心里的意思是"关掉最上面那层"，
-   * 而浮窗是后出现的、盖在停靠面板之上的东西。反过来的话，用户按 `Esc` 会发现
-   * "浮窗还在，右下角那个面板却没了"。
+   * **先关最上面的浮窗，没有浮窗才取消选中**：`Esc` 在用户心里的意思是"关掉最上面那层"，
+   * 而浮窗是后出现的、盖在画布之上的东西。停靠预览面板已随 ADR-0025 移除
+   * （卡片正面就是完整正文），所以第二层语义从"关预览"变成"取消选中"。
    */
   closePreview: () => {
     const panes = get().floatingPanes
@@ -1061,6 +1107,17 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     const seq = ++egoSeq
     const depth = get().depth
     const previous = get().ego
+    /**
+     * 这一份子图属于**哪个 Vault**。
+     *
+     * 为什么要在这里补一次：卡片尺寸（"我怎么看这一篇"）按 Vault 落盘，落盘的键就是这个
+     * `rootPath`；它在过去只由全库视图的 `load()` 写入 —— 于是"默认入口是关系图"的用户
+     * 调过的卡片尺寸**从来没被保存过**（下次打开就没了，而且是个静默的丢失）。
+     *
+     * 优先级：store 里已有的（`load()` 写的，代表"当前这份数据属于谁"）→ 宿主那一刻的
+     * Vault 根（焦点视图这条路上没有别的来源）→ 保持不变。
+     */
+    const rootPath = get().rootPath ?? useVaultStore.getState().info?.rootPath ?? null
     // 保留视角的刷新（保存成功 / 索引就绪）不进 `loading`：画布继续用旧数据渲染（不闪白）。
     // **换圆心或改跳数则相反** —— 那是一幅新的图，留着旧的只会让人以为按钮没反应；
     // 判据放在这里而不是调用方：只有 store 同时知道"旧的这份数据是谁的、用的几跳"。
@@ -1069,7 +1126,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     if (!keepView) {
       // 卡片尺寸是**布局的输入**：非保留视角的加载顺手把它从落盘读回来（用户为此调过宽度，
       // 每次换深度都重调一遍是不能接受的）。保留视角的刷新不动它 —— 内存里的才是最新的。
-      set({ egoStatus: 'loading', egoError: null, cardSizes: loadCardSizes(get().rootPath) })
+      set({ egoStatus: 'loading', egoError: null, cardSizes: loadCardSizes(rootPath) })
     }
     try {
       const data = await ipc.graphEgo(relPath, depth)
@@ -1082,6 +1139,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         egoStatus: 'ready',
         egoError: null,
         texts,
+        // 记下这个 Vault：卡片尺寸与手工位置都按它落盘（见上面 `rootPath` 的说明）
+        ...(rootPath === null ? {} : { rootPath }),
         ...(keepView ? {} : { selected: null }),
       })
     } catch (cause) {
@@ -1122,7 +1181,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     const sizes = new Map(current)
     // 调宽度时把**高度上限一并重置成"自动"**：宽度变了，正文的换行就变了 —— 同一个上限下
     // 更宽的卡片会显示更多行。若此时仍钉着旧上限，用户会觉得"我拉宽了，怎么反而看着更短"。
-    sizes.set(relPath, { width: next, height: null })
+    // `full` 保持不变："看全文"与"卡片多宽"是两个正交的意图。
+    sizes.set(relPath, { width: next, height: null, full: current.get(relPath)?.full === true })
     persistCardSizes(get().rootPath, sizes)
     set({ cardSizes: sizes })
   },
@@ -1130,10 +1190,41 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   setCardHeight: (relPath, height) => {
     const next = clampCardHeight(height)
     const current = get().cardSizes
-    if (current.get(relPath)?.height === next) return
+    if (current.get(relPath)?.height === next && current.get(relPath)?.full !== true) return
     const width = current.get(relPath)?.width ?? null
     const sizes = new Map(current)
-    sizes.set(relPath, { width, height: next })
+    // 显式给了上限就退出「全文」：两者是"这一篇怎么显示"的两种互斥答案
+    sizes.set(relPath, { width, height: next, full: false })
+    persistCardSizes(get().rootPath, sizes)
+    set({ cardSizes: sizes })
+  },
+
+  setCardSize: (relPath, width, height) => {
+    const nextWidth = clampCardWidth(width)
+    const nextHeight = clampCardHeight(height)
+    const current = get().cardSizes
+    const existing = current.get(relPath)
+    if (existing !== undefined && existing.width === nextWidth && existing.height === nextHeight && existing.full !== true) {
+      return
+    }
+    const sizes = new Map(current)
+    // 手柄拖动是"圈定这张卡片的框"：宽高都是显式意图，同时退出全文态（见接口处的说明）
+    sizes.set(relPath, { width: nextWidth, height: nextHeight, full: false })
+    persistCardSizes(get().rootPath, sizes)
+    set({ cardSizes: sizes })
+  },
+
+  setCardFull: (relPath, full) => {
+    const current = get().cardSizes
+    const existing = current.get(relPath)
+    if ((existing?.full === true) === full) return
+    const sizes = new Map(current)
+    if (full) {
+      sizes.set(relPath, { width: existing?.width ?? null, height: null, full: true })
+    } else if (existing !== undefined) {
+      // 关掉全文回到"自动上限"（不恢复某个旧上限 —— 那是切换前的历史，不是现在的意图）
+      sizes.set(relPath, { ...existing, full: false })
+    }
     persistCardSizes(get().rootPath, sizes)
     set({ cardSizes: sizes })
   },
@@ -1193,6 +1284,12 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     if (get().floating === on) return
     saveJson(PREFS_KEY, prefsOf({ ...get(), floating: on }))
     set({ floating: on })
+  },
+
+  setTitleOnly: (on) => {
+    if (get().titleOnly === on) return
+    saveJson(PREFS_KEY, prefsOf({ ...get(), titleOnly: on }))
+    set({ titleOnly: on })
   },
 
   // -------------------------------------------------------------------------

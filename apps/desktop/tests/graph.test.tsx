@@ -8,7 +8,8 @@
  *    网格排布不重叠、视口裁剪只返回相交项、边的分类（入链虚线 / 出链实线）与连接点。
  *    这些断言不碰 DOM，所以出问题时能直接指到"哪个坐标算错了"。
  * 2. **组件行为**（`GraphCanvas` + Mock 适配器的 `graph_data`）：卡片与文件夹容器渲染、
- *    单击出预览（正文真的渲染出来了）、双击进编辑器、文件夹收起/展开、键盘与拖动。
+ *    单击选中（正文本来就画在卡片正面；ADR-0025 起不再有侧边预览面板）、双击进编辑器、
+ *    文件夹收起/展开、悬停 wikilink 高亮连线、键盘与拖动。
  *
  * 断言尽量落在**可观测的结果**上（DOM 结构、store 状态、localStorage），
  * 而不是内部实现细节（用了哪个变量、哪一层 memo），换实现不该让这些用例变红。
@@ -434,6 +435,28 @@ function clickAtWorld(world: Point): void {
   const host = graphHost()
   pointer(host, 'pointerdown', { x: at.x, y: at.y })
   pointer(host, 'pointerup', { x: at.x, y: at.y })
+}
+
+/**
+ * 焦点视图里某张卡片的**当前**世界矩形（从宿主的 `data-graph-card-rects` 读）。
+ *
+ * 为什么必须读这个属性而不是自己算：漂浮开着时卡片持续在动（力场 + 20fps），
+ * `layoutEgo` 给的环上位置只是**种子** —— 拖动/漂浮之后想点到它，只能问宿主"它此刻在哪"。
+ * 视口外的卡片不在这个属性里（它只列可见的），但本文件的用例里所有卡片都在视口内。
+ */
+function focusCardRect(relPath: string): Rect | null {
+  const attr = graphHost().getAttribute('data-graph-card-rects') ?? ''
+  for (const entry of attr.split(';')) {
+    const sep = entry.lastIndexOf('|')
+    if (sep < 0) continue
+    if (entry.slice(0, sep) !== relPath) continue
+    const [x = 0, y = 0, width = 0, height = 0] = entry
+      .slice(sep + 1)
+      .split(',')
+      .map((part) => Number(part))
+    return { x, y, width, height }
+  }
+  return null
 }
 
 /** 打开一篇笔记（走真实的 `openNote`：读盘、填 doc）——焦点视图的圆心就是当前打开的这篇。 */
@@ -1267,6 +1290,12 @@ describe('知识图谱画布', () => {
       egoStatus: 'idle',
       egoError: null,
       texts: new Map<string, string>(),
+      // 下面这些不在 `resetStores()` 的重置范围里，却会跨用例泄漏（真实踩过：
+      // 某条用例关掉"从链接引出"，后面所有用例的引线就都不见了）—— 一并复位
+      edgeFromLink: true,
+      titleOnly: false,
+      pins: new Map(),
+      floatingPanes: [],
     })
     // 缩放 / 适应窗口 / 关闭预览走命令表（幂等注册，重复调用无副作用）
     registerBuiltinCommands()
@@ -1326,9 +1355,15 @@ describe('知识图谱画布', () => {
     expect(document.querySelector('.mn-graph__hud')?.textContent).toContain('4 边')
   })
 
-  it('单击卡片 = 在画布上直接预览正文（不按 Ctrl、不用悬停）', async () => {
+  it('单击卡片 = 选中它（相关连线高亮）；正文本来就画在卡片正面，不再需要侧边预览', async () => {
+    /*
+      ADR-0025 把停靠在右侧的预览面板移除了：卡片正面就是那篇笔记的完整 Markdown 预览
+      （这条由 graph-ego-preview.test.ts 钉着），侧边再开一块只是第二份事实。
+      单击的语义因此收成**选中**：store 的 `selected`、宿主的 `data-graph-selected`、
+      相关连线高亮 —— 画布上一张卡片都不少。想读 DOM 版全文有「浮窗打开」（另有专条用例）。
+    */
     await mountFocus('项目/设计.md')
-    expect(document.querySelector('.mn-graph-preview')).toBeNull()
+    expect(graphHost().getAttribute('data-graph-selected')).toBe('')
     const cardsBefore = cardCount()
 
     /*
@@ -1341,22 +1376,20 @@ describe('知识图谱画布', () => {
 
     await waitFor(() => {
       expect(useGraphStore.getState().selected).toBe('项目/设计.md')
-      expect(document.querySelector('.mn-graph-preview')).not.toBeNull()
+      expect(graphHost().getAttribute('data-graph-selected')).toBe('项目/设计.md')
     })
-    // 渲染的是**正文**（表格里的"原子写"），不是路径或摘要
+    // 圆心卡片的正文本来就画在卡片正面上（"原子写"只出现在正文里，任何标题都没有）
     await waitFor(() => {
-      expect(document.querySelector('.mn-graph-preview__article')?.textContent).toContain('原子写')
+      expect(drawnTexts().some((text) => text.includes('原子写'))).toBe(true)
     })
-    // 标题与路径都在面板上
-    expect(document.querySelector('.mn-graph-preview')?.textContent).toContain('项目/设计.md')
-    // 预览不阻塞画布：面板是浮层，不是新的布局分支 ⇒ 卡片一张都没少（原来比的是"另一张卡片还在"）
+    // 选中不阻塞画布：没有新增布局分支，卡片一张都没少
     expect(cardCount()).toBe(cardsBefore)
   })
 
-  it('Esc 关闭预览（命令）；点画布空白处也关闭', async () => {
+  it('Esc 取消选中（命令）；点画布空白处也取消', async () => {
     await mountFocus('项目/设计.md', { keys: true })
 
-    // 先开一次预览：点中心那张卡片（原用例点的是 项目/路线图.md 的 DOM 元素）
+    // 先选中圆心那张卡片（原用例点的是 项目/路线图.md 的 DOM 元素）
     clickAtWorld({ x: 0, y: 0 })
     await waitFor(() => {
       expect(useGraphStore.getState().selected).toBe('项目/设计.md')
@@ -1371,23 +1404,22 @@ describe('知识图谱画布', () => {
     clickAtWorld({ x: 1_000_000, y: 1_000_000 })
     await waitFor(() => {
       expect(useGraphStore.getState().selected).toBeNull()
-      expect(document.querySelector('.mn-graph-preview')).toBeNull()
+      expect(graphHost().getAttribute('data-graph-selected')).toBe('')
     })
 
     /*
-      Esc 现在是 `graph.closePreview` 命令：**焦点在不在画布上都生效**（全局快捷键分发）。
-      原来按键打在 `screen.getByLabelText('知识图谱画布')` 上，那个 aria-label 已经换成了
-      随模式变化的描述（焦点视图是『与「…」相关的关系图，N 跳』）—— 这里改成直接拿宿主元素。
+      Esc 是 `graph.closePreview` 命令：**焦点在不在画布上都生效**（全局快捷键分发）。
+      停靠预览面板随 ADR-0025 移除后，它的语义是"先关最上面的浮窗，没有浮窗才取消选中"
+      （见 `graph-store.closePreview`；命令 id 与快捷键都没变）。
     */
     clickAtWorld({ x: 0, y: 0 })
     await waitFor(() => {
-      expect(document.querySelector('.mn-graph-preview')).not.toBeNull()
+      expect(useGraphStore.getState().selected).toBe('项目/设计.md')
     })
     fireEvent.keyDown(graphHost(), { key: 'Escape' })
     await waitFor(() => {
-      expect(document.querySelector('.mn-graph-preview')).toBeNull()
+      expect(useGraphStore.getState().selected).toBeNull()
     })
-    expect(useGraphStore.getState().selected).toBeNull()
 
     // 宿主是可聚焦的应用区域（键盘用户的入口），描述随模式/跳数变化
     expect(graphHost().getAttribute('role')).toBe('application')
@@ -1547,12 +1579,13 @@ describe('知识图谱画布', () => {
       1. **宿主自己** `tabIndex=0`（一个可聚焦的"应用区域"），方向键在**同一方向上最近的卡片**
          之间移动选中项 —— 这是 `GraphCanvas.handleKeyDown` 提供的替代通路，
          否则画布对键盘用户就等于一块不可操作的图片；
-      2. **Enter / Ctrl+Enter 由预览面板上的两个按钮负责**（"在编辑器中打开" / "关闭预览"）。
+      2. **打开进编辑器由 HUD 的「浮窗打开」与浮窗里的按钮负责**（ADR-0025 把侧边预览面板
+         移除了：卡片正面就是完整正文，"再看一块侧边栏"没有存在理由）。
 
-    性质没变："键盘用户能选中一张卡片、能把它打开进编辑器、能关掉预览"，只是入口从
-    Tab 换成了方向键 + 面板按钮。
+    性质没变："键盘用户能选中一张卡片、能读它的全文、能把它打开进编辑器"，只是入口从
+    Tab 换成了方向键 + 浮窗。
   */
-  it('键盘通路：卡片不再是 DOM 所以 Tab 到不了它，改由方向键移动选中项、面板按钮负责打开', async () => {
+  it('键盘通路：卡片不再是 DOM 所以 Tab 到不了它，改由方向键移动选中项、浮窗按钮负责打开', async () => {
     await mountFocus('项目/设计.md')
     const host = graphHost()
 
@@ -1569,7 +1602,7 @@ describe('知识图谱画布', () => {
     })
     const first = useGraphStore.getState().selected
 
-    // 再按一次：选中项换到**另一张**卡片，预览面板跟着换（面板上的路径就是新的那一篇）
+    // 再按一次：选中项换到**另一张**卡片（宿主属性上的选中就是新的那一篇）
     fireEvent.keyDown(host, { key: 'ArrowRight' })
     await waitFor(() => {
       const selected = useGraphStore.getState().selected
@@ -1577,13 +1610,17 @@ describe('知识图谱画布', () => {
       expect(selected).not.toBe(first)
     })
     const selected = useGraphStore.getState().selected ?? ''
-    await waitFor(() => {
-      expect(document.querySelector('.mn-graph-preview__path')?.textContent).toBe(selected)
-    })
+    expect(graphHost().getAttribute('data-graph-selected')).toBe(selected)
 
-    // Enter / Ctrl+Enter 由面板上的按钮承担：点"在编辑器中打开"= 进编辑视图并读入那一篇
-    expect(screen.getByRole('button', { name: '在编辑器中打开' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '关闭预览' })).toBeTruthy()
+    // "读全文 / 打开进编辑器"由浮窗承担：HUD 的「浮窗打开」（选中一张卡片才出现）→
+    // 浮窗里的路径就是那一篇 → 浮窗里的"在编辑器中打开"进编辑视图并读入它
+    fireEvent.click(hudButton('open-floating'))
+    const pane = await waitFor(() => {
+      const element = document.querySelector<HTMLElement>('.mn-float-note')
+      expect(element).not.toBeNull()
+      return element as HTMLElement
+    })
+    expect(pane.querySelector('.mn-float-note__path')?.textContent).toBe(selected)
     fireEvent.click(screen.getByRole('button', { name: '在编辑器中打开' }))
     await waitFor(() => {
       expect(useUiStore.getState().viewMode).toBe('edit')
@@ -1681,61 +1718,135 @@ describe('知识图谱画布', () => {
     expect(document.querySelector('.mn-graph-preview')).toBeNull()
   })
 
-  it('预览面板：打开时焦点进入面板，关闭后还给打开它的那个元素（画布宿主）', async () => {
-    await mountFocus('项目/设计.md')
+  it('失去焦点即松开：被按住的卡片在"点空白 / 选中换走"之后继续漂浮（ADR-0025）', async () => {
     /*
-      原来是"关闭后焦点还给刚才那张卡片" —— canvas 之后**卡片不可聚焦**（它不是 DOM），
-      所以"还给谁"只能是"还给打开面板时持有焦点的那个元素"：这里是画布宿主
-      （它 `tabindex=0`，本来就是 Tab 序列里的第一个落点）。
-      性质没变：焦点不会凭空掉到 body 上（那意味着键盘用户要从头 Tab 一遍）。
+      用户原话："每个卡片聚焦后的失去焦点继续松开卡片，保持浮动"。
+      曾经"按住"是近乎永久的状态（只有 HUD 的「松开卡片」能解除）；现在的判据：
+      **焦点走了就松开** —— 点空白、或选中换到另一张，被按住的卡片都立刻交还力场。
+      两条路都要守：空白点击在 `endPointer`（那次选中可能根本没变），
+      换选中在"选中变化"的 effect 上（它也覆盖方向键 / 定位笔记 / 命令那几条路）。
     */
-    const host = graphHost()
-    host.focus()
-    expect(document.activeElement).toBe(host)
-
-    clickAtWorld({ x: 0, y: 0 })
-    const panel = await waitFor(() => {
-      const element = document.querySelector<HTMLElement>('.mn-graph-preview')
-      expect(element).not.toBeNull()
-      return element
-    })
-    if (panel === null) throw new Error('预览面板没有出现')
-    // 打开即聚焦：键盘用户不会"面板开了但焦点还留在画布上"
-    expect(document.activeElement).toBe(panel)
-
-    // 关闭（右上角的 ×，与 Esc 同一条关闭路径）后焦点还给宿主，Tab 不用从头走
-    const closeButton = panel.querySelector<HTMLButtonElement>('button[aria-label="关闭预览"]')
-    if (closeButton === null) throw new Error('没有关闭按钮')
-    fireEvent.click(closeButton)
-
-    await waitFor(() => {
-      expect(document.querySelector('.mn-graph-preview')).toBeNull()
-    })
-    expect(document.activeElement).toBe(graphHost())
-  })
-
-  it('预览正文里的 [[wikilink]] 能点开目标笔记（解析口径与阅读视图一致）', async () => {
     await mountFocus('项目/设计.md')
-    clickAtWorld({ x: 0, y: 0 })
+    const relPath = '项目/设计.md'
+    const host = graphHost()
 
-    // 设计.md 正文里有 [[路线图]]，Mock 索引把它解析到 项目/路线图.md
+    const dragCard = (world: Point, dx: number, dy: number): void => {
+      const from = screenPoint(world)
+      pointer(host, 'pointerdown', { x: from.x, y: from.y })
+      pointer(host, 'pointermove', { x: from.x + dx, y: from.y + dy })
+      pointer(host, 'pointerup', { x: from.x + dx, y: from.y + dy })
+    }
+
+    // 拖动圆心那张 ⇒ 被按住（pins 里有了它，力场不再推它）
+    dragCard({ x: 0, y: 0 }, 90, 60)
+    expect(useGraphStore.getState().pins.has(relPath)).toBe(true)
+
+    // 点空白处 ⇒ 它失去焦点 ⇒ 立即松开（不再等「松开卡片」按钮）
+    clickAtWorld({ x: 1_000_000, y: 1_000_000 })
     await waitFor(() => {
-      const link = document.querySelector('a.mn-wikilink[data-target="路线图"]')
-      expect(link).not.toBeNull()
-      expect(link?.getAttribute('data-rel-path')).toBe('项目/路线图.md')
+      expect(useGraphStore.getState().pins.size).toBe(0)
     })
-    const link = document.querySelector<HTMLAnchorElement>('a.mn-wikilink[data-target="路线图"]')
-    if (link === null) throw new Error('没有渲染出 wikilink')
 
-    fireEvent.click(link)
+    // 再按住一次（位置已经漂过，按**当前**矩形抓它），然后把选中换到另一张 ⇒ 同样松开
+    const current = focusCardRect(relPath)
+    expect(current).not.toBeNull()
+    const box = current ?? { x: 0, y: 0, width: 1, height: 1 }
+    dragCard({ x: box.x + box.width / 2, y: box.y + box.height / 2 }, 30, 20)
+    expect(useGraphStore.getState().pins.has(relPath)).toBe(true)
 
-    // 面板跟着滑到那篇卡片（画布上"顺着链接读下去"），同时把它读进编辑器
+    const neighbour = focusCardRect('项目/路线图.md')
+    expect(neighbour).not.toBeNull()
+    const neighbourBox = neighbour ?? { x: 0, y: 0, width: 0, height: 0 }
+    clickAtWorld({
+      x: neighbourBox.x + neighbourBox.width / 2,
+      y: neighbourBox.y + neighbourBox.height / 2,
+    })
     await waitFor(() => {
       expect(useGraphStore.getState().selected).toBe('项目/路线图.md')
     })
     await waitFor(() => {
-      expect(useNoteStore.getState().doc?.relPath).toBe('项目/路线图.md')
+      expect(useGraphStore.getState().pins.size).toBe(0)
     })
+  })
+
+  it('悬停正文里某段 [[链接]]：对应连线提亮（引线也提亮），移开即恢复', async () => {
+    /*
+      用户要的那件事："鼠标悬浮 wikilink 的时候对应的关系连线高亮"。
+      注意圆心的边**默认就是高亮的**（与中心相关），用它验"悬停点亮"等于没验 ——
+      所以这条用一条**不碰圆心**的边：链条 Mock（中心 → 一跳 → 两跳）里
+      `一跳 → 两跳` 默认是"环与环之间"的淡虚线，把指针移到「一跳」卡片正文里的
+      [[两跳]] 上，它就该提亮。指针落点从那条边的**引线起点小圆点**读
+      （它就是锚点 = 那段文字的左侧），再往右挪 4px 进文字内部 —— 全程不猜像素。
+    */
+    setIpcAdapter(createMockAdapter({ rootPath: VAULT_ROOT, notes: CHAIN_NOTES }))
+    await act(async () => {
+      await useVaultStore.getState().openVault(VAULT_ROOT)
+    })
+    await mountFocus('中心.md')
+    // 深度 1 时"两跳"不在子图里，调到 2
+    fireEvent.click(screen.getByRole('button', { name: '增加一跳' }))
+    await waitFor(() => {
+      expect(graphHost().getAttribute('data-graph-depth')).toBe('2')
+    })
+
+    /** 一跳 → 两跳 那条边的**卡外那段**（它在 span 层；引线层里同 key 的组没有它）。 */
+    const spanOf = (): SVGPathElement | null => {
+      for (const group of document.querySelectorAll<SVGGElement>('g[data-edge]')) {
+        const span = group.querySelector<SVGPathElement>(
+          'path.mn-graph-edge:not(.mn-graph-edge--lead)',
+        )
+        if (span === null) continue
+        const title = group.querySelector('title')?.textContent ?? ''
+        if (title.includes('一跳 → 两跳')) return span
+      }
+      return null
+    }
+    /** 同一条边的引线（卡片内那段虚线，在 lead 层）。 */
+    const leadOf = (): SVGPathElement | null => {
+      for (const group of document.querySelectorAll<SVGGElement>('g[data-edge]')) {
+        const lead = group.querySelector<SVGPathElement>('path.mn-graph-edge--lead')
+        if (lead === null) continue
+        const title = group.querySelector('title')?.textContent ?? ''
+        if (title.includes('一跳 → 两跳')) return lead
+      }
+      return null
+    }
+
+    const dot = await waitFor(() => {
+      for (const group of document.querySelectorAll<SVGGElement>('g[data-edge]')) {
+        const title = group.querySelector('title')?.textContent ?? ''
+        if (!title.includes('一跳 → 两跳')) continue
+        const found = group.querySelector<SVGCircleElement>('.mn-graph-edge-lead-dot')
+        if (found !== null) return found
+      }
+      throw new Error('还没有 一跳 → 两跳 的引线')
+    })
+    const anchor = { x: Number(dot.getAttribute('cx')), y: Number(dot.getAttribute('cy')) }
+    expect(Number.isFinite(anchor.x) && Number.isFinite(anchor.y)).toBe(true)
+
+    // 默认：这条边不碰圆心 ⇒ 淡化（对照组：没有它，下面的"提亮"可能是恒真的）
+    await waitFor(() => {
+      expect(spanOf()?.getAttribute('class') ?? '').toContain('mn-graph-edge--dim')
+    })
+
+    // 悬停到那段 [[两跳]] 上：边提亮、引线提亮、宿主给出 over-link 光标
+    const at = screenPoint({ x: anchor.x + 4, y: anchor.y })
+    pointer(graphHost(), 'pointermove', { x: at.x, y: at.y })
+    await waitFor(() => {
+      const spanClass = spanOf()?.getAttribute('class') ?? ''
+      expect(spanClass).toContain('mn-graph-edge--highlight')
+      expect(spanClass).not.toContain('mn-graph-edge--dim')
+    })
+    expect(leadOf()?.getAttribute('class') ?? '').toContain('mn-graph-edge--lead--active')
+    expect(graphHost().className).toContain('mn-graph--over-link')
+
+    // 移开到空白：恢复淡化（高亮不是"点过一次就亮着"）
+    const away = screenPoint({ x: 1_000_000, y: 1_000_000 })
+    pointer(graphHost(), 'pointermove', { x: away.x, y: away.y })
+    await waitFor(() => {
+      expect(spanOf()?.getAttribute('class') ?? '').toContain('mn-graph-edge--dim')
+    })
+    expect(graphHost().className).not.toContain('mn-graph--over-link')
   })
 
   it('刷新期间不闪白：旧卡片继续显示，只在 HUD 上给一个"刷新中"的轻量指示', async () => {
@@ -2315,28 +2426,34 @@ describe('知识图谱画布', () => {
       expect(useGraphStore.getState().cardSizes.get(relPath)?.height).toBe(400)
     })
 
-    // 2) 缩放手柄：从右下角往外拖 60 像素（世界坐标）⇒ 宽度变大
+    // 2) 缩放手柄：往右下拖 ⇒ **宽与高一起**跟着光标走（曾经只能调宽度 ——
+    //    "卡片不能调高度"是用户报回来的缺陷，见 store 里 `setCardSize` 的说明）
     const rectAttr = graphHost().getAttribute('data-graph-root-rect') ?? ''
     const [rx = 0, ry = 0, rw = 0, rh = 0] = rectAttr.split(',').map((part) => Number(part))
     expect(rw).toBeGreaterThan(0)
+    expect(rh).toBeGreaterThan(0)
     const handleWorld = { x: rx + rw - 7, y: ry + rh - 7 }
     const handleScreen = screenPoint(handleWorld)
     pointer(graphHost(), 'pointerdown', { x: handleScreen.x, y: handleScreen.y })
-    pointer(graphHost(), 'pointermove', { x: handleScreen.x + 60, y: handleScreen.y })
-    pointer(graphHost(), 'pointerup', { x: handleScreen.x + 60, y: handleScreen.y })
+    pointer(graphHost(), 'pointermove', { x: handleScreen.x + 60, y: handleScreen.y + 45 })
+    pointer(graphHost(), 'pointerup', { x: handleScreen.x + 60, y: handleScreen.y + 45 })
 
     const scale = useGraphStore.getState().view.zoom
     await waitFor(() => {
-      const width = useGraphStore.getState().cardSizes.get(relPath)?.width ?? 0
-      // 拉宽的语义是"右边界跟着光标走"：新宽度 = 光标的世界 x − 卡片左边界。
+      const size = useGraphStore.getState().cardSizes.get(relPath)
+      const width = size?.width ?? 0
+      // 宽度的语义是"右边界跟着光标走"：新宽度 = 光标的世界 x − 卡片左边界。
       // 按下点在**手柄里**（右下角内缩 `CARD_RESIZE_HANDLE/2` 处），所以基准是 `rw - 7` 而不是 `rw`。
       // 容差 ±2：两边都取整过（属性里的矩形取整、store 写入时取整），差一个像素是**取整**不是错。
-      const expected = rw - 7 + 60 / scale
-      expect(Math.abs(width - expected)).toBeLessThanOrEqual(2)
+      const expectedWidth = rw - 7 + 60 / scale
+      expect(Math.abs(width - expectedWidth)).toBeLessThanOrEqual(2)
       expect(width).toBeGreaterThan(rw)
+      // 高度同一条换算（光标的的世界 y − 卡片上边界）：**再也不是"拉回自动"**
+      const expectedHeight = rh - 7 + 45 / scale
+      expect(Math.abs((size?.height ?? 0) - expectedHeight)).toBeLessThanOrEqual(2)
+      // 手柄拖动是"圈定框"：两个方向都是显式意图 ⇒ 不在「全文」态
+      expect(size?.full ?? false).toBe(false)
     })
-    // 拉宽之后高度上限回到"自动"（换行变了，见 store 的说明）
-    expect(useGraphStore.getState().cardSizes.get(relPath)?.height).toBeNull()
     // 拉手柄没有把画布也拖走
     expect(useGraphStore.getState().view).toEqual(useGraphStore.getState().view)
 
@@ -2439,10 +2556,11 @@ describe('知识图谱画布', () => {
     })
   })
 
-  it('浮动笔记面板：从 HUD 打开一个浮窗，`Esc` 先关它、再关停靠预览（ADR-0023）', async () => {
+  it('浮动笔记面板：从 HUD 打开一个浮窗，`Esc` 先关它、再取消选中（ADR-0023/0025）', async () => {
     /*
-      浮窗是这一轮新增的"把一篇拎出来读"的姿势，它必须在**画布之上**、可多个、且与 `Esc`
-      的语义一致：`Esc` 在用户心里的意思是"关掉最上面那层"。
+      浮窗是"把一篇拎出来读"的姿势（ADR-0025 移除侧边预览之后，它是图谱里唯一的 DOM 全文），
+      它必须在**画布之上**、可多个、且与 `Esc` 的语义一致：`Esc` 在用户心里的意思是
+      "关掉最上面那层"—— 先是浮窗，然后才是"取消选中"。
     */
     await mountFocus('项目/设计.md')
     clickAtWorld({ x: 0, y: 0 })
@@ -2459,7 +2577,7 @@ describe('知识图谱画布', () => {
     expect(pane.getAttribute('data-mn-graph-nopan')).not.toBeNull()
     expect(useGraphStore.getState().floatingPanes).toHaveLength(1)
 
-    // `Esc`（命令走 `closePreview`）先关浮窗，停靠预览留着
+    // `Esc`（命令走 `closePreview`）先关浮窗，选中留着
     act(() => {
       useGraphStore.getState().closePreview()
     })
@@ -2468,11 +2586,100 @@ describe('知识图谱画布', () => {
     })
     expect(useGraphStore.getState().selected).toBe('项目/设计.md')
 
-    // 再按一次才关停靠预览
+    // 再按一次才取消选中（曾经的"关停靠预览"那一层就是现在的"取消选中"）
     act(() => {
       useGraphStore.getState().closePreview()
     })
     expect(useGraphStore.getState().selected).toBeNull()
+  })
+
+  it('「仅标题」开关：卡片只剩标题（正文与引线都收起来），开关落盘', async () => {
+    /*
+      用户要的是"增加一个配置是只有标题（文件名）的卡片"。这条守四件事：
+        ① 卡片变矮（只剩壳：标题行 + 分隔线 + 内边距，几何由 `titleOnlyCardHeight` 给）；
+        ② 正文不再被画出来；**没有正文就没有可指的 [[链接]]** ⇒ 引线如实消失
+           （连线退成"从卡片边界出发"，与全库视图同一种降级形态）；
+        ③ 高度档那一行藏起来（纯标题卡片没有"正文高度上限"这回事）；
+        ④ 它是"我怎么看图"的偏好 ⇒ 落盘，且可逆。
+    */
+    await mountFocus('项目/设计.md')
+    await waitFor(() => {
+      expect(drawnTexts().some((text) => text.includes('原子写'))).toBe(true)
+    })
+    // 选中圆心那张卡片：高度档那一行才会出现（下面要断言它在纯标题模式下藏起来）
+    clickAtWorld({ x: 0, y: 0 })
+    await waitFor(() => {
+      expect(useGraphStore.getState().selected).toBe('项目/设计.md')
+    })
+    const heightOfRoot = (): number =>
+      Number((graphHost().getAttribute('data-graph-root-rect') ?? '').split(',')[3] ?? 0)
+    const fullHeight = heightOfRoot()
+    expect(fullHeight).toBeGreaterThan(0)
+    expect(document.querySelector('[data-card-height="auto"]')).not.toBeNull()
+
+    resetDrawnTexts()
+    fireEvent.click(hudButton('toggle-title-only'))
+
+    // 等到重画之后：标题还在，正文与"目录/度数"那一行都不在了
+    await waitFor(() => {
+      expect(drawnTexts()).toContain('设计')
+    })
+    expect(drawnTexts().some((text) => text.includes('原子写'))).toBe(false)
+    expect(drawnTexts()).not.toContain('项目')
+    expect(heightOfRoot()).toBeLessThan(fullHeight)
+    // 卡片内那段虚线引线来自"正文里的 [[链接]]"：没有正文就没有引线
+    expect(document.querySelectorAll('path.mn-graph-edge--lead')).toHaveLength(0)
+    // 高度档与纯标题无关，整行收起
+    expect(document.querySelector('[data-card-height="auto"]')).toBeNull()
+    expect(JSON.parse(window.localStorage.getItem(PREFS_KEY) ?? '{}')).toMatchObject({
+      titleOnly: true,
+    })
+
+    // 关掉之后正文与高度档都回来（开关可逆）
+    resetDrawnTexts()
+    fireEvent.click(hudButton('toggle-title-only'))
+    await waitFor(() => {
+      expect(drawnTexts().some((text) => text.includes('原子写'))).toBe(true)
+    })
+    expect(document.querySelector('[data-card-height="auto"]')).not.toBeNull()
+  })
+
+  it('「全文」档：不截断（与数值档互斥），HUD 上的选中态跟随', async () => {
+    /*
+      项 5 的"卡片可以完整展示全文"：高度档的第五个选项就是**不截断**。
+      它与数值档**互斥** —— 两者是"这一篇怎么显示"的两种答案，不能同时成立。
+      Mock 的笔记都很短（全文与自动排出来一样高），所以几何上无可断言；
+      几何那一侧由 `layoutCard` 的单测钉着（`maxHeight: Infinity` ⇒ 与"没给上限"逐块一致），
+      这里守的是状态机与 HUD 的选中态。
+    */
+    await mountFocus('项目/设计.md')
+    const relPath = '项目/设计.md'
+    clickAtWorld({ x: 0, y: 0 })
+    await waitFor(() => {
+      expect(useGraphStore.getState().selected).toBe(relPath)
+    })
+
+    const chipOf = (value: string): HTMLElement => {
+      const element = document.querySelector<HTMLElement>(`[data-card-height="${value}"]`)
+      if (element === null) throw new Error(`HUD 上没有 ${value} 这一档`)
+      return element
+    }
+    fireEvent.click(chipOf('full'))
+    await waitFor(() => {
+      expect(useGraphStore.getState().cardSizes.get(relPath)?.full).toBe(true)
+    })
+    expect(chipOf('full').getAttribute('aria-pressed')).toBe('true')
+    expect(chipOf('auto').getAttribute('aria-pressed')).toBe('false')
+
+    // 互斥：再选一个数值档 ⇒ 退出全文
+    fireEvent.click(chipOf('900'))
+    await waitFor(() => {
+      const size = useGraphStore.getState().cardSizes.get(relPath)
+      expect(size?.full ?? false).toBe(false)
+      expect(size?.height).toBe(900)
+    })
+    expect(chipOf('900').getAttribute('aria-pressed')).toBe('true')
+    expect(chipOf('full').getAttribute('aria-pressed')).toBe('false')
   })
 })
 

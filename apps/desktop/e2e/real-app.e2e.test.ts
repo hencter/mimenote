@@ -186,18 +186,33 @@ describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设
       '关系图画出圆心与它的邻居',
     )
 
-    // 单击**圆心那张卡片** → 就地预览正文（不需要按 Ctrl、不需要悬停）。
+    // 单击**圆心那张卡片** → 选中它（ADR-0025 起不再有侧边预览面板：卡片正面就是完整正文）。
     // 卡片没有 DOM 节点可点：命中判的是世界坐标矩形，世界原点的屏幕位置就是那两个 offset。
     await clickGraphCenterCard(app.page)
-    await app.page.waitForSelector('.mn-graph-preview', { state: 'visible' })
-    expect(await app.page.locator('.mn-graph-preview').getAttribute('aria-label')).toBe('预览 甲')
     await waitUntil(
-      async () => ((await app.page.locator('.mn-graph-preview').textContent()) ?? '').includes('粗体'),
+      async () =>
+        (await app.page.locator('.mn-graph').getAttribute('data-graph-selected')) === '甲.md',
       15_000,
-      '预览里出现笔记正文',
+      '单击圆心卡片选中了它',
+    )
+    // "读全文"交给浮窗（真实渲染链路：`note_read` → `renderMarkdown`）
+    await app.page.locator('[data-graph-action="open-floating"]').click()
+    const pane = app.page.locator('.mn-float-note')
+    await pane.waitFor({ state: 'visible' })
+    await waitUntil(
+      async () => ((await pane.textContent()) ?? '').includes('粗体'),
+      15_000,
+      '浮窗里出现笔记正文',
     )
     await app.page.keyboard.press('Escape')
-    await waitUntil(async () => (await app.page.locator('.mn-graph-preview').count()) === 0, 5_000, '预览关闭')
+    await waitUntil(async () => (await app.page.locator('.mn-float-note').count()) === 0, 5_000, 'Esc 关掉浮窗')
+    // 再按一次才是取消选中（`graph.closePreview` 的两层语义）
+    await app.page.keyboard.press('Escape')
+    await waitUntil(
+      async () => (await app.page.locator('.mn-graph').getAttribute('data-graph-selected')) === '',
+      5_000,
+      '再按一次 Esc 取消选中',
+    )
 
     // 换到"整个 Vault"：文件夹容器与悬空链接的虚影标签都留在 DOM 里（只有卡片搬进了 canvas）
     await app.page.locator('[data-graph-action="mode-vault"]').click()
@@ -227,7 +242,12 @@ describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设
     await app.page.locator('.mn-graph__find-input').fill('甲')
     await app.page.waitForSelector('[data-find-path="甲.md"]', { state: 'visible' })
     await app.page.locator('[data-find-path="甲.md"]').click()
-    await app.page.waitForSelector('.mn-graph-preview', { state: 'visible' })
+    await waitUntil(
+      async () =>
+        (await app.page.locator('.mn-graph').getAttribute('data-graph-selected')) === '甲.md',
+      15_000,
+      '定位并选中了甲',
+    )
     // 注意 SVG 元素的 `className` 是 `SVGAnimatedString` 对象，必须读属性
     const classes = await app.page
       .locator('.mn-graph-edge--highlight')
@@ -237,7 +257,11 @@ describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设
     expect(classes.some((name) => !name.includes('mn-graph-edge--dashed'))).toBe(true)
 
     await app.page.keyboard.press('Escape')
-    await waitUntil(async () => (await app.page.locator('.mn-graph-preview').count()) === 0, 5_000, '预览关闭')
+    await waitUntil(
+      async () => (await app.page.locator('.mn-graph').getAttribute('data-graph-selected')) === '',
+      5_000,
+      '取消选中',
+    )
   })
 
   it('设置页：Ctrl+, 打开、显示版本与 Vault 统计，Esc 关闭', async () => {

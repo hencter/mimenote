@@ -157,7 +157,9 @@ export const GraphEdges = memo(function GraphEdges({
           */}
           {withLead && visual.leadPath !== undefined && (
             <path
-              className="mn-graph-edge mn-graph-edge--lead"
+              className={`mn-graph-edge mn-graph-edge--lead${
+                visual.style.highlight ? ' mn-graph-edge--lead--active' : ''
+              }`}
               d={visual.leadPath}
               strokeLinecap="butt"
               {...leadDashAttributes(visual)}
@@ -179,7 +181,9 @@ export const GraphEdges = memo(function GraphEdges({
               它同时盖住相位在链接那一端可能留下的空隙（见 `leadDash` 的推导） */}
           {withLead && visual.leadFrom !== undefined && (
             <circle
-              className="mn-graph-edge-lead-dot"
+              className={`mn-graph-edge-lead-dot${
+                visual.style.highlight ? ' mn-graph-edge-lead-dot--active' : ''
+              }`}
               cx={visual.leadFrom.x}
               cy={visual.leadFrom.y}
               r={2}
