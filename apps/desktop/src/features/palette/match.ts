@@ -34,7 +34,7 @@
 
 import type { Command } from '@/app/commands'
 import { formatChord } from '@/app/commands'
-import { isMarkdown } from '@/domain/paths'
+import { displayName, displayPath, isMarkdown } from '@/domain/paths'
 import type { EntryMeta } from '@/ipc/types'
 
 /** 面板一次最多渲染多少条（其余只在提示里报"还有 N 条"）。 */
@@ -281,17 +281,28 @@ export function filterCommands(
 // 笔记索引（快速切换的数据源 = vault-store 的 entries）
 // ---------------------------------------------------------------------------
 
-/** 笔记的预计算索引项（与查询无关）。 */
+/**
+ * 笔记的预计算索引项（与查询无关）。
+ *
+ * `relPath` 是**身份**（打开哪一篇、`data-rel-path` 用什么），`displayPath` 才是
+ * 被匹配与被渲染的字符串 —— 界面上不显示 `.md`（ADR-0030），而高亮下标必须落在
+ * **看得见的那串字符**上：拿 relPath 去匹配、把结尾三个字符藏起来的话，
+ * 用户搜 "md" 会得到一串指向不存在位置的空 `<mark>`。
+ */
 export interface NoteIndexEntry {
   relPath: string
+  /** 显示用路径（笔记不带扩展名），既是匹配目标也是渲染文本。 */
+  displayPath: string
   lowerPath: string
-  /** 文件名在路径中的起始下标（用于"文件名命中优先"的加分）。 */
+  /** 文件名在 `displayPath` 中的起始下标（用于"文件名命中优先"的加分）。 */
   nameStart: number
 }
 
 export interface RankedNote {
   relPath: string
-  /** 命中字符在 relPath 中的下标（渲染时按连续段合并成 `<mark>`）。 */
+  /** 与 `NoteIndexEntry.displayPath` 同一串字符（渲染与高亮都用它）。 */
+  displayPath: string
+  /** 命中字符在 `displayPath` 中的下标（渲染时按连续段合并成 `<mark>`）。 */
   indices: readonly number[]
 }
 
@@ -313,11 +324,13 @@ export function buildNoteIndex(entries: readonly EntryMeta[]): NoteIndexEntry[] 
   for (const entry of entries) {
     if (entry.isDir) continue
     if (!isMarkdown(entry.relPath)) continue
-    const lowerPath = entry.relPath.toLowerCase()
+    const shown = displayPath(entry.relPath)
+    const lowerPath = shown.toLowerCase()
     items.push({
       relPath: entry.relPath,
+      displayPath: shown,
       lowerPath,
-      nameStart: Math.max(0, lowerPath.length - entry.name.toLowerCase().length),
+      nameStart: Math.max(0, lowerPath.length - displayName(entry.relPath).toLowerCase().length),
     })
   }
   items.sort((a, b) => collator.compare(a.relPath, b.relPath))
@@ -336,7 +349,7 @@ export function filterNotes(
 ): PaletteOutcome<RankedNote> {
   if (lowerQuery === '') {
     return {
-      items: index.slice(0, limit).map((entry) => ({ relPath: entry.relPath, indices: NO_INDICES })),
+      items: index.slice(0, limit).map((entry) => ({ relPath: entry.relPath, displayPath: entry.displayPath, indices: NO_INDICES })),
       total: index.length,
     }
   }
@@ -349,6 +362,7 @@ export function filterNotes(
     const inName = first !== undefined && first >= entry.nameStart
     candidates.push({
       relPath: entry.relPath,
+      displayPath: entry.displayPath,
       indices: match.indices,
       score: match.score + (inName ? NAME_WEIGHT : 0),
     })
@@ -356,7 +370,7 @@ export function filterNotes(
 
   candidates.sort((a, b) => b.score - a.score)
   return {
-    items: candidates.slice(0, limit).map(({ relPath, indices }) => ({ relPath, indices })),
+    items: candidates.slice(0, limit).map(({ relPath, displayPath: shown, indices }) => ({ relPath, displayPath: shown, indices })),
     total: candidates.length,
   }
 }

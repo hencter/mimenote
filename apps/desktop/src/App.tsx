@@ -41,6 +41,7 @@ import { useWindowTitle } from '@/features/status/window-title'
 import { TabBar } from '@/features/tabs/TabBar'
 import { VaultGate } from '@/features/vault/VaultGate'
 import { formatDuration } from '@/domain/format'
+import { displayPath } from '@/domain/paths'
 import { subscribeIndexStatus, useLinksStore } from '@/state/links-store'
 import { flushAutosave, hasUnsavedChanges, useNoteStore } from '@/state/note-store'
 import { useUiStore } from '@/state/ui-store'
@@ -218,9 +219,11 @@ export function App() {
         */}
         <div className="mn-titlebar__center">
           {relPath !== null && (
-            <div className="mn-titlebar__path" title={relPath}>
+            // 可见文字去掉 `.md`（`displayPath`，ADR-0030）；`title` 与 `data-note-path` 给**真实路径** ——
+            // 前者是"悬停看全名"的出口，后者是自动化认"当前是哪一篇"的抓手（可见文字不是身份）。
+            <div className="mn-titlebar__path" title={relPath} data-note-path={relPath}>
               <Icon name="pencil" size={13} />
-              <span className="mn-titlebar__path-text">{relPath}</span>
+              <span className="mn-titlebar__path-text">{displayPath(relPath)}</span>
               {noteStatus === 'saving' && <span className="mn-titlebar__status">保存中…</span>}
             </div>
           )}

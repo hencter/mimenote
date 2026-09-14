@@ -14,6 +14,7 @@
  * `vault-store.entries` 的原因：那会出现"列表里选得中、画布上找不到"的落差。
  */
 
+import { displayName, displayPath } from '@/domain/paths'
 import { filterNotes, type NoteIndexEntry, type RankedNote } from '@/features/palette/match'
 
 import type { GraphNode } from '@/ipc/types'
@@ -21,7 +22,7 @@ import type { GraphNode } from '@/ipc/types'
 /** 一次最多给出几条候选（下拉列表不做虚拟化，几十条足够选）。 */
 export const FIND_LIMIT = 30
 
-/** 定位候选（`indices` 是命中字符在相对路径里的下标，渲染高亮用）。 */
+/** 定位候选（`indices` 是命中字符在 `displayPath` 里的下标，渲染高亮用）。 */
 export interface GraphFindMatch extends RankedNote {
   /** 卡片标题（图谱写的是文件名主干）。 */
   title: string
@@ -32,25 +33,22 @@ export interface GraphFindMatch extends RankedNote {
 /** 把图谱节点整理成匹配器认的索引（按路径排序，保证空查询下顺序稳定）。 */
 export function buildGraphFindIndex(nodes: readonly GraphNode[]): NoteIndexEntry[] {
   const items: NoteIndexEntry[] = nodes.map((node) => {
-    const lowerPath = node.relPath.toLowerCase()
+    // 匹配与高亮都跑在**显示用路径**上（不带 `.md`），与命令面板同一口径（ADR-0030）
+    const shown = displayPath(node.relPath)
+    const lowerPath = shown.toLowerCase()
     return {
       relPath: node.relPath,
+      displayPath: shown,
       lowerPath,
       // 文件名起点：路径长度 - 路径末段长度。`title` 是主干（可能被宿主换过），
       // 而"文件名命中优先"这条加权是照着**路径**算的，所以用末段而不是 title
-      nameStart: Math.max(0, lowerPath.length - fileNameOf(node.relPath).toLowerCase().length),
+      nameStart: Math.max(0, lowerPath.length - displayName(node.relPath).toLowerCase().length),
     }
   })
   items.sort((left, right) =>
     left.relPath < right.relPath ? -1 : left.relPath > right.relPath ? 1 : 0,
   )
   return items
-}
-
-/** 取路径最后一段（`domain/paths.basename` 的口径，这里内联避免为一个函数多一层依赖）。 */
-function fileNameOf(relPath: string): string {
-  const index = relPath.lastIndexOf('/')
-  return index === -1 ? relPath : relPath.slice(index + 1)
 }
 
 /**
@@ -72,8 +70,9 @@ export function findGraphMatches(
     if (node === undefined) continue
     matches.push({
       relPath: item.relPath,
+      displayPath: item.displayPath,
       indices: item.indices,
-      title: node.title === '' ? fileNameOf(node.relPath) : node.title,
+      title: node.title === '' ? displayName(node.relPath) : node.title,
       folder: node.folder,
     })
   }

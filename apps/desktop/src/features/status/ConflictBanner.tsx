@@ -4,6 +4,7 @@ import { useState } from 'react'
 
 import { Icon } from '@/components/Icon'
 import { formatClock } from '@/domain/format'
+import { displayPath } from '@/domain/paths'
 import { useNoteStore } from '@/state/note-store'
 
 export function ConflictBanner() {
@@ -27,7 +28,7 @@ export function ConflictBanner() {
     <div className="mn-conflict" role="alert">
       <Icon name="alert" size={16} />
       <div className="mn-conflict__body">
-        <strong>「{doc.relPath}」已被外部修改</strong>
+        <strong title={doc.relPath}>「{displayPath(doc.relPath)}」已被外部修改</strong>
         <span>
           编辑器中的内容基于 {formatClock(doc.openedAt)} 读取的版本，磁盘上的版本更新于{' '}
           {formatClock(conflict.detectedAt)}。为避免覆盖别人的改动，保存已暂停。

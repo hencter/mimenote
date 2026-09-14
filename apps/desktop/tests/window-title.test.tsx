@@ -32,23 +32,33 @@ describe('窗口标题', () => {
     )
   })
 
-  it('打开笔记后是"笔记名 — 应用名"，只取文件名而不是路径', () => {
+  // 标题里的笔记名**不带 .md**（ADR-0030）：任务栏与 Alt+Tab 里那是"哪一篇"的身份，
+  // 而不是磁盘上的文件名（真实名字在文件树/悬停提示里）。
+  it('打开笔记后是"笔记名 — 应用名"，只取文件名而不是路径，且不带 .md', () => {
     expect(
       windowTitle({ relPath: '项目/子项目/细节.md', dirty: false, rootPath: 'C:\\Notes\\知识库' }),
-    ).toBe('细节.md — Mimenote')
+    ).toBe('细节 — Mimenote')
   })
 
   it('未保存时加一个圆点，保存后又消失', () => {
-    expect(windowTitle({ relPath: '甲.md', dirty: true, rootPath: null })).toBe('甲.md • — Mimenote')
-    expect(windowTitle({ relPath: '甲.md', dirty: false, rootPath: null })).toBe('甲.md — Mimenote')
+    expect(windowTitle({ relPath: '甲.md', dirty: true, rootPath: null })).toBe('甲 • — Mimenote')
+    expect(windowTitle({ relPath: '甲.md', dirty: false, rootPath: null })).toBe('甲 — Mimenote')
+  })
+
+  it('隐藏的只是**笔记**的扩展名：附件一类原样保留', () => {
+    // `displayName` 的边界（ADR-0030）：只有 `.md` / `.markdown` 会被剥掉 ——
+    // "图"与"图.png"是两回事，后者去掉扩展名就认不出是什么文件了。
+    expect(windowTitle({ relPath: '附件/图.png', dirty: false, rootPath: null })).toBe(
+      '图.png — Mimenote',
+    )
   })
 
   it('把标题写到 document.title（浏览器标签在 dev 下也跟着变）', () => {
     const view = render(<Harness relPath="项目/设计.md" dirty={false} rootPath={null} />)
-    expect(document.title).toBe('设计.md — Mimenote')
+    expect(document.title).toBe('设计 — Mimenote')
 
     view.rerender(<Harness relPath="项目/设计.md" dirty rootPath={null} />)
-    expect(document.title).toBe('设计.md • — Mimenote')
+    expect(document.title).toBe('设计 • — Mimenote')
 
     view.rerender(<Harness relPath={null} dirty={false} rootPath={null} />)
     expect(document.title).toBe('Mimenote')
@@ -57,6 +67,6 @@ describe('窗口标题', () => {
   it('非 Tauri 运行时不会尝试设置窗口标题（也不报错）', () => {
     // jsdom 里 `isTauriRuntime()` 为 false：这条断言的是"不抛错、不留 Promise 拒绝"
     render(<Harness relPath="甲.md" dirty rootPath={null} />)
-    expect(document.title).toContain('甲.md')
+    expect(document.title).toContain('甲')
   })
 })

@@ -155,9 +155,12 @@ describe('外壳渲染', () => {
 
     await waitFor(() => {
       const center = document.querySelector('.mn-titlebar__center')
-      expect(center?.querySelector('.mn-titlebar__path')?.textContent ?? '').toContain(
-        '项目/设计.md',
-      )
+      const path = center?.querySelector('.mn-titlebar__path')
+      // **可见文字**不带 `.md`（`displayPath`，ADR-0030），而 `data-note-path` 给真实路径：
+      // 自动化认身份要读它，不能读可见文字（"项目/设计" 会误配 "项目/设计文档"）
+      expect(path?.querySelector('.mn-titlebar__path-text')?.textContent).toBe('项目/设计')
+      expect(path?.getAttribute('data-note-path')).toBe('项目/设计.md')
+      expect(path?.getAttribute('title')).toBe('项目/设计.md')
     })
     expect(document.querySelector('.mn-editor__path')).toBeNull()
   })
@@ -211,7 +214,8 @@ describe('链接面板（M2）', () => {
       const names = Array.from(panel.querySelectorAll('.mn-links__item-name')).map(
         (node) => node.textContent,
       )
-      expect(names).toContain('路线图.md')
+      // 反链里的名字也不带 .md（ADR-0030）
+      expect(names).toContain('路线图')
     })
 
     // 出链里应出现「细节」（已解析）与悬空项（在细节笔记里）
@@ -225,9 +229,9 @@ describe('链接面板（M2）', () => {
       panel.querySelector<HTMLButtonElement>('[data-backlink-from="项目/路线图.md"]')?.click()
     })
     await waitFor(() => {
-      expect(document.querySelector('.mn-titlebar__path')?.textContent ?? '').toContain(
-        '项目/路线图.md',
-      )
+      expect(
+        document.querySelector('.mn-titlebar__path')?.getAttribute('data-note-path'),
+      ).toBe('项目/路线图.md')
     })
   })
 
@@ -256,9 +260,9 @@ describe('链接面板（M2）', () => {
     // 从前它挂在编辑器工具栏上，这个视图里读不到，只能退回断言 store。
     await waitFor(() => {
       expect(useNoteStore.getState().doc?.relPath).toBe('项目/设计.md')
-      expect(document.querySelector('.mn-titlebar__path')?.textContent ?? '').toContain(
-        '项目/设计.md',
-      )
+      expect(
+        document.querySelector('.mn-titlebar__path')?.getAttribute('data-note-path'),
+      ).toBe('项目/设计.md')
     })
     expect(useVaultStore.getState().selected).toBe('项目/设计.md')
   })

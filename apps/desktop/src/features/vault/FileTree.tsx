@@ -51,7 +51,7 @@ import {
   type DropTarget,
 } from '@/domain/drag'
 import { formatBytes } from '@/domain/format'
-import { isMarkdown } from '@/domain/paths'
+import { displayName, isMarkdown } from '@/domain/paths'
 import { flattenTree, type FlatRow } from '@/domain/tree'
 import { computeWindow, scrollTopToReveal } from '@/domain/virtual-list'
 import { useNoteStore } from '@/state/note-store'
@@ -750,7 +750,7 @@ const FileTreeRow = memo(function FileTreeRow({
         <span className="mn-tree-row__chevron mn-tree-row__chevron--placeholder" />
       )}
       <Icon name={iconName} size={14} className="mn-tree-row__icon" />
-      <span className="mn-tree-row__name">{entry.name}</span>
+      <span className="mn-tree-row__name">{entry.isDir ? entry.name : displayName(relPath)}</span>
       {!entry.isDir && !markdown && <span className="mn-tree-row__badge">{entry.ext ?? '?'}</span>}
     </div>
   )

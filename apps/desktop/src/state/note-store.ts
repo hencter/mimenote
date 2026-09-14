@@ -11,7 +11,7 @@
 import { create } from 'zustand'
 
 import { fromEditorText, toEditorText, type TextFormat } from '@/domain/eol'
-import { isMarkdown } from '@/domain/paths'
+import { displayPath, isMarkdown } from '@/domain/paths'
 import { ipc } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
 import type { TextStats } from '@/ipc/types'
@@ -268,7 +268,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
         }
       })
 
-      if (force) toast.success('已覆盖保存', `${doc.relPath}（${outcome.writtenInMs}ms）`)
+      if (force) toast.success('已覆盖保存', `${displayPath(doc.relPath)}（${outcome.writtenInMs}ms）`)
       return true
     } catch (cause) {
       const error = MimenoteError.from(cause)

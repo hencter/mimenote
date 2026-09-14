@@ -27,7 +27,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent
 import { REVEAL_ROW_EVENT } from '@/app/dom-events'
 import { ContextMenu, type ContextMenuItem } from '@/components/ContextMenu'
 import { Icon } from '@/components/Icon'
-import { basename } from '@/domain/paths'
+import { basename, displayName } from '@/domain/paths'
 import { useNoteStore } from '@/state/note-store'
 import { installTabsSync, setCaretMemory, useTabsStore } from '@/state/tabs-store'
 import { useUiStore } from '@/state/ui-store'
@@ -193,7 +193,7 @@ export function TabBar() {
               if (event.button === 1) event.preventDefault()
             }}
           >
-            <span className="mn-tabs__label">{basename(relPath)}</span>
+            <span className="mn-tabs__label">{displayName(relPath)}</span>
             {mark !== null && (
               <span
                 className={`mn-tabs__mark mn-tabs__mark--${mark}`}

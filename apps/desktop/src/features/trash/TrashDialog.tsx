@@ -21,7 +21,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { basename } from '@/domain/paths'
+import { basename, displayName, displayPath } from '@/domain/paths'
 import { useTrashStore } from '@/state/trash-store'
 import { toast } from '@/state/toast-store'
 import { useUiStore } from '@/state/ui-store'
@@ -108,7 +108,7 @@ export function TrashDialog() {
       toast.error('恢复失败', explainError(failure))
       return
     }
-    report(summary)
+    report(summary, entry.isDir)
   }
 
   return (
@@ -177,10 +177,10 @@ export function TrashDialog() {
               <div className="mn-trash__meta">
                 <span className="mn-trash__name" title={entry.originalRelPath}>
                   {entry.isDir ? '📁 ' : ''}
-                  {basename(entry.originalRelPath)}
+                  {entry.isDir ? basename(entry.originalRelPath) : displayName(entry.originalRelPath)}
                 </span>
                 <span className="mn-trash__path" title={entry.originalRelPath}>
-                  {entry.originalRelPath}
+                  {entry.isDir ? entry.originalRelPath : displayPath(entry.originalRelPath)}
                 </span>
                 <span className="mn-trash__sub">
                   <span title={new Date(entry.deletedAtMs).toLocaleString()}>
@@ -258,7 +258,7 @@ export function TrashDialog() {
 }
 
 /** 恢复成功后的提示 + 一次静默的条目表刷新。 */
-function report(summary: RestoreSummary): void {
+function report(summary: RestoreSummary, isDir: boolean): void {
   const where = summary.restoredToOriginalPlace
     ? '已恢复到原来的位置'
     : `已恢复到 ${summary.restoredRelPath}`
@@ -266,7 +266,7 @@ function report(summary: RestoreSummary): void {
     summary.createdDirs.length === 0
       ? ''
       : `（顺手建了 ${summary.createdDirs.length} 个目录：${summary.createdDirs.join('、')}）`
-  toast.success(`${basename(summary.restoredRelPath)} ${where}`, dirs.replace(/^（|）$/g, ''))
+  toast.success(`${isDir ? basename(summary.restoredRelPath) : displayName(summary.restoredRelPath)} ${where}`, dirs.replace(/^（|）$/g, ''))
 
   // **总是**刷新条目表与文件树：宿主的恢复只更新它自己那份条目表与索引，而前端这一份是
   // 打开 Vault 时拍的快照 —— 不刷新就会出现"文件回到磁盘了、树里却没有那一行"（真踩过）。

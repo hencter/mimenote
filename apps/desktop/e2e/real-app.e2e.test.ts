@@ -288,6 +288,19 @@ describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设
   })
 })
 
+/**
+ * 当前打开的笔记（标题栏中区那条路径）。
+ *
+ * 读 `data-note-path` 而**不是可见文字**：可见文字不带 `.md`（`displayPath`，ADR-0030），
+ * 而自动化要的是真实路径；顺带避开"项目/设计"误配"项目/设计文档"这类前缀命中。
+ * 没有打开的笔记时返回 `null`（那个元素根本不渲染）。
+ */
+async function currentNotePath(page: Page): Promise<string | null> {
+  const node = page.locator('.mn-titlebar__path')
+  if ((await node.count()) === 0) return null
+  return node.getAttribute('data-note-path')
+}
+
 /** 打开某篇笔记（自足：不依赖上一条用例留下的树/面板/视图状态）。 */
 async function openNoteInTree(page: Page, relPath: string): Promise<void> {
   // 上一个用例可能把视图留在"阅读"里（主区域一次只渲染一个 pane），先回到编辑视图
@@ -296,7 +309,7 @@ async function openNoteInTree(page: Page, relPath: string): Promise<void> {
   await treeRow(page, relPath).click()
   await waitUntil(
     // 标题栏中区的路径三种视图里都在（ADR-0029）→ 不必再退回"树里这一行被选中"那个间接信号
-    async () => ((await page.locator('.mn-titlebar__path').textContent()) ?? '').includes(relPath),
+    async () => (await currentNotePath(page)) === relPath,
     15_000,
     `打开 ${relPath}`,
   )
@@ -453,7 +466,7 @@ describe.skipIf(!supported)('真实应用：链接索引（真实 wikilink 解�
     // 点反向链接 → 打开乙
     await app.page.locator('[data-backlink-from="笔记/乙.md"]').click()
     await waitUntil(
-      async () => ((await app.page.locator('.mn-titlebar__path').textContent()) ?? '').includes('笔记/乙.md'),
+      async () => ((await currentNotePath(app.page)) === '笔记/乙.md'),
       15_000,
       '跳转到乙',
     )
@@ -476,7 +489,7 @@ describe.skipIf(!supported)('真实应用：链接索引（真实 wikilink 解�
     await app.page.locator('[data-outbound-target="丁"]').click()
     await waitUntil(() => Promise.resolve(existsSync(vault.absolute('笔记/丁.md'))), 15_000, '丁.md 被创建')
     await waitUntil(
-      async () => ((await app.page.locator('.mn-titlebar__path').textContent()) ?? '').includes('笔记/丁.md'),
+      async () => ((await currentNotePath(app.page)) === '笔记/丁.md'),
       15_000,
       '创建后自动打开丁',
     )
@@ -828,7 +841,7 @@ describe.skipIf(!supported)('真实应用：标签与属性面板（真实 IPC�
     await app.page.locator('.mn-palette__input').press('Enter')
     await waitUntil(
       async () =>
-        ((await app.page.locator('.mn-titlebar__path').textContent()) ?? '').includes('项目/设计.md'),
+        ((await currentNotePath(app.page)) === '项目/设计.md'),
       15_000,
       '回车打开命中的笔记',
     )
@@ -852,7 +865,7 @@ describe.skipIf(!supported)('真实应用：标签与属性面板（真实 IPC�
     await app.page.locator('.mn-tags [data-tag-note="项目/路线图.md"]').click()
     await waitUntil(
       async () =>
-        ((await app.page.locator('.mn-titlebar__path').textContent()) ?? '').includes('项目/路线图.md'),
+        ((await currentNotePath(app.page)) === '项目/路线图.md'),
       15_000,
       '点击后打开了路线图',
     )
@@ -920,7 +933,7 @@ describe.skipIf(!supported)('真实应用：重命名与全库链接改写（真
     // 正在编辑的笔记原地跟到新路径（内容不变）
     await waitUntil(
       async () =>
-        ((await app.page.locator('.mn-titlebar__path').textContent()) ?? '').includes(NEW),
+        ((await currentNotePath(app.page)) === NEW),
       15_000,
       '编辑器切到新路径',
     )
@@ -976,7 +989,7 @@ describe.skipIf(!supported)('真实应用：重命名与全库链接改写（真
     await ensureLinksPanel(app.page)
     await waitUntil(
       async () =>
-        (await app.page.locator('.mn-links__item-name').allTextContents()).includes('alpha.md'),
+        (await app.page.locator('.mn-links__item-name').allTextContents()).includes('alpha'),
       15_000,
       '新笔记的反向链接里出现来源笔记',
     )
@@ -1068,7 +1081,7 @@ describe.skipIf(!supported)('真实应用：搜索命中跳转（真实 FTS5）'
     )
 
     // 打开的是命中那一篇
-    expect(((await app.page.locator('.mn-titlebar__path').textContent()) ?? '').includes(NOTE)).toBe(
+    expect(((await currentNotePath(app.page)) === NOTE)).toBe(
       true,
     )
     // 跳转只是"看"：磁盘上一个字节都没变（没有为了定位往正文里插标记）
@@ -1824,7 +1837,8 @@ describe.skipIf(!supported)('真实应用：回收站恢复（真实磁盘）', 
 
     await openTrashViaPalette()
     await waitUntil(
-      async () => (await app.page.locator('.mn-trash').textContent())?.includes('拿回来.md') === true,
+      // 回收站里的名字不带 .md（ADR-0030）
+      async () => (await app.page.locator('.mn-trash').textContent())?.includes('拿回来') === true,
       10_000,
       '回收站里列出了刚删的笔记',
     )
@@ -1842,7 +1856,7 @@ describe.skipIf(!supported)('真实应用：回收站恢复（真实磁盘）', 
     )
     // 台账里不该再有它（恢复过的条目不会被列第二次）
     await waitUntil(
-      async () => (await app.page.locator('.mn-trash').textContent())?.includes('拿回来.md') === false,
+      async () => (await app.page.locator('.mn-trash').textContent())?.includes('拿回来') === false,
       10_000,
       '列表里不再有它',
     )
@@ -1874,7 +1888,7 @@ describe.skipIf(!supported)('真实应用：回收站恢复（真实磁盘）', 
     )
     expect(await vault.read(RESTORE_ME)).toBe('# 占位者\n')
     // 记录仍在回收站里，供用户换名字再来
-    expect((await app.page.locator('.mn-trash').textContent()) ?? '').toContain('拿回来.md')
+    expect((await app.page.locator('.mn-trash').textContent()) ?? '').toContain('拿回来')
   }, 120_000)
 })
 

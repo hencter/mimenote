@@ -67,9 +67,10 @@ describe('列出与空态', () => {
     render(<TrashDialog />)
     await openTrash()
 
-    const row = await screen.findByText('设计.md')
+    // 名字与路径都不带 .md（ADR-0030）；悬浮提示里才是真实路径
+    const row = await screen.findByText('设计')
     expect(row).toBeTruthy()
-    expect(screen.getByText('项目/设计.md')).toBeTruthy()
+    expect(screen.getByText('项目/设计')).toBeTruthy()
     expect(screen.getByText('刚刚')).toBeTruthy()
     expect(screen.getByText(/1 条可恢复/)).toBeTruthy()
     expect(screen.getAllByRole('button', { name: '恢复' }).length).toBeGreaterThan(0)
@@ -92,7 +93,7 @@ describe('恢复', () => {
     const note = await ipc.noteRead('项目/设计.md')
     expect(note.text).toBe('# 设计\n\n这一行要被删掉再拿回来。\n')
     // 列表里不该再有它
-    await waitFor(() => expect(screen.queryByText('设计.md')).toBeNull())
+    await waitFor(() => expect(screen.queryByText('设计')).toBeNull())
   })
 
   it('原位置被占用时绝不覆盖，并指出「恢复为…」', async () => {
@@ -109,7 +110,7 @@ describe('恢复', () => {
       expect(error?.detail ?? '').toContain('恢复为')
     })
     // 记录仍在列表里（换名字再来）
-    expect(screen.getByText('设计.md')).toBeTruthy()
+    expect(screen.getByText('设计')).toBeTruthy()
   })
 
   it('「恢复为…」把东西放到指定路径，并如实汇报顺手建了哪些目录', async () => {
@@ -196,11 +197,11 @@ describe('异常与边界', () => {
     await deleteNote('项目/设计.md')
     render(<TrashDialog />)
     await openTrash()
-    await screen.findByText('设计.md')
+    await screen.findByText('设计')
 
     fireEvent.click(screen.getByRole('button', { name: '关闭回收站' }))
     expect(useUiStore.getState().trashDialogOpen).toBe(false)
-    expect(screen.queryByText('设计.md')).toBeNull()
+    expect(screen.queryByText('设计')).toBeNull()
   })
 })
 

@@ -23,7 +23,7 @@
  */
 
 import type { EntryMeta } from '@/ipc/types'
-import { basename, isMarkdown, parentOf } from './paths'
+import { displayName, isMarkdown, parentOf } from './paths'
 
 /**
  * 拖拽载荷的 MIME 类型。
@@ -171,7 +171,7 @@ function resolve(input: ResolveInput): DropTarget {
         : '不能把文件夹移动到它自己的子目录里',
       label: ontoItself
         ? '不能把文件夹移动到它自己里面'
-        : `「${basename(input.dragged.relPath)}」不能移动到它自己的子目录里`,
+        : `「${displayName(input.dragged.relPath)}」不能移动到它自己的子目录里`,
     }
   }
   if (input.parentRel === input.fromDir) {
@@ -255,8 +255,8 @@ export function isSafeRelPath(relPath: string): boolean {
     .every((segment) => segment !== '' && segment !== '.' && segment !== '..')
 }
 
-/** 文件名（`relPath` 的最后一段）—— 提示文案里用。 */
+/** 文件名（`relPath` 的最后一段）—— 提示文案里用；笔记不带 `.md`（ADR-0030）。 */
 export function draggedName(payload: DragPayload): string {
-  return basename(payload.relPath)
+  return displayName(payload.relPath)
 }
 

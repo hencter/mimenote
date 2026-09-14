@@ -1,7 +1,7 @@
 /** 链接面板：当前笔记的反向链接与出链。 */
 
 import { Icon } from '@/components/Icon'
-import { basename } from '@/domain/paths'
+import { displayName, displayPath } from '@/domain/paths'
 import { createNoteFromLink, openNote, openNoteAt } from '@/app/actions'
 import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
@@ -70,7 +70,7 @@ export function LinksPanel() {
                     // 时用的就是引用所在行），所以可以直接跳过去 —— 与搜索结果同一个入口。
                     onClick={() => void openNoteAt(backlink.fromRelPath, backlink.line)}
                   >
-                    <span className="mn-links__item-name">{basename(backlink.fromRelPath)}</span>
+                    <span className="mn-links__item-name">{displayName(backlink.fromRelPath)}</span>
                     <span className="mn-links__item-meta">
                       「{backlink.display}」 · 第 {backlink.line} 行
                       {backlink.anchor !== null ? ` · #${backlink.anchor}` : ''}
@@ -113,7 +113,7 @@ export function LinksPanel() {
                     >
                       <span className="mn-links__item-name">{link.display}</span>
                       <span className="mn-links__item-meta">
-                        {resolved === null ? '悬空 · 点击创建' : resolved}
+                        {resolved === null ? '悬空 · 点击创建' : displayPath(resolved)}
                         {link.ambiguous ? ' · 同名多篇' : ''}
                         {link.anchor !== null ? ` · #${link.anchor}` : ''}
                       </span>

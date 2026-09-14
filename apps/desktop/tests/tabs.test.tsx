@@ -129,14 +129,15 @@ describe('打开与切换', () => {
     const strip = screen.getByRole('tablist', { name: '打开的笔记' })
     expect(strip).toBeTruthy()
     expect(tabNode('README.md').getAttribute('aria-selected')).toBe('true')
-    // 标签上显示的是文件名（完整路径在 title 里）
-    expect(tabNode('README.md').textContent).toContain('README.md')
+    // 标签上显示的是文件名（完整路径在 title 里），且不带 `.md`（ADR-0030）
+    expect(tabNode('README.md').querySelector('.mn-tabs__label')?.textContent).toBe('README')
 
     await open('项目/设计.md')
     expect(tabPaths()).toEqual(['README.md', '项目/设计.md'])
     expect(tabNode('README.md').getAttribute('aria-selected')).toBe('false')
     expect(tabNode('项目/设计.md').getAttribute('aria-selected')).toBe('true')
-    expect(tabNode('项目/设计.md').textContent).toContain('设计.md')
+    // 标签上的可见文字不带 .md（ADR-0030）；**身份**仍然由 data-tab-path 承载（上面那两行）
+    expect(tabNode('项目/设计.md').querySelector('.mn-tabs__label')?.textContent).toBe('设计')
     expect(tabNode('项目/设计.md').getAttribute('title')).toBe('项目/设计.md')
   })
 

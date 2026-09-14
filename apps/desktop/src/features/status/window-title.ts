@@ -15,7 +15,7 @@
 
 import { useEffect } from 'react'
 
-import { basename } from '@/domain/paths'
+import { displayName } from '@/domain/paths'
 import { isTauriRuntime } from '@/ipc/client'
 
 /** 应用名（窗口标题的后缀，与 `tauri.conf.json` 的 productName 一致）。 */
@@ -42,7 +42,7 @@ export function windowTitle(input: TitleInput): string {
   if (input.relPath === null) {
     return vault === '' ? APP_NAME : `${APP_NAME} — ${vault}`
   }
-  const name = basename(input.relPath)
+  const name = displayName(input.relPath)
   const mark = input.dirty ? ` ${DIRTY_MARK}` : ''
   return `${name}${mark} — ${APP_NAME}`
 }

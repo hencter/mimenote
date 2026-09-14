@@ -34,6 +34,7 @@ import type { ChangeEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from
 import { openNote, openNoteAt } from '@/app/actions'
 import { commands, formatChord } from '@/app/commands'
 import { Icon, type IconName } from '@/components/Icon'
+import { displayPath } from '@/domain/paths'
 import { describeError } from '@/ipc/types'
 import type { IndexPhase, SearchHit } from '@/ipc/types'
 import { useLinksStore } from '@/state/links-store'
@@ -399,7 +400,7 @@ export function CommandPalette({
                       onClick={() => activateNote(item)}
                     >
                       <span className="mn-palette__item-title">
-                        <Highlighted text={item.relPath} indices={item.indices} />
+                        <Highlighted text={item.displayPath} indices={item.indices} />
                       </span>
                     </li>
                   ))
@@ -419,7 +420,7 @@ export function CommandPalette({
                       onMouseMove={() => setActive(index)}
                       onClick={() => activateHit(hit)}
                     >
-                      <span className="mn-palette__item-title">{hit.relPath}</span>
+                      <span className="mn-palette__item-title">{displayPath(hit.relPath)}</span>
                       <span className="mn-palette__item-sub">
                         {hit.line}:{' '}
                         {/* 高亮用**子串**下标（不是子序列）：必须与宿主实际命中的位置一致 */}

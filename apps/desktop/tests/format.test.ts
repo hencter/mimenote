@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { formatBytes, formatClock, formatDuration } from '@/domain/format'
-import { basename, extensionOf, isMarkdown, parentOf, shortenPath, stem } from '@/domain/paths'
+import { basename, displayName, displayPath, extensionOf, isMarkdown, parentOf, shortenPath, stem } from '@/domain/paths'
 
 describe('formatBytes', () => {
   it('字节以内不加单位换算', () => {
@@ -64,5 +64,19 @@ describe('路径工具', () => {
     expect(short.length).toBeLessThanOrEqual(31)
     expect(short.endsWith('笔记.md')).toBe(true)
     expect(shortenPath('短.md', 30)).toBe('短.md')
+  })
+
+  it('displayName / displayPath：只剥笔记的扩展名（ADR-0030）', () => {
+    expect(displayName('项目/设计.md')).toBe('设计')
+    expect(displayName('项目/设计.MARKDOWN')).toBe('设计')
+    expect(displayPath('项目/设计.md')).toBe('项目/设计')
+    expect(displayPath('项目/子/设计.md')).toBe('项目/子/设计')
+    // 目录那一段即使叫 `归档.md` 也不动：被剥的只是最后那一段
+    expect(displayPath('归档.md/笔记.md')).toBe('归档.md/笔记')
+    // 附件、无扩展名、以及"."开头的名字一律原样
+    expect(displayName('附件/图.png')).toBe('图.png')
+    expect(displayPath('附件/图.png')).toBe('附件/图.png')
+    expect(displayName('LICENSE')).toBe('LICENSE')
+    expect(displayPath('a/.md')).toBe('a/.md')
   })
 })

@@ -6,7 +6,7 @@
  */
 
 import { formatBytes } from '@/domain/format'
-import { basename, isMarkdown, parentOf } from '@/domain/paths'
+import { basename, displayPath, isMarkdown, parentOf } from '@/domain/paths'
 import { jumpToLineWhenReady } from '@/features/editor/line-jump'
 import { changedAnything, groupSkips, resultSentence } from '@/features/tags/tag-rename'
 import { currentAdapterKind, ipc } from '@/ipc/client'
@@ -946,7 +946,7 @@ export async function showAbout(): Promise<void> {
     if (doc !== null) {
       const onDisk = await ipc.noteStats(doc.relPath)
       lines.push(
-        `磁盘「${doc.relPath}」：${formatBytes(onDisk.sizeBytes)} · ${onDisk.stats.words} 词 · ${onDisk.stats.lines} 行 · 约 ${onDisk.stats.readingMinutes} 分钟`,
+        `磁盘「${displayPath(doc.relPath)}」：${formatBytes(onDisk.sizeBytes)} · ${onDisk.stats.words} 词 · ${onDisk.stats.lines} 行 · 约 ${onDisk.stats.readingMinutes} 分钟`,
       )
     }
     toast.info(`Mimenote ${version.app}`, lines.join('\n'))
