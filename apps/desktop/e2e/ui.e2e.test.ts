@@ -1670,6 +1670,45 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.waitForSelector('.cm-content', { state: 'visible' })
   })
 
+  it('设置页：关掉「显示行号」，编辑器左侧那一栏立刻消失（不重开笔记、正文不动）', async () => {
+    /*
+      为什么值得端到端测：这条设置的**全部价值**就在于"立刻生效且不打断写作"——
+      如果实现成"重建编辑器"，用户关一个显示开关就会丢掉光标与撤销历史（真实风险，
+      因为最容易的写法就是重建）。所以这里断三件事：栏消失、正文一字不变、再打开它回来。
+      收尾要把开关**还原成默认的开**：设置是持久化的，留着关会让后面的用例看不到行号。
+    */
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/设计.md')
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+    expect(await page.locator('.cm-gutters').count()).toBe(1)
+
+    await page.keyboard.press('Control+,')
+    await page.waitForSelector('.mn-settings', { state: 'visible', timeout: 10_000 })
+    await page.locator('[role="tab"]', { hasText: '编辑器' }).click()
+
+    const toggle = page.locator('input[aria-label="显示行号"]')
+    expect(await toggle.isChecked()).toBe(true)
+    await toggle.uncheck()
+
+    await waitUntil(
+      async () => (await page.locator('.cm-gutters').count()) === 0,
+      10_000,
+      '行号栏消失',
+    )
+    // 正文与光标没有被"重建编辑器"这种事打扰
+    expect(await page.locator('.cm-content').textContent()).toContain('参考')
+
+    await toggle.check()
+    await waitUntil(
+      async () => (await page.locator('.cm-gutters').count()) === 1,
+      10_000,
+      '行号栏回来',
+    )
+
+    await page.keyboard.press('Escape')
+    await waitUntil(async () => (await page.locator('.mn-settings').count()) === 0, 5_000, '设置页关闭')
+  })
+
   it('知识图谱：「漂浮」开关的按下状态与落盘偏好始终一致（开→关→开）', async () => {
     // 为什么值得端到端测：`floating` 是一个**纯偏好**开关 —— 它的可见后果是"力场要不要一直推进"，
     // 而那件事在有限的等待里断不了（力场收敛之后即使开着也不动，断言"在动"会假红）。

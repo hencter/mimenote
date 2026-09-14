@@ -24,6 +24,7 @@ import {
   currentCursorLine,
   replaceEditorText,
   setEditorAppearance,
+  setEditorLineNumbers,
   setEditorTabSize,
 } from './cm/setup'
 
@@ -33,6 +34,8 @@ export function MarkdownEditor() {
   // 创建编辑器那一瞬间要用"当下"的 Tab 宽度：值放 ref 里，回调 ref 才能读到最新值
   // （回调 ref 的依赖是空的，不能把 tabWidth 当闭包变量捕获进去 —— 那会把它冻在首次渲染）
   const tabWidthRef = useRef(useSettingsStore.getState().tabWidth)
+  /** 同上：创建编辑器那一瞬间的行号开关。 */
+  const lineNumbersRef = useRef(useSettingsStore.getState().editorLineNumbers)
 
   const relPath = useNoteStore((state) => state.doc?.relPath ?? null)
   const revision = useNoteStore((state) => state.doc?.revision ?? 0)
@@ -40,6 +43,8 @@ export function MarkdownEditor() {
   const themeId = useUiStore((state) => state.themeId)
   // 只读订阅"Tab 宽度"：编辑器不改它，设置页改它，这里跟着重配置 Compartment
   const tabWidth = useSettingsStore((state) => state.tabWidth)
+  // 同上：行号栏的开关（默认开，可在设置页关掉）
+  const showLineNumbers = useSettingsStore((state) => state.editorLineNumbers)
   const isDark = getTheme(themeId).appearance === 'dark'
 
   // 创建编辑器：用**回调 ref**，节点挂载即创建、卸载即销毁。
@@ -70,6 +75,7 @@ export function MarkdownEditor() {
       },
       isDarkRef.current,
       tabWidthRef.current,
+      lineNumbersRef.current,
     )
 
     viewRef.current = new EditorView({
@@ -122,6 +128,13 @@ export function MarkdownEditor() {
     const view = viewRef.current
     if (view !== null) setEditorTabSize(view, tabWidth)
   }, [tabWidth])
+
+  // 行号开关变化（设置页）：同样只重配置 Compartment —— 关掉它不该丢掉光标与撤销历史。
+  useEffect(() => {
+    lineNumbersRef.current = showLineNumbers
+    const view = viewRef.current
+    if (view !== null) setEditorLineNumbers(view, showLineNumbers)
+  }, [showLineNumbers])
 
   return (
     <div className="mn-editor">

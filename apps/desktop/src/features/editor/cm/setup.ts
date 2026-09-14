@@ -68,6 +68,26 @@ export const appearanceCompartment = new Compartment()
 export const tabSizeCompartment = new Compartment()
 
 /**
+ * 允许运行时替换的扩展槽（**行号栏**）。
+ *
+ * 为什么也走 `Compartment`：行号栏是"随时想开/想关"的显示偏好，而重建编辑器会让
+ * 光标、选区、撤销历史、滚动位置全部清零（理由同上）。重配置只做一次 `StateEffect`，
+ * 文档与编辑状态一个字节都不动 —— 唯一的变化就是左侧那一栏出现或消失。
+ */
+export const lineNumbersCompartment = new Compartment()
+
+/**
+ * 行号栏的扩展（开关两个一起收）。
+ *
+ * `highlightActiveLineGutter()` 必须与 `lineNumbers()` 同进同出：它高亮的是**行号栏里的**
+ * 当前行，没有行号栏时它什么也画不出来，留着只是一条死扩展。
+ * （`highlightActiveLine()` 是另一回事 —— 它高亮正文那一行的底色，关行号也该保留，见文件头。）
+ */
+export function lineNumberExtensions(show: boolean): Extension {
+  return show ? [lineNumbers(), highlightActiveLineGutter()] : []
+}
+
+/**
  * Tab 宽度的兜底值。
  *
  * 生产路径上由 {@link createEditorExtensions} 的第三个参数提供（`MarkdownEditor.tsx`
@@ -118,10 +138,16 @@ export function createEditorExtensions(
   callbacks: EditorCallbacks,
   isDark: boolean,
   tabWidth: number = DEFAULT_TAB_WIDTH,
+  /**
+   * 是否显示行号（设置页的「编辑器 · 显示行号」）。
+   *
+   * 默认**开**：与从前一致，且"跳到第 N 行""对着日志找位置"是常见需求；
+   * 纯写作的人可以在设置里关掉，腾出十几像素的正文宽度。
+   */
+  showLineNumbers: boolean = true,
 ): Extension[] {
   return [
-    lineNumbers(),
-    highlightActiveLineGutter(),
+    lineNumbersCompartment.of(lineNumberExtensions(showLineNumbers)),
     highlightSpecialChars(),
     history(),
     drawSelection(),
@@ -232,6 +258,17 @@ export function setEditorTabSize(view: EditorView, tabWidth: number): void {
   const next = Number.isFinite(tabWidth) && tabWidth > 0 ? Math.round(tabWidth) : DEFAULT_TAB_WIDTH
   if (view.state.tabSize === next) return
   view.dispatch({ effects: tabSizeCompartment.reconfigure(tabSizeExtensions(next)) })
+}
+
+/**
+ * 运行时切换行号栏（不重建编辑器）。
+ *
+ * 与 {@link setEditorTabSize} 同一套纪律：只重配置那一个 Compartment，
+ * 文档、光标、选区、撤销历史、滚动位置全都不动 —— 用户只是关了一栏显示，
+ * 不该因此失去"刚刚编辑到哪儿"。
+ */
+export function setEditorLineNumbers(view: EditorView, show: boolean): void {
+  view.dispatch({ effects: lineNumbersCompartment.reconfigure(lineNumberExtensions(show)) })
 }
 
 /** 用整篇文本替换编辑器内容（切换文件 / 重新加载时使用）。 */

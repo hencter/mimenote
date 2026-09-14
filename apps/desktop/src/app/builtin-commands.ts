@@ -140,6 +140,17 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
   },
 
   {
+    id: 'view.toggleLineNumbers',
+    title: '编辑器：显示 / 隐藏行号',
+    category: '视图',
+    // 与"打开设置"一样不设 `when`：它是个纯显示开关，没有 Vault 时也说得通（编辑器在空态）
+    run: () => {
+      const settings = useSettingsStore.getState()
+      settings.setEditorLineNumbers(!settings.editorLineNumbers)
+    },
+  },
+
+  {
     id: 'vault.open',
     title: '打开 Vault…',
     category: 'Vault',

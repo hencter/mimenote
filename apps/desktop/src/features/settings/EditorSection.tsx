@@ -1,4 +1,4 @@
-/** 设置页 · 编辑器分区：自动保存延迟、Tab 宽度、附件目录。 */
+/** 设置页 · 编辑器分区：自动保存延迟、Tab 宽度、行号、附件目录。 */
 
 import { useState } from 'react'
 
@@ -16,6 +16,8 @@ export function EditorSection() {
   const setAutosaveDelayMs = useSettingsStore((state) => state.setAutosaveDelayMs)
   const tabWidth = useSettingsStore((state) => state.tabWidth)
   const setTabWidth = useSettingsStore((state) => state.setTabWidth)
+  const editorLineNumbers = useSettingsStore((state) => state.editorLineNumbers)
+  const setEditorLineNumbers = useSettingsStore((state) => state.setEditorLineNumbers)
   const attachmentDir = useSettingsStore((state) => state.attachmentDir)
   const setAttachmentDir = useSettingsStore((state) => state.setAttachmentDir)
   /**
@@ -39,7 +41,8 @@ export function EditorSection() {
     <>
       <h3 className="mn-settings__section-title">编辑器</h3>
       <p className="mn-settings__section-hint">
-        这几项是"写盘节奏""制表符宽度"与"粘贴的图片放哪儿"，与具体笔记无关，因此跨 Vault 保存。
+        这几项是"写盘节奏""显示方式"与"粘贴的图片放哪儿"，与具体笔记无关，因此跨 Vault 保存；
+        全部**即时生效**，不需要重开笔记。
       </p>
 
       <section className="mn-settings__group" aria-labelledby="mn-settings-autosave-title">
@@ -112,6 +115,36 @@ export function EditorSection() {
           <code className="mn-settings__path">features/editor/cm/setup.ts</code> 里补一行{' '}
           <code className="mn-settings__path">EditorState.tabSize.of(值)</code>
           （属于编辑器装配，不在本次改动范围内）。
+        </p>
+      </section>
+
+      <section className="mn-settings__group" aria-labelledby="mn-settings-gutter-title">
+        <h4 className="mn-settings__group-title" id="mn-settings-gutter-title">
+          <Icon name="outline" size={14} />
+          行号
+        </h4>
+        <div className="mn-settings__row">
+          <span className="mn-settings__row-label">
+            <span className="mn-settings__row-title">显示行号</span>
+            <span className="mn-settings__row-hint">
+              左侧那一栏行号。关掉之后正文会宽出十几像素（纯写作时那一栏是纯噪声）；
+              「跳到第 N 行」「对着日志找位置」这类事需要它，所以默认是开的
+            </span>
+          </span>
+          <label className="mn-settings__checkbox">
+            <input
+              type="checkbox"
+              aria-label="显示行号"
+              checked={editorLineNumbers}
+              onChange={(event) => setEditorLineNumbers(event.target.checked)}
+            />
+          </label>
+        </div>
+        <p className="mn-settings__note">
+          说明：切换是<strong>即时</strong>的 —— 编辑器只把那一段扩展换掉（CodeMirror 的
+          {' '}
+          <code className="mn-settings__path">Compartment</code>），文档、光标、选区、
+          撤销历史一个都不动；也不必重开笔记。设置跨 Vault 保存。
         </p>
       </section>
 

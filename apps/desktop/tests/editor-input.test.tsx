@@ -494,3 +494,60 @@ describe('设置页的「Tab 宽度」接线', () => {
     expect(view?.state.doc.toString()).toBe('- 甲')
   })
 })
+
+// ---------------------------------------------------------------------------
+// 7. 接线：设置页的「显示行号」真的作用到编辑器上
+// ---------------------------------------------------------------------------
+
+describe('设置页的「显示行号」接线', () => {
+  it('默认显示行号；关掉即隐藏，且**不重建编辑器**（光标与文档都在）', () => {
+    /*
+      为什么值得单独一条：行号是"随手开关"的显示偏好，而最容易写错的做法是
+      "重建编辑器"——那会把光标、选区、撤销历史全部清零。这里同时钉住两件事：
+      ① gutter 真的消失/回来；② 实例、DOM、文档、光标一个都没变。
+    */
+    useSettingsStore.getState().setEditorLineNumbers(true)
+    pretendOpenNote('笔记/测试.md', '- 甲\n- 乙')
+    render(<MarkdownEditor />)
+
+    const content = document.querySelector<HTMLElement>('.cm-content')
+    expect(content).not.toBeNull()
+    const view = content === null ? null : EditorView.findFromDOM(content)
+    expect(view).not.toBeNull()
+    expect(document.querySelector('.cm-gutters')).not.toBeNull()
+
+    // 把光标放到第二行：关掉行号之后它必须还在原处
+    act(() => {
+      view?.dispatch({ selection: { anchor: view.state.doc.line(2).from + 2 } })
+    })
+    const headBefore = view?.state.selection.main.head ?? -1
+    const domBefore = view?.dom
+
+    act(() => {
+      useSettingsStore.getState().setEditorLineNumbers(false)
+    })
+
+    expect(document.querySelector('.cm-gutters')).toBeNull()
+    expect(EditorView.findFromDOM(content as HTMLElement)).toBe(view)
+    expect(view?.dom).toBe(domBefore)
+    expect(view?.state.doc.toString()).toBe('- 甲\n- 乙')
+    expect(view?.state.selection.main.head).toBe(headBefore)
+
+    // 再打开：行号回来，光标依旧在原处
+    act(() => {
+      useSettingsStore.getState().setEditorLineNumbers(true)
+    })
+    expect(document.querySelector('.cm-gutters')).not.toBeNull()
+    expect(view?.state.selection.main.head).toBe(headBefore)
+  })
+
+  it('创建时就用当前设置值（关着行号时挂载，第一次渲染起就没有 gutter）', () => {
+    useSettingsStore.getState().setEditorLineNumbers(false)
+    pretendOpenNote('笔记/测试.md', '正文')
+
+    render(<MarkdownEditor />)
+
+    expect(document.querySelector('.cm-content')).not.toBeNull()
+    expect(document.querySelector('.cm-gutters')).toBeNull()
+  })
+})

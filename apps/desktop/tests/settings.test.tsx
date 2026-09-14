@@ -506,6 +506,72 @@ describe('设置对话框', () => {
     )
   })
 
+  it('行号开关：默认开、关掉写进 localStorage、跨会话读得回来', () => {
+    /*
+      行号是"显示偏好"，所以断言三处：默认值（升级上来的用户不该突然丢失行号）、
+      落盘（重启后还在）、以及**读回来**（旧版本存的那份里没有这个字段 ⇒ 必须是开）。
+    */
+    renderShell()
+    act(() => {
+      useSettingsStore.getState().openSettings()
+    })
+    fireEvent.click(screen.getByRole('tab', { name: '编辑器' }))
+
+    const checkbox = screen.getByLabelText<HTMLInputElement>('显示行号')
+    expect(checkbox.checked).toBe(true)
+
+    fireEvent.click(checkbox)
+    expect(useSettingsStore.getState().editorLineNumbers).toBe(false)
+    expect(
+      (JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY) ?? '{}') as {
+        editorLineNumbers?: boolean
+      }).editorLineNumbers,
+    ).toBe(false)
+  })
+
+  it('行号的读回：只有显式写了 false 才算关（老版本存的那份里没有这个字段）', async () => {
+    // 缺字段 ⇒ 开（升级上来的用户不该突然丢失行号）
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ tabWidth: 4 }))
+    vi.resetModules()
+    const withoutField = await import('@/state/settings-store')
+    expect(withoutField.useSettingsStore.getState().editorLineNumbers).toBe(true)
+
+    // 非法值也回到开
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({ editorLineNumbers: 'yes' }),
+    )
+    vi.resetModules()
+    const garbage = await import('@/state/settings-store')
+    expect(garbage.useSettingsStore.getState().editorLineNumbers).toBe(true)
+
+    // 显式的 false 才算关
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ editorLineNumbers: false }))
+    vi.resetModules()
+    const off = await import('@/state/settings-store')
+    expect(off.useSettingsStore.getState().editorLineNumbers).toBe(false)
+  })
+
+  it('命令面板里的「编辑器：显示 / 隐藏行号」是同一个开关的第二条入口', async () => {
+    /*
+      为什么要有命令：设置页里那一栏是"配置"，而"我现在就想让它消失"是**动作**——
+      命令面板（`Ctrl+K`）能直接搜到它，不必先记住它在设置页的哪个分区。
+      两边必须改同一个 store 字段，否则会出现"设置页显示开着、编辑器却没有行号"。
+    */
+    registerBuiltinCommands()
+    useSettingsStore.getState().setEditorLineNumbers(true)
+
+    const command = commands.get('view.toggleLineNumbers')
+    expect(command?.category).toBe('视图')
+    expect(command?.when?.() ?? true).toBe(true)
+
+    await commands.execute('view.toggleLineNumbers')
+    expect(useSettingsStore.getState().editorLineNumbers).toBe(false)
+
+    await commands.execute('view.toggleLineNumbers')
+    expect(useSettingsStore.getState().editorLineNumbers).toBe(true)
+  })
+
   it('Vault 分区：只改片段开关值、索引状态渲染、两个按钮各发一次 IPC', async () => {
     const { adapter, calls } = spyOnIpc(createMockAdapter())
     setIpcAdapter(adapter)

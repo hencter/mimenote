@@ -130,14 +130,14 @@ describe('命令面板', () => {
     fireEvent.change(input, { target: { value: '隐藏' } })
     const options = await waitFor(() => {
       const list = within(dialog).getAllByRole('option')
-      expect(list).toHaveLength(4)
+      expect(list).toHaveLength(5)
       return list
     })
-    // 四条「显示 / 隐藏…」命令（侧栏 / 链接面板 / 标签面板 / 大纲面板）。
+    // 五条含「隐藏」的命令（侧栏 / 链接面板 / 标签面板 / 大纲面板 / 编辑器：显示·隐藏行号）。
     // 顺序由匹配分数决定，因此这里**只断言集合对得上**，再按标题定位"链接面板"那一条：
-    // 将来再加同类命令时，本用例不会再因为它把名次挤走而假失败（断言的是行为，不是名次）。
+    // 加同类命令时受影响的只有上面那个数量，行为断（↓ 走过去 + Enter 执行）与名次无关。
     const labels = options.map((node) => node.textContent ?? '')
-    for (const expected of ['侧栏', '链接面板', '标签面板', '大纲面板']) {
+    for (const expected of ['侧栏', '链接面板', '标签面板', '大纲面板', '行号']) {
       expect(labels.some((text) => text.includes(expected))).toBe(true)
     }
     const linksIndex = labels.findIndex((text) => text.includes('链接面板'))

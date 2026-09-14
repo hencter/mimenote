@@ -41,7 +41,7 @@ export const SETTINGS_SECTIONS_META: Readonly<
   Record<SettingsSection, { label: string; description: string }>
 > = {
   appearance: { label: '外观', description: '主题、界面字号、编辑器字号' },
-  editor: { label: '编辑器', description: '自动保存延迟、Tab 宽度' },
+  editor: { label: '编辑器', description: '自动保存延迟、Tab 宽度、行号' },
   vault: { label: 'Vault', description: 'CSS 片段、索引与缓存' },
   about: { label: '关于', description: '版本、Vault 统计、日志位置' },
 }
@@ -82,6 +82,14 @@ export interface SettingsValues {
   /** Tab 宽度（字符数）→ `--mn-tab-size`。 */
   tabWidth: number
   /**
+   * 编辑器是否显示**行号**（左侧那一栏 gutter）。
+   *
+   * 为什么默认开、而且要能关：行号对"跳到第 N 行""对着日志找位置"有用，
+   * 但纯写作时那一栏是纯噪声（也占掉十几像素的正文宽度）。它属于"我怎么写"的偏好，
+   * 因此与别的项一样跨 Vault 保存。
+   */
+  editorLineNumbers: boolean
+  /**
    * 附件目录（**Vault 内的相对目录**，空串 = Vault 根）→ `attachment_save` 的 `dirRel`。
    *
    * 粘贴/拖入的图片落在这里（见 ADR-0013）。它与前面四项一样是**跨 Vault 的用户偏好**：
@@ -96,6 +104,7 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   readingFontSize: 15,
   autosaveDelayMs: 600,
   tabWidth: 4,
+  editorLineNumbers: true,
   attachmentDir: DEFAULT_ATTACHMENT_DIR,
 }
 
@@ -114,6 +123,8 @@ export interface SettingsState extends SettingsValues {
   setReadingFontSize: (px: number) => void
   setAutosaveDelayMs: (ms: number) => void
   setTabWidth: (width: number) => void
+  /** 编辑器是否显示行号（即时生效：重配置 Compartment，不重建编辑器）。 */
+  setEditorLineNumbers: (on: boolean) => void
   /** 附件目录（相对 Vault 根；空串 = Vault 根）。非法值会被归一化回默认值。 */
   setAttachmentDir: (dir: string) => void
   /** 两个字号一起恢复到主题默认值。 */
@@ -190,6 +201,12 @@ function restoreValues(): SettingsValues {
       DEFAULT_SETTINGS.autosaveDelayMs,
     ),
     tabWidth: snapToOption(saved['tabWidth'], TAB_WIDTH_OPTIONS, DEFAULT_SETTINGS.tabWidth),
+    // 布尔偏好按"只有显式写了 false 才算关"读：老版本存下来的那份里没有这个字段，
+    // 缺省必须是**开**（否则升级之后行号会悄悄消失）
+    editorLineNumbers:
+      typeof saved['editorLineNumbers'] === 'boolean'
+        ? saved['editorLineNumbers']
+        : DEFAULT_SETTINGS.editorLineNumbers,
     // 字符串偏好走**归一化**而不是"信它一次"：手工改过 localStorage、或从旧版本升上来时，
     // 一个非法的目录值会让之后每次粘贴都失败（宿主报 PATH_INVALID），而归一化把它挡在设置层
     attachmentDir:
@@ -212,6 +229,7 @@ function persistValues(state: SettingsValues): void {
     readingFontSize: state.readingFontSize,
     autosaveDelayMs: state.autosaveDelayMs,
     tabWidth: state.tabWidth,
+    editorLineNumbers: state.editorLineNumbers,
     attachmentDir: state.attachmentDir,
   } satisfies SettingsValues)
 }
@@ -281,6 +299,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setTabWidth: (width) => {
     set({ tabWidth: snapToOption(width, TAB_WIDTH_OPTIONS, DEFAULT_SETTINGS.tabWidth) })
+    persistValues(get())
+  },
+
+  setEditorLineNumbers: (on) => {
+    set({ editorLineNumbers: on })
     persistValues(get())
   },
 
