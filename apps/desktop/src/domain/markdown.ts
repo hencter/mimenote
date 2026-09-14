@@ -13,7 +13,7 @@
 import DOMPurify from 'dompurify'
 import MarkdownIt from 'markdown-it'
 
-import { isImageAssetTarget } from './assets'
+import { isImageAssetTarget, parseImageSize } from './assets'
 import { splitWikilink, wikilinkDisplayText } from './links'
 
 const md = new MarkdownIt({
@@ -114,8 +114,15 @@ md.inline.ruler.before('mn_wikilink', 'mn_embed', (state, silent) => {
       // 目标**原样**作为 src：与 `![](…)` 走同一个解析器（`resolveVaultAssetRel`）与同一套
       // 占位/授权约定，`data-mn-src` 上留给用户的也是他自己写下的那个地址。
       token.attrs = [['src', parts.target]]
-      // alt：有别名用别名，没有就用文件名（`附件/图.png` → `图.png`）
-      token.content = parts.alias ?? fileNameOf(parts.target)
+      // 别名有两种含义（Obsidian 的约定）：`|300` / `|300x200` 是**尺寸**，
+      // 其余是图注。尺寸走 `data-mn-*` 传给渲染规则 —— 那里才知道最终要不要出图注元素。
+      const size = parseImageSize(parts.alias)
+      if (size !== null) {
+        token.attrs.push(['data-mn-width', String(size.width)])
+        if (size.height !== null) token.attrs.push(['data-mn-height', String(size.height)])
+      }
+      // alt：有别名用别名（尺寸标记不算别名），没有就用文件名（`附件/图.png` → `图.png`）
+      token.content = size === null ? (parts.alias ?? fileNameOf(parts.target)) : fileNameOf(parts.target)
       token.children = []
     } else {
       const token = state.push('html_inline', '', 0)
@@ -189,6 +196,9 @@ md.renderer.rules.image = (tokens, idx, _options, env, _self) => {
   const src = String(token?.attrGet('src') ?? '')
   const alt = String(token?.content ?? '')
   const title = token?.attrGet('title') ?? null
+  // 尺寸标记（`![[图.png|300]]`）由嵌入规则写在 `data-mn-*` 上；`![](…)` 没有这两个属性
+  const width = numericAttr(token?.attrGet('data-mn-width'))
+  const height = numericAttr(token?.attrGet('data-mn-height'))
   const resolver = (env as { resolveImage?: ImageResolver } | undefined)?.resolveImage
   const resolution = typeof resolver === 'function' ? resolver(src) : null
 
@@ -198,8 +208,11 @@ md.renderer.rules.image = (tokens, idx, _options, env, _self) => {
   }
   if (!SAFE_IMAGE_URL.test(resolution.url)) return imagePlaceholderHtml(src, alt)
 
-  // 图注：优先 alt（`![[图.png|图注]]` 的别名就走这里），没有 alt 才退到 title
-  const caption = alt.trim() === '' ? String(title ?? '') : alt
+  // 图注：优先 alt（`![[图.png|图注]]` 的别名就走这里），没有 alt 才退到 title。
+  // 写了尺寸标记时**不出图注** —— 那时的 alt 是我们补的文件名（为了无障碍），
+  // 把它渲染成图注就是"图上多出一行 `图.png`"。
+  const sized = width !== null
+  const caption = sized || alt.trim() === '' ? (sized ? '' : String(title ?? '')) : alt
   const captionHtml =
     caption === '' ? '' : `<span class="mn-image__caption">${escapeHtml(caption)}</span>`
   const standalone = token !== undefined && isOnlyImageContent(tokens, idx)
@@ -208,6 +221,10 @@ md.renderer.rules.image = (tokens, idx, _options, env, _self) => {
     `<span class="mn-figure${standalone ? ' mn-figure--block' : ''}">` +
     `<img class="mn-image" src="${escapeHtml(resolution.url)}" alt="${escapeHtml(alt)}"` +
     ` data-mn-src="${escapeHtml(src)}" loading="lazy" decoding="async"` +
+    // `width`/`height` **属性**（而不是内联样式）：DOMPurify 默认放行它们，
+    // 而且只写宽度时浏览器会按比例缩放 —— 与 Obsidian 的 `|宽x高` 语义一致
+    (width === null ? '' : ` width="${width}"`) +
+    (height === null ? '' : ` height="${height}"`) +
     (title === null ? '' : ` title="${escapeHtml(String(title))}"`) +
     ' />' +
     captionHtml +
@@ -261,6 +278,13 @@ function escapeHtml(input: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;')
+}
+
+/** `data-mn-width="300"` 这样的属性值 → 正整数（拿不到或越界时返回 `null`）。 */
+function numericAttr(value: unknown): number | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= 4000 ? parsed : null
 }
 
 const PURIFY_CONFIG = {

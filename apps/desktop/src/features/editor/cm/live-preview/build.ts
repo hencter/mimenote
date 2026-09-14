@@ -21,7 +21,7 @@ import { syntaxTree } from '@codemirror/language'
 import { RangeSet, RangeSetBuilder, type EditorState, type Range } from '@codemirror/state'
 import { Decoration, type DecorationSet } from '@codemirror/view'
 
-import { isImageAssetTarget } from '@/domain/assets'
+import { isImageAssetTarget, parseImageSize, type ImageSize } from '@/domain/assets'
 import { frontmatterRegion } from '@/domain/frontmatter'
 import { normalizeLinkTarget, splitWikilink } from '@/domain/links'
 import type { ResolvedLink } from '@/ipc/types'
@@ -460,7 +460,11 @@ function emitWikilink(build: Build, match: WikiMatch): void {
     const rel = resolveAsset(build, target)
     // 分流按**扩展名**（与宿主白名单逐字一致）：`![[别的笔记]]` 不是图片 → 退回 wikilink 渲染
     if (isImageAssetTarget(rel ?? target)) {
-      emitImage(build, match.from, match.to, target, parts.alias ?? '', rel)
+      // 别名是**尺寸**时（`![[图.png|300]]`，Obsidian 约定）不当图注：尺寸交给 widget，
+      // 图注退回到文件名 —— 与预览层（`domain/markdown.ts`）同一套判据，两处不能各判一套
+      const size = parseImageSize(parts.alias)
+      const alt = size === null ? (parts.alias ?? '') : ''
+      emitImage(build, match.from, match.to, target, alt, rel, size)
       return
     }
   }
@@ -688,6 +692,7 @@ function emitImage(
   href: string,
   alt: string,
   rel: string | null,
+  size: ImageSize | null = null,
 ): void {
   const line = build.state.doc.lineAt(from)
   // 视口外：不产出装饰，也不登记授权请求（"只请求当前屏里出现过的图片"）
@@ -705,6 +710,7 @@ function emitImage(
         resolution.kind === 'ready' ? resolution.url : null,
         rel ?? href,
         alt,
+        size,
       ),
     }),
   )

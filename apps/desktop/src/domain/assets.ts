@@ -55,6 +55,41 @@ export function isReservedName(segment: string): boolean {
   return /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(stem)
 }
 
+/** `![[图.png|300]]` 里那种尺寸标记（宽 / 宽x高）。 */
+export interface ImageSize {
+  /** 宽度（像素）。 */
+  width: number
+  /** 高度（像素）；只写宽度时为 `null`（按原图比例缩放）。 */
+  height: number | null
+}
+
+/** 尺寸上限：写 `|999999` 出来的图会把整页排版撑爆，超过就当它不是尺寸标记。 */
+const MAX_SIZE = 4000
+
+/**
+ * 解析 `![[图.png|别名]]` 里的别名：**纯数字**（或 `宽x高`）当尺寸，其余当图注。
+ *
+ * 这是 Obsidian 的既有约定：从它迁移过来的笔记里 `![[图.png|300]]` 到处都是，
+ * 而我们此前一律当图注渲染 —— 结果那些笔记的图片尺寸设置全部失效，
+ * 图上还多出一行"300"的文字。判据刻意很窄（只认十进制数字与 `x`/`X` 分隔），
+ * 因为"300 字以内"这种**看起来像数字的图注**在中文笔记里同样常见（⚠️ 见下方取舍）：
+ *
+ * - `|300` → 宽 300，高度按比例；
+ * - `|300x200` → 宽 300、高 200；
+ * - `|300 字以内`、`|图注`、`|0`、`|999999` → 不是尺寸（当图注）。
+ */
+export function parseImageSize(alias: string | null | undefined): ImageSize | null {
+  if (alias === undefined || alias === null) return null
+  const match = /^\s*(\d{1,4})(?:\s*[xX×]\s*(\d{1,4}))?\s*$/u.exec(alias)
+  if (match === null) return null
+
+  const width = Number(match[1])
+  const height = match[2] === undefined ? null : Number(match[2])
+  if (!Number.isFinite(width) || width <= 0 || width > MAX_SIZE) return null
+  if (height !== null && (!Number.isFinite(height) || height <= 0 || height > MAX_SIZE)) return null
+  return { width, height }
+}
+
 /** 图片解析器需要的最小条目信息（Vault 快照里的 `EntryMeta` 子集）。 */
 export interface AssetEntry {
   relPath: string

@@ -7,6 +7,8 @@
 
 import { WidgetType } from '@codemirror/view'
 
+import type { ImageSize } from '@/domain/assets'
+
 /** 取一个人类可读的标签（说明文字优先，其次文件名）。 */
 function labelFor(rel: string, alt: string): string {
   if (alt.trim() !== '') return alt.trim()
@@ -29,6 +31,14 @@ export class ImageWidget extends WidgetType {
     private readonly url: string | null,
     private readonly rel: string,
     private readonly alt: string,
+    /**
+     * `![[图.png|300]]` 的尺寸标记（Obsidian 约定）。`null` = 没写，按 CSS（`max-height` 等）呈现。
+     *
+     * 用 `width`/`height` **属性**而不是内联样式：只写宽度时浏览器按原图比例缩放，
+     * 与预览层（`domain/markdown.ts` 里渲染成同名属性）完全一致 —— 两个视图对同一篇笔记
+     * 必须给出同一个尺寸，否则"编辑器里好好的、切到阅读变了个大小"。
+     */
+    private readonly size: ImageSize | null = null,
   ) {
     super()
   }
@@ -38,7 +48,9 @@ export class ImageWidget extends WidgetType {
       other instanceof ImageWidget &&
       other.url === this.url &&
       other.rel === this.rel &&
-      other.alt === this.alt
+      other.alt === this.alt &&
+      other.size?.width === this.size?.width &&
+      other.size?.height === this.size?.height
     )
   }
 
@@ -61,6 +73,10 @@ export class ImageWidget extends WidgetType {
     image.loading = 'lazy'
     image.decoding = 'async'
     image.title = this.rel
+    if (this.size !== null) {
+      image.width = this.size.width
+      if (this.size.height !== null) image.height = this.size.height
+    }
     wrap.appendChild(image)
     return wrap
   }
