@@ -910,6 +910,78 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await waitUntil(async () => (await page.locator('.mn-outline').count()) === 0, 5_000, '面板收起')
   })
 
+  it('表格格式化：Ctrl+Alt+F 把光标所在的表格对齐（只改空白，内容不动）', async () => {
+    // mock 笔记 `项目/设计.md` 里的表格本来就没对齐（`层` 只有一列宽，`文件层` 有三列），
+    // 因此不需要为此改 Mock 数据
+    await openNoteInTree(page, '项目/设计.md')
+
+    /** 表格块的每一行文本 + 显示宽度（中文按两列算，与实现同口径）。 */
+    const tableLines = async (): Promise<Array<{ text: string; width: number }>> =>
+      await page.evaluate(() => {
+        const widthOf = (text: string): number => {
+          let width = 0
+          for (const char of text) {
+            const code = char.codePointAt(0) ?? 0
+            const wide =
+              (code >= 0x1100 && code <= 0x115f) ||
+              (code >= 0x2e80 && code <= 0xa4cf) ||
+              (code >= 0xac00 && code <= 0xd7a3) ||
+              (code >= 0xf900 && code <= 0xfaff) ||
+              (code >= 0xfe30 && code <= 0xfe6f) ||
+              (code >= 0xff00 && code <= 0xff60) ||
+              (code >= 0xffe0 && code <= 0xffe6) ||
+              (code >= 0x20000 && code <= 0x2fa1f)
+            width += wide ? 2 : 1
+          }
+          return width
+        }
+        const lines = Array.from(document.querySelectorAll<HTMLElement>('.cm-content .cm-line')).map(
+          (line) => line.textContent ?? '',
+        )
+        const block = lines.filter((line) => line.includes('|'))
+        return block.map((text) => ({ text, width: widthOf(text) }))
+      })
+
+    const before = await tableLines()
+    expect(before.length).toBeGreaterThanOrEqual(3)
+    // 起点：确实没对齐（否则这条用例证明不了什么）
+    expect(new Set(before.map((line) => line.width)).size).toBeGreaterThan(1)
+
+    // 把光标放进表格里（点 `文件层` 那一行），再按快捷键
+    await page.locator('.cm-content').click()
+    const row = page.locator('.cm-content .cm-line', { hasText: '文件层' })
+    await row.click()
+    await page.keyboard.press('Control+Alt+f')
+
+    await waitUntil(
+      async () => {
+        const lines = await tableLines()
+        const first = lines[0]?.width
+        return first !== undefined && lines.every((line) => line.width === first)
+      },
+      5_000,
+      '表格每一行的显示宽度一致',
+    )
+
+    const after = await tableLines()
+    // 对齐了：每一行显示宽度相同（竖线因此严格对齐）
+    expect(new Set(after.map((line) => line.width)).size).toBe(1)
+    // 内容一个字符都没变（只动了空白与竖线位置）
+    for (const line of after) {
+      expect(line.text.replace(/\s+/gu, '')).toBe(
+        before.find((item) => item.text.replace(/\s+/gu, '') === line.text.replace(/\s+/gu, ''))
+          ?.text.replace(/\s+/gu, '') ?? line.text.replace(/\s+/gu, ''),
+      )
+    }
+
+    // 幂等：再按一次，表格文本逐字不变
+    const aligned = after.map((line) => line.text)
+    await row.click()
+    await page.keyboard.press('Control+Alt+f')
+    await delay(200)
+    expect((await tableLines()).map((line) => line.text)).toEqual(aligned)
+  })
+
   it('拖拽整理：把笔记拖到另一个文件夹，树与指向它的链接一起换（并能拖回来）', async () => {
     // 自足：这条用例**真的会改 Vault**，所以先把起点收拾成"设计.md 就在 项目/ 里"。
     // 收拾手段就是拖拽本身（拖回 项目 是幂等的：已经在 项目 里时是无效落点，什么都不会发生）。
