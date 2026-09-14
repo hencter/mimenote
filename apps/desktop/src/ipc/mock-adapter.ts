@@ -34,6 +34,9 @@ import type {
   SetTagsOutcome,
   TagNotes,
   TagRef,
+  TagRenameFile,
+  TagRenameOutcome,
+  TagRenameSkip,
   TagSource,
   TagSummary,
   TrashRecord,
@@ -726,7 +729,31 @@ function mockParseFrontmatter(text: string): MockFrontmatter | null {
 
 /** 抽取正文行内 `#标签`（跳过围栏代码、行内代码、HTML 注释、标题行、转义）。 */
 function mockScanInlineTags(bodyLines: readonly string[], lineOffset: number): TagRef[] {
-  const out: TagRef[] = []
+  return mockScanInlineTagSpans(bodyLines, lineOffset).map((span) => ({
+    tag: span.tag,
+    source: 'inline',
+    line: span.line,
+  }))
+}
+
+/**
+ * 正文里一个行内标签的位置（**行内字符偏移**，`start` 指向 `#`）。
+ *
+ * 抽取与改写共用同一个扫描器（Rust 侧同样是这个纪律）：判据只写一遍，
+ * "抽出来的标签改了、另一处没改"这种不一致才不会出现。
+ */
+interface MockTagSpan {
+  tag: string
+  /** 全文绝对行号（1 起）。 */
+  line: number
+  /** 在 `bodyLines` 里的下标。 */
+  row: number
+  start: number
+  end: number
+}
+
+function mockScanInlineTagSpans(bodyLines: readonly string[], lineOffset: number): MockTagSpan[] {
+  const out: MockTagSpan[] = []
   let fence: string | null = null
   let inComment = false
 
@@ -806,7 +833,7 @@ function mockScanInlineTags(bodyLines: readonly string[], lineOffset: number): T
         const raw = line.slice(index + 1, end)
         // `#123` 这类纯数字不是标签
         if (/\D/.test(raw)) {
-          out.push({ tag: raw, source: 'inline', line: lineOffset + row + 1 })
+          out.push({ tag: raw, line: lineOffset + row + 1, row, start: index, end })
         }
       }
       index = Math.max(end, index + 1)
@@ -1004,6 +1031,284 @@ function mockExtractTags(text: string): TagRef[] {
     push(tag.tag, 'inline', tag.line)
   }
   return out
+}
+
+// ---------------------------------------------------------------------------
+// Mock 的标签改名/合并（`mn_core::tags::rename_tags` 的**简化镜像**）
+//
+// ⚠️ 权威实现永远在 Rust 侧（`crates/mn-core/src/tags.rs`）：判同、层级、去重、
+// 跳过判据都在那里，并且由单测逐条钉住。这里只保证"浏览器预览与 UI 层测试不是假绿"：
+// `note_tags` / `tags_list` 都是从文本现算的，所以只要这里真的改了文本，面板就真的会变。
+//
+// 两处刻意的简化（Rust 侧做得更细，测试也只在那里覆盖）：
+// * 键名比较区分大小写（Rust 大小写不敏感）：`Tags:` 这类写法这里不认识；
+// * 只在写入目标字段上改写（Rust 会把 `tags` 与 `tag` 两个字段都改一遍）。
+// ---------------------------------------------------------------------------
+
+/** 一次改名的映射（`mn_core::tags::TagRename` 的镜像）。 */
+interface MockTagMapping {
+  fromKey: string
+  toDisplay: string
+  toKey: string
+  includeChildren: boolean
+}
+
+function mockTagMapping(from: string, to: string, includeChildren: boolean): MockTagMapping | null {
+  const fromKey = mockNormalizeTag(from)
+  const toDisplay = to
+    .trim()
+    .replace(/^#+/, '')
+    .trim()
+    .split(/\s+/)
+    .filter((part) => part !== '')
+    .join(' ')
+  if (fromKey === '' || toDisplay === '') return null
+  return { fromKey, toDisplay, toKey: mockNormalizeTag(toDisplay), includeChildren }
+}
+
+/** 取子标签里源标签那一段**之后**的原文；不是后代 → `null`。 */
+function mockDescendantSuffix(tag: string, fromKey: string): string | null {
+  const depth = fromKey.split('/').length
+  const segments = tag
+    .trim()
+    .replace(/^#+/, '')
+    .trim()
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter((segment) => segment !== '')
+  if (segments.length <= depth) return null
+  if (mockNormalizeTag(segments.slice(0, depth).join('/')) !== fromKey) return null
+  return segments.slice(depth).join('/')
+}
+
+/** 单个标签在这个映射下变成什么；不受影响 → `null`（`TagRename::apply` 的镜像）。 */
+function mockApplyTagMapping(tag: string, mapping: MockTagMapping): string | null {
+  const key = mockNormalizeTag(tag)
+  if (key === '') return null
+  if (key === mapping.fromKey) return mapping.toDisplay
+  if (!mapping.includeChildren) return null
+  const suffix = mockDescendantSuffix(tag, mapping.fromKey)
+  return suffix === null ? null : `${mapping.toDisplay}/${suffix}`
+}
+
+/** 一个标签字段在原文里的形态（用于"改完写回去时保持原样"）。 */
+type MockTagFieldStyle = 'inline' | 'scalar' | 'block' | 'empty'
+
+interface MockTagField {
+  index: number
+  key: string
+  rest: string
+  style: MockTagFieldStyle
+  items: string[]
+  /** `block`：项行下标（本行之后紧跟的那些）。 */
+  itemRows: number[]
+}
+
+/** 找出 frontmatter 区块里的标签字段（`tags` 在前、`tag` 在后，与面板的显示口径一致）。 */
+function mockTagFields(lines: readonly string[], end: number): MockTagField[] {
+  const bare = (line: string | undefined): string => (line ?? '').replace(/\r$/, '')
+  const out: MockTagField[] = []
+  for (let index = 1; index < end; index += 1) {
+    const match = /^(tags|tag)\s*:(.*)$/.exec(bare(lines[index]))
+    if (match === null) continue
+    const rest = match[2] ?? ''
+    const value = rest.trim()
+
+    // 行内数组：`tags: [甲, 乙]`（也可能是空数组 `[]`）
+    if (value.startsWith('[') && value.endsWith(']')) {
+      out.push({ index, key: match[1] ?? 'tags', rest, style: 'inline', items: parseInlineList(value), itemRows: [] })
+      continue
+    }
+    // 标量：`tags: 甲` 或 `tags: 甲, 乙`
+    if (value !== '' && !value.startsWith('#')) {
+      out.push({
+        index,
+        key: match[1] ?? 'tags',
+        rest,
+        style: 'scalar',
+        items: value
+          .split(',')
+          .map((part) => stripQuotes(part))
+          .filter((part) => part !== ''),
+        itemRows: [],
+      })
+      continue
+    }
+    // 空值 + 紧跟的 `- item` 行（空行/注释行/别的字段都会结束这个块数组）
+    const itemRows: number[] = []
+    for (let row = index + 1; row < end; row += 1) {
+      const item = /^\s*-\s+(.*)$/.exec(bare(lines[row]))
+      if (item === null) break
+      itemRows.push(row)
+    }
+    out.push({
+      index,
+      key: match[1] ?? 'tags',
+      rest,
+      style: itemRows.length > 0 ? 'block' : 'empty',
+      items: itemRows.map((row) => stripQuotes(/^\s*-\s+(.*)$/.exec(bare(lines[row]))?.[1] ?? '')),
+      itemRows,
+    })
+  }
+  return out
+}
+
+/**
+ * 把 frontmatter 里每个标签字段按 `map` 改写（`frontmatter::rename_tag_fields` 的镜像）。
+ *
+ * 只动字段自己的那几个字节：块数组仍写项行（缩进沿用原第一项）、行内数组只换 `[...]`、
+ * 单个标签仍是标量、BOM/CRLF/注释/未知键/字段顺序一律不动。
+ */
+function mockRenameTagFields(
+  text: string,
+  mapping: MockTagMapping,
+): { text: string; edits: number } {
+  const lines = text.split('\n')
+  const bare = (line: string | undefined): string => (line ?? '').replace(/\r$/, '')
+  const cr = (line: string | undefined): string => ((line ?? '').endsWith('\r') ? '\r' : '')
+
+  let end = -1
+  if (bare(lines[0]).replace(/^\u{feff}/u, '').trim() === '---') {
+    for (let index = 1; index < lines.length; index += 1) {
+      if (bare(lines[index]).trim() === '---') {
+        end = index
+        break
+      }
+    }
+  }
+  if (end <= 0) return { text, edits: 0 }
+
+  let edits = 0
+  // 从后往前改：字段的项行区间互不重叠，倒序处理不会打乱前面的下标
+  for (const field of [...mockTagFields(lines, end)].reverse()) {
+    const wanted: string[] = []
+    const seen = new Set<string>()
+    let fieldEdits = 0
+    for (const item of field.items) {
+      const mapped = mockApplyTagMapping(item, mapping) ?? item
+      const key = mockNormalizeTag(mapped)
+      if (key === '' || seen.has(key)) {
+        fieldEdits += 1
+        continue
+      }
+      seen.add(key)
+      if (mapped !== item) fieldEdits += 1
+      wanted.push(mapped)
+    }
+    if (fieldEdits === 0) continue
+    edits += fieldEdits
+
+    const formatted = wanted.map(mockFormatTag)
+    if (field.style === 'block') {
+      // `block` 一定有项行（没有项行的空值字段是 `empty`）
+      const first = field.itemRows[0] ?? field.index + 1
+      const indent = /^(\s*)/.exec(bare(lines[first]))?.[1] ?? ''
+      const replacement = formatted.map((tag) => `${indent}- ${tag}${cr(lines[first])}`)
+      lines.splice(first, field.itemRows.length, ...replacement)
+      continue
+    }
+    if (field.style === 'inline') {
+      const raw = bare(lines[field.index])
+      const open = raw.indexOf('[', raw.indexOf(':'))
+      const close = raw.lastIndexOf(']')
+      if (open >= 0 && close > open) {
+        lines[field.index] =
+          `${raw.slice(0, open)}[${formatted.join(', ')}]${raw.slice(close + 1)}${cr(lines[field.index])}`
+      }
+      continue
+    }
+    if (field.style === 'scalar') {
+      // 1 个标签仍是标量，0 或 ≥2 个变成行内数组（与 Rust 的 `set_tags` 同口径）
+      const written = wanted.length === 1 ? (formatted[0] ?? '') : `[${formatted.join(', ')}]`
+      lines[field.index] = `${field.key}: ${written}${cr(lines[field.index])}`
+    }
+  }
+
+  return { text: lines.join('\n'), edits }
+}
+
+/**
+ * 一次标签改名/合并在**一整篇文本**上的结果（`mn_core::tags::rename_tags` 的镜像）。
+ * 一个字都不用改 → `null`。
+ */
+function mockRenameTags(
+  text: string,
+  mapping: MockTagMapping,
+): { text: string; frontmatterEdits: number; inlineEdits: number; inlineRemoved: number } | null {
+  // 原文里出现过的全部标签键：合并时用它回答"目标标签是不是已经在别处出现"
+  const present = new Set(
+    mockExtractTags(text)
+      .map((tag) => mockNormalizeTag(tag.tag))
+      .filter((key) => key !== ''),
+  )
+  const merging = mapping.toKey !== mapping.fromKey
+
+  const fields = mockRenameTagFields(text, mapping)
+  let current = fields.text
+  let inlineEdits = 0
+  let inlineRemoved = 0
+
+  // 正文（frontmatter 之后）里的行内标签：跳过判据与抽取器同源
+  const all = current.split('\n')
+  const bodyStart = mockParseFrontmatter(current)?.lines ?? 0
+  const spans = mockScanInlineTagSpans(all.slice(bodyStart), bodyStart)
+  const byRow = new Map<number, MockTagSpan[]>()
+  for (const span of spans) {
+    const list = byRow.get(span.row)
+    if (list === undefined) byRow.set(span.row, [span])
+    else list.push(span)
+  }
+
+  for (const [row, rowSpans] of byRow) {
+    const absolute = bodyStart + row
+    const hasCr = (all[absolute] ?? '').endsWith('\r')
+    const line = (all[absolute] ?? '').replace(/\r$/, '')
+    const chars = [...line]
+    const ranges: Array<{ start: number; end: number; text: string }> = []
+
+    for (const span of rowSpans) {
+      const mapped = mockApplyTagMapping(span.tag, mapping)
+      if (mapped === null) continue
+      const key = mockNormalizeTag(mapped)
+      if (merging && present.has(key)) {
+        let from = span.start
+        let to = span.end
+        let after = span.end
+        while (after < chars.length && (chars[after] === ' ' || chars[after] === '\t')) after += 1
+        if (after > span.end) {
+          to = after
+        } else {
+          while (from > 0 && (chars[from - 1] === ' ' || chars[from - 1] === '\t')) from -= 1
+        }
+        ranges.push({ start: from, end: to, text: '' })
+        inlineRemoved += 1
+        continue
+      }
+      if (mapped === span.tag) continue
+      ranges.push({ start: span.start, end: span.end, text: `#${mapped}` })
+      inlineEdits += 1
+    }
+
+    if (ranges.length === 0) continue
+    let rebuilt = ''
+    let cursor = 0
+    for (const range of ranges) {
+      rebuilt += chars.slice(cursor, range.start).join('')
+      rebuilt += range.text
+      cursor = range.end
+    }
+    rebuilt += chars.slice(cursor).join('')
+    all[absolute] = hasCr ? `${rebuilt}\r` : rebuilt
+  }
+
+  current = all.join('\n')
+  if (fields.edits === 0 && inlineEdits === 0 && inlineRemoved === 0) return null
+  return {
+    text: current,
+    frontmatterEdits: fields.edits,
+    inlineEdits,
+    inlineRemoved,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1811,6 +2116,84 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
             changed,
             tags: (frontmatter?.tags ?? []).map((entry) => entry.tag),
             text: updated,
+          }
+          return payload as T
+        }
+        case 'tag_rename': {
+          // 标签改名/合并的 Mock 镜像：与真实宿主同一条纪律 —— 候选集来自"文本里的标签"，
+          // 逐篇走 `mockRenameTags`（frontmatter 与正文一起改），逐篇如实汇报。
+          // `dryRun` 只算不写，但判定与真跑完全一致（对话框那句"这会改 N 篇笔记"才可信）。
+          //
+          // 刻意**永远返回空的 `skipped`**：内存 Vault 不可能"被外部改动"或"写失败"，
+          // 编一个假的跳过项只会让浏览器预览里的汇报看起来更完整、实际更不可信。
+          // 那条路径由宿主单测（`tag_rename_skips_files_changed_outside_the_app` 等）
+          // 与 UI 层用桩适配器写的用例覆盖。
+          const from = String(a.from ?? '')
+          const to = String(a.to ?? '')
+          const includeChildren = a.includeChildren !== false
+          const dryRun = a.dryRun === true
+          const mapping = mockTagMapping(from, to, includeChildren)
+          if (mapping === null) fail('PATH_INVALID', '标签名称为空，无法改名')
+
+          const covers = (key: string): boolean =>
+            key === mapping.fromKey ||
+            (mapping.includeChildren && key.startsWith(`${mapping.fromKey}/`))
+
+          const edited: TagRenameFile[] = []
+          const skipped: TagRenameSkip[] = []
+          let unchanged = 0
+          let frontmatterEdits = 0
+          let inlineEdits = 0
+          let inlineRemoved = 0
+          let candidates = 0
+
+          for (const rel of [...files.keys()].sort()) {
+            if (!isMockMarkdown(rel)) continue
+            const note = files.get(rel)
+            if (note === undefined) continue
+            const keys = new Set(
+              mockExtractTags(note.text)
+                .map((tag) => mockNormalizeTag(tag.tag))
+                .filter((key) => key !== ''),
+            )
+            if (![...keys].some(covers)) continue
+            candidates += 1
+
+            const rewrite = mockRenameTags(note.text, mapping)
+            if (rewrite === null) {
+              unchanged += 1
+              continue
+            }
+            if (!dryRun) {
+              files.set(rel, { relPath: rel, text: rewrite.text })
+              mtimes.set(rel, touch())
+            }
+            frontmatterEdits += rewrite.frontmatterEdits
+            inlineEdits += rewrite.inlineEdits
+            inlineRemoved += rewrite.inlineRemoved
+            edited.push({
+              relPath: rel,
+              frontmatterEdits: rewrite.frontmatterEdits,
+              inlineEdits: rewrite.inlineEdits,
+              inlineRemoved: rewrite.inlineRemoved,
+            })
+          }
+
+          const payload: TagRenameOutcome = {
+            from: mapping.fromKey,
+            to: mapping.toKey,
+            fromDisplay: from,
+            toDisplay: mapping.toDisplay,
+            includeChildren,
+            dryRun,
+            candidates,
+            edited,
+            skipped,
+            unchanged,
+            frontmatterEdits,
+            inlineEdits,
+            inlineRemoved,
+            elapsedMs: 1,
           }
           return payload as T
         }

@@ -22,13 +22,16 @@ pub mod trash;
 
 pub use error::{Error, ErrorCode, Result};
 pub use frontmatter::{
-    body as frontmatter_body, editable_tags, parse as parse_frontmatter, set_tags,
-    set_tags_or_create, Frontmatter, FrontmatterField, FrontmatterValue,
+    body as frontmatter_body, editable_tags, parse as parse_frontmatter, rename_tag_fields,
+    set_tags, set_tags_or_create, Frontmatter, FrontmatterField, FrontmatterValue, TagFieldRewrite,
 };
 pub use links::{extract_links, LinkKind, LinkRef};
 pub use path_guard::VaultRoot;
 pub use scanner::{scan, EntryMeta, ScanOptions, ScanReport};
-pub use tags::{apply_tag_edits, extract_tags, normalize_tag, TagRef, TagSource};
+pub use tags::{
+    apply_tag_edits, extract_tags, normalize_tag, rename_tags, TagRef, TagRename, TagRewrite,
+    TagSource,
+};
 pub use text_stats::TextStats;
 pub use trash::TrashRecord;
 

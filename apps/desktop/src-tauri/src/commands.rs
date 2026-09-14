@@ -124,6 +124,85 @@ pub struct SetTagsOutcome {
     pub text: String,
 }
 
+/// 一次标签重命名/合并里**被真正改写**的一篇笔记。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagRenameFile {
+    pub rel_path: String,
+    /// frontmatter 里被改写的条数（含合并时被去掉的重复项）。
+    pub frontmatter_edits: u32,
+    /// 正文里被换成新写法的 `#标签` 个数。
+    pub inline_edits: u32,
+    /// 正文里因合并被去掉的重复提及数。
+    pub inline_removed: u32,
+}
+
+/// 一篇笔记被跳过（没改）的原因。
+///
+/// **这不是错误码**（刻意与 [`mn_core::ErrorCode`] 分开）：一次操作会碰几十上百个文件，
+/// 每个文件各自的处境不同 —— 用错误码表达等于把"部分成功"强行折叠成"失败"，
+/// 前端也就无法如实说出"改了 12 篇，3 篇因为磁盘被外部改动没改"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TagSkipReason {
+    /// 这一篇在计划之后、落笔之前被外部改过（条目表里的 `(mtime,size)` 与磁盘不一致）。
+    ExternalChange,
+    /// 读不到（已被外部删掉、不是 UTF-8、超过读取上限、权限不足……名目在 `message` 里）。
+    Unreadable,
+    /// 读到了、也算出了新文本，但写盘失败（只读 Vault、磁盘满、被占用）。
+    WriteFailed,
+}
+
+/// 一篇被跳过的笔记。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagRenameSkip {
+    pub rel_path: String,
+    /// 稳定原因（前端按它分组给出人话）。
+    pub reason: TagSkipReason,
+    /// 面向用户的一句话（宿主侧的真实原因，例如"读取失败：文件不存在"）。
+    pub message: String,
+}
+
+/// 标签重命名 / 合并的结果。
+///
+/// 为什么不像 `note_set_tags` 那样带 `text`：这次动的是**几十上百篇**，把它们的全文
+/// 一起塞进 IPC 报文既没有用处（前端不显示别人的正文），也不安全（大 Vault 会撑爆报文）。
+/// 需要"编辑器内存对齐磁盘"的只有当前打开的那一篇，前端按 `edited` 里的路径自己重读一次即可。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagRenameOutcome {
+    /// 源标签的**归一化键**（与索引、面板高亮同一把尺子）。
+    pub from: String,
+    /// 目标标签的**归一化键**。
+    pub to: String,
+    /// 用户输入的源写法（回显用）。
+    pub from_display: String,
+    /// 用户输入的新写法（回显用）。
+    pub to_display: String,
+    /// 是否连带层级子标签（`父` → `母` 时 `父/子` → `母/子`）。
+    pub include_children: bool,
+    /// 是否是"只查询、不落盘"的预演（对话框里那句"这会改 N 篇笔记"）。
+    pub dry_run: bool,
+    /// 标签索引给出的候选笔记数（含最终"无需改动"的那些）。
+    pub candidates: u32,
+    /// 被真正改写的笔记（按路径字典序）；预演时是"将会被改写"的那些。
+    pub edited: Vec<TagRenameFile>,
+    /// 被跳过的笔记 + 原因（按路径字典序）。
+    pub skipped: Vec<TagRenameSkip>,
+    /// 候选里**不需要改**的笔记数（读盘后发现旧写法已经不在里面了 —— 多半是上一次重试
+    /// 已经改过它，或者索引比磁盘旧一拍）。不计入 `edited`/`skipped`。
+    pub unchanged: u32,
+    /// 被改写的 frontmatter 条数合计。
+    pub frontmatter_edits: u32,
+    /// 被改写的正文行内标签处数合计。
+    pub inline_edits: u32,
+    /// 被去掉的重复提及处数合计（合并）。
+    pub inline_removed: u32,
+    /// 整条命令的实测耗时（毫秒）。
+    pub elapsed_ms: u64,
+}
+
 /// 重命名时被改写了链接的某个文件。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -871,6 +950,61 @@ pub async fn tag_notes(state: State<'_, Arc<AppState>>, key: String) -> Result<T
     run_blocking(move || tag_notes_in(&app, &query)).await
 }
 
+/// **标签重命名 / 合并**：把全库所有笔记里的 `甲` 换成 `乙`。
+///
+/// ## 为什么不复用 `note_set_tags` 逐篇调用
+///
+/// 重命名要改的是**正文行内标签**（`note_set_tags` 刻意只改 frontmatter，见 ADR-0006），
+/// 而且必须"要么全改、要么说清楚哪几篇没改"——逐篇调用会让"改了 30 篇之后第 31 篇失败"
+/// 变成一个没有出处的中断。因此这里由宿主一次做完：
+///
+/// ```text
+/// 候选集（标签索引里所有命中的笔记，复用既有索引，不重新扫全库）
+///   逐篇：写锁 → 对照条目表检查磁盘有没有被外部改过 → 读盘 → mn_core::tags::rename_tags
+///         → 没变就跳过（幂等）→ atomic 写 → indexer::update_note（标签/搜索/图谱同一处增量同步）
+/// ```
+///
+/// ## 为什么先查询再确认（`dry_run`）
+///
+/// 这个动作的代价与影响面都写在用户看不到的地方（"改 N 篇笔记"），`dry_run = true` 走**完全
+/// 一样的候选集与判定**，只是不落盘 —— 于是对话框能先说出"这会改 12 篇笔记"，
+/// 而且那句话与真正执行时改的篇数**同源**（不是估的）。
+///
+/// ## 如实汇报，绝不"部分成功却报告成功"
+///
+/// 结果里 `edited` / `skipped` 分开列，跳过原因分三类（[`TagSkipReason`]）。
+/// 单篇写失败不会中断整批（用户重试即可），重试是幂等的：已经改过的文件在新一轮里
+/// 读盘后"旧写法已经不在"，于是既不改也不报错（计入 `unchanged`）。
+///
+/// ## 冲突语义
+///
+/// 这一条**没有** `baseMtimeMs` 入参：它动的不是"用户正在编辑的这一篇"，而是全库。
+/// 逐篇的版本令牌来自**条目表里的 `(mtime,size)`**（ADR-0016 判定"磁盘上有没有新闻"用的
+/// 就是这份对账口径）—— 与磁盘对不上就跳过该篇并如实报告"磁盘被外部改动"，
+/// 而不是拿一份可能已经过时的正文去覆盖。前端在调用前仍会先 `saveNow`（把当前笔记落盘），
+/// 否则当前这篇会被自己的未保存内容挡住。
+#[tauri::command]
+pub async fn tag_rename(
+    state: State<'_, Arc<AppState>>,
+    from: String,
+    to: String,
+    include_children: Option<bool>,
+    dry_run: Option<bool>,
+) -> Result<TagRenameOutcome, IpcError> {
+    let app = Arc::clone(state.inner());
+    let outcome = run_blocking(move || {
+        tag_rename_in(
+            &app,
+            &from,
+            &to,
+            include_children.unwrap_or(true),
+            dry_run.unwrap_or(false),
+        )
+    })
+    .await?;
+    Ok(outcome)
+}
+
 // ---------------------------------------------------------------------------
 // 全文搜索
 // ---------------------------------------------------------------------------
@@ -1485,6 +1619,262 @@ fn tag_notes_in(state: &AppState, key: &str) -> mn_core::Result<TagNotes> {
     })
 }
 
+/// `tag_rename` 的主体（与 Tauri 无关，可单测）。
+///
+/// 编排纪律（顺序与理由）：
+///
+/// 1. **映射先归一化**（`TagRename::new`）：空输入 → `PATH_INVALID`（复用既有稳定码，
+///    不开新码），不区分"源为空"还是"目标为空" —— 两者都是"这次改名没有意义"；
+/// 2. **候选集来自标签索引**，不重新扫全库：索引的倒排表就是"哪些笔记用了这个键"，
+///    1 万笔记的 Vault 里改一个标签只读它真正出现的那几十篇（`tag_summary` 筛出范围内的键
+///    → `notes_with_tag` 取并集）。索引没就绪时**明确报错**而不是"改了 0 篇"：
+///    后者会让用户以为改完了；
+/// 3. **逐篇一个短临界区**（不是整批一把锁）：每个文件的"读 → 改写 → 原子写"必须在
+///    没有并发写的窗口里完成（ADR-0004），但把几百个文件圈进一把锁会让自动保存停摆数秒。
+///    锁外还叠一层"条目表 vs 磁盘"的对账，挡住**外部**改动（见 `plan_mismatch`）；
+/// 4. **一篇一汇报**：写失败只记进 `skipped`，继续下一篇（用户重试即可，重试幂等）；
+/// 5. **索引与条目表同步**：写入成功的每一篇都走 `indexer::update_note`
+///    （标签/搜索/图谱同一处增量更新，ADR-0006 影响一节），条目表在循环之后一次性更新。
+fn tag_rename_in(
+    state: &AppState,
+    from: &str,
+    to: &str,
+    include_children: bool,
+    dry_run: bool,
+) -> mn_core::Result<TagRenameOutcome> {
+    let started = Instant::now();
+
+    if !state.is_open() {
+        return Err(Error::VaultNotSet);
+    }
+    let Some(mapping) = mn_core::TagRename::new(from, to, include_children) else {
+        return Err(Error::invalid(from, "标签名称为空，无法改名"));
+    };
+
+    // 候选集依赖索引：索引没建好时返回 0 篇会被理解成"这个标签不存在"，
+    // 那是**错的信息**。索引是缓存、随时会就绪，让用户等一下比给他一个假答案好。
+    if indexer::status(state).phase != indexer::IndexPhase::Ready {
+        return Err(Error::io(
+            ".mimenote/cache/search.db",
+            std::io::Error::other("标签索引正在构建，请稍后重试"),
+        ));
+    }
+
+    let root = state.vault_root()?;
+    let candidates = tag_rename_candidates(state, &mapping);
+
+    let mut outcome = TagRenameOutcome {
+        from: mapping.from_key().to_string(),
+        to: mapping.to_key(),
+        from_display: from.to_string(),
+        to_display: mapping.to_display().to_string(),
+        include_children,
+        dry_run,
+        candidates: candidates.len() as u32,
+        edited: Vec::new(),
+        skipped: Vec::new(),
+        unchanged: 0,
+        frontmatter_edits: 0,
+        inline_edits: 0,
+        inline_removed: 0,
+        elapsed_ms: 0,
+    };
+    // 写入成功之后要回写的条目表条目（循环里只收集，循环后一次性 update_vault）
+    let mut touched_entries: Vec<EntryMeta> = Vec::new();
+
+    for rel in candidates {
+        let path = match root.resolve_existing(&rel) {
+            Ok(path) => path,
+            Err(error) => {
+                outcome.skipped.push(TagRenameSkip {
+                    rel_path: rel.clone(),
+                    reason: TagSkipReason::Unreadable,
+                    message: format!("无法定位：{error}"),
+                });
+                continue;
+            }
+        };
+
+        // 写锁 + 重新 stat：这里做的是"计划时的磁盘状态 vs 现在的磁盘状态"，
+        // 与 `note_write` 的令牌校验是同一个思路，只是令牌来自条目表而非编辑器
+        let written = {
+            let _write_guard = state.write_guard();
+
+            if let Some(message) = plan_mismatch(state, &path, &rel) {
+                outcome.skipped.push(TagRenameSkip {
+                    rel_path: rel.clone(),
+                    reason: TagSkipReason::ExternalChange,
+                    message,
+                });
+                continue;
+            }
+
+            let text = match read_text(&path, MAX_READ_BYTES) {
+                Ok(text) => text,
+                Err(error) => {
+                    outcome.skipped.push(TagRenameSkip {
+                        rel_path: rel.clone(),
+                        reason: TagSkipReason::Unreadable,
+                        message: format!("读取失败：{error}"),
+                    });
+                    continue;
+                }
+            };
+
+            let Some(rewrite) = mn_core::rename_tags(&text, &mapping) else {
+                // 候选来自索引、磁盘却已经没有旧写法：多半是上一轮重试已经改过它。
+                // 不改、不报错、也不算"跳过"（没有需要解释的事情）
+                outcome.unchanged += 1;
+                continue;
+            };
+
+            let counts = TagRenameFile {
+                rel_path: rel.clone(),
+                frontmatter_edits: rewrite.frontmatter_edits,
+                inline_edits: rewrite.inline_edits,
+                inline_removed: rewrite.inline_removed,
+            };
+
+            if dry_run {
+                // 预演：只算不写（候选集与判定与真跑完全一致，所以篇数是可信的）
+                Some((rewrite, counts, 0u64, 0u64))
+            } else {
+                match write_atomic(&path, rewrite.text.as_bytes()) {
+                    Ok(()) => {
+                        indexer::update_note(state, &rel, &rewrite.text);
+                        let meta = std::fs::metadata(&path).ok();
+                        let size_bytes = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                        let mtime_ms = meta
+                            .as_ref()
+                            .and_then(mn_core::atomic::mtime_ms)
+                            .unwrap_or(0);
+                        Some((rewrite, counts, size_bytes, mtime_ms))
+                    }
+                    Err(error) => {
+                        outcome.skipped.push(TagRenameSkip {
+                            rel_path: rel.clone(),
+                            reason: TagSkipReason::WriteFailed,
+                            message: format!("写入失败：{error}"),
+                        });
+                        None
+                    }
+                }
+            }
+        };
+
+        let Some((rewrite, counts, size_bytes, mtime_ms)) = written else {
+            continue;
+        };
+
+        if !dry_run {
+            touched_entries.push(EntryMeta {
+                rel_path: rel.clone(),
+                name: file_name_of(&rel),
+                is_dir: false,
+                size_bytes,
+                mtime_ms: Some(mtime_ms),
+                ext: ext_of(&rel),
+            });
+        }
+        outcome.frontmatter_edits += rewrite.frontmatter_edits;
+        outcome.inline_edits += rewrite.inline_edits;
+        outcome.inline_removed += rewrite.inline_removed;
+        outcome.edited.push(counts);
+    }
+
+    if !touched_entries.is_empty() {
+        state.update_vault(|ctx| {
+            for entry in touched_entries {
+                ctx.upsert(entry);
+            }
+        });
+    }
+
+    outcome.elapsed_ms = started.elapsed().as_millis() as u64;
+    log::info!(
+        "标签{}：{} → {}（候选 {} 篇，改 {} 篇 / 跳过 {} 篇 / 无需改 {} 篇，{} 处 frontmatter + {} 处正文{}，耗时 {}ms）",
+        if dry_run { "改名预演" } else { "改名" },
+        outcome.from,
+        outcome.to,
+        outcome.candidates,
+        outcome.edited.len(),
+        outcome.skipped.len(),
+        outcome.unchanged,
+        outcome.frontmatter_edits,
+        outcome.inline_edits,
+        if outcome.inline_removed > 0 {
+            format!("，合并去掉 {} 处重复", outcome.inline_removed)
+        } else {
+            String::new()
+        },
+        outcome.elapsed_ms
+    );
+
+    Ok(outcome)
+}
+
+/// 这次改名会碰到的笔记（路径字典序）。
+///
+/// 从标签索引的概览里取出**落在改名范围内**的键，再把它们的笔记并起来。范围内的键可能很多
+/// （改 `父` 时它的每一个子标签都在范围内），但每个键上的笔记集合是现成的
+/// （`notes_with_tag`），所以这一步与"有多少篇笔记"无关，只与"有多少个命中的标签"有关。
+/// 用 `BTreeSet` 去重并保序，结果可复现（测试与日志都依赖这一点）。
+fn tag_rename_candidates(state: &AppState, mapping: &mn_core::TagRename) -> Vec<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for summary in indexer::tag_summary(state) {
+        if !mapping.covers_key(&summary.key) {
+            continue;
+        }
+        for rel in indexer::notes_with_tag(state, &summary.key) {
+            out.insert(rel);
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// 计划时记下的磁盘状态与**现在**的磁盘状态对不上 → 返回一句面向用户的说明。
+///
+/// 判据用的是条目表里的 `(mtime,size)`：那是宿主对"磁盘上是什么"的既有认知
+/// （打开/重扫/自己写盘/监听发现外部改动时都会更新，见 ADR-0016），也与索引跨会话复用
+/// 用的是同一份判定键。对不上意味着"在我们做计划的这段时间里，这篇被应用之外的东西改过"——
+/// 此时再拿刚读到的正文去改写，等于把对方的改动当成背景，用户重试一次就好。
+///
+/// 为什么 `mtime` 之外还要比 `size`：毫秒 mtime 有"同一毫秒内改动漏检"的固有窗口
+/// （ADR-0004 的取舍），字节数是几乎免费的第二道判据 —— 两者都对得上才放行。
+/// 条目表里没有这一篇、或它连 mtime 都拿不到时**放行**：拿不到证据就不该拦，
+/// 拦住一个本来能改的文件比多改一次更难解释。
+fn plan_mismatch(state: &AppState, path: &std::path::Path, rel: &str) -> Option<String> {
+    let (expected_mtime, expected_size) = state
+        .with_vault(|ctx| {
+            Ok(ctx
+                .entries
+                .get(rel)
+                .map(|entry| (entry.mtime_ms, entry.size_bytes)))
+        })
+        .ok()
+        .flatten()?;
+
+    // stat 失败（文件被删/权限不足）交给后面的读取去如实报错，这里不抢那份责任
+    let meta = std::fs::metadata(path).ok()?;
+    let current_mtime = mn_core::atomic::mtime_ms(&meta);
+
+    if let Some(expected) = expected_mtime {
+        if current_mtime != Some(expected) {
+            return Some(format!(
+                "磁盘被外部改动（条目表记为 {expected}ms，磁盘上是 {}ms），请重试",
+                current_mtime.unwrap_or(0)
+            ));
+        }
+    }
+    if meta.len() != expected_size {
+        return Some(format!(
+            "磁盘被外部改动（条目表记为 {expected_size} 字节，磁盘上是 {} 字节），请重试",
+            meta.len()
+        ));
+    }
+    None
+}
+
 /// `graph_data` 的主体（与 Tauri 无关，可单测）。
 ///
 /// 只做三件事：确认 Vault 已打开（否则 `VAULT_NOT_SET`）、取索引、记一条 debug 日志。
@@ -1647,6 +2037,14 @@ mod tests {
         let state = AppState::default();
         state.set_vault(VaultCtx::new(root, options, report));
         *state.index_write() = index;
+        // 索引阶段：真实链路里 `indexer::spawn_build` 建完会置 `Ready`。
+        // `tag_rename` 用"索引是否就绪"回答"候选集能不能信"，所以这里必须如实置一次
+        state.set_index_status(indexer::IndexStatus {
+            phase: indexer::IndexPhase::Ready,
+            indexed: files.len(),
+            total: files.len(),
+            ..Default::default()
+        });
 
         // 全文搜索索引：与构建路径一样，从同一批文本喂进去（测试用内存库，不留文件）
         let search = SearchIndex::open_in_memory().unwrap();
@@ -2689,6 +3087,365 @@ mod tests {
         indexer::remove_note(&state, "笔记/乙.md");
         assert!(tags_list_in(&state).is_empty());
         assert!(tag_notes_in(&state, "新标签").unwrap().notes.is_empty());
+    }
+
+    // -- 标签重命名 / 合并（tag_rename） -----------------------------------------
+
+    /// 全库改写：frontmatter 与正文一起改，条目表与索引一起同步，逐篇如实汇报。
+    #[test]
+    fn tag_rename_rewrites_the_whole_vault_and_reports_every_file() {
+        let (dir, state) = state_with(&[
+            ("甲.md", "---\ntags: [旧, 别的]\n---\n\n正文 #旧 与 #旧。\n"),
+            ("目录/乙.md", "---\ntag: 旧\n---\n\n#旧 收尾\n"),
+            ("丙.md", "---\ntags: [无关]\n---\n\n正文 #无关\n"),
+            // 代码块与行内代码里的 `#旧` 不是标签：一个字都不能动
+            ("丁.md", "```\n#旧\n```\n\n`#旧` 与 #旧\n"),
+        ]);
+
+        let outcome = tag_rename_in(&state, "旧", "新", false, false).unwrap();
+
+        assert_eq!(outcome.from, "旧");
+        assert_eq!(outcome.to, "新");
+        assert!(!outcome.dry_run);
+        assert_eq!(outcome.candidates, 3, "丁 也是候选（正文里有真标签）");
+        assert_eq!(outcome.skipped.len(), 0);
+        assert_eq!(outcome.unchanged, 0);
+        assert_eq!(
+            outcome
+                .edited
+                .iter()
+                .map(|file| file.rel_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["丁.md", "甲.md", "目录/乙.md"],
+            "字典序（`目录/乙.md` 的 UTF-8 字节序在 `甲.md` 之后）"
+        );
+        assert_eq!(outcome.frontmatter_edits, 2);
+        assert_eq!(outcome.inline_edits, 4);
+
+        // 磁盘：frontmatter 两个字段都改、正文行内也改，且代码块/行内代码原样
+        assert_eq!(
+            read_file(dir.path(), "甲.md"),
+            "---\ntags: [新, 别的]\n---\n\n正文 #新 与 #新。\n"
+        );
+        assert_eq!(
+            read_file(dir.path(), "目录/乙.md"),
+            "---\ntag: 新\n---\n\n#新 收尾\n"
+        );
+        assert_eq!(
+            read_file(dir.path(), "丙.md"),
+            "---\ntags: [无关]\n---\n\n正文 #无关\n"
+        );
+        assert_eq!(
+            read_file(dir.path(), "丁.md"),
+            "```\n#旧\n```\n\n`#旧` 与 #新\n"
+        );
+
+        // 索引与条目表跟着走（复用既有增量路径，不需要重扫）
+        assert!(
+            tag_notes_in(&state, "旧").unwrap().notes.is_empty(),
+            "旧标签必须从索引里消失"
+        );
+        assert_eq!(
+            tag_notes_in(&state, "新").unwrap().notes,
+            vec![
+                "丁.md".to_string(),
+                "甲.md".to_string(),
+                "目录/乙.md".to_string()
+            ]
+        );
+        let summary = tags_list_in(&state);
+        assert!(
+            summary.iter().any(|item| item.key == "新"),
+            "全库概览跟着变"
+        );
+        assert!(summary.iter().all(|item| item.key != "旧"));
+        // 条目表里的 (size, mtime) 更新成了磁盘上的真实值（下一次对账/外部改动监听都依赖它）
+        let (size, mtime) = state
+            .with_vault(|ctx| {
+                let entry = ctx.entries.get("甲.md").unwrap();
+                Ok((entry.size_bytes, entry.mtime_ms))
+            })
+            .unwrap();
+        assert_eq!(size, read_file(dir.path(), "甲.md").len() as u64);
+        assert_eq!(
+            mtime,
+            Some(token_of(dir.path(), "甲.md")),
+            "条目表必须与磁盘对齐，否则下一次改名会把这一篇误判成「磁盘被外部改动」"
+        );
+
+        // 搜索索引也在同一处增量更新（正文变了，全文搜索必须搜得到新内容）
+        let hits = state
+            .with_search(|search| Ok(search.search("新", 10).unwrap().total))
+            .unwrap();
+        assert!(
+            hits >= 4,
+            "改写后的正文与字段都要能被搜到（实际 {hits} 行）"
+        );
+    }
+
+    /// 层级：`父` → `母` 把子标签一起带走；`include_children=false` 时不带。
+    #[test]
+    fn tag_rename_can_carry_hierarchical_children() {
+        let text = "---\ntags: [父, 父/子]\n---\n\n#父 与 #父/子 与 #父老\n";
+        let (dir, state) = state_with(&[("甲.md", text), ("乙.md", "#父\n")]);
+
+        let carried = tag_rename_in(&state, "父", "母", true, false).unwrap();
+        assert_eq!(carried.candidates, 2);
+        assert_eq!(
+            read_file(dir.path(), "甲.md"),
+            "---\ntags: [母, 母/子]\n---\n\n#母 与 #母/子 与 #父老\n",
+            "`父老` 不能被误伤"
+        );
+        assert_eq!(read_file(dir.path(), "乙.md"), "#母\n");
+
+        // 不带子标签：只剩整条等于 `父` 的那些（`父/子` 留在原地）
+        let (dir2, state2) = state_with(&[("甲.md", text)]);
+        let flat = tag_rename_in(&state2, "父", "母", false, false).unwrap();
+        assert_eq!(flat.inline_edits, 1);
+        assert_eq!(
+            read_file(dir2.path(), "甲.md"),
+            "---\ntags: [母, 父/子]\n---\n\n#母 与 #父/子 与 #父老\n"
+        );
+    }
+
+    /// 合并：目标已经在同一篇里出现 → 不留重复项（frontmatter 列表与正文提及都算）。
+    #[test]
+    fn tag_rename_merges_without_leaving_duplicates() {
+        let (dir, state) =
+            state_with(&[("甲.md", "---\ntags: [甲, 乙]\n---\n\n正文 #甲 与 #乙。\n")]);
+        let outcome = tag_rename_in(&state, "甲", "乙", false, false).unwrap();
+
+        assert_eq!(
+            read_file(dir.path(), "甲.md"),
+            "---\ntags: [乙]\n---\n\n正文 与 #乙。\n"
+        );
+        assert_eq!(
+            outcome.frontmatter_edits, 2,
+            "一条被换写法、一条因为与目标重复被去掉"
+        );
+        assert_eq!(outcome.inline_removed, 1);
+        assert_eq!(
+            tag_notes_in(&state, "乙").unwrap().notes,
+            vec!["甲.md".to_string()]
+        );
+        assert!(tag_notes_in(&state, "甲").unwrap().notes.is_empty());
+    }
+
+    /// 预演（`dry_run`）走完全一样的判定，但一个字节都不写、索引也不动。
+    #[test]
+    fn tag_rename_dry_run_counts_without_writing() {
+        let (dir, state) = state_with(&[
+            ("甲.md", "---\ntags: [旧]\n---\n\n正文 #旧\n"),
+            ("乙.md", "#旧 与 #旧\n"),
+            ("丙.md", "没有标签\n"),
+        ]);
+
+        let preview = tag_rename_in(&state, "旧", "新", true, true).unwrap();
+        assert!(preview.dry_run);
+        assert_eq!(preview.edited.len(), 2, "预演报的就是真跑会改的篇数");
+        assert_eq!(preview.inline_edits, 3);
+        assert_eq!(
+            read_file(dir.path(), "甲.md"),
+            "---\ntags: [旧]\n---\n\n正文 #旧\n",
+            "预演不落盘"
+        );
+        assert_eq!(read_file(dir.path(), "乙.md"), "#旧 与 #旧\n");
+        // 索引与条目表也不动（预演不是一次写操作）
+        assert_eq!(
+            tag_notes_in(&state, "旧").unwrap().notes,
+            vec!["乙.md".to_string(), "甲.md".to_string()]
+        );
+        assert!(tag_notes_in(&state, "新").unwrap().notes.is_empty());
+    }
+
+    /// 重试幂等：第二次跑"没有需要改的"，既不改文件也不报错（`unchanged` 里如实计数）。
+    #[test]
+    fn tag_rename_retry_is_idempotent() {
+        let before = "---\ntags: [旧]\n---\n\n正文 #旧\n";
+        let (dir, state) = state_with(&[("甲.md", before)]);
+
+        let first = tag_rename_in(&state, "旧", "新", false, false).unwrap();
+        assert_eq!(first.edited.len(), 1);
+        let after_first = read_file(dir.path(), "甲.md");
+        let mtime_after_first = token_of(dir.path(), "甲.md");
+
+        // 第二次：索引已经跟着第一次更新了 → 候选集是空的（连读文件都不必）
+        let second = tag_rename_in(&state, "旧", "新", false, false).unwrap();
+        assert!(second.edited.is_empty(), "已经改过的不再改第二遍");
+        assert_eq!(second.candidates, 0, "索引里已经没有旧写法了");
+        assert_eq!(after_first, read_file(dir.path(), "甲.md"));
+        assert_eq!(
+            mtime_after_first,
+            token_of(dir.path(), "甲.md"),
+            "一个字节都没写（连 mtime 都不该动）"
+        );
+
+        // 索引比磁盘旧一拍（外部改过、监听还没对账）时，候选集里仍然有这一篇 ——
+        // 但真正的判据是**磁盘上的文本**，所以它只会被计入 `unchanged`，不会白写一次
+        indexer::update_note(&state, "甲.md", before);
+        let third = tag_rename_in(&state, "旧", "新", false, false).unwrap();
+        assert_eq!(third.candidates, 1);
+        assert_eq!(third.unchanged, 1);
+        assert!(third.edited.is_empty());
+        assert_eq!(mtime_after_first, token_of(dir.path(), "甲.md"));
+    }
+
+    /// 磁盘被外部改动过的那些：跳过并**如实说明原因**，其余照改。
+    #[test]
+    fn tag_rename_skips_files_changed_outside_the_app() {
+        let (dir, state) = state_with(&[
+            ("稳.md", "---\ntags: [旧]\n---\n\n正文 #旧\n"),
+            ("被外部改.md", "---\ntags: [旧]\n---\n\n正文 #旧\n"),
+        ]);
+
+        // 让条目表与磁盘对不上：这就是"宿主的认知过时了"的判据（ADR-0016 同一份对账口径）。
+        // 不用真的去 sleep 等 mtime 跳一格 —— 那个写法在毫秒级 mtime 上并不稳定
+        state.update_vault(|ctx| {
+            if let Some(entry) = ctx.entries.get_mut("被外部改.md") {
+                entry.mtime_ms = Some(1);
+            }
+        });
+
+        let outcome = tag_rename_in(&state, "旧", "新", false, false).unwrap();
+
+        assert_eq!(
+            outcome
+                .edited
+                .iter()
+                .map(|file| file.rel_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["稳.md"]
+        );
+        assert_eq!(outcome.skipped.len(), 1);
+        assert_eq!(outcome.skipped[0].rel_path, "被外部改.md");
+        assert_eq!(outcome.skipped[0].reason, TagSkipReason::ExternalChange);
+        assert!(
+            outcome.skipped[0].message.contains("磁盘被外部改动"),
+            "跳过必须带上能读懂的原因：{}",
+            outcome.skipped[0].message
+        );
+
+        // 绝不静默覆盖：被跳过的那一篇一个字节都没动
+        assert_eq!(
+            read_file(dir.path(), "被外部改.md"),
+            "---\ntags: [旧]\n---\n\n正文 #旧\n"
+        );
+        assert_eq!(
+            read_file(dir.path(), "稳.md"),
+            "---\ntags: [新]\n---\n\n正文 #新\n"
+        );
+        // 序列化形状（前端按 kebab-case 的稳定原因分组）
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(
+            json.contains("\"reason\":\"external-change\""),
+            "实际：{json}"
+        );
+        assert!(json.contains("\"dryRun\":false"), "实际：{json}");
+
+        // 字节数对不上也算"磁盘被外部改过"：mtime 是毫秒级、有漏检窗口，字节数是第二道判据
+        let (dir2, state2) = state_with(&[("乙.md", "---\ntags: [旧]\n---\n正文\n")]);
+        state2.update_vault(|ctx| {
+            if let Some(entry) = ctx.entries.get_mut("乙.md") {
+                entry.size_bytes += 7;
+            }
+        });
+        let by_size = tag_rename_in(&state2, "旧", "新", false, false).unwrap();
+        assert_eq!(by_size.skipped.len(), 1);
+        assert_eq!(by_size.skipped[0].reason, TagSkipReason::ExternalChange);
+        assert!(
+            by_size.skipped[0].message.contains("字节"),
+            "跳过原因要说清是哪一项对不上：{}",
+            by_size.skipped[0].message
+        );
+        assert_eq!(
+            read_file(dir2.path(), "乙.md"),
+            "---\ntags: [旧]\n---\n正文\n"
+        );
+    }
+
+    /// 单篇写失败不能把整批弄成"半截还不说"：只记一条跳过、其余照改。
+    ///
+    /// 与 `set_tags_reports_io_instead_of_silently_failing_on_a_read_only_file` 同一平台口径：
+    /// `write_atomic` 的收尾在 Windows 上是 `MoveFileEx(REPLACE_EXISTING)`，目标只读时必然失败。
+    #[cfg(windows)]
+    #[test]
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn tag_rename_reports_a_failed_write_and_keeps_going() {
+        let (dir, state) = state_with(&[
+            ("只读.md", "---\ntags: [旧]\n---\n正文\n"),
+            ("别的.md", "---\ntags: [旧]\n---\n正文\n"),
+        ]);
+        let path = dir.path().join("只读.md");
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).unwrap();
+
+        let outcome = tag_rename_in(&state, "旧", "新", false, false).unwrap();
+
+        // 收尾：摘掉只读位（否则临时目录清理会失败）
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&path, permissions).unwrap();
+
+        assert_eq!(outcome.edited.len(), 1, "另一个文件照改");
+        assert_eq!(outcome.edited[0].rel_path, "别的.md");
+        assert_eq!(outcome.skipped.len(), 1);
+        assert_eq!(outcome.skipped[0].rel_path, "只读.md");
+        assert_eq!(outcome.skipped[0].reason, TagSkipReason::WriteFailed);
+        assert!(outcome.skipped[0].message.contains("写入失败"));
+        assert_eq!(
+            read_file(dir.path(), "只读.md"),
+            "---\ntags: [旧]\n---\n正文\n"
+        );
+        // 写失败的那篇不能被同步进索引（索引必须与磁盘一致）
+        assert_eq!(
+            indexer::tags_of(&state, "只读.md")
+                .unwrap()
+                .iter()
+                .map(|tag| tag.tag.clone())
+                .collect::<Vec<String>>(),
+            owned(&["旧"])
+        );
+    }
+
+    /// 入参与前置条件：空名、Vault 未打开、索引没就绪。
+    #[test]
+    fn tag_rename_validates_its_inputs_and_needs_a_ready_index() {
+        let (_dir, state) = state_with(&[("甲.md", "#旧\n")]);
+
+        for (from, to) in [
+            ("", "新"),
+            ("   ", "新"),
+            ("#", "新"),
+            ("旧", ""),
+            ("旧", " # "),
+        ] {
+            assert_eq!(
+                tag_rename_in(&state, from, to, true, false)
+                    .unwrap_err()
+                    .code(),
+                mn_core::ErrorCode::PathInvalid,
+                "应当拒绝：{from:?} → {to:?}"
+            );
+        }
+
+        // 索引还在构建：明确报错，而不是回答"改了 0 篇"（那是一句假答案）
+        state.set_index_status(indexer::IndexStatus::default());
+        let building = tag_rename_in(&state, "旧", "新", true, false).unwrap_err();
+        assert_eq!(building.code(), mn_core::ErrorCode::Io);
+        assert!(
+            building.to_string().contains("正在构建"),
+            "实际：{building}"
+        );
+
+        // Vault 未打开
+        let closed = AppState::default();
+        assert_eq!(
+            tag_rename_in(&closed, "旧", "新", true, false)
+                .unwrap_err()
+                .code(),
+            mn_core::ErrorCode::VaultNotSet
+        );
     }
 
     // -- 全文搜索（search_query） -----------------------------------------------

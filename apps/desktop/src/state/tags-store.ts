@@ -53,6 +53,14 @@ interface TagsState {
   refreshSummary: () => Promise<void>
   /** 展开/收起某个标签下的笔记（传 `null` 收起）。 */
   selectTag: (key: string | null) => Promise<void>
+  /**
+   * 标签改名/合并之后把"展开中的那个标签"换到新键（**只加不改语义**：既有动作的行为不变）。
+   *
+   * 为什么必须有这一步：面板按 `activeKey` 记住用户展开的是哪个标签，改名之后旧键
+   * 在索引里已经不存在，再拿它去查只会得到空列表 —— 用户看到的是"我刚改完，名单空了"。
+   * 与 `key` 无关时什么都不做（普通编辑路径不受影响）。
+   */
+  retargetActiveTag: (fromKey: string, toKey: string) => void
   clear: () => void
 }
 
@@ -128,6 +136,13 @@ export const useTagsStore = create<TagsState>((set, get) => ({
       if (get().activeRaw !== key) return
       set({ activeNotes: [] })
     }
+  },
+
+  retargetActiveTag: (fromKey, toKey) => {
+    // 归一化比较由调用方保证（两侧都是宿主返回的键）；这里只处理"正展开着被改名的那个"
+    if (get().activeKey !== fromKey && get().activeRaw !== fromKey) return
+    set({ activeKey: toKey, activeRaw: toKey, activeNotes: [] })
+    void get().selectTag(toKey)
   },
 
   clear: () => {

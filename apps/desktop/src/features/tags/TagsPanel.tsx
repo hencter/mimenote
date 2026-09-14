@@ -9,9 +9,14 @@
  *   当作 key 传下去，前端不需要复制一遍归一化规则（规则只有一份，在 Rust 侧）；
  * - **改标签只有一种入口**：`app/actions` 的 `editCurrentNoteTags` —— 它负责"先落盘、
  *   再让宿主改 frontmatter、然后把内存文本对齐磁盘"的完整顺序，组件不自己编排；
+ * - **重命名/合并是全库动作**：它由 [`TagRenameDialog`] 承载（输入 → 预览"这会改 N 篇"
+ *   → 执行 → 汇报改了哪些、哪些没改），入口是本篇标签与全库概览每一行上的 `✎`。
+ *   面板只负责"把哪一条标签交给对话框"，不动手写盘；
  * - **行内标签只读**：正文里的 `#标签` 不在 frontmatter 里，面板改不动它。这里的做法是
  *   `×` 仍然可点、但点下去给一句"请到正文里删"，而不是把按钮做成禁用态 ——
  *   禁用按钮只会让用户以为面板坏了（`aria-disabled` 的样式 + 可读提示才是诚实的）。
+ *   **唯一的例外是重命名/合并**：不改正文里的 `#标签` 就等于没改名，那条边界由
+ *   `mn_core::tags::rename_tags` 打开（见 ADR-0006 的「后续修订」）。
  */
 
 import { useEffect, useState } from 'react'
@@ -22,6 +27,7 @@ import { frontmatterValueText, isFrontmatterEmpty } from '@/domain/frontmatter'
 import type { TagRef } from '@/ipc/types'
 import { useNoteStore } from '@/state/note-store'
 import { useTagsStore } from '@/state/tags-store'
+import { TagRenameDialog } from './TagRenameDialog'
 import { parseTagInput } from './tag-input'
 
 import './tags-panel.css'
@@ -42,6 +48,18 @@ export function TagsPanel() {
 
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
+  /**
+   * 正在被重命名/合并的那一条标签（`null` = 对话框没开）。
+   *
+   * 三个字段一起记：`tag` 是原始写法（改名时的源）、`key`/`count` 只有全库概览才有。
+   * 从本篇 chip 进来时 `key = null`（判同交给宿主），`count = null`（不知道就说不知道，
+   * 不编一个数字出来）。
+   */
+  const [renameTarget, setRenameTarget] = useState<{
+    tag: string
+    key: string | null
+    count: number | null
+  } | null>(null)
 
   // 面板可见时跟随"当前笔记"刷新；关闭时不发请求（省一次 IPC）
   useEffect(() => {
@@ -146,6 +164,17 @@ export function TagsPanel() {
                             正文
                           </span>
                         )}
+                      </button>
+                      <button
+                        type="button"
+                        className="mn-tag__action"
+                        data-tag-rename-open={tag.tag}
+                        aria-label={`重命名或合并标签 ${tag.tag}`}
+                        title="重命名 / 合并（全库，连正文行内标签一起改）"
+                        disabled={busy}
+                        onClick={() => setRenameTarget({ tag: tag.tag, key: null, count: null })}
+                      >
+                        ✎
                       </button>
                       <button
                         type="button"
@@ -257,7 +286,7 @@ export function TagsPanel() {
             <h3 className="mn-tags__section-title">全库标签（{summary.length}）</h3>
             <ul className="mn-tags__chips">
               {summary.slice(0, 60).map((item) => (
-                <li key={item.key}>
+                <li key={item.key} className="mn-tags__chip">
                   <button
                     type="button"
                     className={activeKey === item.key ? 'mn-tag mn-tag--active' : 'mn-tag'}
@@ -267,15 +296,43 @@ export function TagsPanel() {
                     #{item.tag}
                     <span className="mn-tag__count">{item.count}</span>
                   </button>
+                  {/* 全库概览是"重命名/合并"最自然的入口：这里的每一行本来就代表一个标签 */}
+                  <button
+                    type="button"
+                    className="mn-tag__action"
+                    data-tag-rename-open={item.key}
+                    aria-label={`重命名或合并标签 ${item.tag}`}
+                    title="重命名 / 合并（全库，连正文行内标签一起改）"
+                    disabled={busy}
+                    onClick={() => setRenameTarget({ tag: item.tag, key: item.key, count: item.count })}
+                  >
+                    ✎
+                  </button>
                 </li>
               ))}
             </ul>
             {summary.length > 60 && (
               <p className="mn-empty__text">只显示前 60 个标签（共 {summary.length} 个）</p>
             )}
+            <p className="mn-tags__hint" data-tag-rename-hint>
+              点标签旁的 <code>✎</code> 可以重命名它：<strong>全库</strong>改写，连正文里的{' '}
+              <code>#标签</code> 一起改；输入一个已经存在的标签名就是把它<strong>合并</strong>过去。
+            </p>
+            <p className="mn-tags__hint">
+              重命名会改动<strong>全库</strong>：对话框会先告诉你"这会改 N 篇笔记"，确认之后才写盘。
+            </p>
           </section>
         )}
       </div>
+
+      {renameTarget !== null && (
+        <TagRenameDialog
+          tag={renameTarget.tag}
+          key={renameTarget.key}
+          count={renameTarget.count}
+          onClose={() => setRenameTarget(null)}
+        />
+      )}
     </aside>
   )
 }

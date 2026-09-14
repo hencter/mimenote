@@ -26,6 +26,7 @@ import type {
   SetTagsOutcome,
   SnippetFile,
   TagNotes,
+  TagRenameOutcome,
   TagSummary,
   TrashRecord,
   VaultInfo,
@@ -181,6 +182,33 @@ export const ipc = {
   tagsList: () => call<TagSummary[]>('tags_list'),
   /** 某个标签下的笔记（`key` 为归一化键）。 */
   tagNotes: (key: string) => call<TagNotes>('tag_notes', { key }),
+
+  /**
+   * **标签重命名 / 合并**：把全库所有笔记里的 `from` 换成 `to`。
+   *
+   * 与 {@link ipc.noteSetTags} 的区别不只是"批量"：这个动作**会改正文**里的行内
+   * `#标签`（重命名不改正文就是假的），因此它走的是宿主里 `mn_core::tags::rename_tags`
+   * 那一份判定（跳过代码块/行内代码/HTML 注释/frontmatter 区块，与抽取器同源）。
+   *
+   * - `dryRun: true` 走**完全一样**的候选集与判定，只是不落盘 —— 对话框据此先说出
+   *   "这会改 N 篇笔记"，那句话与真正执行时改的篇数同源；
+   * - `includeChildren` 缺省 `true`：`父` 改名时把 `父/子` 一起带成 `母/子`；
+   * - 结果里 `edited` 与 `skipped` 分开列（跳过原因见 {@link TagSkipReason}），
+   *   单篇写失败不会中断整批；重试幂等（已经改过的文件在新一轮里"无需改动"）；
+   * - 没有 `baseMtimeMs`：它动的不是"用户正在编辑的这一篇"而是全库，逐篇的版本令牌
+   *   由宿主用条目表里的 `(mtime,size)` 与磁盘对账（对不上 → 该篇跳过并如实报告）。
+   */
+  tagRename: (
+    from: string,
+    to: string,
+    options: { includeChildren?: boolean; dryRun?: boolean } = {},
+  ) =>
+    call<TagRenameOutcome>('tag_rename', {
+      from,
+      to,
+      includeChildren: options.includeChildren ?? true,
+      dryRun: options.dryRun ?? false,
+    }),
 
   /**
    * 为本地图片换取**逐文件**读取授权（ADR-0007）。

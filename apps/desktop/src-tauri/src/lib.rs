@@ -44,6 +44,10 @@ pub fn run() {
             // 标签面板的写入口：与 note_write 同一把写锁 + 同一份 mtime 令牌 + 同一个原子写，
             // 只多一步"在区块里按最小 diff 改 tags"（见 commands.rs 的 note_set_tags 文档）
             commands::note_set_tags,
+            // 标签重命名 / 合并：全库改写 frontmatter **与正文行内**标签。
+            // 候选集来自标签索引，逐篇走同一个原子写 + 同一处索引增量同步，
+            // 且逐篇如实汇报"改了 / 跳过了（为什么）"（见 commands.rs 的 tag_rename 文档）
+            commands::tag_rename,
             commands::note_create,
             commands::note_rename,
             // 跨目录移动（拖拽整理 / 「移动到…」）：与重命名共用同一条"换位置 + 改写全库链接"链路

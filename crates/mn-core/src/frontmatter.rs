@@ -63,6 +63,10 @@
 //! [`set_tags_or_create`] 是同一套改写的**另一个入口**：没有 frontmatter 时它会补一个区块
 //! （那是"在面板里加标签"这个产品决策，不是本模块的默认行为，见该函数的文档）。
 //!
+//! [`rename_tag_fields`] 是第三个入口：它回答的不是"这篇的标签应该是什么"，而是
+//! "把磁盘上已有的每一条标签换成什么"（标签重命名/合并）—— 因此它会把 `tags` **与** `tag`
+//! 两个字段都改一遍，而 [`set_tags`] 的落点永远只有一个字段。
+//!
 //! 键名比较**大小写不敏感**（`Tags` 与 `tags` 等价），与 [`crate::tags`] 的抽取保持一致。
 
 use std::collections::HashSet;
@@ -199,16 +203,7 @@ pub fn set_tags(text: &str, tags: &[String]) -> Option<String> {
     let located = parse_located(text)?;
     let wanted = clean_tags(tags);
 
-    let target = located
-        .fields
-        .iter()
-        .find(|field| field.key.eq_ignore_ascii_case("tags"))
-        .or_else(|| {
-            located
-                .fields
-                .iter()
-                .find(|field| field.key.eq_ignore_ascii_case("tag"))
-        });
+    let target = find_editable_field(&located.fields);
 
     let Some(field) = target else {
         if wanted.is_empty() {
@@ -225,11 +220,28 @@ pub fn set_tags(text: &str, tags: &[String]) -> Option<String> {
         return Some(out);
     };
 
-    let (start, end, replacement) = match field.style {
+    match field_replacement(text, field, &wanted) {
+        Some((start, end, replacement)) => Some(splice(text, start, end, &replacement)),
+        // `Empty` 且要写的标签为空：原样返回（不为了"设置零个标签"去动一个空字段）
+        None => Some(text.to_string()),
+    }
+}
+
+/// [`set_tags`] 与 [`rename_tag_fields`] 共用的"这个字段要替换成什么"。
+///
+/// 返回 `(起, 止, 替换文本)`；`None` = 保持原样。两种调用方的落点纪律因此**只有一份**：
+/// 块数组只换项行（缩进沿用原第一项）、行内数组只换 `[...]`（行尾注释留着）、
+/// 单个标签仍是标量、`key:` 空值在冒号后插入。
+fn field_replacement(
+    text: &str,
+    field: &LocatedField,
+    wanted: &[String],
+) -> Option<(usize, usize, String)> {
+    match field.style {
         ValueStyle::Block => {
             if wanted.is_empty() {
                 // 把 `- item` 行连同最后一个换行一并删掉，避免留下空行
-                (field.item_start, field.item_end_full, String::new())
+                Some((field.item_start, field.item_end_full, String::new()))
             } else {
                 let eol = eol_ending_at(text, field.item_end_full);
                 let joined = wanted
@@ -237,37 +249,147 @@ pub fn set_tags(text: &str, tags: &[String]) -> Option<String> {
                     .map(|tag| format!("{}- {}", field.indent, format_scalar(tag)))
                     .collect::<Vec<String>>()
                     .join(eol);
-                (field.item_start, field.item_end, joined)
+                Some((field.item_start, field.item_end, joined))
             }
         }
-        ValueStyle::Inline => (
+        ValueStyle::Inline => Some((
             field.value_start,
             field.value_end,
-            format_inline_list(&wanted),
-        ),
-        ValueStyle::Scalar => (
+            format_inline_list(wanted),
+        )),
+        ValueStyle::Scalar => Some((
             field.value_start,
             field.value_end,
             if wanted.len() == 1 {
                 format_scalar(&wanted[0])
             } else {
-                format_inline_list(&wanted)
+                format_inline_list(wanted)
             },
-        ),
+        )),
         ValueStyle::Empty => {
             if wanted.is_empty() {
-                return Some(text.to_string());
+                return None;
             }
             let value = if wanted.len() == 1 {
                 format_scalar(&wanted[0])
             } else {
-                format_inline_list(&wanted)
+                format_inline_list(wanted)
             };
-            (field.insert_at, field.insert_at, format!(" {value}"))
+            Some((field.insert_at, field.insert_at, format!(" {value}")))
         }
-    };
+    }
+}
 
-    Some(splice(text, start, end, &replacement))
+/// 改写要用的那个字段：优先 `tags`，其次 `tag`（键名大小写不敏感）。
+fn find_editable_field(fields: &[LocatedField]) -> Option<&LocatedField> {
+    fields
+        .iter()
+        .find(|field| field.key.eq_ignore_ascii_case("tags"))
+        .or_else(|| {
+            fields
+                .iter()
+                .find(|field| field.key.eq_ignore_ascii_case("tag"))
+        })
+}
+
+/// 一个标签字段的**可改写列表**（与 `set_tags` 的落点口径一致：数组元素原样，标量按逗号切）。
+fn field_items(field: &LocatedField) -> Vec<String> {
+    match &field.value {
+        FrontmatterValue::List(items) => items.clone(),
+        // 标量只按逗号切（与 `collect_tags` 同一口径），不按空白切
+        FrontmatterValue::Scalar(text) | FrontmatterValue::Number(text) => text
+            .split(',')
+            .map(strip_hash)
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect(),
+        FrontmatterValue::Bool(_) | FrontmatterValue::Null => Vec::new(),
+    }
+}
+
+/// [`rename_tag_fields`] 的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagFieldRewrite {
+    /// 改写后的全文；`edits == 0` 时与输入**逐字节相同**。
+    pub text: String,
+    /// 真正被改写的条数（改写的项 + 因合并被去掉的重复项）。
+    pub edits: u32,
+}
+
+/// 把 `tags` **与** `tag` 字段里的标签逐个交给 `map` 改写（`None` = 这一条保持原样）。
+///
+/// 与 [`set_tags`] 的分工：`set_tags` 回答"这篇的标签**应该是什么**"，落点只有一个字段
+/// （面板的增删走它）；本函数回答"把已经写在磁盘上的每一条标签换成什么"，因此**两个字段
+/// 都改** —— 重命名/合并的要求是"全库再也找不到旧写法"，只改一个字段会让 `tag:` 里那份
+/// 原地不动，用户看到的就是"改了但没改干净"。
+///
+/// 纪律与 [`set_tags`] 完全一致（保真、最小 diff、BOM/CRLF/注释/未知键不动）：
+///
+/// * 没有 frontmatter → `None`（与 [`set_tags`] 同一契约，绝不擅自插入区块）；
+/// * 没有 tags/tag 字段、或映射后每条都与原文相同 → `edits == 0`、文本逐字节不变；
+/// * 每个字段**各自**按 [`normalize_tag`] 去重（合并时"目标已经在同一个字段里"就是这种情况），
+///   保留首次出现的顺序与写法；两个字段之间**不**去重 —— 那是用户在磁盘上自己写下的结构，
+///   替他把两个字段合并成一个字段属于另一件事（`set_tags` 也不做）。
+pub fn rename_tag_fields(
+    text: &str,
+    map: impl Fn(&str) -> Option<String>,
+) -> Option<TagFieldRewrite> {
+    let located = parse_located(text)?;
+
+    let mut replacements: Vec<(usize, usize, String)> = Vec::new();
+    let mut edits = 0u32;
+
+    for field in &located.fields {
+        if !(field.key.eq_ignore_ascii_case("tags") || field.key.eq_ignore_ascii_case("tag")) {
+            continue;
+        }
+        let existing = field_items(field);
+        if existing.is_empty() {
+            continue;
+        }
+
+        let mut wanted: Vec<String> = Vec::with_capacity(existing.len());
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut field_edits = 0u32;
+
+        for item in existing {
+            let mapped = map(&item).unwrap_or_else(|| item.clone());
+            let key = normalize_tag(&mapped);
+            if key.is_empty() || !seen.insert(key) {
+                // 空键或映射后与前面的项撞车（合并）→ 这一条从字段里去掉
+                field_edits += 1;
+                continue;
+            }
+            if mapped != item {
+                field_edits += 1;
+            }
+            wanted.push(mapped);
+        }
+
+        if field_edits == 0 {
+            continue;
+        }
+        let Some(replacement) = field_replacement(text, field, &wanted) else {
+            continue;
+        };
+        edits += field_edits;
+        replacements.push(replacement);
+    }
+
+    if edits == 0 {
+        return Some(TagFieldRewrite {
+            text: text.to_string(),
+            edits: 0,
+        });
+    }
+
+    // 从后往前替换：区间按出现顺序收集，倒序应用后前面那些偏移依然有效
+    let mut out = text.to_string();
+    for (start, end, replacement) in replacements.into_iter().rev() {
+        out = splice(&out, start, end, &replacement);
+    }
+
+    Some(TagFieldRewrite { text: out, edits })
 }
 
 /// [`set_tags`] **可编辑的那一份**标签列表（落点与它严格一致：优先 `tags` 字段，其次 `tag` 字段）。
@@ -284,31 +406,10 @@ pub fn editable_tags(text: &str) -> Vec<String> {
     let Some(located) = parse_located(text) else {
         return Vec::new();
     };
-    let target = located
-        .fields
-        .iter()
-        .find(|field| field.key.eq_ignore_ascii_case("tags"))
-        .or_else(|| {
-            located
-                .fields
-                .iter()
-                .find(|field| field.key.eq_ignore_ascii_case("tag"))
-        });
-    let Some(field) = target else {
+    let Some(field) = find_editable_field(&located.fields) else {
         return Vec::new();
     };
-
-    match &field.value {
-        FrontmatterValue::List(items) => items.clone(),
-        // 标量只按逗号切（与 `collect_tags` 同一口径），不按空白切
-        FrontmatterValue::Scalar(text) | FrontmatterValue::Number(text) => text
-            .split(',')
-            .map(strip_hash)
-            .filter(|part| !part.is_empty())
-            .map(str::to_string)
-            .collect(),
-        FrontmatterValue::Bool(_) | FrontmatterValue::Null => Vec::new(),
-    }
+    field_items(field)
 }
 
 /// 与 [`set_tags`] 相同，但**没有 frontmatter 时补一个区块**（返回全文而不是 `Option`）。

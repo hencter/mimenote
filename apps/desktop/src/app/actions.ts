@@ -8,9 +8,10 @@
 import { formatBytes } from '@/domain/format'
 import { basename, isMarkdown, parentOf } from '@/domain/paths'
 import { jumpToLineWhenReady } from '@/features/editor/line-jump'
+import { changedAnything, groupSkips, resultSentence } from '@/features/tags/tag-rename'
 import { currentAdapterKind, ipc } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
-import type { RenameOutcome } from '@/ipc/types'
+import type { RenameOutcome, TagRenameOutcome } from '@/ipc/types'
 import { useConfirmStore } from '@/state/confirm-store'
 import { refreshGraphData } from '@/state/graph-store'
 import { useLinksStore } from '@/state/links-store'
@@ -323,6 +324,93 @@ export async function editCurrentNoteTags(changes: {
 /** 正文行内标签删不掉时给出的可读提示（面板的 `×` 走它，而不是让按钮看起来坏了）。 */
 export function explainInlineTag(tag: string): void {
   toast.info('这是正文里的标签', `#${tag} 写在正文里，请到正文里删（标签面板只改 frontmatter）`)
+}
+
+/**
+ * **全库**标签重命名 / 合并（标签面板的写入口）。
+ *
+ * 顺序约束集中在这里（组件不需要知道为什么）：
+ *
+ * 1. **先落盘**（只有真跑时）：宿主会基于磁盘上的文本改写**全库**。内存里若有未保存的正文，
+ *    随后那次自动保存会把刚改好的那一篇（如果正好是当前这篇）覆盖回去；
+ * 2. 宿主一次做完「候选集 → 逐篇令牌校验 → 改写 frontmatter 与正文 → 原子写 → 索引增量同步」，
+ *    并**逐篇汇报**（`edited` / `skipped`）。前端不自己拼 frontmatter、也不自己遍历文件；
+ * 3. 收尾四件事：
+ *    - 面板与全库概览重读（索引已在宿主侧增量更新，不需要重扫）；
+ *    - 展开中的那个标签换成新键（否则用户看到的还是旧标签下的名单）；
+ *    - 正在编辑的那一篇若被改写 → **重读**。它有未保存内容时**不**重读（宁可让下一次保存
+ *      走既有的冲突横幅，也不替用户丢掉他刚敲的字）；
+ *    - 图谱只在画布正显示时刷新（与 `editCurrentNoteTags` 同一纪律）。
+ *
+ * `dryRun: true` 是"先查询再确认"里的查询：宿主走完全一样的判定但不落盘，
+ * 于是对话框能说出"这会改 N 篇笔记"，而且那句话与真跑同源。
+ *
+ * 返回值 `null` 表示"这次请求没有发出去"（没打开 Vault、名称为空、保存冲突）——
+ * 界面状态不该有任何变化。
+ */
+export async function renameTag(
+  from: string,
+  to: string,
+  options: { includeChildren?: boolean; dryRun?: boolean } = {},
+): Promise<TagRenameOutcome | null> {
+  const includeChildren = options.includeChildren ?? true
+  const dryRun = options.dryRun ?? false
+  const source = from.trim()
+  const target = to.trim().replace(/^#+/, '').trim()
+  if (source === '' || target === '') {
+    // 判同与清理的权威在宿主（`normalize_tag` / `TagRename::new`），这里只挡掉"明显空"的输入
+    toast.warn('标签名不能为空', '请输入新的标签名（层级标签用 `/`，例如 项目/进行中）')
+    return null
+  }
+
+  const openRelPath = useNoteStore.getState().doc?.relPath ?? null
+
+  try {
+    if (!dryRun && hasUnsavedChanges()) {
+      const saved = await useNoteStore.getState().saveNow()
+      if (!saved && hasUnsavedChanges()) {
+        toast.error('已取消标签改名', '当前笔记有未保存的修改，请先解决保存冲突')
+        return null
+      }
+    }
+
+    const outcome = await ipc.tagRename(source, target, { includeChildren, dryRun })
+    if (dryRun) return outcome
+
+    const edited = new Set(outcome.edited.map((file) => file.relPath))
+    if (changedAnything(outcome)) {
+      // 当前笔记被改过：内存文本必须对齐磁盘（否则下一次自动保存会写回旧标签）。
+      // 有未保存内容时**不**重读：那会丢掉用户刚敲的字，交给既有的冲突横幅更诚实。
+      if (openRelPath !== null && edited.has(openRelPath) && !useNoteStore.getState().dirty) {
+        await useNoteStore.getState().reload({ silent: true })
+      }
+
+      useTagsStore.getState().retargetActiveTag(outcome.from, outcome.to)
+      await useTagsStore.getState().refreshFor(useNoteStore.getState().doc?.relPath ?? null)
+
+      if (useUiStore.getState().viewMode === 'graph') {
+        void refreshGraphData()
+      }
+      void useLinksStore.getState().refresh(useNoteStore.getState().doc?.relPath ?? null)
+    }
+
+    if (outcome.skipped.length > 0) {
+      // "改了一部分"必须说出来（还带上"怎么办"）：只报成功会让用户以为改干净了
+      const advice = groupSkips(outcome.skipped)
+        .map((group) => group.advice)
+        .join('；')
+      toast.warn('标签改名未全部完成', `${resultSentence(outcome)} —— ${advice}`)
+    } else if (outcome.edited.length > 0) {
+      toast.success('已重命名标签', `${outcome.fromDisplay} → ${outcome.toDisplay}：${resultSentence(outcome)}`)
+    } else {
+      toast.info('没有变化', resultSentence(outcome))
+    }
+
+    return outcome
+  } catch (cause) {
+    toast.error(describeError(MimenoteError.from(cause), '标签改名失败'))
+    return null
+  }
 }
 
 // ---------------------------------------------------------------------------

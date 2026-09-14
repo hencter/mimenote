@@ -4,10 +4,14 @@
 //!
 //! * [`mn_core::frontmatter::parse`] 的识别边界（BOM/CRLF/未闭合/字段顺序）；
 //! * [`mn_core::tags::extract_tags`] 的两个来源、行号、排除项与去重；
-//! * [`mn_core::frontmatter::set_tags`] 的**最小 diff**：除被改的那几行外逐字节不变。
+//! * [`mn_core::frontmatter::set_tags`] 的**最小 diff**：除被改的那几行外逐字节不变；
+//! * [`mn_core::tags::rename_tags`] 的重命名/合并：frontmatter 与正文一起改、
+//!   跳过判据与抽取器一致、合并去重。
 
 use mn_core::frontmatter::{self, FrontmatterValue};
-use mn_core::tags::{apply_tag_edits, extract_tags, normalize_tag, TagSource};
+use mn_core::tags::{
+    apply_tag_edits, extract_tags, normalize_tag, rename_tags, TagRename, TagSource,
+};
 use mn_core::{parse_frontmatter, set_tags, set_tags_or_create};
 
 /// 把文本按"含换行符的行"切开，便于逐字节比对（`split_inclusive` 保留行尾）。
@@ -253,5 +257,83 @@ fn serialized_tag_ref_shape() {
     assert_eq!(
         serde_json::to_string(&fm_tags).unwrap(),
         r#"[{"tag":"甲","source":"frontmatter","line":2}]"#
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 标签重命名 / 合并（`tags::rename_tags`）
+// ---------------------------------------------------------------------------
+
+/// 重命名必须**同时**改 frontmatter 与正文，且只动该动的字节（BOM/CRLF/未知键/代码块）。
+#[test]
+fn rename_rewrites_frontmatter_and_body_with_a_minimal_diff() {
+    let text = format!("\u{feff}{NOTE}");
+    let map = TagRename::new("项目/甲", "归档/甲", false).unwrap();
+    let out = rename_tags(&text, &map)
+        .expect("正文与 frontmatter 都有它，必须改")
+        .text;
+
+    // 只有 block 数组的那一项与正文那一行发生变化（正文里的 `#项目/甲` 是行内标签）
+    assert_only_these_lines_changed(&text, &out, &[3, 10]);
+    assert!(out.starts_with('\u{feff}'), "BOM 必须保留");
+    assert!(out.contains("cover: 图.png"), "未知键必须保留");
+    assert!(out.contains("draft: false # 未完成"), "行尾注释必须保留");
+    // 代码块里的 `#项目/甲`（如果有）与行内代码里的都不动 —— 这里用排除项直接钉住
+    assert!(out.contains("```\r\n#代码块里的不算\r\n```"));
+    assert!(out.contains("`#行内代码也不算`"));
+    assert_eq!(
+        parse_frontmatter(&out).unwrap().tags,
+        vec!["归档/甲".to_string(), "乙".to_string()]
+    );
+    // 正文里那一处也真的改了（抽取器按归一化键去重，所以它不会出现在 `extract_tags`
+    // 的行内列表里 —— frontmatter 先出现，写法胜出），因此这里直接看文本
+    assert!(out.contains("正文里的 #丙 与 #归档/甲（重复）。"));
+}
+
+/// 层级标签：`父` → `母` 把 `父/子` 一起带走（后缀逐字保留），`include_children=false` 时不带。
+#[test]
+fn rename_carries_hierarchical_children() {
+    let text = "---\ntags: [父, 父/子, 父/子/孙, 父老]\n---\n\n#父 与 #父/子 与 #父老\n";
+    let carried = rename_tags(text, &TagRename::new("父", "母", true).unwrap())
+        .unwrap()
+        .text;
+    assert_eq!(
+        carried, "---\ntags: [母, 母/子, 母/子/孙, 父老]\n---\n\n#母 与 #母/子 与 #父老\n",
+        "`父老` 前缀只是看起来像，不能动"
+    );
+
+    // 不带子标签：只改整条等于 `父` 的那些
+    let flat = "---\ntags: [父, 父/子]\n---\n\n#父 与 #父/子\n";
+    let only_parent = rename_tags(flat, &TagRename::new("父", "母", false).unwrap())
+        .unwrap()
+        .text;
+    assert_eq!(
+        only_parent,
+        "---\ntags: [母, 父/子]\n---\n\n#母 与 #父/子\n"
+    );
+}
+
+/// 合并：目标已经在同一篇里出现时不能留下重复项（frontmatter 列表与正文提及都算）。
+#[test]
+fn merge_dedupes_within_one_note() {
+    let text = "---\ntags: [甲, 乙]\n---\n\n正文 #甲 与 #乙 与 #别的。\n";
+    let out = rename_tags(text, &TagRename::new("甲", "乙", false).unwrap())
+        .unwrap()
+        .text;
+    assert_eq!(out, "---\ntags: [乙]\n---\n\n正文 与 #乙 与 #别的。\n");
+    // 幂等：重试（例如用户对"被跳过的文件"再点一次）不会二次改动
+    assert!(rename_tags(&out, &TagRename::new("甲", "乙", false).unwrap()).is_none());
+}
+
+/// 正文行内标签在**重命名**时会改（M2 起它是只读的那条边界被打开）——
+/// 但不该出现在代码块/行内代码/HTML 注释/frontmatter 区块/标题行里的那些。
+#[test]
+fn rename_skips_everything_that_is_not_a_tag() {
+    let map = TagRename::new("甲", "乙", false).unwrap();
+    let text = "---\n# 注释里的 #甲\ntitle: t\n---\n\n# 标题里的 #甲\n\n正文 #甲\n\n```\n#甲\n```\n\n`#甲`\n\n<!-- #甲 -->\n";
+    let out = rename_tags(text, &map).unwrap().text;
+    assert_eq!(
+        out,
+        "---\n# 注释里的 #甲\ntitle: t\n---\n\n# 标题里的 #甲\n\n正文 #乙\n\n```\n#甲\n```\n\n`#甲`\n\n<!-- #甲 -->\n"
     );
 }

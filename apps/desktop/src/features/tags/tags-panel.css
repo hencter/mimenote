@@ -125,6 +125,108 @@
   opacity: 0.45;
 }
 
+/*
+ * 「重命名 / 合并」按钮（本篇标签与全库概览各一个）。
+ *
+ * 与 `×` 分开两种颜色是刻意的：移除是**本篇**的小动作，重命名是**全库**的大动作。
+ * 长得一样会让用户在只想删一个标签时打开一个"会改几十篇笔记"的对话框。
+ */
+.mn-tag__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--mn-fg-muted);
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.mn-tag__action:hover:not(:disabled) {
+  color: var(--mn-accent);
+  background: var(--mn-bg);
+}
+
+/* -- 重命名/合并对话框（`.mn-overlay` / `.mn-dialog` 沿用全站样式） -------------- */
+
+.mn-dialog--tag-rename {
+  width: min(560px, calc(100vw - 40px));
+}
+
+.mn-tag-rename__source {
+  padding: 0 4px;
+  font-family: var(--mn-font-mono);
+  color: var(--mn-accent);
+}
+
+.mn-tag-rename__count {
+  color: var(--mn-fg-muted);
+}
+
+.mn-tag-rename__panel {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--mn-bg);
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+}
+
+.mn-tag-rename__sentence {
+  margin: 0;
+  font-weight: 600;
+  color: var(--mn-fg);
+}
+
+.mn-tag-rename__detail {
+  margin: 4px 0 0;
+  font-family: var(--mn-font-mono);
+  font-size: 11px;
+  color: var(--mn-fg-muted);
+}
+
+.mn-tag-rename__files {
+  max-height: 168px;
+  margin: 6px 0 0;
+  padding-left: 18px;
+  overflow: auto;
+  font-family: var(--mn-font-mono);
+  font-size: 11px;
+  color: var(--mn-fg);
+  overflow-wrap: anywhere;
+}
+
+.mn-tag-rename__file-detail {
+  margin-left: 8px;
+  color: var(--mn-fg-muted);
+}
+
+/* 跳过的那一组用警示色：这是"没改完"的唯一提示，不能看起来和成功一样 */
+.mn-tag-rename__skip {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--mn-border);
+}
+
+.mn-tag-rename__skip-title {
+  margin: 0;
+  font-size: 12px;
+  color: var(--mn-warning);
+}
+
+.mn-tag-rename__hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--mn-fg-muted);
+}
+
 /* "正文"角标：行内标签是只读的，必须在视觉上立刻看得出来源 */
 .mn-tag__source {
   padding: 0 4px;

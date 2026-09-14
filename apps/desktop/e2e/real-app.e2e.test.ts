@@ -1240,3 +1240,104 @@ describe.skipIf(!supported)('真实应用：外部改动自动同步（ADR-0016�
     expect(await app.page.locator('.mn-conflict').count()).toBe(0)
   }, 60_000)
 })
+
+/**
+ * 标签**重命名 / 合并**（全库改写：frontmatter 与正文行内标签一起改）。
+ *
+ * 这一层能抓到单测抓不到的东西：真实宿主里"候选集来自标签索引"这条路、
+ * 逐篇的原子写与索引增量同步、以及**对话框里那句"这会改 N 篇笔记"是不是真的等于
+ * 随后改动的篇数**。用例刻意放了一篇"正文里也有 `#旧` + 一个代码块里的 `#旧`"的笔记：
+ * 逐字节比对才能证明"该改的改了、不该动的没动"。
+ */
+describe.skipIf(!supported)('真实应用：标签重命名 / 合并（真实磁盘）', () => {
+  const MAIN = '标签改名.md'
+  const OTHER = 'notes/另一篇.md'
+
+  /** CRLF + 行尾注释 + 未知键 + 正文行内标签 + 一个代码块（里面的 `#旧` 不是标签）。 */
+  const MAIN_BEFORE =
+    '---\r\ntitle: 改名示例\r\ntags: [旧, 别的]\r\ndraft: false # 未完成\r\n---\r\n# 标题\r\n\r\n正文 #旧 与 #别的。\r\n\r\n```\r\n#旧\r\n```\r\n'
+  const MAIN_AFTER = MAIN_BEFORE.replace('tags: [旧, 别的]', 'tags: [新, 别的]').replace(
+    '正文 #旧 与',
+    '正文 #新 与',
+  )
+  const OTHER_BEFORE = '# 另一篇\r\n\r\n这里也有 #旧。\r\n'
+  const OTHER_AFTER = '# 另一篇\r\n\r\n这里也有 #新。\r\n'
+
+  let app: LaunchedApp
+  let vault: TempVault
+
+  beforeAll(async () => {
+    vault = await createTempVault({
+      [MAIN]: MAIN_BEFORE,
+      [OTHER]: OTHER_BEFORE,
+    })
+    app = await launchApp({ vaultPath: vault.path })
+    await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
+  }, 120_000)
+
+  afterAll(async () => {
+    if (app !== undefined) await app.close()
+    if (vault !== undefined) await vault.cleanup()
+  })
+
+  it('预览说出"这会改 2 篇" → 确认 → 全库真的改了（代码块里的不动）', async () => {
+    await openNoteInTree(app.page, MAIN)
+    await app.page.keyboard.press('Control+Shift+t')
+    await app.page.waitForSelector('.mn-tags', { state: 'visible', timeout: 10_000 })
+    await waitUntil(
+      async () => (await app.page.locator('.mn-tags [data-tag-key="旧"]').count()) === 1,
+      15_000,
+      '全库标签概览里出现 旧',
+    )
+
+    // 从全库概览那一行的 `✎` 打开对话框（与用户真实路径一致）。
+    // 用 `li` + `has` 限定范围：本篇标签那一行也有一个同名的 `✎`（两个入口都在）
+    await app.page
+      .locator('.mn-tags li', { has: app.page.locator('[data-tag-key="旧"]') })
+      .locator('[data-tag-rename-open="旧"]')
+      .click()
+    await app.page.waitForSelector('[data-tag-rename-dialog]', { state: 'visible', timeout: 10_000 })
+
+    const input = app.page.locator('[data-tag-rename-input]')
+    await input.fill('新')
+    await input.press('Enter')
+
+    // 先查询：这一步**不落盘**，但要说清会改几篇
+    await app.page.waitForSelector('[data-tag-rename-preview]', { state: 'visible', timeout: 15_000 })
+    const preview = (await app.page.locator('[data-tag-rename-preview]').textContent()) ?? ''
+    expect(preview).toContain('这会改 2 篇笔记')
+    expect(await vault.read(MAIN)).toBe(MAIN_BEFORE)
+    expect(await vault.read(OTHER)).toBe(OTHER_BEFORE)
+
+    // 再确认：这时候才写盘
+    await app.page.locator('[data-tag-rename-confirm]').click()
+    await app.page.waitForSelector('[data-tag-rename-result]', { state: 'visible', timeout: 30_000 })
+
+    await waitForFileContent(vault, MAIN, (text) => text.includes('tags: [新, 别的]'))
+    // 逐字节比对：CRLF、行尾注释、未知键、代码块里的 `#旧` 都必须原样
+    expect(await vault.read(MAIN)).toBe(MAIN_AFTER)
+    // 另一篇（只有正文行内标签）也被全库改写了
+    expect(await vault.read(OTHER)).toBe(OTHER_AFTER)
+
+    const result = (await app.page.locator('[data-tag-rename-result]').textContent()) ?? ''
+    expect(result).toContain('改了 2 篇笔记')
+    // 没有跳过项时不该出现"没改"的警示块
+    expect(await app.page.locator('[data-tag-rename-skip]').count()).toBe(0)
+
+    // 关掉对话框，面板与全库概览跟着换成新标签（索引增量同步，不需要重扫）
+    await app.page.locator('[data-tag-rename-done]').click()
+    await waitUntil(
+      async () => (await app.page.locator('.mn-tags [data-tag-key="新"]').count()) === 1,
+      15_000,
+      '全库标签概览里出现 新',
+    )
+    expect(await app.page.locator('.mn-tags [data-tag-key="旧"]').count()).toBe(0)
+    // 编辑器内存也必须对齐磁盘（否则下一次自动保存会把刚写下的标签覆盖掉）
+    await waitUntil(
+      async () =>
+        ((await app.page.locator('.cm-content').textContent()) ?? '').includes('正文 #新 与 #别的。'),
+      15_000,
+      '编辑器文本与磁盘对齐',
+    )
+  }, 120_000)
+})

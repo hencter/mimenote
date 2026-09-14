@@ -237,6 +237,69 @@ export interface TagNotes {
   notes: string[]
 }
 
+/** 一次标签重命名/合并里被真正改写的某篇笔记（`mimenote_lib::commands::TagRenameFile`）。 */
+export interface TagRenameFile {
+  relPath: string
+  /** frontmatter 里被改写的条数（含合并时被去掉的重复项）。 */
+  frontmatterEdits: number
+  /** 正文里被换成新写法的 `#标签` 处数。 */
+  inlineEdits: number
+  /** 正文里因合并被去掉的重复提及处数。 */
+  inlineRemoved: number
+}
+
+/**
+ * 一篇笔记被跳过（没改）的**原因**（`mimenote_lib::commands::TagSkipReason`）。
+ *
+ * 它不是 `ErrorCode`：一次操作会碰几十上百个文件，每篇的处境都不同 ——
+ * 用错误码表达等于把"部分成功"折叠成"失败"，界面也就无法如实说出
+ * "改了 12 篇，3 篇因为磁盘被外部改动没改"。
+ */
+export type TagSkipReason = 'external-change' | 'unreadable' | 'write-failed'
+
+/** 一篇被跳过的笔记（`mimenote_lib::commands::TagRenameSkip`）。 */
+export interface TagRenameSkip {
+  relPath: string
+  /** 稳定原因（界面按它分组给出一句人话）。 */
+  reason: TagSkipReason
+  /** 宿主侧的具体原因（例如"读取失败：文件不存在"）。 */
+  message: string
+}
+
+/**
+ * 标签重命名 / 合并的结果（`mimenote_lib::commands::TagRenameOutcome`）。
+ *
+ * 与 {@link SetTagsOutcome} 最大的区别是**没有 `text`**：这次动的是几十上百篇，
+ * 把它们的全文塞进报文既没有用处也会撑爆大 Vault。需要"编辑器内存对齐磁盘"的只有
+ * 当前打开的那一篇，前端按 `edited` 里的路径自己重读一次即可。
+ */
+export interface TagRenameOutcome {
+  /** 源标签的归一化键。 */
+  from: string
+  /** 目标标签的归一化键。 */
+  to: string
+  /** 用户输入的源写法（回显用）。 */
+  fromDisplay: string
+  /** 用户输入的新写法（回显用）。 */
+  toDisplay: string
+  /** 是否连带层级子标签（`父` → `母` 时 `父/子` → `母/子`）。 */
+  includeChildren: boolean
+  /** 是否是"只查询、不落盘"的预演（对话框里那句"这会改 N 篇笔记"）。 */
+  dryRun: boolean
+  /** 标签索引给出的候选笔记数（含最终"无需改动"的那些）。 */
+  candidates: number
+  /** 被真正改写（预演时是"将会被改写"）的笔记，按路径字典序。 */
+  edited: TagRenameFile[]
+  /** 被跳过的笔记 + 原因，按路径字典序。 */
+  skipped: TagRenameSkip[]
+  /** 候选里不需要改的笔记数（上一轮已经改过、或索引比磁盘旧一拍）。 */
+  unchanged: number
+  frontmatterEdits: number
+  inlineEdits: number
+  inlineRemoved: number
+  elapsedMs: number
+}
+
 /** 一张本地图片的读取授权（`mimenote_lib::assets::AssetGrant`，见 ADR-0007）。 */
 export interface AssetGrant {
   /** 图片的 Vault 相对路径（与请求里的写法一致，POSIX）。 */
