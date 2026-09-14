@@ -65,6 +65,7 @@
 | `cm/wiki-complete/` | `[[` / `![[` 的候选弹层（排序口径与宿主消歧规则一致） | 见 `feat(editor)` 的提交说明 |
 | `cm/image-input.ts` | 粘贴 / 拖入图片 → 写进附件目录 → 插入相对链接 | ADR-0013 |
 | `cm/flash-line.ts` | "命中行"的一次性高亮（搜索跳转、大纲跳转共用） | §8 第 4 条 |
+| `cm/table-format.ts` | 光标所在 Markdown 表格的对齐格式化（纯函数在 `domain/table-format.ts`） | 走**命令表**（`note.formatTable`，`Mod+Alt+F`）而不是编辑器私有 keymap，因此命令面板里也能搜到；只改空白与竖线位置 |
 | `line-jump.ts` | 把光标落到第 N 行（打开 + 定位的两半，另一半在 `app/actions.openNoteAt`） | §8 第 4 条 |
 
 两条纪律（踩过坑）：

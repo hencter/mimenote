@@ -9,6 +9,8 @@ import { useTagsStore } from '@/state/tags-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 import { requestExportKind } from '@/features/export/export-events'
+import { formatTableCommand } from '@/features/editor/cm/table-format'
+import { findEditorView } from '@/features/editor/line-jump'
 import { isMarkdown } from '@/domain/paths'
 import {
   closeVault,
@@ -448,6 +450,24 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     run: () => {
       const relPath = useNoteStore.getState().doc?.relPath ?? null
       void useLinksStore.getState().refresh(relPath)
+    },
+  },
+  {
+    // 表格格式化：把光标所在表格的列宽对齐（只改空白与竖线位置，不动内容）。
+    // 走命令表而不是编辑器私有的 keymap —— 这样命令面板里也能搜到，快捷键只有一处定义。
+    // 编辑器不在场时（阅读/图谱视图）`when` 会置灰；命令自身在"不是表格"时什么都不做。
+    id: 'note.formatTable',
+    title: '格式化表格（对齐竖线与列宽）',
+    category: '笔记',
+    keybinding: 'Mod+Alt+F',
+    when: hasDocument,
+    unavailableReason: '需要先打开一篇笔记',
+    run: () => {
+      // 编辑器实例只有 `features/editor` 知道怎么找（DOM 查法写在 `line-jump.ts` 里）：
+      // 命令层不持有 view，只是"转交给当前编辑器"。编辑器不在场时 `findEditorView` 返回 null，
+      // 这里就什么都不做 —— 与"按了没反应"不同，`when` 已经保证了有文档才可用。
+      const view = findEditorView()
+      if (view !== null) formatTableCommand(view)
     },
   },
 
