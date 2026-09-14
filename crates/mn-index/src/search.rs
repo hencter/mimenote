@@ -70,6 +70,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Instant;
 
 use rusqlite::{params, Connection, ErrorCode};
 
@@ -102,6 +103,14 @@ const UNKNOWN_MTIME: i64 = -1;
 
 /// 打开连接后等待锁的时间（毫秒）：并发构建撞锁时在这里等，而不是立刻报 "database is locked"。
 const BUSY_TIMEOUT_MS: u64 = 2000;
+
+/// 增量收尾时，FTS5 段数达到多少就顺手合并一次（见 [`SearchIndex::optimize_if_fragmented`]）。
+///
+/// 为什么是 8：实测（`bench_optimize_after_incremental`）里跑 20 轮增量后段数在 **11–18** 之间浮动
+/// ——FTS5 的 automerge 会把段数稳定在这个量级附近，不会无限增长，所以阈值要落在这个区间的下沿附近；
+/// 定得更低（比如 2、3）只会在"本来就没几个段"时白花一次全库重写（30 万行约 0.9 s）。
+/// 而 8 段以上正是实测里查询已经比 1 段慢 1.7–2.2× 的区间。
+const OPTIMIZE_SEGMENT_THRESHOLD: usize = 8;
 
 /// 建表语句（`IF NOT EXISTS`：打开已有库时不动它）。
 ///
@@ -608,15 +617,45 @@ impl SearchIndex {
         Ok(())
     }
 
-    /// 结束增量写入：提交。
+    /// 结束增量写入：提交；**段攒多了就顺手合并一次**（见 [`Self::optimize_if_fragmented`]）。
     ///
-    /// 刻意**不做** `rebuild`/`optimize`：FTS5 的索引是按行增量维护的（[`Self::add_note`]
-    /// 在非重建状态下逐行写 FTS），而 `optimize` 要为整个索引合并段 —— 几百 MB 的库上
-    /// 它本身就是秒级成本，正是这一轮要省掉的东西。
+    /// 这里曾经写的是"刻意**不做** `rebuild`/`optimize`"——那时的理由是"optimize 要为整个索引
+    /// 合并段，几百 MB 的库上本身是秒级成本，正是增量这一轮要省掉的东西"。**那个理由对一半**：
+    /// 每次增量都合并确实不该（0.9 s 白花），但**永远不合并**会让查询慢下来 —— 实测跑了 20 轮
+    /// 增量之后段数在 11–18 之间浮动，查询平均 76.9 ms；合并成 1 个段后是 45.8 ms（1.68×，
+    /// 另一个批次里是 2.2×）。所以改成**按段数触发**：低于阈值一个字节都不动，高于阈值合并一次。
     pub fn finish_incremental(&self) -> Result<()> {
         self.conn()
             .execute_batch("COMMIT")
-            .map_err(|error| self.db(error))
+            .map_err(|error| self.db(error))?;
+        self.optimize_if_fragmented();
+        Ok(())
+    }
+
+    /// 段数超过 [`OPTIMIZE_SEGMENT_THRESHOLD`] 就合并一次（否则什么都不做）。
+    ///
+    /// **失败只记日志**：合并是加速器，不是正确性的前提（ADR-0002：这一切都是派生数据）。
+    /// 一次成功的增量索引不该因为"顺手做的优化"失败而变成失败。
+    fn optimize_if_fragmented(&self) {
+        let count = match self.segment_count() {
+            Ok(count) => count,
+            Err(error) => {
+                log::debug!("读不到 FTS5 段数，跳过合并：{error}");
+                return;
+            }
+        };
+        if count < OPTIMIZE_SEGMENT_THRESHOLD {
+            return;
+        }
+        let started = Instant::now();
+        match self.optimize() {
+            Ok(()) => log::debug!(
+                "全文搜索索引合并：{} 个段 → 1 个（{} ms；查询会因此快 1.7–2.2×，见 SearchIndex::optimize 的实测）",
+                count,
+                started.elapsed().as_millis()
+            ),
+            Err(error) => log::warn!("全文搜索索引合并失败（不影响搜索结果，只是慢一点）：{error}"),
+        }
     }
 
     // -- 增量更新（保存/新建/删除/重命名） --------------------------------------
@@ -641,6 +680,48 @@ impl SearchIndex {
             add_rows(conn, bulk, &rel, text)
         })
         .map_err(|error| self.db(error))
+    }
+
+    /// 合并 FTS5 的所有段（`optimize`）。
+    ///
+    /// **它解决的是查询速度，不是磁盘占用** —— 这一点要写在最前面，因为它跟直觉相反，
+    /// 而我最初的判断正是错的：
+    ///
+    /// * 1 万篇 / 30 万行的库里跑 20 轮增量（每轮改 200 篇）之后，`optimize` **一个字节都没回收**
+    ///   （118.5 MB → 118.5 MB）：SQLite 把释放的页留在文件里（freelist），文件大小不掉。
+    ///   作者真实 Vault 的 207 MB 缓存库实测只有 **1 个段**（全量重建时已经 optimize 过），
+    ///   所以"段膨胀撑大了库"这个猜测是**错的**；
+    /// * 但它把**查询平均耗时从 82.8 ms 降到 37.3 ms（2.2×）**，代价是一次 937 ms 的全库重写 ——
+    ///   bm25 打分要跨段读倒排表，段越少扫得越少。
+    ///
+    /// **什么时候该调**：增量写入会不断产生新段（FTS5 的 automerge 只做对数级合并，不会并成 1 个），
+    /// 所以"跑了很久的增量库"会攒出十几个到几十个段。判据用 [`Self::segment_count`]，别按时间猜。
+    /// 基准见 `lib.rs` 的 `bench_optimize_after_incremental`
+    /// （`cargo test -p mn-index --release -- --ignored --nocapture bench_optimize_after_incremental`）。
+    ///
+    /// **调用方要克制**：这是一次全库重写（30 万行约 0.9 s），不该挂在每次保存后面。
+    pub fn optimize(&self) -> Result<()> {
+        let conn = self.conn();
+        conn.execute_batch("INSERT INTO lines_fts(lines_fts) VALUES('optimize')")
+            .map_err(|error| self.db(error))
+    }
+
+    /// FTS5 当前有多少个段（`distinct segid`）。
+    ///
+    /// 为什么单独暴露：它是"要不要 [`Self::optimize`]"的**判据** —— 段数是 FTS5 自己合并策略的
+    /// 结果（写入模式不同，同样的写入量攒出的段数差别很大），按时间或写入次数猜都不靠谱。
+    /// 代价是一次小表扫描（`lines_fts_idx` 每行一个「段 × 词」条目，真实库里 2000 行量级，亚毫秒）。
+    /// 空库返回 0。
+    pub fn segment_count(&self) -> Result<usize> {
+        let conn = self.conn();
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(DISTINCT segid) FROM lines_fts_idx",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| self.db(error))?;
+        Ok(count.max(0) as usize)
     }
 
     /// 删除一篇笔记（或其整棵子树）的全部落盘数据：内容行、FTS 行、链接/标签数据与判定键。
@@ -1517,6 +1598,81 @@ mod tests {
             .into_iter()
             .map(|hit| (hit.rel_path, hit.line))
             .collect()
+    }
+
+    // -- 段合并（optimize）-------------------------------------------------------
+
+    /// 增量写入会让 FTS5 攒出多个段；`optimize` 把它们并成 1 个，且**一行都不能丢**。
+    ///
+    /// 这条测试同时钉住两件事：
+    /// 1. "段会攒"是事实（不是我们想象出来的问题）—— 断言这一点，否则下面的修复就成了无的放矢；
+    /// 2. 合并只影响布局，不影响搜索结果（同样的查询在合并前后返回同样的命中）。
+    #[test]
+    fn optimize_collapses_segments_without_losing_rows() {
+        let index = index_of(&[("a.md", "甲\n乙\n丙")]);
+        assert_eq!(
+            index.segment_count().unwrap(),
+            1,
+            "全量重建自带一次 optimize"
+        );
+
+        // 反复重写同一批笔记：每次 upsert 都会往 FTS5 里追加新段
+        for round in 0..40 {
+            for note in 0..5 {
+                index
+                    .upsert_note(
+                        &format!("n{note}.md"),
+                        &format!("第 {round} 轮 关键词 内容"),
+                    )
+                    .unwrap();
+            }
+        }
+        let fragmented = index.segment_count().unwrap();
+        assert!(
+            fragmented > 1,
+            "增量写入应当攒出多个段（实测 {fragmented} 个），否则本测试没有覆盖到真实问题"
+        );
+
+        let before_hits = hits(&index, "关键词");
+        let before_lines = index.counts().unwrap().lines;
+        index.optimize().unwrap();
+
+        assert_eq!(index.segment_count().unwrap(), 1);
+        assert_eq!(
+            index.counts().unwrap().lines,
+            before_lines,
+            "合并不该动行数"
+        );
+        assert_eq!(hits(&index, "关键词"), before_hits, "合并不该改变命中");
+    }
+
+    /// 段数**没到阈值**时一次都不合并（那是白花的全库重写）；到了阈值才合并。
+    #[test]
+    fn incremental_finish_only_merges_after_segments_pile_up() {
+        let index = index_of(&[("a.md", "甲")]);
+        index.optimize_if_fragmented();
+        assert_eq!(index.segment_count().unwrap(), 1, "1 个段时不该做任何事");
+
+        // 一直写到段数越过阈值（上限只是防呆：真到了上限说明 automerge 行为变了，值得有人看）
+        let mut writes = 0;
+        while index.segment_count().unwrap() < OPTIMIZE_SEGMENT_THRESHOLD {
+            index
+                .upsert_note(&format!("n{writes}.md"), "内容 关键词")
+                .unwrap();
+            writes += 1;
+            assert!(
+                writes < 2_000,
+                "写了 {writes} 次仍然只有 {} 个段：FTS5 的合并行为可能变了，阈值需要重新标定",
+                index.segment_count().unwrap()
+            );
+        }
+
+        index.optimize_if_fragmented();
+        assert_eq!(
+            index.segment_count().unwrap(),
+            1,
+            "越过阈值后应当合并成 1 个段（{writes} 次写入才越线，这条数字本身也有参考价值）"
+        );
     }
 
     // -- 增量复用的测试夹具 -----------------------------------------------------

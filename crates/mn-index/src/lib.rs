@@ -1672,6 +1672,135 @@ mod tests {
         assert!(!search_outcome.aborted);
     }
 
+    /// 性能基准：**长期只走增量**的缓存库会攒下多少段，`optimize` 能回收多少。
+    ///
+    /// 运行：`cargo test -p mn-index --release -- --ignored --nocapture bench_optimize_after_incremental`
+    ///
+    /// 为什么值得单独量：全量重建在 `finish_rebuild` 里自带一次 `optimize`，而**日常路径是增量**
+    /// ——打开 Vault 只重写改过的那几篇、保存一篇只 `upsert_note` 一篇，而 FTS5 的删除是
+    /// **打墓碑**，空间要等段合并才回收。作者的真实 Vault（50 万行）里实测到 2669 个段、
+    /// 7326 个数据块、207 MB，所以"跑一段时间之后补一次 optimize 值不值"是个有真实语料背景的问题。
+    ///
+    /// 基准做的事：建 1 万篇 / 30 万行的库 → 跑 20 轮增量（每轮改 200 篇，模拟"用一阵子"）→
+    /// 量 optimize 前后的**库大小**与**查询耗时**，并打印 optimize 自己的耗时（那是它的代价）。
+    #[test]
+    #[ignore]
+    fn bench_optimize_after_incremental() {
+        let dir = tempfile::tempdir().unwrap();
+        for d in 0..100 {
+            let sub = dir.path().join(format!("dir{d:03}"));
+            std::fs::create_dir_all(&sub).unwrap();
+            for f in 0..100 {
+                let mut body = String::new();
+                for i in 1..=29 {
+                    body.push_str(&format!(
+                        "第 {i} 行：这是用来测试全文搜索的中文正文，里面还有 search 这样的英文单词\n"
+                    ));
+                }
+                if f % 10 == 0 {
+                    body.push_str("这一行里有关键词，别的行没有\n");
+                }
+                body.push_str(&format!("末尾一行 [[note{f:03}]]\n"));
+                std::fs::write(sub.join(format!("note{f:03}.md")), body).unwrap();
+            }
+        }
+        let entries: Vec<EntryMeta> = (0..100)
+            .flat_map(|d| (0..100).map(move |f| note(&format!("dir{d:03}/note{f:03}.md"))))
+            .collect();
+
+        let db_path = dir.path().join(".mimenote/cache/search.db");
+        let search = SearchIndex::open_for_rebuild(&db_path).unwrap();
+        let (_, built) = build_indexes(
+            dir.path(),
+            &entries,
+            &BuildOptions::default(),
+            None,
+            Some(&search),
+            |_, _| {},
+        );
+
+        let size_mb = |path: &std::path::Path| {
+            std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) as f64 / 1_048_576.0
+        };
+        let segments = || search.segment_count().unwrap_or(0);
+
+        let query_ms = |query: &str| {
+            let started = Instant::now();
+            let rounds = 20;
+            for _ in 0..rounds {
+                let _ = search.search(query, 50).unwrap();
+            }
+            started.elapsed().as_secs_f64() * 1000.0 / f64::from(rounds)
+        };
+
+        eprintln!(
+            "全量重建后：{:.1} MB（段 {}，查询 {:.2} ms；全文搜索这一路 {} ms，共 {} 行）",
+            size_mb(&db_path),
+            segments(),
+            query_ms("关键词"),
+            built.search.map(|s| s.duration_ms).unwrap_or(0),
+            search.counts().map(|c| c.lines).unwrap_or(0)
+        );
+
+        // 20 轮增量：每轮把 200 篇的正文换掉（路径不变、内容不同 —— 这正是"编辑一篇笔记"）
+        const ROUNDS: usize = 20;
+        const PER_ROUND: usize = 200;
+        for round in 0..ROUNDS {
+            for i in 0..PER_ROUND {
+                let index = round * PER_ROUND + i;
+                let (d, f) = (index % 100, (index / 100) % 100);
+                let rel = format!("dir{d:03}/note{f:03}.md");
+                let mut body = String::new();
+                for line in 1..=29 {
+                    body.push_str(&format!(
+                        "第 {line} 行：第 {round} 轮改过的正文，中文内容与英文 search 混排\n"
+                    ));
+                }
+                body.push_str("这一行里有关键词，别的行没有\n");
+                search.upsert_note(&rel, &body).unwrap();
+            }
+            if round % 5 == 4 {
+                eprintln!(
+                    "  第 {} 轮增量后：{:.1} MB，段 {}，查询 {:.2} ms",
+                    round + 1,
+                    size_mb(&db_path),
+                    segments(),
+                    query_ms("关键词")
+                );
+            }
+        }
+
+        let before_size = size_mb(&db_path);
+        let before_segments = segments();
+        let before_query = query_ms("关键词");
+        let started = Instant::now();
+        search.optimize().unwrap();
+        let optimize_ms = started.elapsed().as_millis();
+        let after_size = size_mb(&db_path);
+        let after_segments = segments();
+        let after_query = query_ms("关键词");
+
+        eprintln!(
+            "{ROUNDS} 轮增量（每轮 {PER_ROUND} 篇）之后：\n\
+             \x20 optimize 前：{before_size:.1} MB，段 {before_segments}，查询平均 {before_query:.2} ms\n\
+             \x20 optimize 后：{after_size:.1} MB，段 {after_segments}，查询平均 {after_query:.2} ms\n\
+             \x20 optimize 自身耗时：{optimize_ms} ms（文件大小变化 {:.1} MB，{:.1}%；查询 {:.2}×）",
+            before_size - after_size,
+            (before_size - after_size) / before_size * 100.0,
+            before_query / after_query
+        );
+
+        // optimize 只该让库变小或持平，且查询不该因此变慢（这是"值不值得做"的底线）
+        assert!(
+            after_size <= before_size + 0.5,
+            "optimize 之后库变大了：{before_size:.1} → {after_size:.1} MB"
+        );
+        assert!(
+            after_query <= before_query * 1.5 + 0.5,
+            "optimize 之后查询变慢了：{before_query:.2} → {after_query:.2} ms"
+        );
+    }
+
     #[test]
     fn build_can_be_cancelled() {
         let dir = tempfile::tempdir().unwrap();
