@@ -111,6 +111,32 @@ const WHEEL_ZOOM_K = 0.0016
 /** 平移拖动与"单击空白处关闭预览"之间的位移阈值。 */
 const CLICK_SLOP_PX = 3
 
+/**
+ * 拖动卡片时把力场加热到的强度（`ForceSimulation.heat`）。
+ *
+ * 为什么要加热：打开图谱时 `settle()` 已经把强度跑到 0，**力全部停摆**。被拖的那张卡片是
+ * `fixed` 的（位置由光标决定，本来就不受力），但"邻居让开"必须靠力 —— 只有硬碰撞会推人，
+ * 手感就是"撞上去才动、其余时候整幅图是死的"。0.3 是实测的形状：足以让斥力与弹簧推动邻居
+ * （被连接的卡片会跟着走），又不会让整幅图重新洗牌。
+ */
+const DRAG_HEAT = 0.3
+
+/** 每次 pointermove 推进几步：一步推不完"多个重叠对"，太多又会让一次移动滑出去很远。 */
+const DRAG_STEPS = 2
+
+/** 松开卡片、把它重新交给力场时的热度：比拖动时更高，"松开"才看起来真的松开了。 */
+const RELEASE_HEAT = 0.6
+
+/**
+ * 开着"漂浮"时力场强度的**底值**：每帧把强度抬到至少这个数。
+ *
+ * 为什么需要它：`settle()` 会把强度跑到 0，之后`step()` 一点点力都没有 —— 实测每步每张卡片
+ * 只移动 0.003px，也就是说"漂浮"这个开关打开与关掉**看起来完全一样**（用户说的"整体非常僵硬"
+ * 里有一半是这件事）。给一个很小的底值让力场始终醒着：实测 0.2 时每步平均 0.12px
+ * （20fps ≈ 2.3px/秒）—— 是看得见的缓慢呼吸，而不是乱飞。
+ */
+const FLOAT_HEAT_FLOOR = 0.2
+
 /** 焦点视图的卡片宽度（世界坐标）：一屏放得下 3~4 张，正文一行 ≈ 34 个汉字。 */
 const EGO_CARD_WIDTH = 320
 
@@ -219,7 +245,8 @@ function countOverlaps(rects: ReadonlyMap<string, Rect>): number {
   return overlaps
 }
 
-/** 一组卡片的包围盒（力导向落定之后用它"适应窗口"）。 */function boundsOfRects(rects: ReadonlyMap<string, Rect>): Rect | null {
+/** 一组卡片的包围盒（力导向落定之后用它"适应窗口"）。 */
+function boundsOfRects(rects: ReadonlyMap<string, Rect>): Rect | null {
   let minX = Number.POSITIVE_INFINITY
   let minY = Number.POSITIVE_INFINITY
   let maxX = Number.NEGATIVE_INFINITY
@@ -475,6 +502,28 @@ export function GraphCanvas() {
   const [tick, setTick] = useState(0)
 
   /**
+   * 被按住卡片的**最新**位置（每次渲染刷新）。
+   *
+   * 为什么必须走 ref、不能把它写进下面那条 effect 的依赖：`pins` 是"每个 pointermove 都可能变"的状态。
+   * 一旦成为依赖，拖动过程中模拟会被**反复重建**（每次都从同心环的种子重新落定），于是：
+   * 卡片每一帧都被拽回原位、邻居永远来不及被推开、镜头还会跟着重新取景 —— 用户看到的就是
+   * "拖拽卡片没有变动位置、没有碰撞推动卡片、整体非常僵硬"。改成 ref 之后：
+   * 拖动只改"活着的那个模拟"（`pin` + `heat` + 推进），而真正的重建
+   * （换力度档、换圆心、改参数）仍然以用户摆好的位置为**种子**。
+   */
+  const pinsRef = useRef(pins)
+  pinsRef.current = pins
+
+  /** 正在被拖动的那张卡片（松手时把最终位置写回 store；拖动过程中不写，免得每个 pointermove 都重渲染）。 */
+  const draggedPinRef = useRef<{ relPath: string; center: { x: number; y: number } } | null>(null)
+  /**
+   * 拖动中的卡片路径（用于**画在最上层**，见 `paintNodes`）。
+   *
+   * 与 `draggedPinRef` 分开：那个是"松手时要落盘的数据"（不该触发渲染），这个纯粹是画笔的入参。
+   */
+  const [dragging, setDragging] = useState<string | null>(null)
+
+  /**
    * 种子：同心环布局给出的位置。
    *
    * 这就是 ADR-0021 与力导向共存的方式 —— 环布局保证"离中心几跳"一眼可分且每次打开都一样，
@@ -498,17 +547,23 @@ export function GraphCanvas() {
       return
     }
     const cards = egoLayout.layout.cards
-    const nodes = cards.map((card) => ({
-      relPath: card.relPath,
-      // 模拟跑在**中心点**上，卡片矩形由尺寸还原（见 force.ts 的说明）
-      x: card.rect.x + card.rect.width / 2,
-      y: card.rect.y + card.rect.height / 2,
-      width: card.rect.width,
-      height: card.rect.height,
-      hop: card.hop,
-      // 圆心那一篇钉在原点：用户打开图谱时希望"当前这篇"始终在中心
-      fixed: card.relPath === ego.root || pins.has(card.relPath),
-    }))
+    const held = pinsRef.current
+    const nodes = cards.map((card) => {
+      // 被按住的卡片以**用户摆下的位置**为种子，而不是环上的原位：重建（换档 / 改参数）时
+      // 用户手动摆好的排布必须活下来。没被按住的仍然从同心环出发（那是可复现性的来源）。
+      const pin = held.get(card.relPath)
+      return {
+        relPath: card.relPath,
+        // 模拟跑在**中心点**上，卡片矩形由尺寸还原（见 force.ts 的说明）
+        x: pin?.x ?? card.rect.x + card.rect.width / 2,
+        y: pin?.y ?? card.rect.y + card.rect.height / 2,
+        width: card.rect.width,
+        height: card.rect.height,
+        hop: card.hop,
+        // 圆心那一篇钉在原点：用户打开图谱时希望"当前这篇"始终在中心
+        fixed: card.relPath === ego.root || pin !== undefined,
+      }
+    })
     const edges = ego.data.edges
       .filter((edge) => edge.toRelPath !== null)
       .map((edge) => ({ from: edge.fromRelPath, to: edge.toRelPath ?? '' }))
@@ -520,17 +575,19 @@ export function GraphCanvas() {
     const rects = applySimulation(cards, sim.positions())
     positionsRef.current = rects
     // "适应窗口"必须用**落定之后**的包围盒：力场会把环收紧（默认档实测约收三分之二），
-    // 用环的包围盒去 fit 会让整幅图偏在一角。键里带预设与"松开"的次数 ⇒
-    // 换档 / 松开卡片要重新适应，而同一次会话里拖动卡片不会。
+    // 用环的包围盒去 fit 会让整幅图偏在一角。键里**只有"图形本身"变了才重新取景**
+    // （圆心 / 深度 / 力度档），特意不含 `pins`：按住或拖动一张卡片不该让镜头跳一下。
     const bounds = boundsOfRects(rects)
     if (bounds !== null) {
       useGraphStore.getState().setEgoBounds(bounds)
       useGraphStore
         .getState()
-        .autoFitBounds(`${ego.root}\u0000${ego.depth}\u0000${forcePresetId}\u0000${pins.size}`, bounds)
+        .autoFitBounds(`${ego.root}\u0000${ego.depth}\u0000${forcePresetId}`, bounds)
     }
     setTick((value) => value + 1)
-  }, [mode, egoLayout, ego, forceParams, forcePresetId, seedKey, pins])
+    // ⚠️ 依赖里**不能**有 `pins`（理由见 `pinsRef`）：它会随拖动每一帧变化，加进来就等于
+    // "每拖动一像素就把整个模拟推倒重来"，那正是用户报的"拖不动 + 没有碰撞"。
+  }, [mode, egoLayout, ego, forceParams, forcePresetId, seedKey])
 
   /**
    * 漂浮：以 **20fps** 推进模拟并重画。
@@ -545,6 +602,9 @@ export function GraphCanvas() {
     const timer = setInterval(() => {
       const sim = simRef.current
       if (sim === null) return
+      // 每帧把强度抬到"漂浮底值"（见 `FLOAT_HEAT_FLOOR`）：不加这一笔的话，"漂浮"开着也
+      // 只是每 50ms 白跑一次 `step()` —— 落定之后没有力，位置一动不动。
+      sim.heat(FLOAT_HEAT_FLOOR)
       const moving = sim.step()
       if (!moving) return
       positionsRef.current = applySimulation(egoLayout.layout.cards, sim.positions())
@@ -562,6 +622,41 @@ export function GraphCanvas() {
     },
     [egoLayout],
   )
+
+  /**
+   * 立刻推进模拟 `steps` 步，并把新位置交给画笔。
+   *
+   * 为什么要"手动推进"而不是等漂浮循环（20fps）：拖动是离散事件（pointermove 每秒几十到一百多次），
+   * 等定时器意味着"一秒钟只有 20 次反馈"，手感发涩；而且拖动时每一步都必须**当场**解掉碰撞，
+   * 否则指针穿过邻居时看起来像"穿模"。相邻卡片的让位就发生在这一步里
+   * （`step` 内部先算力、再解重叠，硬约束保证走完不重叠）。
+   */
+  const advanceSimulation = useCallback(
+    (sim: ForceSimulation, steps: number) => {
+      for (let index = 0; index < steps; index += 1) sim.step()
+      if (egoLayout === null) return
+      positionsRef.current = applySimulation(egoLayout.layout.cards, sim.positions())
+      setTick((value) => value + 1)
+    },
+    [egoLayout],
+  )
+
+  /**
+   * 松开所有被按住的卡片：重新交给力场（否则它们会永远停在手放下的地方）。
+   *
+   * 必须同时**加热**：`settle()` 之后强度是 0，只 `unpin` 的话卡片会"松开了但一动不动"，
+   * 用户只会觉得按钮没生效；这不只是观感问题 —— 松开的语义就是"让力场重新接管它"。
+   */
+  const releasePins = useCallback(() => {
+    const held = [...useGraphStore.getState().pins.keys()]
+    if (held.length === 0) return
+    useGraphStore.getState().unpinCards()
+    const sim = simRef.current
+    if (sim === null) return
+    for (const relPath of held) sim.unpin(relPath)
+    sim.heat(RELEASE_HEAT)
+    advanceSimulation(sim, DRAG_STEPS * 4)
+  }, [advanceSimulation])
 
   const visibleCardsList = useMemo<EgoCardBox[] | GraphCardBox[]>(() => {
     if (mode === 'focus') {
@@ -589,7 +684,16 @@ export function GraphCanvas() {
     if (mode === 'focus') {
       if (egoLayout === null) return []
       const root = ego?.root ?? null
-      return egoLayout.layout.cards.map((card) => ({
+      const ordered =
+        dragging === null
+          ? egoLayout.layout.cards
+          : // 拖动中的那张画在**最后**（最上层）：不这么做的话，把它拖到别的卡片上时会被盖住 ——
+            // 用户看到的是"卡片没了"，而不是"我在搬它"（画布没有 z-index，顺序就是层级）。
+            [
+              ...egoLayout.layout.cards.filter((card) => card.relPath !== dragging),
+              ...egoLayout.layout.cards.filter((card) => card.relPath === dragging),
+            ]
+      return ordered.map((card) => ({
         relPath: card.relPath,
         title: card.node.title,
         // 位置取**当前**（漂浮之后的）矩形；`tick` 是这里的刷新时钟
@@ -613,7 +717,7 @@ export function GraphCanvas() {
       layout: null,
       compactLines: compactLinesFor(card.node),
     }))
-  }, [mode, egoLayout, ego, vaultLayout, selected, currentRect, tick])
+  }, [mode, egoLayout, ego, vaultLayout, selected, currentRect, tick, dragging])
 
   /**
    * 连线：两种视图都交给 SVG 层（正交折线、箭头、悬空虚影都已经在那里实现好了）。
@@ -984,10 +1088,16 @@ export function GraphCanvas() {
       const tolerance = 4 / transform.scale
       if (mode === 'focus') {
         const cards = egoLayout?.layout.cards ?? []
+        // ⚠️ 命中的必须是**当前**矩形（力场松弛之后、或被用户拖过之后的位置），而不是
+        // `card.rect`（同心环给的原始位置）。两者默认档下就差着大约三分之二的距离，
+        // 用原始矩形命中的后果是"按在画着的那张卡片上，抓住的却是另一张"——
+        // 拖动的表现是"按不住 / 一按就跳"，这正是"拖拽很僵硬"的一半来源。
+        // 顺序与画笔一致（后画的在上），所以倒着找第一个命中的就是"最上面那张"。
         for (let index = cards.length - 1; index >= 0; index -= 1) {
           const card = cards[index]
           if (card === undefined) continue
-          if (rectHit(card.rect, point, tolerance)) return { relPath: card.relPath, rect: card.rect }
+          const rect = currentRect(card.relPath) ?? card.rect
+          if (rectHit(rect, point, tolerance)) return { relPath: card.relPath, rect }
         }
         return null
       }
@@ -999,7 +1109,7 @@ export function GraphCanvas() {
       }
       return null
     },
-    [mode, egoLayout, vaultLayout, transform.scale],
+    [mode, egoLayout, vaultLayout, transform.scale, currentRect],
   )
 
   const fitNow = useCallback(() => {
@@ -1062,6 +1172,10 @@ export function GraphCanvas() {
             : null,
         resize: handle,
       }
+      // 上一次拖动如果被别的事件打断（例如中途按了 Esc、或指针被系统抢走），残留的记录会让
+      // 松手时把**上一张**卡片钉到这一次的位置上 —— 每次按下都从干净的开始。
+      draggedPinRef.current = null
+      setDragging(null)
       setPanning(true)
     },
     [hitCard, mode, worldPointOf, transform.scale],
@@ -1098,23 +1212,23 @@ export function GraphCanvas() {
         const world = worldPointOf(event.clientX, event.clientY)
         if (world === null) return
         if (mode === 'focus') {
-          // 焦点视图：把这张卡片**钉住**在光标下（模拟里 fixed = true），其余继续被张力牵着
+          // 焦点视图：把这张卡片**钉在光标下**（`fixed`），并给力场加热 —— 邻居得重新受力才会让位。
           const rect = currentRect(state.card.relPath)
           const sim = simRef.current
-          if (rect !== null && sim !== null) {
-            const centerX = world.x - state.card.grabX + rect.width / 2
-            const centerY = world.y - state.card.grabY + rect.height / 2
-            sim.pin(state.card.relPath, centerX, centerY)
-            // 记进 store：HUD 要显示"已按住几张"，重建模拟也要以它为输入（`pins` 是那条 effect 的依赖）
-            useGraphStore.getState().pinCard(state.card.relPath, { x: centerX, y: centerY })
-            positionsRef.current = new Map(positionsRef.current).set(state.card.relPath, {
-              x: centerX - rect.width / 2,
-              y: centerY - rect.height / 2,
-              width: rect.width,
-              height: rect.height,
-            })
-            setTick((value) => value + 1)
-          }
+          if (rect === null || sim === null) return
+          const centerX = world.x - state.card.grabX + rect.width / 2
+          const centerY = world.y - state.card.grabY + rect.height / 2
+          sim.pin(state.card.relPath, centerX, centerY)
+          // 加热 + 当场推进：被拖的那张是 `fixed` 的（位置由光标决定），斥力 / 弹簧 / 硬碰撞
+          // 全都作用在**别人**身上 —— "把卡片推到另一张上，它自己让开"就是这么来的。
+          // 不加热的话 alpha 从打开起就是 0，整幅图会像死的一样纹丝不动。
+          sim.heat(DRAG_HEAT)
+          advanceSimulation(sim, DRAG_STEPS)
+          // 记住最终位置，松手时写回 store（一为 HUD 的"已按住"，二为重建模拟时的种子）。
+          // 拖动过程中**不**写 store：每个 pointermove 都写会让整棵画布重渲染，位置已经
+          // 由 `positionsRef` 直接喂给画笔了，不需要绕一趟 React 状态。
+          draggedPinRef.current = { relPath: state.card.relPath, center: { x: centerX, y: centerY } }
+          setDragging((current) => (current === state.card?.relPath ? current : state.card?.relPath ?? null))
           return
         }
         // 全库视图：抓点相对卡片左上角的偏移保持不变（否则卡片会"跳"到光标下）
@@ -1129,7 +1243,7 @@ export function GraphCanvas() {
       if (state.card !== null) return
       useGraphStore.getState().panBy(dx, dy)
     },
-    [hitCard, worldPointOf, mode, currentRect],
+    [hitCard, worldPointOf, mode, currentRect, advanceSimulation],
   )
 
   const endPointer = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1147,7 +1261,19 @@ export function GraphCanvas() {
     }
     if (event.type !== 'pointerup' || state.button !== 0) return
 
-    if (state.moved) return // 拖动过：不改选中（拖卡片 / 拉宽 / 拖画布都不是"点了一下"）
+    if (state.moved) {
+      // 拖动结束：把**最终**位置写回 store。
+      // 为什么不在每次 pointermove 里写：那会让整个画布随指针重渲染（几十次/秒），
+      // 而位置已经由 `positionsRef` 直接喂给画笔了；store 里这份只服务两件事 ——
+      // HUD 上"已按住 N 张"，以及重建模拟时"以用户摆好的位置为种子"。
+      setDragging(null)
+      const dragged = draggedPinRef.current
+      if (dragged !== null) {
+        draggedPinRef.current = null
+        useGraphStore.getState().pinCard(dragged.relPath, dragged.center)
+      }
+      return // 拖动过：不改选中（拖卡片 / 拉宽 / 拖画布都不是"点了一下"）
+    }
     // 没拖动：点在卡片上 = 选中（右侧出现预览），点在空白 = 关掉预览
     const world = { x: state.startWorldX, y: state.startWorldY }
     const hit = hitCard(world)
@@ -1192,7 +1318,12 @@ export function GraphCanvas() {
       if (isTextEntryTarget(event.target)) return
       const cards =
         mode === 'focus'
-          ? (egoLayout?.layout.cards ?? []).map((card) => ({ relPath: card.relPath, rect: card.rect }))
+          ? // 用**当前**矩形：方向键选的"同一方向上最近的卡片"必须按眼睛看到的排布算，
+            // 用环上的原始位置会让方向键指到一张画在别处的卡片（拖动过之后更明显）
+            (egoLayout?.layout.cards ?? []).map((card) => ({
+              relPath: card.relPath,
+              rect: currentRect(card.relPath) ?? card.rect,
+            }))
           : (vaultLayout?.cards ?? []).map((card) => ({ relPath: card.relPath, rect: card }))
       if (cards.length === 0) return
       event.preventDefault()
@@ -1223,7 +1354,7 @@ export function GraphCanvas() {
       useGraphStore.getState().select(target)
       locateCard(target)
     },
-    [mode, egoLayout, vaultLayout, selected, locateCard],
+    [mode, egoLayout, vaultLayout, selected, locateCard, currentRect],
   )
 
   // -------------------------------------------------------------------------
@@ -1263,6 +1394,29 @@ export function GraphCanvas() {
     rootRect === null
       ? ''
       : [rootRect.x, rootRect.y, rootRect.width, rootRect.height].map((value) => Math.round(value)).join(',')
+
+  /**
+   * 当前**可见**卡片的矩形（`relPath|x,y,w,h`，世界坐标，`;` 分隔，保留一位小数）。
+   *
+   * 与 `data-graph-root-rect` 同一个理由，只是把"一张"扩成"看得见的每一张"：
+   * 卡片画在 canvas 上，外面的自动化无从知道某张此刻在哪，而"把甲拖到乙身上"
+   * "拖完之后两张不许重叠"这类断言**必须**知道它 —— 否则只能靠"某段文字画在哪个坐标"
+   * 去反推，而正文里同样会出现那两个字（真实踩过：标题「路线图」与正文里的 `[[路线图]]`
+   * 撞名，反推出来的位置是正文那一段的）。
+   *
+   * 只列可见的那些（视口外的不可能在自动化里被点到），并且**保留一位小数**：
+   * 整数舍入会让"位移 120px 对不对"这类断言多出 ±0.5px 的噪声。
+   */
+  const cardRectsAttr = useMemo(() => {
+    if (mode !== 'focus') return ''
+    return paintNodes
+      .filter((node) => visibleSet.has(node.relPath))
+      .map((node) => {
+        const round = (value: number): number => Math.round(value * 10) / 10
+        return `${node.relPath}|${round(node.rect.x)},${round(node.rect.y)},${round(node.rect.width)},${round(node.rect.height)}`
+      })
+      .join(';')
+  }, [mode, paintNodes, visibleSet])
   /** 当前布局里重叠的卡片对数（见 `countOverlaps`）：碰撞起作用时应当恒为 0。 */
   const overlaps = useMemo(
     () => (mode === 'focus' ? countOverlaps(positionsRef.current) : 0),
@@ -1309,6 +1463,7 @@ export function GraphCanvas() {
       /* 上一帧真正画出来的张数（裁剪之后） */
       data-graph-painted-cards={paintedCards}
       data-graph-root-rect={rootRectAttr}
+      data-graph-card-rects={cardRectsAttr}
       /* 被按住的卡片数（漂浮时"我按住了几张"一眼可见） */
       data-graph-pinned={pins.size}
       /* 当前布局里重叠的卡片对数（碰撞是硬约束时应当恒为 0） */
@@ -1335,7 +1490,8 @@ export function GraphCanvas() {
             height: vaultLayout?.bounds.height ?? 0,
           }}
         >
-          <GraphEdges visuals={edgeVisuals} viewBox={visibleWorldRect} />
+          {/* 卡外那一段（张力曲线 + 箭头 + 虚线）留在 viewport 里：它本来就该被路过的卡片盖住 */}
+          <GraphEdges visuals={edgeVisuals} viewBox={visibleWorldRect} layer="span" />
 
           {mode === 'vault' &&
             visibleFolders.map((folder) => (
@@ -1355,6 +1511,24 @@ export function GraphCanvas() {
         data-mn-cards={paintNodes.length}
         aria-hidden="true"
       />
+
+      {/*
+        卡片**内**那段引线（从正文里的 `[[链接]]` 到卡片边界）必须画在卡片层**之上**。
+
+        为什么不能和卡外那段一起留在 viewport 里：卡片是不透明底、画在 canvas 上（`z-index: 1`），
+        而 `.mn-graph__viewport` 带 `will-change: transform`、自成一个层叠上下文 —— viewport 里
+        任何 z-index（哪怕 2）都盖不过 canvas。引线整段都在卡片矩形里，于是被整段盖掉，
+        用户看到的就是"线从卡片边缘凭空开始"，正是这一轮要修的那句报障。
+        （`.mn-graph__leads` 的样式在 `graph.css`：z-index 2 + `pointer-events: none`。）
+      */}
+      <div
+        className="mn-graph__leads"
+        style={{
+          transform: `translate(${Math.round(view.x)}px, ${Math.round(view.y)}px) scale(${view.zoom})`,
+        }}
+      >
+        <GraphEdges visuals={edgeVisuals} viewBox={visibleWorldRect} layer="lead" />
+      </div>
 
       {/* ---------------------------------------------------------------- HUD */}
       <div className="mn-graph__hud" data-mn-graph-nopan>
@@ -1521,7 +1695,7 @@ export function GraphCanvas() {
                 className="mn-graph__chip"
                 data-graph-action="unpin-cards"
                 title="松开被拖住的卡片，让张力重新把它们摆回去"
-                onClick={() => useGraphStore.getState().unpinCards()}
+                onClick={releasePins}
               >
                 松开卡片
               </button>

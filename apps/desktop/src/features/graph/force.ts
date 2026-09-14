@@ -279,6 +279,15 @@ export interface ForceSimulation {
   pin(relPath: string, x: number, y: number): void
   /** 松开钉子（松手后它继续被力场接管）。 */
   unpin(relPath: string): void
+  /**
+   * 重新加热：把强度抬到**至少** `value`（夹在 0..1）。
+   *
+   * 为什么交互必须能加热：`settle()` 之后强度归零，力全部停摆。用户拖动一张卡片时，被拖的那张
+   * 是 `fixed` 的（位置由光标决定，本来就不受力），但**邻居要让位就得重新受力** ——
+   * 只靠硬碰撞的话只有"撞上去了"才推得动，斥力与弹簧完全不参与，手感就是"整幅图是死的"，
+   * 而"笔记之间应该有碰撞、拖的时候别人会让开"正是用户要的。
+   */
+  heat(value: number): void
   /** 每张卡片左上角的坐标（= 中心 − 尺寸/2），直接喂给画笔。 */
   positions(): Map<string, Point>
 }
@@ -725,6 +734,19 @@ export function createForceSimulation(input: {
     node.vy = 0
   }
 
+  /**
+   * 重新加热（见接口上的说明）。
+   *
+   * 取 `max` 而不是直接赋值：一次拖动里 `heat` 会被反复调用（每个 pointermove 一次），
+   * 而"只升温不降温"才能保证拖动期间力场一直是醒着的 —— 降温只有两条合法路径：
+   * 步数（`alphaDecay`）与 `settle()`。夹到 1 是因为 alpha 是**总强度**：超过 1 会让斥力比
+   * 参数面板上的刻度更强，"我把斥力调到 3.5"这句话就不成立了。
+   */
+  function heat(value: number): void {
+    const next = Math.min(1, Math.max(0, finite(value, 0)))
+    if (next > alpha) alpha = next
+  }
+
   function positions(): Map<string, Point> {
     // 每次新建 Map 与新对象：调用方拿到的是某一帧的快照，改它（或把它缓存起来画上一帧）
     // 都不该影响模拟内部的状态。
@@ -749,6 +771,7 @@ export function createForceSimulation(input: {
     settle,
     pin,
     unpin,
+    heat,
     positions,
   }
 }

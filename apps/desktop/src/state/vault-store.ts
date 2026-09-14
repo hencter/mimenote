@@ -440,7 +440,8 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     persistExpanded(info?.rootPath ?? '', expanded)
   },
 
-  registerAttachment: (file) => {    const parent = parentOf(file.relPath)
+  registerAttachment: (file) => {
+    const parent = parentOf(file.relPath)
     const ext = extensionOf(file.relPath)
     const entry: EntryMeta = {
       relPath: file.relPath,

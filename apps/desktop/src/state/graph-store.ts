@@ -1285,7 +1285,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     set({ pins })
   },
 
-  autoFitBounds: (key, bounds) => {    const state = get()
+  autoFitBounds: (key, bounds) => {
+    const state = get()
     if (state.fitKey === key) return
     if (bounds.width <= 0 || bounds.height <= 0) return
     set({

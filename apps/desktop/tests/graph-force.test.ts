@@ -494,6 +494,76 @@ describe('碰撞（约束：矩形不许相交）', () => {
     expect(intersectingPairs(sim)).toBe(1)
   })
 
+  describe('heat（交互把力场重新唤醒）', () => {
+    /*
+      为什么需要这一组：`settle()` 之后 alpha = 0，力全部停摆 —— 打开图谱很安静是对的，
+      但用户一旦开始拖卡片，"邻居让开"必须靠力（只有硬碰撞的话就是"撞上去才动"）。
+      `heat` 于是成了**交互层唯一的重启开关**，它的语义要被逐条钉住。
+    */
+
+    it('settle() 之后加热会让邻居重新受力', () => {
+      const nodes = [seed('甲.md', 0, 0, { hop: 0, fixed: true }), seed('乙.md', 900, 0)]
+      const edges: ForceEdge[] = [edge('甲.md', '乙.md')]
+      const sim = createForceSimulation({ nodes, edges, params: { damping: 0.5 } })
+      sim.settle()
+      // 落定的定义就是"已经冷了"：alpha = 0，之后再走步位置一点不动
+      expect(sim.alpha).toBe(0)
+
+      const before = snapshot(sim)
+      sim.heat(0.6)
+      expect(sim.alpha).toBe(0.6)
+      for (let index = 0; index < 5; index += 1) sim.step()
+
+      expect(snapshot(sim)).not.toEqual(before)
+      expect(intersectingPairs(sim)).toBe(0)
+    })
+
+    it('只升温不降温：heat(0) 不会把已经热着的模拟冷下来', () => {
+      const sim = createForceSimulation({ nodes: [seed('甲.md', 0, 0), seed('乙.md', 900, 0)], edges: [] })
+      sim.heat(0.8)
+      const hot = sim.alpha
+      sim.heat(0)
+      sim.heat(-5)
+      expect(sim.alpha).toBe(hot)
+    })
+
+    it('强度夹在 0..1：heat(2) 不会让斥力比参数面板给的更强', () => {
+      const sim = createForceSimulation({ nodes: [seed('甲.md', 0, 0)], edges: [] })
+      sim.settle()
+      sim.heat(2)
+      expect(sim.alpha).toBe(1)
+    })
+
+    it('加热是临时的：力全开时可以短暂重叠，但重新落定之后仍然零重叠', () => {
+      /*
+        这条把"零重叠"的**适用范围**钉清楚：它是**落定状态**的不变量，不是"任意时刻"的。
+        力全开（alpha = 1）时卡片被推得很快，约束在追但追不上，中间帧可以有重叠 ——
+        这是力导向本来就有的样子（用户看到的也是"撞开"的动感）。
+        真正要保证的是：加热不会留下一个永久重叠的终态。
+      */
+      const { nodes, edges } = crowdedRing()
+      const sim = createForceSimulation({ nodes, edges })
+      sim.settle()
+      sim.heat(1)
+      for (let index = 0; index < 40; index += 1) sim.step()
+      sim.settle()
+      expect(intersectingPairs(sim)).toBe(0)
+    })
+
+    it('加热 + 同样的步数 ⇒ 位置逐字节可复现（确定性没有被交互打破）', () => {
+      const run = (): [string, number, number][] => {
+        const { nodes, edges } = crowdedRing()
+        const sim = createForceSimulation({ nodes, edges })
+        sim.settle()
+        sim.pin('环心.md', 120, -80)
+        sim.heat(0.5)
+        for (let index = 0; index < 12; index += 1) sim.step()
+        return snapshot(sim)
+      }
+      expect(run()).toEqual(run())
+    })
+  })
+
   it('collideStrength 取中间值：重叠减少但不为零（软约束的语义）', () => {
     // 两张卡片被一条 linkDistance 0 的弹簧一直往一起拉（alphaDecay 0 ⇒ 力永不降温），
     // 于是"稳态残余重叠"会一直存在，正好用来比较三种强度。

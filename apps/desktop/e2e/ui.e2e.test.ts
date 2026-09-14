@@ -416,6 +416,33 @@ async function graphRootRect(
 }
 
 /**
+ * 当前**可见**卡片的矩形（`data-graph-card-rects`，世界坐标，相对路径 → 矩形）。
+ *
+ * 与 `graphRootRect` 同一个理由，只是圆心之外的那些也需要：像"把甲拖到乙身上"
+ * "被撞的那张有没有让开"这类断言，必须知道**乙此刻在哪**。属性格式是
+ * `relPath|x,y,w,h`，多条之间用 `;` 分隔（一位小数），是宿主里那段注释写明的契约。
+ */
+async function graphCardRects(
+  page: Page,
+): Promise<Map<string, { x: number; y: number; width: number; height: number }>> {
+  const raw = await graphText(page, 'data-graph-card-rects')
+  const result = new Map<string, { x: number; y: number; width: number; height: number }>()
+  for (const entry of raw.split(';')) {
+    if (entry === '') continue
+    const [relPath, numbers] = entry.split('|')
+    if (relPath === undefined || numbers === undefined) continue
+    const values = numbers.split(',').map((part) => Number(part))
+    const [x = Number.NaN, y = Number.NaN, width = Number.NaN, height = Number.NaN] = values
+    if (values.length !== 4 || [x, y, width, height].some((value) => !Number.isFinite(value))) {
+      throw new Error(`图谱属性 data-graph-card-rects 里有一条读不出矩形：${entry}`)
+    }
+    result.set(relPath, { x, y, width, height })
+  }
+  if (result.size === 0) throw new Error('图谱属性 data-graph-card-rects 是空的')
+  return result
+}
+
+/**
  * 世界坐标 → 页面坐标（`屏幕 = 世界 × scale + offset`，再加宿主左上角）。
  *
  * 与 `GraphCanvas` 里 `toWorld` 的口径逐字对应（那边是反过来的那一半）。
@@ -1560,6 +1587,121 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     // 收尾：「重置卡片」把尺寸还给自动，别让后面的用例继承一张被拉宽的卡片
     await page.locator('[data-graph-action="reset-card-size"]').click()
     await waitUntil(async () => (await graphRootRect(page)).width === before.width, 10_000, '重置回自动尺寸')
+
+    // 回到编辑视图（后续用例与"默认视图"保持一致）
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+  })
+
+  it('知识图谱：拖卡片本体真的跟着光标走，并且把撞上的那张推开（零重叠）', async () => {
+    /*
+      用户原话：「拖拽卡片没有变动位置，然后没有碰撞推动卡片，整体非常僵硬！」
+      这条端到端用例守的就是那句话本身，三个断言对应三个症状：
+
+      1. 按下 + 移动之后，圆心卡片的**世界矩形**必须真的跟着手走了（不是弹回原位）；
+      2. 把它拖到另一张卡片上时，`data-graph-overlaps` 必须**一直是 0**（硬碰撞在拖动过程中
+         同样成立），并且被撞的那张要真的让开（矩形中心距变大）；
+      3. 松手之后它被"按住"（`data-graph-pinned` = 1），位置留在手放下的地方。
+
+      为什么必须在真浏览器里测：命中判定读的是**当前**矩形（力场松弛之后的位置），
+      拖动是否跟手取决于"每个 pointermove 都会推进模拟并重绘"这条时序 —— jsdom 里
+      画布是假的、时序也是假的，这两件事都测不出来。
+    */
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/设计.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    await ensureGraphFocusMode(page)
+    await resetGraphDepthToOne(page)
+    await waitUntil(async () => (await graphCardCount(page)) >= 3, 10_000, '画出圆心与它的邻居')
+    await page.locator('[data-graph-action="unpin-cards"]').click() // 起点自足：没有卡片被按住
+
+    const origin = await graphBoxOrigin(page)
+    const transform = await settledGraphTransform(page)
+    const root = await graphRootRect(page)
+    const grabWorld = { x: root.x + root.width / 2, y: root.y + root.height / 2 }
+    const grab = graphScreenPoint(origin, transform, grabWorld)
+
+    // 挑一张**离圆心最远**的卡片当靶子（压住它就必须真的把圆心搬过去）
+    const cards = await graphCardRects(page)
+    const target = [...cards.entries()]
+      .filter(([relPath]) => relPath !== '项目/设计.md')
+      .sort((a, b) => b[1].y - a[1].y)[0]
+    expect(target).toBeDefined()
+    const [targetPath, targetRect] = target as [string, { x: number; y: number; width: number; height: number }]
+    const landing = graphScreenPoint(origin, transform, {
+      x: targetRect.x + targetRect.width / 2,
+      y: targetRect.y + targetRect.height / 2,
+    })
+    expect(await graphPointBlocked(page, grab)).toBe(false)
+    expect(await graphPointBlocked(page, landing)).toBe(false)
+
+    await page.mouse.move(grab.x, grab.y)
+    await page.mouse.down()
+    await page.mouse.move(grab.x + (landing.x - grab.x) * 0.5, grab.y + (landing.y - grab.y) * 0.5, {
+      steps: 8,
+    })
+    // ① 拖动**过程中**就已经跟着走了：半个行程对应半个世界位移（缩放换算回去）
+    const midway = await graphRootRect(page)
+    expect(midway.x).not.toBe(root.x)
+    expect(midway.y).not.toBe(root.y)
+
+    await page.mouse.move(landing.x, landing.y, { steps: 8 })
+    // ② 撞上去了，但**零重叠**，而且被撞的那张确实让开了
+    expect(await graphNumber(page, 'data-graph-overlaps')).toBe(0)
+    const pushed = (await graphCardRects(page)).get(targetPath)
+    expect(pushed).toBeDefined()
+    const pushedRect = pushed as { x: number; y: number; width: number; height: number }
+    const pushedDistance =
+      Math.abs(pushedRect.x - targetRect.x) + Math.abs(pushedRect.y - targetRect.y)
+    // 让开的距离必须看得出来：几十像素级的位移，而不是"浮点噪声级的 0.01"
+    expect(pushedDistance).toBeGreaterThan(10)
+
+    // 松手前记下位置：松手之后它必须**留在这里**（力场不会把它拽回去）
+    const beforeUp = await graphRootRect(page)
+    await page.mouse.up()
+    // ③ 松手之后它被按住，且位置留在手放下的地方
+    await waitUntil(
+      async () => (await graphNumber(page, 'data-graph-pinned')) === 1,
+      10_000,
+      '松手后这张卡片处于被按住状态',
+    )
+    const released = await graphRootRect(page)
+    expect(Math.abs(released.x - beforeUp.x)).toBeLessThanOrEqual(2)
+    expect(Math.abs(released.y - beforeUp.y)).toBeLessThanOrEqual(2)
+    expect(await graphNumber(page, 'data-graph-overlaps')).toBe(0)
+
+    /*
+      收尾（这一条不是客套）：这条用例**故意**把圆心那张搬到了别处，而后续用例
+      （"选中卡片 → 浮窗"、"力导向预设换档"）都建立在"圆心那张就在世界原点"这条几何前提上。
+      所以必须把图画回去：
+      1. 「松开卡片」清掉钉子；
+      2. 切到全库再切回来 ⇒ 模拟**从同心环的种子重建**（这是可复现的那条路径），
+         几何回到"刚打开图谱"的样子；
+      3. 最后自己验一遍：圆心那张的矩形确实又框住了世界原点。
+    */
+    await page.locator('[data-graph-action="unpin-cards"]').click()
+    await waitUntil(
+      async () => (await graphNumber(page, 'data-graph-pinned')) === 0,
+      10_000,
+      '卡片被松开',
+    )
+    await page.locator('[data-graph-action="mode-vault"]').click()
+    await waitUntil(async () => (await graphText(page, 'data-graph-mode')) === 'vault', 10_000, '切到全库')
+    await page.locator('[data-graph-action="mode-focus"]').click()
+    await waitUntil(
+      async () => (await graphText(page, 'data-graph-mode')) === 'focus',
+      10_000,
+      '切回关系图',
+    )
+    await waitUntil(
+      async () => {
+        const rect = await graphRootRect(page)
+        return rect.x <= 0 && rect.y <= 0 && rect.x + rect.width >= 0 && rect.y + rect.height >= 0
+      },
+      10_000,
+      '圆心那张卡片重新回到世界原点',
+    )
 
     // 回到编辑视图（后续用例与"默认视图"保持一致）
     await page.locator('button[aria-label="编辑（所见即所得）"]').click()
