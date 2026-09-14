@@ -14,7 +14,7 @@
 import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { chromium, type Browser, type Page } from 'playwright-core'
+import { chromium, type Browser, type Locator, type Page } from 'playwright-core'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { delay, findFreePort, packageRoot } from './support/harness'
@@ -467,12 +467,31 @@ async function graphTension(page: Page): Promise<number> {
 }
 
 /**
- * 把「连线张力」滑块设到某个值（张力是这一轮唯一一个**连续量**旋钮，HUD 上没有胶囊可按）。
+ * 把一个**受控**的 `<input type=range>` 设成某个值（力度管理面板上的每一根滑杆都用它）。
  *
- * 为什么要绕开 `element.value = x`：滑块是**受控**组件，React 在元素实例上挂了自己的
- * `value` 描述符（用来判断"这次输入到底变没变"）。直接赋值会被它判成"没变"，
- * `onChange` 根本不触发 —— 于是用例会"改了个寂寞"却仍然通过后面的存在性断言。
- * 用原型上的原生 setter 改值再手写 `input` 事件，才是 React 认的那种用户输入。
+ * 为什么要绕开 `element.value = x`：受控组件在元素实例上挂了 React 自己的 `value` 描述符
+ * （用来判断"这次输入到底变没变"），直接赋值会被判成"没变"、`onChange` 根本不触发 ——
+ * 于是用例"改了个寂寞"却仍然通过后面的存在性断言。用原型上的原生 setter 改值再手写事件，
+ * 才是 React 认的那种用户输入。
+ */
+async function setRangeValue(locator: Locator, value: string): Promise<void> {
+  await locator.evaluate((element, next) => {
+    if (!(element instanceof HTMLInputElement)) throw new Error('不是 input')
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    if (setter === undefined) throw new Error('拿不到 input.value 的原生 setter')
+    setter.call(element, next)
+    element.dispatchEvent(new Event('input', { bubbles: true }))
+    element.dispatchEvent(new Event('change', { bubbles: true }))
+  }, value)
+  await waitUntil(
+    async () => (await locator.inputValue()) === value,
+    5_000,
+    `滑杆设成 ${value}`,
+  )
+}
+
+/**
+ * 把「连线张力」滑块设到某个值（张力是这一轮唯一一个**连续量**旋钮，HUD 上没有胶囊可按）。
  */
 async function setGraphTension(page: Page, tension: number): Promise<void> {
   await page.locator('.mn-graph__slider[aria-label="连线张力"]').evaluate((element, value) => {
@@ -1735,6 +1754,69 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await chip.click()
     await waitUntil(async () => (await chip.getAttribute('aria-pressed')) === 'true', 5_000, '再打开漂浮')
     expect((await readGraphPrefs(page))?.floating).toBe(true)
+
+    // 回到编辑视图（后续用例与"默认视图"保持一致）
+    await page.locator('button[aria-label="编辑（所见即所得）"]').click()
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+  })
+
+  it('知识图谱：力度管理面板逐项可调、整份落盘，且**卡片之间不重叠**（碰撞是硬约束）', async () => {
+    /*
+      用户的两句要求一起验：
+        · "图谱应该有力度管理" ⇒ 面板里每项都有滑杆、拖一下立刻生效并落盘、手调后标"自定义"、
+          「恢复预设」退得回去；
+        · "笔记之间应该有碰撞" ⇒ 默认力度下 `data-graph-overlaps` 恒为 0。
+      后半句还做了一次**对照**（把斥力关到 0、向心力拉满 ⇒ 本该挤成一团）：这时仍然是 0，
+      说明兜住它的是碰撞而不是碰巧；再关掉碰撞 ⇒ 立刻出现重叠，证明那个 0 不是恒真的。
+      收尾把力度恢复成预设，别让后续用例看到一幅被挤过的图。
+    */
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/设计.md')
+    await page.keyboard.press('Control+g')
+    await page.waitForSelector('.mn-graph', { state: 'visible' })
+    await ensureGraphFocusMode(page)
+
+    const overlaps = () => graphNumber(page, 'data-graph-overlaps')
+    await waitUntil(async () => (await overlaps()) === 0, 10_000, '默认力度下不重叠')
+
+    await page.locator('[data-graph-action="toggle-force-panel"]').click()
+    await page.waitForSelector('.mn-force', { state: 'visible', timeout: 10_000 })
+    // 每一项参数都有控件（漏一项就等于那个旋钮不存在）
+    for (const key of ['centerStrength', 'repelStrength', 'linkStrength', 'linkDistance', 'damping', 'maxSpeed', 'collideStrength', 'collideIterations', 'alphaDecay']) {
+      expect(await page.locator(`[data-force-param="${key}"]`).count()).toBe(1)
+    }
+
+    // 拖「斥力」：store 与落盘一起变，角标变成"自定义"
+    const repel = page.locator('[data-force-param="repelStrength"]')
+    await setRangeValue(repel, '6')
+    await waitUntil(
+      async () => ((await readGraphPrefs(page))?.forceParams as Record<string, number> | undefined)?.['repelStrength'] === 6,
+      5_000,
+      '斥力写进偏好',
+    )
+    expect(((await page.locator('[data-force-current]').textContent()) ?? '').includes('自定义')).toBe(true)
+
+    // 对照实验：把"该挤成一团"的力加上去，碰撞仍然保证零重叠
+    await setRangeValue(repel, '0')
+    await setRangeValue(page.locator('[data-force-param="centerStrength"]'), '0.05')
+    await page.waitForTimeout(400)
+    expect(await overlaps()).toBe(0)
+
+    // 再把碰撞关掉：同样的力场立刻叠在一起（这一条是上面那个 0 的对照）
+    await setRangeValue(page.locator('[data-force-param="collideStrength"]'), '0')
+    await waitUntil(async () => (await overlaps()) > 0, 10_000, '关掉碰撞后出现重叠')
+
+    // 「恢复预设」把一切还原（后续用例看到一个正常的手感）
+    await page.locator('[data-force-action="reset"]').click()
+    await waitUntil(
+      async () => ((await page.locator('[data-force-current]').textContent()) ?? '').includes('自定义') === false,
+      5_000,
+      '恢复预设后不再是自定义',
+    )
+    await waitUntil(async () => (await overlaps()) === 0, 10_000, '恢复后重新落定为零重叠')
+
+    await page.locator('[aria-label="关闭力度管理"]').click()
+    await waitUntil(async () => (await page.locator('.mn-force').count()) === 0, 5_000, '面板关闭')
 
     // 回到编辑视图（后续用例与"默认视图"保持一致）
     await page.locator('button[aria-label="编辑（所见即所得）"]').click()

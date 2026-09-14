@@ -1,0 +1,131 @@
+/*
+ * 「力度管理」面板（ADR-0023）。
+ *
+ * 定位：贴在 HUD 右侧的一个常驻小面板（`position: absolute`，宿主内），
+ * 与 HUD 同级（`z-index` 3）但用更高的层级压在画布上；它带 `data-mn-graph-nopan`，
+ * 因此鼠标在它上面拖动/滚轮不会平移或缩放画布。
+ *
+ * 宽度与配色沿用 HUD 那一套（`--mn-bg-elevated` + `--mn-border` + 11px 字号）：
+ * 它是 HUD 的延伸，不该看起来像另一个应用。
+ */
+
+.mn-force {
+  position: absolute;
+  left: 324px;
+  top: 12px;
+  z-index: 3;
+  width: 268px;
+  max-height: calc(100% - 24px);
+  overflow: auto;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--mn-border);
+  border-radius: 10px;
+  background: var(--mn-bg-elevated);
+  box-shadow: var(--mn-shadow);
+  font-size: 11px;
+  color: var(--mn-fg);
+}
+
+.mn-force__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.mn-force__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  color: var(--mn-fg);
+}
+
+.mn-force__badge {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--mn-fg-subtle);
+  font-size: 10px;
+  text-align: right;
+}
+
+/* 手调过之后角标要看得出来"这不是原来那一档了" */
+.mn-force[data-force-custom='true'] .mn-force__badge {
+  color: var(--mn-accent);
+}
+
+.mn-force__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--mn-border);
+}
+
+.mn-force__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 0;
+}
+
+.mn-force__row {
+  display: grid;
+  grid-template-columns: 62px 1fr 42px;
+  align-items: center;
+  gap: 6px;
+  cursor: help;
+}
+
+.mn-force__label {
+  color: var(--mn-fg-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.mn-force__value {
+  color: var(--mn-fg);
+  font-family: var(--mn-font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.mn-force__slider {
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--mn-accent);
+}
+
+.mn-force__select {
+  padding: 1px 4px;
+  border: 1px solid var(--mn-border);
+  border-radius: 6px;
+  background: var(--mn-bg);
+  color: var(--mn-fg);
+  font-family: inherit;
+  font-size: 10px;
+}
+
+/* 弹簧范围那一行的下拉跨两列（它没有数值列） */
+.mn-force__row:has(.mn-force__select) {
+  grid-template-columns: 62px 1fr;
+}
+
+.mn-force__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 6px;
+  border-top: 1px solid var(--mn-border);
+}
+
+.mn-force__hint {
+  color: var(--mn-fg-subtle);
+  font-size: 10px;
+  line-height: 1.5;
+}

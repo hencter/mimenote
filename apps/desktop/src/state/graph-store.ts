@@ -39,6 +39,8 @@ import {
   type Rect,
   type Size,
 } from '@/features/graph/layout'
+import type { ForceParams } from '@/features/graph/force'
+import { forcePreset } from '@/features/graph/force-presets'
 import { ipc } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
 import type { GraphData } from '@/ipc/types'
@@ -96,6 +98,143 @@ export const DEFAULT_TENSION = 0.35
 
 /** 默认力导向预设（见 `features/graph/force-presets.ts`）。 */
 export const DEFAULT_FORCE_PRESET = 'balanced'
+
+/**
+ * 每个力度参数的可调范围（HUD 的「力度管理」面板用滑杆改它们，`step` 是滑杆的步长）。
+ *
+ * 为什么范围写在这里而不是 `force.ts` 里：`force.ts` 是**模拟**（只关心数学），
+ * 而"滑杆能给到多细、最大能到多少"是**界面与人心的取舍** —— 比如阻尼低于 0.5 会晃得像果冻、
+ * 高于 0.99 基本就不动了，滑杆没有理由伸到那些地方去。两者混在一起，改滑杆范围就得动模拟层。
+ */
+export interface ForceParamRange {
+  /** 中文名（面板上那一行）。 */
+  label: string
+  /** 一句话说明"这个旋钮往两边拧分别会发生什么"。 */
+  hint: string
+  min: number
+  max: number
+  step: number
+  /** 展示时保留几位小数（`0` = 整数）。 */
+  digits: number
+}
+
+export const FORCE_PARAM_RANGES: Readonly<Record<string, ForceParamRange>> = {
+  centerStrength: {
+    label: '向心力',
+    hint: '把所有卡片往圆心（当前笔记）拉的强度；调大更紧凑、调小更散',
+    min: 0,
+    max: 0.05,
+    step: 0.001,
+    digits: 3,
+  },
+  repelStrength: {
+    label: '斥力',
+    hint: '卡片之间互相推开的强度；调大更松（重叠也会更少）',
+    min: 0,
+    max: 20,
+    step: 0.5,
+    digits: 1,
+  },
+  linkStrength: {
+    label: '弹簧强度',
+    hint: '有链接的两张被拉向"弹簧长度"的强度；调大把有关的卡片拉得更近',
+    min: 0,
+    max: 0.3,
+    step: 0.005,
+    digits: 3,
+  },
+  linkDistance: {
+    label: '弹簧长度',
+    hint: '有链接的两张之间的自然距离（世界像素）—— 这就是"连线张力"最直观的旋钮',
+    min: 120,
+    max: 1200,
+    step: 20,
+    digits: 0,
+  },
+  damping: {
+    label: '阻尼',
+    hint: '越小越"黏"、越大越晃；0.84 左右是"落定快又不僵"的手感',
+    min: 0.5,
+    max: 0.99,
+    step: 0.01,
+    digits: 2,
+  },
+  maxSpeed: {
+    label: '速度上限',
+    hint: '每一步最多移动多少像素；调小让运动更柔和，调大允许更强的弹开',
+    min: 0,
+    max: 80,
+    step: 2,
+    digits: 0,
+  },
+  alphaDecay: {
+    label: '强度衰减',
+    hint: '每步的强度衰减；0 = 永不衰减（一直漂浮），调大更快落定',
+    min: 0,
+    max: 0.05,
+    step: 0.001,
+    digits: 3,
+  },
+  collideStrength: {
+    label: '碰撞强度',
+    hint: '卡片不许重叠的力度：1 = 硬约束（落定后保证一张都不叠），0 = 只靠斥力（可能叠在一起）',
+    min: 0,
+    max: 1,
+    step: 0.05,
+    digits: 2,
+  },
+  collideIterations: {
+    label: '碰撞轮数',
+    hint: '每一步之后解几轮重叠（一轮在密集处推不开 —— A 推开 B 又把 B 推进 C）',
+    min: 1,
+    max: 4,
+    step: 1,
+    digits: 0,
+  },
+}
+
+/** 力度参数里可以用滑杆调的那些键（`linkMaxHop` 是"几跳以内算弹簧"，用选项而不是滑杆）。 */
+export const FORCE_SLIDER_KEYS: readonly string[] = [
+  'centerStrength',
+  'repelStrength',
+  'linkStrength',
+  'linkDistance',
+  'damping',
+  'maxSpeed',
+  'collideStrength',
+  'collideIterations',
+  'alphaDecay',
+]
+
+/** `linkMaxHop` 的可选值（`Infinity` 在界面里显示成「全部」）。 */
+export const FORCE_HOP_OPTIONS: readonly number[] = [1, 2, 3, 4, Number.POSITIVE_INFINITY]
+
+export function formatForceParam(key: string, value: number): string {
+  if (!Number.isFinite(value)) return '全部'
+  const range = FORCE_PARAM_RANGES[key]
+  if (range === undefined) return String(value)
+  return value.toFixed(range.digits)
+}
+
+/**
+ * 把参数值夹进滑杆的范围并按步长吸附。
+ *
+ * 两条都要：夹范围防"手工改过 localStorage 的极端值"（比如把阻尼写成 2 会让模拟直接发散），
+ * 吸附步长则是为了让"面板上显示的"与"实际生效的"永远是同一个数 —— 否则滑杆会显示一个
+ * 它自己再也回不去的值（拖回去也差一点点）。
+ */
+export function clampForceParam(key: string, value: number): number {
+  if (!Number.isFinite(value)) return value
+  const range = FORCE_PARAM_RANGES[key]
+  if (range === undefined) return value
+  const clamped = Math.min(range.max, Math.max(range.min, value))
+  const steps = Math.round((clamped - range.min) / range.step)
+  const snapped = range.min + steps * range.step
+  // 浮点乘法会留下 0.30000000000000004 这种尾巴：按步长的小数位数收一下，
+  // 否则滑杆的 `value` 与 store 里的值永远不严格相等（受控输入会因此抖动）
+  const decimals = range.step < 1 ? (`${range.step}`.split('.')[1]?.length ?? 0) : 0
+  return Number(snapped.toFixed(decimals))
+}
 
 // ---------------------------------------------------------------------------
 // 卡片尺寸（可调大小）
@@ -220,6 +359,8 @@ interface StoredPrefs {
   forcePreset?: string
   /** 是否让节点持续漂浮（false = 打开时落定后就静止）。 */
   floating?: boolean
+  /** 手调过的力度参数（整份存下来，读回时逐项夹范围 + 吸附步长，见 `readForceParams`）。 */
+  forceParams?: ForceParams
 }
 
 function isStoredPrefs(value: unknown): value is StoredPrefs {
@@ -244,6 +385,8 @@ function readPrefs(): StoredPrefs {
     edgeFromLink: stored.edgeFromLink !== false,
     floating: stored.floating !== false,
     forcePreset: stored.forcePreset ?? DEFAULT_FORCE_PRESET,
+    // 整份力度：没有存过就用预设那一套（`null` 表示"没存过/存坏了"）
+    forceParams: readForceParams(stored.forceParams) ?? forcePreset(stored.forcePreset ?? DEFAULT_FORCE_PRESET).params,
   }
 }
 
@@ -411,9 +554,20 @@ interface GraphState {
   /** 连接线是否从正文里的 wiki link 文字处引出（关掉 = 全部从卡片边界出发）。 */
   edgeFromLink: boolean
   setEdgeFromLink: (on: boolean) => void
-  /** 力导向的预设 id（见 `features/graph/force-presets.ts`）。 */
+  /**
+   * 力导向的**当前参数**（可以是一整套预设，也可以是用户手调过的）。
+   *
+   * 为什么存整份参数而不是"预设 id + 覆盖项"：滑杆一拧就是"我在改这一套手感"，
+   * 而"哪些字段被改过"对用户没有意义（见 `forcePreset` 只用来显示"当前基于哪一档"）。
+   */
+  forceParams: ForceParams
+  /** 当前力度基于哪一档预设（手调之后界面显示"自定义"，但仍记得从哪一档出发）。 */
   forcePreset: string
   setForcePreset: (id: string) => void
+  /** 改一个力度参数（越界会被夹回范围内；面板上的滑杆走它）。 */
+  setForceParam: (key: string, value: number) => void
+  /** 把力度恢复成当前预设的那一套。 */
+  resetForceParams: () => void
   /** 是否让节点持续漂浮（false = 落定后静止，省电）。 */
   floating: boolean
   setFloating: (on: boolean) => void
@@ -534,9 +688,10 @@ interface PrefsSource {
   edgeFromLink: boolean
   floating: boolean
   forcePreset: string
+  forceParams: ForceParams
 }
 
-/** 把当前状态收成一份可落盘的偏好（四个 setter 共用，避免各自漏写一个字段）。 */
+/** 把当前状态收成一份可落盘的偏好（所有 setter 共用，避免各自漏写一个字段）。 */
 function prefsOf(source: PrefsSource): StoredPrefs {
   return {
     mode: source.mode,
@@ -545,7 +700,33 @@ function prefsOf(source: PrefsSource): StoredPrefs {
     edgeFromLink: source.edgeFromLink,
     floating: source.floating,
     forcePreset: source.forcePreset,
+    forceParams: { ...source.forceParams },
   }
+}
+
+/**
+ * 力度参数的落盘/读回。
+ *
+ * 为什么整份存下来（而不是只存预设名）：用户拧过的滑杆必须跨会话保留 —— 那是"我怎么看这幅图"
+ * 的一部分，重启就回到默认值等于白调。读回时逐项走 {@link readForceParams}（夹范围 + 吸附步长），
+ * 因此手工改过 localStorage 的脏值不会让模拟发散。
+ */
+function readForceParams(raw: unknown): ForceParams | null {
+  if (raw === null || typeof raw !== 'object') return null
+  const record = raw as Record<string, unknown>
+  const out: Record<string, number> = {
+    ...(forcePreset(DEFAULT_FORCE_PRESET).params as unknown as Record<string, number>),
+  }
+  let known = 0
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue
+    if (!(key in out)) continue
+    out[key] = clampForceParam(key, value)
+    known += 1
+  }
+  // 一个认识的字段都没有 ⇒ 当成"没存过"（让调用方回到预设那一套），而不是塞一份缺项的参数
+  if (known === 0) return null
+  return out as unknown as ForceParams
 }
 
 /** 浮动面板的层级：只增不减（`z` 只用来排序，数值本身没有意义）。 */
@@ -626,6 +807,11 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   tension: readPrefs().tension ?? DEFAULT_TENSION,
   edgeFromLink: readPrefs().edgeFromLink !== false,
   forcePreset: readPrefs().forcePreset ?? DEFAULT_FORCE_PRESET,
+  /**
+   * 当前力度参数：优先用手调过的那一份，否则用当前预设那一套。
+   * 两者都在 `readPrefs` 里算好（见 `readForceParams`：逐项夹范围 + 吸附步长）。
+   */
+  forceParams: readPrefs().forceParams ?? forcePreset(readPrefs().forcePreset ?? DEFAULT_FORCE_PRESET).params,
   floating: readPrefs().floating !== false,
   floatingPanes: [],
   pins: new Map<string, Point>(),
@@ -980,8 +1166,27 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
   setForcePreset: (id) => {
     if (get().forcePreset === id) return
-    saveJson(PREFS_KEY, prefsOf({ ...get(), forcePreset: id }))
-    set({ forcePreset: id })
+    const params = forcePreset(id).params
+    // 换预设 = 换**整套**力度（用户点的是"改用这一档手感"），因此手调过的参数一起被覆盖
+    saveJson(PREFS_KEY, prefsOf({ ...get(), forcePreset: id, forceParams: params }))
+    set({ forcePreset: id, forceParams: params })
+  },
+
+  setForceParam: (key, value) => {
+    const current = get().forceParams
+    const next = clampForceParam(key, value)
+    if ((current as unknown as Record<string, number>)[key] === next) return
+    // `key` 来自面板上那份固定清单（`FORCE_SLIDER_KEYS`），"按动态键改一个字段"在 TS 里
+    // 表达不出来 —— 这里是本文件唯一一处断言：值已经过 `clampForceParam`，形状必然是 `ForceParams`
+    const params = { ...current, [key]: next } as ForceParams
+    saveJson(PREFS_KEY, prefsOf({ ...get(), forceParams: params }))
+    set({ forceParams: params })
+  },
+
+  resetForceParams: () => {
+    const params = forcePreset(get().forcePreset).params
+    saveJson(PREFS_KEY, prefsOf({ ...get(), forceParams: params }))
+    set({ forceParams: params })
   },
 
   setFloating: (on) => {

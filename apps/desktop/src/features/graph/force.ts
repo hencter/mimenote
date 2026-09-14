@@ -18,11 +18,15 @@
  * （每次打开都不一样、空间记忆失效）。
  *
  * 已知代价（如实写在这里，别让人以后以为白拿）：松弛之后"跳数 = 半径"不再被**严格**保证 ——
- * 斥力与弹簧可能让个别二跳节点挤进一环的缝里，而**默认参数会把两层环半径都收紧到种子的约三分之二**
- * （实测：6 邻居、一跳种子 562 → 377，二跳种子 1124 → 672，`settle()` 249 步）。
+ * 斥力与弹簧可能让个别二跳节点挤进一环的缝里，而**默认参数会把两层环半径都收到种子的七成上下**
+ * （实测：6 邻居、一跳种子 562 → 392、二跳种子 1124 → 692，`settle()` 274 步、零相交）。
  * 也就是说"谁在内、谁在外"这个信息保住了，但"半径 = 布局算出来的那个数"不再成立。
- * 想尽量保住环半径，用「舒展」档（`linkDistance` 520、向心力 0.0035，实测一跳 493 ≈ 种子），
+ * 想尽量保住环半径，用「舒展」档（`linkDistance` 520、向心力 0.0035，实测一跳 494 ≈ 种子），
  * 或者干脆不启用本层。
+ *
+ * ⚠️ 加了碰撞约束（第四节）之后这条代价有了一个"地板"：环半径**不可能**小于"这一圈的卡片
+ * 按 320×400 摆开所需的空间"，所以"把环压得更紧"这件事在力场这一层已经到头了
+ * （实测：「紧凑」与「均衡」的落定半径几乎一样，394 vs 392）。要更紧只能改布局层的卡片尺寸/环半径。
  *
  * **被否掉的替代**：按 hop 把节点弹回各自的环半径（力场变成"环的橡皮筋"）。它确实能严格保住
  * 层次，但那等于把环形布局在力场里再算一遍：参数面板上要多暴露 5 个环半径，用户钉住一张卡片
@@ -53,7 +57,19 @@
  * **为什么不用 d3-force**：硬约束是不加依赖之外，它自己的定时器与 `Math.random()` 与"每帧一步、
  * 结果可复现"直接冲突，`alphaMin` 的几何衰减也没法表达"永不降温"的持续漂浮。
  *
- * ## 四、不要碰的东西
+ * ## 四、碰撞是**约束**，不是第四股力
+ *
+ * 斥力只是"倾向"：它是力，会被阻尼、弹簧、向心力一起拉扯，参数一极端（节点多、向心力大、
+ * 或 `repelStrength` 被调小）就会出现真的叠在一起的卡片 —— 那是看得见的错误，不是风格。
+ * 所以碰撞做成**位置层面的约束**：每一步（积分之后）把相交的矩形沿最小平移向量分开，
+ * `collideStrength: 1` + 多轮时静止就能保证零重叠（测试里用矩形判据钉住）。
+ *
+ * 被否掉的替代：**只把斥力调大**（它永远只是趋势，而且为了在密集处也推得开，得把强度提到
+ * 在稀疏处"像爆炸"的量级）；**把碰撞做成速度冲量**（力与冲量混在一起、与阻尼打架，
+ * 而且我们只要"不重叠"这个几何事实，不需要把它变成动量）；**用圆近似卡片**
+ * （320×400 的对角线是 512，圆会把上下两排之间撑出一条一眼可见的空缝）。
+ *
+ * ## 五、不要碰的东西
  *
  * 世界 → 屏幕的换算在 `viewport.ts`（本层不参与），画笔只要"每张卡片左上角"（`positions()`）。
  * 本层不 import React、不碰 DOM、不读全局状态，因此全部性质都能在 vitest 里直接断言。
@@ -83,6 +99,16 @@ export interface ForceParams {
   linkMaxHop: number
   /** 每步的强度衰减（alpha 从 1 衰减到 0 时停止；0 = 永不衰减，用于持续漂浮）。 */
   alphaDecay: number
+  /**
+   * 碰撞约束的强度（0..1）：**每一步之后**把重叠的卡片沿最小平移向量推开的比例。
+   *
+   * `1` = 硬约束（一轮就把这一对完全分开，因此静止时可以保证零重叠）；`0` = 关掉碰撞
+   * （回到"只有斥力、只是倾向于不重叠"的老行为，供对照与测试）；中间值是"每轮只解决这么多
+   * 比例" —— 软一些、不会在密集处抖，代价是**允许一点点稳态重叠**（见 `collidePass` 的注释）。
+   */
+  collideStrength: number
+  /** 每次 `step()` 之后跑几轮解重叠（1..4 的整数）：一轮在密集处可能推不开（A 推开 B 又把 B 推进 C）。 */
+  collideIterations: number
 }
 
 /**
@@ -119,6 +145,17 @@ export interface ForceParams {
  *   于是参数面板上 `alphaDecay` 有一个可解释的含义：**几步落定 = 1 / alphaDecay**。
  *   为什么给 200 步而不是 100 步：向心力的慢模式（≈0.98/步）要 ~200 步才收敛，
  *   预算短于它就会"冻在半路"（观感是每次打开都停在一个不太对劲的中间态）。
+ * - `collideStrength` 1（硬约束）：用户的反馈是"笔记之间应该有碰撞"，而**斥力只是倾向**——
+ *   节点一多、向心力一大、或者 `repelStrength` 被调小，卡片就会真的叠在一起，那是看得见的错误。
+ *   硬约束换来一条可以断言的保证：`settle()` 之后零重叠（测试里用矩形判据钉住）。
+ *   为什么不取 0.5 之类的软值：软值只把重叠按比例压小，稳态残余重叠 ≈ 每步被推进来的距离 /
+ *   (1 − (1 − strength)^轮数)；密集处仍然看得见叠着的一条边，等于没解决用户的抱怨。
+ * - `collideIterations` 3：**为什么不是 1**：一轮是顺序处理的（`i < j` 逐对），把 A 从 B 身上
+ *   推开之后，后续更靠后的那一对可能又把 A 挤回去 —— 密集处一轮推不干净（实测：12 张卡片挤在
+ *   原点附近时，1 轮之后还剩明显残余，3 轮基本干净）。
+ *   **为什么不是 4**：每加一轮都是又一遍 O(n²)（300 节点 = 4.5 万对），而第 4 轮能修掉的只是
+ *   前 3 轮剩下的极小残余 —— 收益递减而代价线性增长。上限就钉在 4：再多轮数在面板上也没人会用，
+ *   而"极端密集"该用「紧凑」档（硬 + 4 轮）而不是把默认值调钝。
  *
  * `Object.freeze`：它是所有模拟共享的一份"同一组参数"，被谁就地改一个字段都会让别的模拟
  * （以及测试里"同一组参数"的前提）失去意义。
@@ -132,6 +169,8 @@ export const DEFAULT_FORCE_PARAMS: ForceParams = Object.freeze({
   maxSpeed: 24,
   linkMaxHop: Number.POSITIVE_INFINITY,
   alphaDecay: 0.005,
+  collideStrength: 1,
+  collideIterations: 3,
 })
 
 // ---------------------------------------------------------------------------
@@ -149,6 +188,28 @@ export const DEFAULT_FORCE_PARAMS: ForceParams = Object.freeze({
 const REPEL_MIN_Q2 = 0.25
 /** 归一化距离平方小于它 ⇒ 两个中心几乎重合（差 < 0.01% 的卡片宽），力的方向无定义（梯度趋近 0）。 */
 const DEGENERATE_Q2 = 1e-8
+/**
+ * 碰撞求解的轮数上限。
+ *
+ * 为什么有上限（而不是"一直迭代到没有重叠"）：每一轮都是一遍 O(n²)，而 300 节点已经是
+ * 4.5 万对/步；"迭代到干净"在极端密集时可能要走几十轮，把每一帧的成本变成不可预期的东西。
+ * 4 轮是"实测量级上足够干净"与"每步成本可控"之间的取舍；真到推不开的密度，用户该调的是
+ * 预设（`compact`）而不是指望这个上限自己长大。
+ */
+const MAX_COLLIDE_ITERATIONS = 4
+/**
+ * 碰撞分离时多推的那一点"皮"（世界像素）：1e-6。
+ *
+ * **为什么必须有它**（这是实测出来的，不是理论洁癖）：只推到"刚好相切"时，任何一次后续修正带来
+ * 的浮点噪声（量级 ≈ eps × 坐标 ≈ 1e-12）都能把这一对**翻回相交**，于是"某一轮什么都没动"
+ * ——也就是"零重叠"的那条证据——永远不可达：`settle()` 会一直跑到步数上限，最后留下几处
+ * 1e-9 px 级的相交。实测（13 张卡片挤在半径 80 的一圈里）：没有这一微米时落定后仍有 3~8 处相交，
+ * 加上之后归零，而且 `settle()` 也提前停下来了。
+ *
+ * **为什么是 1e-6 而不是 0.01 那种"看得见的缝"**：它只用来消除浮点噪声。一微米在任何缩放下
+ * 都比一个像素小九个数量级，既看不见，也不会让相邻卡片看起来"没挨着"。
+ */
+const COLLIDE_SLOP = 1e-6
 /** 两中心的世界距离小于它（像素）⇒ 弹簧方向无定义，跳过这条边（交给斥力分开）。 */
 const DIRECTION_EPSILON = 1e-6
 /** alpha 低于它就当作"已经冷了"（`settle` 的判据之一）。与 d3-force 的 alphaMin 同源。 */
@@ -201,9 +262,18 @@ export interface ForceSimulation {
   nodes: readonly ForceNode[]
   /** 当前强度（1 → 0 衰减；`params.alphaDecay === 0` 时恒为 1）。 */
   alpha: number
-  /** 走一步（`dt` 默认 1）。返回是否"还在动"（alpha > 阈值 或 还有节点速度不为零）。 */
+  /**
+   * 走一步（`dt` 默认 1）。返回是否"还在动"：alpha 还没冷、还有节点的速度不为零、
+   * 或者碰撞求解这一步还在挪卡片（位置修正也是"动"）。
+   */
   step(dt?: number): boolean
-  /** 直接跑到稳定（最多 `maxSteps` 步），返回实际步数。用于"打开就落定"的确定性路径。 */
+  /**
+   * 直接跑到稳定（最多 `maxSteps` 步），返回实际步数。用于"打开就落定"的确定性路径。
+   *
+   * "稳定"的定义是三个条件都满足：力已经冷（alpha = 0）、速度都衰减到阈值以下、
+   * **碰撞求解有一整轮什么都没动**。最后一条不是凑数的：它同时证明了当前状态零重叠
+   * （见 `collidePass`），于是"`settle()` 之后不重叠"是一个被证明的结论而不是运气。
+   */
   settle(maxSteps?: number): number
   /** 把某个节点钉在指定中心点（拖动时用），返回新的模拟状态（不可变风格也行）。 */
   pin(relPath: string, x: number, y: number): void
@@ -265,7 +335,18 @@ function resolveParams(overrides: Partial<ForceParams> | undefined): ForceParams
         ? Number.POSITIVE_INFINITY
         : Math.max(0, finite(raw.linkMaxHop ?? base.linkMaxHop, base.linkMaxHop)),
     alphaDecay: Math.max(0, finite(raw.alphaDecay ?? base.alphaDecay, base.alphaDecay)),
+    collideStrength: clamp01(finite(raw.collideStrength ?? base.collideStrength, base.collideStrength)),
+    // 轮数按契约（1..4 的整数）夹紧：**关掉碰撞只有 `collideStrength: 0` 一条路**，
+    // 不让轮数也能"关"（两个旋钮都能开/关同一件事时，面板上的状态就说不清了）。
+    collideIterations: clampIterations(
+      finite(raw.collideIterations ?? base.collideIterations, base.collideIterations),
+    ),
   }
+}
+
+/** 轮数夹到 1..4 的整数：小数四舍五入（0.5 轮没有意义），超界夹紧，非有限值已经被 `finite` 兜过。 */
+function clampIterations(value: number): number {
+  return Math.min(MAX_COLLIDE_ITERATIONS, Math.max(1, Math.round(value)))
 }
 
 /** 边的下标对（字符串比较只在创建时做一次）。 */
@@ -372,9 +453,99 @@ export function createForceSimulation(input: {
   const accelX = new Float64Array(count)
   const accelY = new Float64Array(count)
   let alpha = 1
+  /**
+   * 最近一步里碰撞求解**最后一轮**的最大位置修正量（世界像素）。
+   *
+   * 为什么要记住它：位置修正不改变速度，所以"速度衰减到阈值"不足以说明模拟停了 —— 约束还在
+   * 挪卡片时也得算"还在动"。返回 0 还有更强的含义：**那一轮没有动过任何一个节点**，
+   * 于是"没有任何一对相交"是被证明的，而不是"看起来差不多"（见 `collidePass`）。
+   */
+  let lastCorrection = 0
+
+  /**
+   * 一轮碰撞求解：把所有相交的矩形对沿**最小平移向量**（MTV）分开。
+   *
+   * ## 为什么要有这一步（而不是只把斥力调大）
+   *
+   * 斥力是"倾向"：它是力，被阻尼、弹簧、向心力一起拉扯，参数一极端（节点多、`centerStrength`
+   * 大、或 `repelStrength` 调小）就会出现真的叠着的卡片。用户要的是"笔记之间应该有碰撞"——
+   * 那是一个**几何事实**，不是趋势。约束（每一步之后直接解重叠）才能给出可断言的不变量：
+   * 静止时零重叠。
+   *
+   * ## MTV 的两个取舍
+   *
+   * 1. **轴对齐矩形，不是圆**：卡片在世界坐标里就是轴对齐矩形（`width × height`），用圆近似
+   *    会凭空在上下两排之间留出一条对角线级的缝（320×400 的对角线是 512）。
+   * 2. **取重叠量较小的那一轴**：这就是"最小平移向量"的定义 —— 沿它推开所走的距离最短，
+   *    因此对布局的扰动最小。两轴相等时取 y（代码里是 `overlapX < overlapY ? x : y`），
+   *    与"哪个看起来更自然"无关，只是要一个确定的选择。
+   *
+   * ## 分配修正量与确定性
+   *
+   * 两边都可动就各推一半；有一侧被钉住（`fixed`）就把它那一半让给对面（钉住 = 位置是事实）；
+   * 两侧都钉住直接跳过。遍历严格按 `i < j`、每轮重新遍历：浮点加法不满足结合律，
+   * 换一个遍历顺序就会得到另一份坐标，"同一份输入逐字节相同"这条纪律就没了。
+   *
+   * ## 软约束（`strength < 1`）的代价（如实说）
+   *
+   * `strength` 是每轮实际推开的比例。软值并不会"最终也完全分开"：只要还有力把卡片往里挤，
+   * 就会停在一个**稳态残余重叠**上（≈ 每步被推进来的距离 / (1 − (1 − strength)^轮数)）。
+   * 这是刻意的取舍 —— 软一点的观感更"顺"，而"必须有碰撞"的要求由默认值 1（硬约束）满足。
+   *
+   * @returns 这一轮里单个节点被挪动的最大距离（0 = 这一轮什么都没动 ⇒ 当前状态零重叠）。
+   */
+  function collidePass(strength: number): number {
+    let maxCorrection = 0
+    for (let i = 0; i < count; i += 1) {
+      const a = nodes[i]
+      if (a === undefined) continue
+      for (let j = i + 1; j < count; j += 1) {
+        const b = nodes[j]
+        if (b === undefined) continue
+        if (a.fixed && b.fixed) continue // 两张都钉住：谁也不能动，这一对只能留着（诚实地留着）
+
+        const dx = b.x - a.x
+        const dy = b.y - a.y
+        // 轴对齐矩形的相交判据，与 `layout.ts` 的 `rectsIntersect` 同一口径：贴边（重叠量恰为 0）
+        // 不算相交，因此判据是"重叠量 ≤ 0"。下面推的时候会多带一微米的皮（`COLLIDE_SLOP`），
+        // 于是刚分开的一对不会被邻居的浮点噪声翻回相交。
+        const overlapX = (a.width + b.width) / 2 - Math.abs(dx)
+        if (overlapX <= 0) continue
+        const overlapY = (a.height + b.height) / 2 - Math.abs(dy)
+        if (overlapY <= 0) continue
+
+        const alongX = overlapX < overlapY
+        // 先留出一微米的"皮"（COLLIDE_SLOP）再按强度解决：`strength = 1` 时这一对是**完全分开**
+        // 且带一点余量，浮点噪声就再也翻不动"相交/不相交"这个符号了。
+        const total = ((alongX ? overlapX : overlapY) + COLLIDE_SLOP) * strength
+        if (!(total > 0)) continue // strength = 0 或算出了 0：这一对不需要动
+        const half = a.fixed || b.fixed ? total : total / 2
+        const shareA = a.fixed ? 0 : half
+        const shareB = b.fixed ? 0 : half
+
+        // 方向：从 a 指向 b。两心在该轴上的坐标恰好相等时（dx = 0 / dy = 0）取 + 方向 ——
+        // 那时方向在几何上无意义，但**必须确定**（不许用随机数，也不许"跳过不管"，
+        // 跳过会让完全重合的卡片永远叠着）。
+        if (alongX) {
+          const sign = dx >= 0 ? 1 : -1
+          a.x -= sign * shareA
+          b.x += sign * shareB
+        } else {
+          const sign = dy >= 0 ? 1 : -1
+          a.y -= sign * shareA
+          b.y += sign * shareB
+        }
+        if (shareA > maxCorrection) maxCorrection = shareA
+        if (shareB > maxCorrection) maxCorrection = shareB
+      }
+    }
+    return maxCorrection
+  }
 
   function isMoving(): boolean {
     if (alpha > ALPHA_MIN) return true
+    // 位置修正也是"动"：约束还在挪卡片时，`settle` 不该说"已经落定"。
+    if (lastCorrection > 0) return true
     for (const node of nodes) {
       if (Math.sqrt(node.vx * node.vx + node.vy * node.vy) > SPEED_EPSILON) return true
     }
@@ -495,11 +666,28 @@ export function createForceSimulation(input: {
       if (moved > maxVelocity) maxVelocity = moved
     }
 
+    // --- 碰撞约束：轴对齐矩形不许相交（在**积分之后**修位置，力的顺序不受影响）-------------
+    //
+    // 为什么放在积分之后：碰撞改的是位置而不是力，摆在力之后就等于"力算完了，再把不合法的位置
+    // 挪回合法的位置"，这与"约束"的语义一致（约束不该反过来改变力的大小）。
+    // 为什么 dt = 0 时整段跳过：dt = 0 的语义是"这一步什么都不发生"（可以用它当暂停），
+    // 位置修正也是这一步的结果，跳过它才自洽 —— 注意这与 `maxSpeed: 0` 不同：后者只是"速度上限
+    // 为零"，约束照样会把叠着的卡片分开（那是几何事实，不是速度）。别把两者当成同一个开关。
+    lastCorrection = 0
+    if (h !== 0 && params.collideStrength > 0) {
+      for (let pass = 0; pass < params.collideIterations; pass += 1) {
+        lastCorrection = collidePass(params.collideStrength)
+        // 某一轮什么都没动 ⇒ 当前状态已经零重叠（`collidePass` 没改过任何坐标），
+        // 后面几轮是纯浪费，提前结束。这条也是"多轮会收敛"的实证入口。
+        if (lastCorrection <= 0) break
+      }
+    }
+
     // alpha 按**步**衰减，不随 dt 缩放：它是"已经跑了多少步"的进度，而 dt 只是"这一步走多远"的
     // 旋钮。让 dt 影响降温速度，慢动作就会连"落定时间"也一起变，参数面板上的 1/alphaDecay 会失准。
     if (params.alphaDecay > 0) alpha = Math.max(0, alpha - params.alphaDecay)
 
-    return alpha > ALPHA_MIN || maxVelocity > SPEED_EPSILON
+    return alpha > ALPHA_MIN || maxVelocity > SPEED_EPSILON || lastCorrection > 0
   }
 
   function settle(maxSteps = DEFAULT_SETTLE_STEPS): number {

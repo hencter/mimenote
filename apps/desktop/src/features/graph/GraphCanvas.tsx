@@ -68,7 +68,8 @@ import {
 import { readPalette, type GraphPalette } from './canvas/palette'
 import { paintGraph, cardResizeHandleRect, type PaintNode } from './canvas/paint'
 import { createTokenReader } from './canvas/probe'
-import { FORCE_PRESETS, forcePreset } from './force-presets'
+import { FORCE_PRESETS } from './force-presets'
+import { ForcePanel } from './ForcePanel'
 import { createForceSimulation, type ForceSimulation } from './force'
 import { linkEdgeGeometry } from './link-edge'
 import { FloatingNote } from './FloatingNote'
@@ -190,8 +191,35 @@ function applySimulation(
   return rects
 }
 
-/** 一组卡片的包围盒（力导向落定之后用它"适应窗口"）。 */
-function boundsOfRects(rects: ReadonlyMap<string, Rect>): Rect | null {
+/**
+ * 当前布局里**重叠的卡片对数**。
+ *
+ * 为什么值得算一遍并暴露出来：用户的反馈是"笔记之间应该有碰撞！"—— 碰撞约束对不对，
+ * 唯一说了算的判据就是"矩形还相交吗"。把它算成这个数之后，界面调试、组件测试与端到端
+ * 都能直接断言 `0`，而不是靠肉眼看画布。
+ *
+ * 代价：`O(n²)` 的两两判交。ego 子图的节点上限是 300（宿主保证），最坏 4.5 万次简单比较，
+ * 亚毫秒级；因此不做空间索引 —— 加一层网格只会让这段代码更难读，收益在噪声里。
+ */
+function countOverlaps(rects: ReadonlyMap<string, Rect>): number {
+  const list = [...rects.values()]
+  let overlaps = 0
+  for (let i = 0; i < list.length; i += 1) {
+    const a = list[i]
+    if (a === undefined) continue
+    for (let j = i + 1; j < list.length; j += 1) {
+      const b = list[j]
+      if (b === undefined) continue
+      // 轴对齐矩形相交：两个轴都必须有正的重叠量（贴边不算重叠）
+      if (a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height) {
+        overlaps += 1
+      }
+    }
+  }
+  return overlaps
+}
+
+/** 一组卡片的包围盒（力导向落定之后用它"适应窗口"）。 */function boundsOfRects(rects: ReadonlyMap<string, Rect>): Rect | null {
   let minX = Number.POSITIVE_INFINITY
   let minY = Number.POSITIVE_INFINITY
   let maxX = Number.NEGATIVE_INFINITY
@@ -287,6 +315,8 @@ export function GraphCanvas() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [panning, setPanning] = useState(false)
   const [hovered, setHovered] = useState<string | null>(null)
+  /** 「力度管理」面板是否打开（瞬时状态，不持久化）。 */
+  const [forcePanelOpen, setForcePanelOpen] = useState(false)
   /** 上一帧真正画出来的卡片数（视口裁剪之后）—— 只用于诊断属性，不参与渲染决策。 */
   const [paintedCards, setPaintedCards] = useState(0)
   const pointerRef = useRef<PointerState | null>(null)
@@ -431,7 +461,13 @@ export function GraphCanvas() {
   // 命中测试读的也是同一份 ref，因此"看到的"和"点得中的"永远是同一个位置。
   // -------------------------------------------------------------------------
 
-  const forceParams = useMemo(() => forcePreset(forcePresetId).params, [forcePresetId])
+  /**
+   * 力导向的**当前参数**：来自 store（预设或用户手调过的那一份）。
+   *
+   * 为什么不再 `forcePreset(id).params` 现算：面板上的滑杆改了参数之后必须立刻生效，
+   * 而 store 里那份才是"当前这一套力度"的唯一真相（预设只是它的起点）。
+   */
+  const forceParams = useGraphStore((state) => state.forceParams)
   /** 被用户按住的卡片（ADR-0023）：力场不再移动它们，但它们仍然推开别人。 */
   const pins = useGraphStore((state) => state.pins)
   const positionsRef = useRef<Map<string, Rect>>(new Map())
@@ -1222,12 +1258,17 @@ export function GraphCanvas() {
    * 卡片画在 canvas 上，位置还受力导向影响 —— 外面（测试、自动化、调试）无从知道它此刻在哪，
    * 而"精确点到它"和"拖它的缩放手柄"正需要这个数。
    */
-  const rootRect =
-    mode === 'focus' && ego !== null ? currentRect(ego.root) : null
+  const rootRect = mode === 'focus' && ego !== null ? currentRect(ego.root) : null
   const rootRectAttr =
     rootRect === null
       ? ''
       : [rootRect.x, rootRect.y, rootRect.width, rootRect.height].map((value) => Math.round(value)).join(',')
+  /** 当前布局里重叠的卡片对数（见 `countOverlaps`）：碰撞起作用时应当恒为 0。 */
+  const overlaps = useMemo(
+    () => (mode === 'focus' ? countOverlaps(positionsRef.current) : 0),
+    // `tick` 是位置变化的时钟（漂浮每帧、落定、拖动都会推进它）
+    [mode, tick],
+  )
   const nodeCount = mode === 'focus' ? (ego?.data.nodes.length ?? 0) : (data?.nodes.length ?? 0)
   const edgeCount = mode === 'focus' ? (ego?.data.edges.length ?? 0) : (data?.edges.length ?? 0)
   const truncated = mode === 'focus' ? (ego?.data.truncated ?? false) : (data?.truncated ?? true)
@@ -1270,6 +1311,8 @@ export function GraphCanvas() {
       data-graph-root-rect={rootRectAttr}
       /* 被按住的卡片数（漂浮时"我按住了几张"一眼可见） */
       data-graph-pinned={pins.size}
+      /* 当前布局里重叠的卡片对数（碰撞是硬约束时应当恒为 0） */
+      data-graph-overlaps={overlaps}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={endPointer}
@@ -1482,6 +1525,16 @@ export function GraphCanvas() {
               >
                 松开卡片
               </button>
+              <button
+                type="button"
+                className={`mn-graph__chip${forcePanelOpen ? ' mn-graph__chip--active' : ''}`}
+                aria-pressed={forcePanelOpen}
+                data-graph-action="toggle-force-panel"
+                title="力度管理：逐项调整向心力 / 斥力 / 弹簧 / 阻尼 / 碰撞…"
+                onClick={() => setForcePanelOpen((open) => !open)}
+              >
+                力度管理
+              </button>
             </div>
 
             {selected !== null && (
@@ -1656,6 +1709,11 @@ export function GraphCanvas() {
           </button>
         </div>
       </div>
+
+      {/* 力度管理：贴着 HUD 的详细旋钮面板（打开状态是瞬时的，不持久化） */}
+      {mode === 'focus' && forcePanelOpen && (
+        <ForcePanel onClose={() => setForcePanelOpen(false)} />
+      )}
 
       {/*
         浮动笔记面板（ADR-0023）：可拖动、可缩放、可多个并存，点一下置顶。

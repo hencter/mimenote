@@ -16,6 +16,7 @@
 
 import { describe, expect, it } from 'vitest'
 
+import { rectsIntersect, type Rect } from '@/features/graph/layout'
 import {
   DEFAULT_FORCE_PARAMS,
   createForceSimulation,
@@ -105,6 +106,82 @@ function expectFinite(sim: ForceSimulation): void {
     expect(Number.isFinite(node.vy)).toBe(true)
   }
   expect(Number.isFinite(sim.alpha)).toBe(true)
+}
+
+/**
+ * 卡片矩形：`positions()`（= 中心 − 尺寸/2）配上 `ForceNode.width/height`。
+ * 这是画笔真正会画出来的那个盒子，碰撞的判据必须落在这上面。
+ */
+function cardRects(sim: ForceSimulation): Rect[] {
+  const positions = sim.positions()
+  const rects: Rect[] = []
+  for (const node of sim.nodes) {
+    const point = positions.get(node.relPath)
+    if (point === undefined) continue
+    rects.push({ x: point.x, y: point.y, width: node.width, height: node.height })
+  }
+  return rects
+}
+
+/**
+ * 相交的卡片对数。判据直接复用 `layout.ts` 的 `rectsIntersect`（贴边不算相交）——
+ * 刻意**不**重写一份"中心距 > 对角线"之类的近似：那种近似会把"竖直相切"也算成重叠。
+ */
+function intersectingPairs(sim: ForceSimulation): number {
+  const rects = cardRects(sim)
+  let pairs = 0
+  for (let i = 0; i < rects.length; i += 1) {
+    const a = rects[i]
+    if (a === undefined) continue
+    for (let j = i + 1; j < rects.length; j += 1) {
+      const b = rects[j]
+      if (b === undefined) continue
+      if (rectsIntersect(a, b)) pairs += 1
+    }
+  }
+  return pairs
+}
+
+/** 最深的一处重叠（世界像素）：0 = 没有任何一对相交；用于比较"1 轮 vs 4 轮"这类相对效果。 */
+function maxOverlapDepth(sim: ForceSimulation): number {
+  let worst = 0
+  const list = sim.nodes
+  for (let i = 0; i < list.length; i += 1) {
+    const a = list[i]
+    if (a === undefined) continue
+    for (let j = i + 1; j < list.length; j += 1) {
+      const b = list[j]
+      if (b === undefined) continue
+      const overlapX = (a.width + b.width) / 2 - Math.abs(b.x - a.x)
+      const overlapY = (a.height + b.height) / 2 - Math.abs(b.y - a.y)
+      if (overlapX > 0 && overlapY > 0) worst = Math.max(worst, Math.min(overlapX, overlapY))
+    }
+  }
+  return worst
+}
+
+/** 12 张卡片全挤在原点附近（最狠的一档：相邻中心距只有 10px，重叠量接近一整个卡片宽）。 */
+function crowdedCluster(): SeedNode[] {
+  return Array.from({ length: 12 }, (_, index) =>
+    seed(`挤${index}.md`, (index % 4) * 10 - 15, (Math.floor(index / 4) % 3) * 10 - 5, {
+      hop: index % 3,
+    }),
+  )
+}
+
+/** 一圈很密的环：中心 + 12 个邻居摆在半径 80 上（相邻中心距 ≈41px，全部互相重叠）。 */
+function crowdedRing(): { nodes: SeedNode[]; edges: ForceEdge[] } {
+  const DEG = Math.PI / 180
+  const nodes = [
+    seed('环心.md', 0, 0, { hop: 0 }),
+    ...Array.from({ length: 12 }, (_, index) =>
+      seed(`环${index}.md`, Math.cos(index * 30 * DEG) * 80, Math.sin(index * 30 * DEG) * 80, {
+        hop: 1,
+      }),
+    ),
+  ]
+  const edges = nodes.slice(1).map((node) => edge('环心.md', node.relPath))
+  return { nodes, edges }
 }
 
 // ---------------------------------------------------------------------------
@@ -288,10 +365,14 @@ describe('斥力', () => {
   })
 
   it('repelStrength = 0 时两张重叠的卡片不分开（也不抛错）', () => {
+    // ⚠️ 这条测的是"斥力这一股力被关掉之后没有任何东西再把它们推开"，所以必须**同时**把碰撞
+    // 约束也关掉（`collideStrength: 0`）：两张卡片本来就是重叠摆的（中心距 44px < 320），
+    // 有了碰撞之后它们会被约束直接分开 —— 那是**新加的一条正确行为**，不是这条测试要测的东西。
+    // 换句话说：这条断言在加碰撞之前成立，是因为"当时允许重叠"；现在"允许重叠"必须显式声明。
     const sim = createForceSimulation({
       nodes: [seed('甲.md', 0, 0), seed('乙.md', 40, 20)],
       edges: [],
-      params: { repelStrength: 0, centerStrength: 0, alphaDecay: 0 },
+      params: { repelStrength: 0, centerStrength: 0, alphaDecay: 0, collideStrength: 0 },
     })
     const before = snapshot(sim)
 
@@ -304,16 +385,259 @@ describe('斥力', () => {
 })
 
 // ---------------------------------------------------------------------------
+// 碰撞（约束，不是第四股力）
+// ---------------------------------------------------------------------------
+
+describe('碰撞（约束：矩形不许相交）', () => {
+  it('12 张卡片全挤在原点附近：settle() 之后零重叠（矩形判据，0 容差）', () => {
+    const sim = createForceSimulation({ nodes: crowdedCluster(), edges: [] })
+
+    // 起点确实是"叠成一坨"（否则这条测试什么也没证明）
+    expect(intersectingPairs(sim)).toBeGreaterThan(0)
+
+    const steps = sim.settle()
+
+    expect(steps).toBeGreaterThan(0)
+    expect(intersectingPairs(sim)).toBe(0)
+    expect(maxOverlapDepth(sim)).toBe(0)
+    expectFinite(sim)
+  })
+
+  it('一圈很密的环（中心 + 12 邻居 + 连线）：settle() 之后同样零重叠', () => {
+    const { nodes, edges } = crowdedRing()
+    const sim = createForceSimulation({ nodes, edges })
+
+    expect(intersectingPairs(sim)).toBeGreaterThan(0)
+
+    sim.settle()
+
+    expect(intersectingPairs(sim)).toBe(0)
+    expect(maxOverlapDepth(sim)).toBe(0)
+    expectFinite(sim)
+  })
+
+  it('把碰撞关掉（collideStrength: 0）就会重叠 —— 上面那两条不是恒真的', () => {
+    // 同一份"挤在原点"的输入，只把碰撞约束关掉：斥力是"倾向"，它推不开这么密的堆。
+    const sim = createForceSimulation({
+      nodes: crowdedCluster(),
+      edges: [],
+      params: { collideStrength: 0 },
+    })
+
+    sim.settle()
+
+    expect(intersectingPairs(sim)).toBeGreaterThan(0)
+    expect(maxOverlapDepth(sim)).toBeGreaterThan(0)
+  })
+
+  it('4 轮之后的最大残余重叠 ≤ 1 轮之后（多轮确实在收敛）', () => {
+    const { nodes, edges } = crowdedRing()
+    // alphaDecay 0 ⇒ 力一直热着（一直在把卡片往里挤），残余重叠不会被"降温"掩盖，
+    // 这样比较的才是**轮数**的效果，而不是"谁先冻住"
+    const build = (collideIterations: number): ForceSimulation =>
+      createForceSimulation({
+        nodes,
+        edges,
+        params: { alphaDecay: 0, collideStrength: 1, collideIterations },
+      })
+
+    const one = build(1)
+    const four = build(4)
+    for (let index = 0; index < 6; index += 1) {
+      one.step()
+      four.step()
+    }
+
+    const residualOne = maxOverlapDepth(one)
+    const residualFour = maxOverlapDepth(four)
+
+    expect(residualOne).toBeGreaterThan(0) // 1 轮真的推不干净（否则这条比较是空转）
+    expect(residualFour).toBeLessThanOrEqual(residualOne)
+  })
+
+  it('被钉住的卡片不因碰撞而移动，但它仍然把别人推开', () => {
+    const sim = createForceSimulation({
+      nodes: [seed('钉.md', 0, 0, { hop: 0, fixed: true }), seed('游.md', 40, 0)],
+      edges: [],
+      // 只留碰撞：把斥力也关掉，才能确定"游.md 动了"是约束干的
+      params: { centerStrength: 0, repelStrength: 0, alphaDecay: 0 },
+    })
+    const pinned = nodeOf(sim, '钉.md')
+
+    sim.step()
+
+    expect({ x: pinned.x, y: pinned.y }).toEqual({ x: 0, y: 0 })
+    expect(pinned.vx).toBe(0)
+    expect(pinned.vy).toBe(0)
+    // 钉住的那一半修正全部让给对面：40 + (320 − 40) = 320，正好相切 —— 再多推一微米
+    // （碰撞的"皮"，见 `force.ts` 的 `COLLIDE_SLOP`）。所以这里是"到 320 的几微米以内"（精度 5），
+    // 不是恰好相等；"分开"这个事实由下面那条 0 相交断言钉住。
+    expect(nodeOf(sim, '游.md').x).toBeCloseTo(320, 5)
+    expect(intersectingPairs(sim)).toBe(0)
+  })
+
+  it('两张都钉住时谁都不动（重叠只能如实留着）', () => {
+    const sim = createForceSimulation({
+      nodes: [
+        seed('钉甲.md', 0, 0, { hop: 0, fixed: true }),
+        seed('钉乙.md', 40, 0, { fixed: true }),
+      ],
+      edges: [],
+      params: { centerStrength: 0, repelStrength: 0, alphaDecay: 0 },
+    })
+    const before = snapshot(sim)
+
+    for (let index = 0; index < 5; index += 1) sim.step()
+
+    expect(snapshot(sim)).toEqual(before)
+    // 谁都不能动 ⇒ 这一对只能叠着（不是"解开了"，是"没得解"）
+    expect(intersectingPairs(sim)).toBe(1)
+  })
+
+  it('collideStrength 取中间值：重叠减少但不为零（软约束的语义）', () => {
+    // 两张卡片被一条 linkDistance 0 的弹簧一直往一起拉（alphaDecay 0 ⇒ 力永不降温），
+    // 于是"稳态残余重叠"会一直存在，正好用来比较三种强度。
+    const build = (collideStrength: number): ForceSimulation =>
+      createForceSimulation({
+        nodes: [seed('甲.md', 0, 0), seed('乙.md', 200, 0)],
+        edges: [edge('甲.md', '乙.md')],
+        params: {
+          centerStrength: 0,
+          repelStrength: 0,
+          linkStrength: 0.05,
+          linkDistance: 0,
+          maxSpeed: 24,
+          alphaDecay: 0,
+          collideStrength,
+          collideIterations: 1,
+        },
+      })
+
+    const off = build(0)
+    const soft = build(0.5)
+    const hard = build(1)
+    for (let index = 0; index < 200; index += 1) {
+      off.step()
+      soft.step()
+      hard.step()
+    }
+
+    const residualOff = maxOverlapDepth(off)
+    const residualSoft = maxOverlapDepth(soft)
+    const residualHard = maxOverlapDepth(hard)
+
+    expect(residualSoft).toBeGreaterThan(0) // 软约束**允许**一点稳态重叠
+    expect(residualSoft).toBeLessThan(residualOff) // 但比关掉碰撞时少得多
+    expect(residualHard).toBeLessThanOrEqual(residualSoft) // 越硬越干净
+  })
+
+  it('沿重叠量较小的那一轴分离（MTV 的定义）', () => {
+    // 竖直方向只重叠 20px、水平方向重叠 320px ⇒ 应该沿 y 分开，x 一动都不动。
+    // 如果实现成"总是沿 x 推"（很容易犯的错），这条会立刻红。
+    const sim = createForceSimulation({
+      nodes: [seed('甲.md', 0, 0), seed('乙.md', 0, 380)],
+      edges: [],
+      params: { centerStrength: 0, repelStrength: 0, alphaDecay: 0 },
+    })
+
+    sim.step()
+
+    expect(nodeOf(sim, '甲.md').x).toBe(0)
+    expect(nodeOf(sim, '乙.md').x).toBe(0)
+    // 两边都可动 ⇒ 各推一半：乙 380 → 390+、甲 0 → −10−，**相对距离**从 380 变成 400
+    // （正好相切 + 一微米的"皮"，所以精度取 5 而不是 6）
+    expect(nodeOf(sim, '乙.md').y - nodeOf(sim, '甲.md').y).toBeCloseTo(400, 5)
+    expect(intersectingPairs(sim)).toBe(0)
+  })
+
+  it('碰撞只改位置、不改速度（约束不是冲量）', () => {
+    const sim = createForceSimulation({
+      nodes: [seed('甲.md', 0, 0), seed('乙.md', 40, 0)],
+      edges: [],
+      params: { centerStrength: 0, repelStrength: 0, alphaDecay: 0 },
+    })
+    // ⚠️ 必须把数字读出来：`nodeOf` 返回的是模拟**内部**那个对象（每帧就地更新），
+    // 抓着它当"改动前的快照"是错的（读到的永远是新值）
+    const beforeX = nodeOf(sim, '乙.md').x
+
+    sim.step()
+
+    const after = nodeOf(sim, '乙.md')
+    expect(after.x).not.toBe(beforeX) // 位置被约束修正了
+    expect(after.vx).toBe(0) // 但速度没被碰过（那是力场的职责）
+    expect(after.vy).toBe(0)
+  })
+
+  it('dt = 0 时连碰撞也不跑（整步暂停）；有 dt 的一步才会解重叠', () => {
+    const sim = createForceSimulation({
+      nodes: [seed('甲.md', 0, 0), seed('乙.md', 40, 0)],
+      edges: [],
+      params: { centerStrength: 0, repelStrength: 0, alphaDecay: 0 },
+    })
+    const before = snapshot(sim)
+
+    sim.step(0)
+    sim.step(Number.NaN)
+    expect(snapshot(sim)).toEqual(before) // 暂停：位置修正也不该发生
+    expect(intersectingPairs(sim)).toBe(1)
+
+    sim.step(1)
+    expect(intersectingPairs(sim)).toBe(0) // 真的走了一步，约束才生效
+  })
+
+  it('collideIterations 被夹到 1..4 的整数：越界、小数、非有限值都落到合法档', () => {
+    const { nodes, edges } = crowdedRing()
+    const run = (collideIterations: number): [string, number, number][] => {
+      const sim = createForceSimulation({
+        nodes,
+        edges,
+        params: { alphaDecay: 0, collideIterations },
+      })
+      for (let index = 0; index < 5; index += 1) sim.step()
+      return snapshot(sim)
+    }
+
+    expect(run(99)).toEqual(run(4)) // 上界夹到 4
+    expect(run(0)).toEqual(run(1)) // 下界夹到 1（关掉碰撞只有 collideStrength: 0 一条路）
+    expect(run(2.6)).toEqual(run(3)) // 小数四舍五入
+    expect(run(Number.NaN)).toEqual(run(3)) // 非有限值退到默认的 3
+  })
+
+  it('碰撞不看边也不看跳数：不相连的卡片照样被分开', () => {
+    const sim = createForceSimulation({
+      nodes: [seed('甲.md', 0, 0, { hop: 0 }), seed('乙.md', 60, 0, { hop: 3 })],
+      edges: [edge('甲.md', '别处.md')],
+      // linkMaxHop 1 + 只有一条悬空边 ⇒ 弹簧什么都没连上，能分开它们的只有斥力与碰撞
+      params: { centerStrength: 0, repelStrength: 0, linkMaxHop: 1, alphaDecay: 0 },
+    })
+
+    sim.step()
+
+    expect(intersectingPairs(sim)).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // 弹簧（"张力"这个旋钮）
 // ---------------------------------------------------------------------------
 
 describe('弹簧（张力）', () => {
   it('linkDistance 变大时，相连的两点确实更远（旋钮真的有效）', () => {
+    // ⚠️ 这里显式关掉碰撞（`collideStrength: 0`）：这条测试要的是"弹簧把两点拉到**自然长度**上"，
+    // 而 linkDistance 200 < 卡片宽 320 —— 落点 200 意味着两张卡片必须叠着。带碰撞时它们会被
+    // 分开到 ≥320，弹簧的自然长度就永远达不到（那是正确行为，但不是这条测试要钉的东西）。
+    // 断言本身一个字没改。
     const build = (linkDistance: number): ForceSimulation =>
       createForceSimulation({
         nodes: [seed('甲.md', -200, 0), seed('乙.md', 200, 0)],
         edges: [edge('甲.md', '乙.md')],
-        params: { centerStrength: 0, repelStrength: 0, linkDistance, alphaDecay: 0.008 },
+        params: {
+          centerStrength: 0,
+          repelStrength: 0,
+          linkDistance,
+          alphaDecay: 0.008,
+          collideStrength: 0,
+        },
       })
 
     const tight = build(200)
@@ -571,6 +895,8 @@ describe('边界与安全阀', () => {
       maxSpeed: 12,
       linkMaxHop: Number.POSITIVE_INFINITY,
       alphaDecay: 0,
+      collideStrength: 1,
+      collideIterations: 3,
     }
 
     const sim = createForceSimulation({ nodes, edges, params: extreme })
@@ -580,7 +906,11 @@ describe('边界与安全阀', () => {
       expect(maxSpeedOf(sim)).toBeLessThanOrEqual(12 + 1e-9)
     }
 
-    const frozen = createForceSimulation({ nodes, edges, params: { ...extreme, maxSpeed: 0 } })
+    // ⚠️ maxSpeed = 0 的那一半**也要关掉碰撞**：`maxSpeed` 是"速度上限为零"，而碰撞是位置层面的
+    // 约束 —— 三张卡片本来就是重叠摆的（中心距 ~45px），约束会照样把它们分开。
+    // 这条断言（"谁都动不了"）是"速度被钳住"的直接结果，因此把约束关掉才是它要测的场景。
+    const pinned: ForceParams = { ...extreme, maxSpeed: 0, collideStrength: 0 }
+    const frozen = createForceSimulation({ nodes, edges, params: pinned })
     const before = snapshot(frozen)
     frozen.step()
     frozen.step()
@@ -654,6 +984,15 @@ describe('预设（参数面板上的那几档）', () => {
       expect(params.maxSpeed).toBeLessThanOrEqual(64)
       expect(params.alphaDecay).toBeGreaterThanOrEqual(0)
       expect(params.linkMaxHop === Number.POSITIVE_INFINITY || params.linkMaxHop >= 1).toBe(true)
+      // 碰撞这两项也要在合法区间里：strength 0..1、轮数 1..4 的整数
+      expect(Number.isFinite(params.collideStrength)).toBe(true)
+      expect(params.collideStrength).toBeGreaterThanOrEqual(0)
+      expect(params.collideStrength).toBeLessThanOrEqual(1)
+      expect(Number.isInteger(params.collideIterations)).toBe(true)
+      expect(params.collideIterations).toBeGreaterThanOrEqual(1)
+      expect(params.collideIterations).toBeLessThanOrEqual(4)
+      // "笔记之间应该有碰撞"：除了「漂浮」（要慢、要软）之外，每一档都得真的能分开卡片
+      expect(params.collideStrength).toBeGreaterThan(0.5)
 
       const sim = createForceSimulation({
         nodes: [seed('甲.md', 0, 0, { hop: 0 }), seed('乙.md', 560, 0), seed('丙.md', 0, 560, { hop: 2 })],

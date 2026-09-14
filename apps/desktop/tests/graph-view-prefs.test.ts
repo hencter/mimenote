@@ -9,7 +9,7 @@
  * - 浮动面板**不落盘**（下次打开还挂着一堆不知道从哪来的浮窗，比什么都没有更困惑）。
  */
 
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter } from '@/ipc/mock-adapter'
@@ -26,10 +26,12 @@ import {
   PREFS_KEY,
   clampCardHeight,
   clampCardWidth,
+  clampForceParam,
   clampTension,
   useGraphStore,
 } from '@/state/graph-store'
 import { useVaultStore } from '@/state/vault-store'
+import { forcePreset } from '@/features/graph/force-presets'
 
 const VAULT_ROOT = 'C:\\Mock\\Vault'
 const OTHER_VAULT = 'C:\\Other\\Vault'
@@ -119,6 +121,88 @@ describe('张力与浮动态的偏好', () => {
 
     expect(prefs()['forcePreset']).toBe('airy')
     expect(prefs()['floating']).toBe(false)
+  })
+
+  it('力度参数：逐项可调、夹范围、吸附步长、整份落盘', () => {
+    /*
+      "力度管理"面板上的每一根滑杆都走 `setForceParam`。三件事一起守：
+      ① 值真的进了 store；② 越界/离散步长都收拢（否则滑杆显示的值与生效值会差一点点）；
+      ③ 整份落盘（用户拧过的滑杆必须跨会话保留 —— 那是"我怎么看这幅图"的一部分）。
+    */
+    const before = useGraphStore.getState().forceParams
+    useGraphStore.getState().setForceParam('repelStrength', 7.4)
+    const after = useGraphStore.getState().forceParams
+    expect(after.repelStrength).toBe(7.5) // 步长 0.5 ⇒ 吸附到 7.5
+    expect(before.repelStrength).not.toBe(after.repelStrength)
+
+    // 越界夹回范围（阻尼上限 0.99：写成 2 会让模拟直接发散）
+    useGraphStore.getState().setForceParam('damping', 2)
+    expect(useGraphStore.getState().forceParams.damping).toBe(0.99)
+    useGraphStore.getState().setForceParam('damping', -5)
+    expect(useGraphStore.getState().forceParams.damping).toBe(0.5)
+
+    // 落盘是**整份**：改一项不该抹掉别的（曾经踩过：只写两个字段把其余偏好抹了）
+    const stored = prefs()['forceParams'] as Record<string, number>
+    expect(stored['damping']).toBe(0.5)
+    expect(stored['repelStrength']).toBe(7.5)
+    expect(Object.keys(stored).length).toBeGreaterThanOrEqual(8)
+  })
+
+  it('`clampForceParam`：范围、步长、浮点尾巴三件事', () => {
+    expect(clampForceParam('linkDistance', 500)).toBe(500)
+    expect(clampForceParam('linkDistance', 130)).toBe(140) // 步长 20，从 120 起算
+    expect(clampForceParam('linkDistance', 5)).toBe(120)
+    expect(clampForceParam('linkDistance', 9999)).toBe(1200)
+    // 浮点乘法的尾巴要收掉：0.1+0.2 那类数会让滑杆的受控值永远差一点点
+    expect(clampForceParam('linkStrength', 0.1)).toBe(0.1)
+    expect(clampForceParam('damping', 0.845)).toBe(0.85)
+    // 不认识的键原样返回（面板之外的调用方不该被悄悄改值）
+    expect(clampForceParam('不存在', 42)).toBe(42)
+    // 非有限值不动（`Infinity` 是 `linkMaxHop` 的合法值，由选项而不是滑杆给）
+    expect(clampForceParam('linkDistance', Number.POSITIVE_INFINITY)).toBe(
+      Number.POSITIVE_INFINITY,
+    )
+  })
+
+  it('换预设 = 换整套力度；「恢复预设」把滑杆调回那一套', () => {
+    useGraphStore.getState().setForceParam('centerStrength', 0.04)
+    const twiddled = useGraphStore.getState().forceParams
+    expect(twiddled.centerStrength).toBe(0.04)
+
+    // 恢复：回到当前预设（`balanced`）那一套
+    useGraphStore.getState().resetForceParams()
+    const restored = useGraphStore.getState().forceParams
+    const preset = forcePreset(DEFAULT_FORCE_PRESET).params
+    expect(restored.centerStrength).toBe(preset.centerStrength)
+    expect(restored).toEqual(preset)
+
+    // 换预设：连手调过的那一项一起被覆盖（点的是"改用这一档手感"）
+    useGraphStore.getState().setForceParam('damping', 0.5)
+    useGraphStore.getState().setForcePreset('compact')
+    const compact = forcePreset('compact').params
+    expect(useGraphStore.getState().forceParams).toEqual(compact)
+    expect(useGraphStore.getState().forcePreset).toBe('compact')
+  })
+
+  it('力度参数的脏数据不会让模拟发散（读回落盘时逐项夹回来）', async () => {
+    window.localStorage.setItem(
+      PREFS_KEY,
+      JSON.stringify({
+        mode: 'focus',
+        depth: 1,
+        forcePreset: 'balanced',
+        forceParams: { damping: 99, repelStrength: -3, linkDistance: 'far', 未知键: 1 },
+      }),
+    )
+    vi.resetModules()
+    const fresh = await import('@/state/graph-store')
+    const params = fresh.useGraphStore.getState().forceParams
+
+    expect(params.damping).toBe(0.99)
+    expect(params.repelStrength).toBe(0)
+    // 不认识的键被丢掉、非数字的值也被丢掉（保留默认）
+    expect(Object.keys(params as unknown as Record<string, number>)).not.toContain('未知键')
+    expect(params.linkDistance).toBe(forcePreset('balanced').params.linkDistance)
   })
 
   it('换视图 / 改跳数**不会**把别的偏好从落盘里抹掉（真实踩过的回归）', () => {

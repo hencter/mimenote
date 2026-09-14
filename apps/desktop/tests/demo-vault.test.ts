@@ -62,6 +62,16 @@ function listFiles(root: string): string[] {
 
 const FILES = listFiles(VAULT_ROOT)
 const NOTES = FILES.filter((rel) => rel.toLowerCase().endsWith('.md'))
+
+/**
+ * **不属于夹具**的笔记：示例 Vault 同时也是"手工试用/临时写作"的地方，用户随时可能在里面
+ * 新建一篇草稿来试渲染。那种草稿不该让夹具的一致性检查变红（它本来就不是夹具的一部分）。
+ *
+ * 为什么列成显式名单而不是"凡是没写进 README 的都跳过"：显式名单在新增草稿时只会影响
+ * 这一条检查、而且**看得见**（有人往里加名字时，评审会看到这行）；反过来"没写进 README
+ * 就跳过"会把真正的夹具文件漏掉都不报警 —— 那个方向的放宽要危险得多。
+ */
+const NOT_FIXTURE = new Set(['未命名笔记 1.md'])
 const ENTRIES: AssetEntry[] = FILES.map((relPath) => ({ relPath, isDir: false }))
 
 const read = (rel: string): string => readFileSync(join(VAULT_ROOT, ...rel.split('/')), 'utf8')
@@ -144,6 +154,9 @@ describe('示例 Vault：结构与引用完整性', () => {
     const resolver = createAssetResolver(ENTRIES)
     const problems: string[] = []
     for (const rel of NOTES) {
+      // 用户在示例 Vault 里写的草稿不算夹具（见 `NOT_FIXTURE`）：试渲染时引用一张外链图片
+      // 是完全合理的行为，不该让夹具的一致性检查变红。
+      if (NOT_FIXTURE.has(rel)) continue
       const text = read(rel)
       const hrefs = [
         ...markdownImageHrefs(text),

@@ -14,17 +14,27 @@
  * 而不是内部实现细节（用了哪个变量、哪一层 memo），换实现不该让这些用例变红。
  */
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import {
+  act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import {
+  afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { App } from '@/App'
-import { openNote } from '@/app/actions'
-import { registerBuiltinCommands, GRAPH_COMMAND_IDS } from '@/app/builtin-commands'
-import { commands } from '@/app/commands'
-import { useGlobalKeymap } from '@/app/keymap'
-import { compareEntries } from '@/domain/tree'
-import { isMarkdown } from '@/domain/paths'
-import { GraphCanvas } from '@/features/graph/GraphCanvas'
+import {
+  App } from '@/App'
+import {
+  openNote } from '@/app/actions'
+import {
+  registerBuiltinCommands, GRAPH_COMMAND_IDS } from '@/app/builtin-commands'
+import {
+  commands } from '@/app/commands'
+import {
+  useGlobalKeymap } from '@/app/keymap'
+import {
+  compareEntries } from '@/domain/tree'
+import {
+  isMarkdown } from '@/domain/paths'
+import {
+  GraphCanvas } from '@/features/graph/GraphCanvas'
 import type { PaintContext } from '@/features/graph/canvas/paint'
 import {
   CARD_GAP,
@@ -55,22 +65,31 @@ import {
   type Point,
   type Rect,
 } from '@/features/graph/layout'
-import { makeEntry, setIpcAdapter, type IpcAdapter } from '@/ipc/client'
-import { createMockAdapter } from '@/ipc/mock-adapter'
+import {
+  makeEntry, setIpcAdapter, type IpcAdapter } from '@/ipc/client'
+import {
+  createMockAdapter } from '@/ipc/mock-adapter'
 import type { GraphData, GraphEdge, GraphNode } from '@/ipc/types'
 import {
   DEFAULT_EGO_DEPTH,
+  DEFAULT_FORCE_PRESET,
   DEFAULT_VIEW,
   FALLBACK_VIEWPORT,
+  FORCE_SLIDER_KEYS,
   POSITIONS_KEY,
   PREFS_KEY,
   flushPositionPersist,
   useGraphStore,
 } from '@/state/graph-store'
-import { useLinksStore } from '@/state/links-store'
-import { useNoteStore } from '@/state/note-store'
-import { useUiStore } from '@/state/ui-store'
-import { useVaultStore } from '@/state/vault-store'
+import { forcePreset } from '@/features/graph/force-presets'
+import {
+  useLinksStore } from '@/state/links-store'
+import {
+  useNoteStore } from '@/state/note-store'
+import {
+  useUiStore } from '@/state/ui-store'
+import {
+  useVaultStore } from '@/state/vault-store'
 
 const VAULT_ROOT = 'C:\\MockVault'
 
@@ -380,9 +399,18 @@ function paintedCardCount(): number {
   return Number(graphHost().getAttribute('data-graph-painted-cards'))
 }
 
+/**
+ * 当前布局里**重叠的卡片对数**（宿主上的 `data-graph-overlaps`）。
+ *
+ * 用户说"笔记之间应该有碰撞"，唯一说了算的判据就是"矩形还相交吗" ——
+ * 这个数字是那条约束在界面上的证据（碰撞为硬约束时应当恒为 0）。
+ */
+function overlapCount(): number {
+  return Number(graphHost().getAttribute('data-graph-overlaps'))
+}
+
 /** 渲染出来的文件夹容器路径（连线与容器仍然留在 DOM 里）。 */
-function folderPaths(): string[] {
-  return Array.from(document.querySelectorAll('.mn-graph-folder')).map(
+function folderPaths(): string[] {  return Array.from(document.querySelectorAll('.mn-graph-folder')).map(
     (element) => element.getAttribute('data-folder') ?? '',
   )
 }
@@ -2218,6 +2246,92 @@ describe('知识图谱画布', () => {
     fireEvent.click(hudButton('reset-card-size'))
     await waitFor(() => {
       expect(useGraphStore.getState().cardSizes.size).toBe(0)
+    })
+  })
+
+  it('力度管理面板：每一项都在，拖滑杆即改 store 并落盘，手调后标「自定义」、恢复预设还原', async () => {
+    /*
+      用户的要求是"图谱应该有力度管理"：预设只是起点，真正要的是**逐项**能拧。
+      这条守四件事：① 每一项参数都有控件（漏一项就等于那个旋钮不存在）；
+      ② 拖动立刻进 store（不是等"应用"按钮）；③ 整份落盘（重启后还在）；
+      ④ 手调之后角标要如实说"这不再是原来那一档了"，「恢复预设」能退回去。
+    */
+    await mountFocus('项目/设计.md')
+    fireEvent.click(hudButton('toggle-force-panel'))
+
+    const panel = await waitFor(() => {
+      const element = document.querySelector('.mn-force')
+      expect(element).not.toBeNull()
+      return element as HTMLElement
+    })
+    // 每个滑杆都在（`FORCE_SLIDER_KEYS` 是面板与 store 之间的契约）
+    for (const key of FORCE_SLIDER_KEYS) {
+      expect(panel.querySelector(`[data-force-param="${key}"]`), key).not.toBeNull()
+    }
+    // 「弹簧范围」用下拉（`Infinity` 用滑杆表达不出来）
+    expect(panel.querySelector('.mn-force__select')).not.toBeNull()
+
+    // 拖一项：立刻进 store，并且整份落盘
+    const slider = panel.querySelector<HTMLInputElement>('[data-force-param="repelStrength"]')
+    expect(slider).not.toBeNull()
+    fireEvent.change(slider as HTMLInputElement, { target: { value: '8' } })
+    expect(useGraphStore.getState().forceParams.repelStrength).toBe(8)
+    expect(
+      (JSON.parse(window.localStorage.getItem(PREFS_KEY) ?? '{}') as {
+        forceParams?: Record<string, number>
+      }).forceParams?.['repelStrength'],
+    ).toBe(8)
+
+    // 角标如实说"自定义"（基于哪一档也写出来）
+    const badge = panel.querySelector('[data-force-current]')
+    expect(badge?.textContent ?? '').toContain('自定义')
+
+    // 「恢复预设」：回到当前那一档
+    const expected = forcePreset(DEFAULT_FORCE_PRESET).params.repelStrength
+    fireEvent.click(panel.querySelector('[data-force-action="reset"]') as HTMLElement)
+    expect(useGraphStore.getState().forceParams.repelStrength).toBe(expected)
+    expect(panel.querySelector('[data-force-current]')?.textContent ?? '').not.toContain('自定义')
+
+    // 关闭：面板消失（它的打开状态是瞬时的，不持久化）
+    fireEvent.click(screen.getByLabelText('关闭力度管理'))
+    await waitFor(() => {
+      expect(document.querySelector('.mn-force')).toBeNull()
+    })
+  })
+
+  it('笔记之间会碰撞：把斥力关掉（本该挤成一团），硬碰撞仍然保证零重叠', async () => {
+    /*
+      用户的另一句是"笔记之间应该有碰撞！"。判据只能是"矩形还相交吗"，所以宿主上有一个
+      `data-graph-overlaps`（两两判交的对数）。这条把它正面测一遍：
+        1. 默认力度下就是 0（本来就该不重叠）；
+        2. 把**斥力关到 0**、向心力拉满（模拟"全都往圆心挤"）之后**仍然是 0** ——
+           这正是碰撞约束的意义：斥力只是"倾向"，碰撞才是"保证"；
+        3. 再把碰撞也关掉 ⇒ 重叠对数 > 0。这一条是**对照**：没有它，上面两个 0 可能是恒真的。
+      收尾恢复默认力度，别把后面用例的图挤成一团。
+    */
+    await mountFocus('项目/设计.md')
+    expect(cardCount()).toBeGreaterThan(1) // 至少两张才有"重叠"可言
+    await waitFor(() => {
+      expect(overlapCount()).toBe(0)
+    })
+
+    act(() => {
+      useGraphStore.getState().setForceParam('repelStrength', 0)
+      useGraphStore.getState().setForceParam('centerStrength', 0.05)
+    })
+    await waitFor(() => {
+      expect(overlapCount()).toBe(0)
+    })
+
+    act(() => {
+      useGraphStore.getState().setForceParam('collideStrength', 0)
+    })
+    await waitFor(() => {
+      expect(overlapCount()).toBeGreaterThan(0)
+    })
+
+    act(() => {
+      useGraphStore.getState().resetForceParams()
     })
   })
 
