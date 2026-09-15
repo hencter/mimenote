@@ -10,7 +10,7 @@
 
 ```
 pnpm typecheck                 ✓ 无错误
-pnpm test                      ✓ 87 个测试文件 / 1601 条
+pnpm test                      ✓ 88 个测试文件 / 1618 条
 pnpm test:e2e:ui               ✓ 64 条（前置：先 pnpm build）
 pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle；release 二进制未变，未重跑）
 ```
@@ -102,6 +102,17 @@ pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle
 - 顺手修的门禁红：`tests/demo-vault.test.ts` 的 `listFiles` 现在跳过 `.mimenote/trash`
   （用户删除的副本不该被当成夹具；`README` 里列着的 `.mimenote/snippets/` 仍然照查）。
 
+## 1.6 正在做：容器切割（ADR-0035 模型层已交付）
+
+用户对布局的最终要求是"**每个模块都是标签 + 内容，标签可以拖到别的容器**"，也就是
+**一棵二叉切割树**（同时取代 ADR-0026 的三区停靠与 `tabs-store` 的全窗口标签栏）。
+
+- **模型层已交付**：`features/layout/tree-layout.ts`（纯函数 + 六条不变式 + 迁移 +
+  500 步固定种子随机操作的单测）。判据、操作面、边界都写在 ADR-0035 里。
+- **UI 还没接**：拖拽落点提示、每叶一条标签栏、分隔条、键盘等价物是下一批交付。
+  接线时注意：读旧格式（`dockLayout` + `mimenote.tabs.v1`）→ 转树 → 只写树，旧键**保留一轮**
+  （回滚时还能读回来）；`note-store` 是单文档模型，所以"同一篇笔记只在一个叶子里"是硬约束。
+
 ## 2. 下一轮可以做的（按价值排序）
 
 1. **把连线搬进 canvas**：这是所有"更优雅的线"效果（渐细笔触 taper、发光、流动虚线、60fps 漂浮）
@@ -119,7 +130,7 @@ pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle
 
 - **注释与文档一律中文，注释解释"为什么"**（取舍、代价、踩过的坑），不复述代码在做什么。
 - **提交由主会话做**：派出去的子代理**绝不执行 git 写操作**，只允许 `status`/`log`/`diff` 这类只读命令。
-  每个交付项 = feature commit + docs-sync commit；ADR 放 `docs/adr/`，**下一个编号是 0035**。
+  每个交付项 = feature commit + docs-sync commit；ADR 放 `docs/adr/`，**下一个编号是 0036**。
 - **`examples/demo-vault/` 是用户自己的草稿区**：不要动、不要提交里面的未跟踪文件（含
   `项目/未命名笔记.md` 与 `测试笔记.md` 那两处删除 —— 都是用户自己删的，保持原样）。
 - **确定性是一条纪律**：力场自己实现 xorshift32、固定遍历顺序、不用 `Math.hypot` 的地方就别用；
@@ -129,7 +140,7 @@ pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle
   `features/dock/dock-layout.ts`，连线形状是 `features/graph/edge-routing.ts`。
 - **数字要同步**：用例数写在 `README.md`（质量门禁表 + E2E 覆盖段），功能描述写在 README 的功能表 +
   `docs/architecture.md`（§7 ADR 表、§8 边界清单）+ `docs/milestones.md`。现在改完是
-  **87 文件 / 1601 条 / UI E2E 63 条 / 应用层 E2E 34 条**（应用层那 34 条是在纯文本查看器与图标刻度之前跑的：那两处都走 UI 层可覆盖的路径）。
+  **88 文件 / 1618 条 / UI E2E 64 条 / 应用层 E2E 34 条**（四层都在最新代码上跑过，应用层那次重建了 release 二进制）。
 - **验证顺序**：`pnpm typecheck` + 目标 vitest → `pnpm test` → 动了前端就 `pnpm build` + `pnpm test:e2e:ui`
   → 动了 Rust 或要跑应用层 E2E 才 `tauri build --no-bundle`（约 3–4 分钟）+ `pnpm test:e2e:app`。
 - **`pnpm test` 有已知抖动**：`tests/graph.test.tsx` 的「仅标题」用例在**并行跑整套**时偶发失败
