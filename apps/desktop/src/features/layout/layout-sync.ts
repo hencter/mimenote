@@ -23,6 +23,7 @@ import {
   defaultLayout,
   isViewModule,
   itemsOf,
+  layoutsEqual,
   leafOfItem,
   leaves,
   noteItem,
@@ -76,13 +77,35 @@ export interface ReconcileInput {
  */
 export function migrateLayout(
   raw: unknown,
-  legacy: { dock?: LegacyDockLayout | null; notes: readonly string[]; modules?: readonly ViewModuleId[] },
+  legacy: {
+    dock?: LegacyDockLayout | null
+    /**
+     * 打开的笔记（**权威**：给了就按它裁剪树上已有的笔记标签）。
+     *
+     * **不给 = "还没拿到这份名单，别动树上的笔记"** —— 这一条是接线时踩出来的：
+     * `ui-store` 在**模块初始化**时读盘，那时 `tabs-store` 还没加载，若传 `[]` 就会把
+     * 树上的笔记标签全部裁掉（用户把某篇笔记拖到别处的布局每次启动都丢）。
+     * 真正的裁剪交给 `tabs-store` 挂载后的对账（那时它才知道"开着哪几篇"）。
+     */
+    notes?: readonly string[]
+    modules?: readonly ViewModuleId[]
+  },
 ): TreeLayout {
-  const seed = raw === undefined || raw === null ? fromLegacy(legacy.dock ?? null, legacy.notes) : raw
-  return reconcileLayout(normalizeLayout(seed), {
-    notes: legacy.notes,
+  const seed =
+    raw === undefined || raw === null ? fromLegacy(legacy.dock ?? null, legacy.notes ?? []) : raw
+  const normalized = normalizeLayout(seed)
+  if (legacy.notes === undefined && legacy.modules === undefined) return normalized
+  return reconcileLayout(normalized, {
+    notes: legacy.notes ?? noteItemsIn(normalized),
     ...(legacy.modules === undefined ? {} : { modules: legacy.modules }),
   })
+}
+
+/** 树上现有的笔记标签（"没给权威名单"时用它把树原样保住）。 */
+function noteItemsIn(layout: TreeLayout): string[] {
+  return itemsOf(layout)
+    .map((item) => notePathOf(item))
+    .filter((path): path is string => path !== null)
 }
 
 /** 旧的三区停靠 → 树（不改动 `fromDockLayout` 的迁移口径，只是允许 `dock` 缺失）。 */
@@ -186,7 +209,12 @@ export function reconcileLayout(layout: TreeLayout, input: ReconcileInput): Tree
     tree = attachItem(tree, module, { leafId: anchor, edge })
   }
 
-  return normalizeLayout(tree, { isKnownItem: (item) => isViewModule(item) || notePathOf(item) !== null })
+  const normalized = normalizeLayout(tree, {
+    isKnownItem: (item) => isViewModule(item) || notePathOf(item) !== null,
+  })
+  // 幂等的**强版本**：没变就返回原引用。调用方（`tabs-store` 的订阅）因此可以每帧对账，
+  // 而不会让 `ui-store` 每次都写一遍 localStorage。
+  return layoutsEqual(normalized, layout) ? layout : normalized
 }
 
 /** 主叶的 id：`main` 那一格；没有就用最左边的那个叶（叶子一个都没有时返回 `undefined`）。 */

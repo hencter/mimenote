@@ -41,6 +41,8 @@ import type { EntryMeta } from '@/ipc/types'
 import { useConfirmStore } from './confirm-store'
 import { useNoteStore } from './note-store'
 import { loadJson, saveJson } from './persist'
+import { reconcileLayout } from '@/features/layout/layout-sync'
+import { useUiStore } from './ui-store'
 import { useVaultStore } from './vault-store'
 
 /** 持久化键：`{ [vaultRoot]: { tabs, active } }`。 */
@@ -269,6 +271,17 @@ function handleVaultChange(rootPath: string | null, entries: readonly EntryMeta[
  * `TabBar` 是在 `openVault` 之后才挂载的，只订阅"变化"会永远看不到那次打开 Vault。
  */
 export function installTabsSync(): Disposer {
+  /*
+   * **布局树随标签对账**（ADR-0035 的接线）：树管"谁在哪"，`tabs-store` 管"谁存在"。
+   * 对账是幂等的（没变化返回原引用 ⇒ `setLayout` 直接返回，不写盘），所以挂在这里每帧调也安全。
+   * 安装点选在这里而不是 `ui-store`：那边不该反向依赖业务 store（同一份数据两个方向订阅会成环）。
+   */
+  const syncLayout = (): void => {
+    const ui = useUiStore.getState()
+    ui.setLayout(reconcileLayout(ui.layout, { notes: useTabsStore.getState().tabs }))
+  }
+  syncLayout()
+  const disposeLayout = useTabsStore.subscribe(syncLayout)
   const vault = useVaultStore.getState()
   const root = vault.info?.rootPath ?? null
   if (useTabsStore.getState().restoredRoot !== root) {
@@ -292,6 +305,8 @@ export function installTabsSync(): Disposer {
   })
 
   return () => {
+    disposeLayout()
+
     disposeVault()
     disposeNote()
   }

@@ -19,6 +19,12 @@ import {
   type DockModuleId,
   type DockSide,
 } from '@/features/dock/dock-layout'
+import {
+  defaultLayout,
+  layoutsEqual,
+  type TreeLayout,
+} from '@/features/layout/tree-layout'
+import { migrateLayout } from '@/features/layout/layout-sync'
 import { loadJson, saveJson } from './persist'
 
 /**
@@ -90,6 +96,15 @@ export interface UiPreferences {
    * 四条切换快捷键因此一字不用改（见 `features/dock/dock-layout.ts` 的说明）。
    */
   dockLayout: DockLayout
+  /**
+   * **容器切割树**（ADR-0035）：谁在哪一格、每格显示谁、每刀的比例。
+   *
+   * 与 `dockLayout` 的关系是**迁移期并存**：`dockLayout` 仍然是这一轮渲染与交互的依据
+   * （换渲染器必须和"每叶一条标签栏 + 拖拽落点"一起上，否则 `Alt+1/2/3` 那套会悬空），
+   * 而树是**新的落盘格式**：从 `dockLayout` 迁移而来、随打开的笔记对账、并且**不再删旧键**
+   * （回滚到旧版本时还能读到升级前那份布局）。
+   */
+  layout: TreeLayout
   /** 底部停靠区的高度（px，**按用户偏好存**：它与侧栏宽度同一性质）。 */
   bottomDockHeight: number
 }
@@ -116,6 +131,7 @@ const DEFAULTS: UiPreferences = {
   outlineLevelsByVault: {},
   treeSort: DEFAULT_TREE_SORT,
   dockLayout: DEFAULT_DOCK_LAYOUT,
+  layout: defaultLayout(),
   bottomDockHeight: 220,
 }
 
@@ -168,6 +184,17 @@ const initial: UiPreferences = {
   treeSort: isTreeSort(restored.treeSort) ? restored.treeSort : DEFAULTS.treeSort,
   // 停靠模型有一条不变式（每个模块恰好出现一次），坏数据整份退回默认 —— 见 dock-layout.ts 的文件头
   dockLayout: isDockLayout(restored.dockLayout) ? restored.dockLayout : DEFAULT_DOCK_LAYOUT,
+  /*
+   * 树的新旧迁移：已经有树就用树；只有旧的 dockLayout 就迁移；都没有就用**今天默认的停靠布局**
+   * 迁移出来（于是"外观不变"这条在默认情况下也成立）。
+   *
+   * **刻意不传 notes**：这一行在模块初始化时执行，那时 `tabs-store` 还没加载 ——
+   * 传 `[]` 会被对账理解成"一篇都没开"，把树上的笔记标签全裁掉。传 `undefined` 的语义是
+   * "还没拿到名单，别动树上的笔记"，真正的裁剪交给挂载后的对账。
+   */
+  layout: migrateLayout(restored.layout, {
+    dock: isDockLayout(restored.dockLayout) ? restored.dockLayout : DEFAULT_DOCK_LAYOUT,
+  }),
   bottomDockHeight: clamp(
     restored.bottomDockHeight ?? DEFAULTS.bottomDockHeight,
     BOTTOM_DOCK_MIN,
@@ -240,6 +267,14 @@ interface UiState extends UiPreferences {
   setTrashDialogOpen: (open: boolean) => void
 
   /**
+   * 换一棵布局树（对账 / 以后的各种拖拽都走它）。
+   *
+   * 结构没变时**直接返回**：对账是"每帧都可能调"的路径，不挡住的话每次切标签都会写一遍
+   * localStorage。
+   */
+  setLayout: (layout: TreeLayout) => void
+
+  /**
    * 主区里**正在用查看器打开的附件**（Vault 相对路径；`null` = 主区显示的是笔记）。
    *
    * 与 `paletteMode` / `trashDialogOpen` 同一类**瞬时状态**：刻意不进 `persist()` ——
@@ -268,6 +303,7 @@ function persist(state: UiState): void {
     outlineLevelsByVault: state.outlineLevelsByVault,
     treeSort: state.treeSort,
     dockLayout: state.dockLayout,
+    layout: state.layout,
     bottomDockHeight: state.bottomDockHeight,
   } satisfies UiPreferences)
 }
@@ -293,6 +329,12 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   closePalette: () => {
     set({ paletteMode: null })
+  },
+
+  setLayout: (layout) => {
+    if (layoutsEqual(get().layout, layout)) return
+    set({ layout })
+    persist(get())
   },
 
   openFile: (relPath) => {

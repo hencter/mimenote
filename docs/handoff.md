@@ -10,7 +10,7 @@
 
 ```
 pnpm typecheck                 ✓ 无错误
-pnpm test                      ✓ 89 个测试文件 / 1633 条
+pnpm test                      ✓ 90 个测试文件 / 1640 条
 pnpm test:e2e:ui               ✓ 64 条（前置：先 pnpm build）
 pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle；release 二进制未变，未重跑）
 ```
@@ -109,10 +109,11 @@ pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle
 
 - **模型层已交付**：`features/layout/tree-layout.ts`（纯函数 + 六条不变式 + 迁移 +
   500 步固定种子随机操作的单测）。判据、操作面、边界都写在 ADR-0035 里。
-- **接线的逻辑面也已交付**：`features/layout/layout-sync.ts`（`migrateLayout` 读旧格式 → 树；
-  `reconcileLayout` 树 ↔ 权威列表对账，**幂等**、**隐藏 ≠ 移除**）。剩下的是
-  **ui-store 落盘与渲染接线**：读旧 `dockLayout` + `mimenote.tabs.v1` → 转树 → 只写树，
-  旧键保留一轮。
+- **接线的逻辑面也已交付**：`features/layout/layout-sync.ts`（`migrateLayout` / `reconcileLayout`）。
+- **树已经是活的落盘状态**：`ui-store.layout` 进 `mimenote.ui.v1`（旧键 `dockLayout` 不删、
+  回滚可读），对账挂在 `installTabsSync` 里，`setLayout` 结构没变时不写盘。
+  **渲染与交互仍走旧的 `dockLayout`** —— 下一批才换渲染器（必须和"每叶一条标签栏 +
+  拖标签落点提示"一起上，否则 `Alt+1/2/3` 会悬空）。
 - **UI 还没接**：拖拽落点提示、每叶一条标签栏、分隔条、键盘等价物是下一批交付。
   接线时注意：读旧格式（`dockLayout` + `mimenote.tabs.v1`）→ 转树 → 只写树，旧键**保留一轮**
   （回滚时还能读回来）；`note-store` 是单文档模型，所以"同一篇笔记只在一个叶子里"是硬约束。
@@ -144,7 +145,7 @@ pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle
   `features/dock/dock-layout.ts`，连线形状是 `features/graph/edge-routing.ts`。
 - **数字要同步**：用例数写在 `README.md`（质量门禁表 + E2E 覆盖段），功能描述写在 README 的功能表 +
   `docs/architecture.md`（§7 ADR 表、§8 边界清单）+ `docs/milestones.md`。现在改完是
-  **89 文件 / 1633 条 / UI E2E 64 条 / 应用层 E2E 34 条**（UI 与应用层是在这一批的模型/逻辑改动之前跑的：那两批只新增纯函数模块，界面未动）。
+  **90 文件 / 1640 条 / UI E2E 64 条 / 应用层 E2E 34 条**（UI E2E 在这一批之后跑过；应用层那 34 条是在顶行合并之后、这几批纯逻辑改动之前跑的 —— 界面没动）。
 - **验证顺序**：`pnpm typecheck` + 目标 vitest → `pnpm test` → 动了前端就 `pnpm build` + `pnpm test:e2e:ui`
   → 动了 Rust 或要跑应用层 E2E 才 `tauri build --no-bundle`（约 3–4 分钟）+ `pnpm test:e2e:app`。
 - **`pnpm test` 有已知抖动**：`tests/graph.test.tsx` 的「仅标题」用例在**并行跑整套**时偶发失败

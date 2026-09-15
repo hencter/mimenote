@@ -223,6 +223,27 @@ function uniqueId(layout: TreeLayout, base: string): string {
   }
 }
 
+/** 两棵树结构上是否**逐字相同**（对账用它决定"要不要写盘"）。 */
+export function layoutsEqual(a: TreeLayout, b: TreeLayout): boolean {
+  if (a.kind !== b.kind || a.id !== b.id) return false
+  if (a.kind === 'leaf' && b.kind === 'leaf') {
+    return (
+      a.active === b.active &&
+      a.items.length === b.items.length &&
+      a.items.every((item, index) => item === b.items[index])
+    )
+  }
+  if (a.kind === 'split' && b.kind === 'split') {
+    return (
+      a.axis === b.axis &&
+      a.ratio === b.ratio &&
+      layoutsEqual(a.a, b.a) &&
+      layoutsEqual(a.b, b.b)
+    )
+  }
+  return false
+}
+
 function clampRatio(ratio: number): number {
   if (!Number.isFinite(ratio)) return 0.5
   return Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio))
