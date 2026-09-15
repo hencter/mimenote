@@ -10,8 +10,8 @@
 
 ```
 pnpm typecheck                 ✓ 无错误
-pnpm test                      ✓ 84 个测试文件 / 1579 条
-pnpm test:e2e:ui               ✓ 61 条（前置：先 pnpm build）
+pnpm test                      ✓ 85 个测试文件 / 1587 条
+pnpm test:e2e:ui               ✓ 62 条（前置：先 pnpm build）
 pnpm test:e2e:app              ✓ 33 条（前置：先 tauri build --no-bundle；release 二进制未变，未重跑）
 ```
 
@@ -70,7 +70,15 @@ pnpm test:e2e:app              ✓ 33 条（前置：先 tauri build --no-bundle
 | # | 用户原话 | 落在哪 |
 | --- | --- | --- |
 | 1 | `mn-editor__path` 居中在中间页、高度不固定，希望进标题栏那一行并分成左/中/右三区 | **ADR-0029**：`.mn-titlebar` 改网格 `1fr / 2fr / 1fr`（`__left` / `__center` / `__right`），路径从编辑器面板搬进中区（`.mn-titlebar__path`），删掉 `.mn-editor__path` / `.mn-editor__status` |
-| 2 | 隐藏 `.md` 的扩展名 | **ADR-0030**：`domain/paths.ts` 新增 `displayName` / `displayPath`（建在既有的 `isMarkdown` 上），标签页 / 标题栏 / 文件树 / 反链出链 / 快速切换 / 搜索命中 / 窗口标题 / 回收站 / 冲突横幅 / 拖拽与保存提示都改走它；导出件、宿主报错原文、移动对话框保留真实文件名 |
+| 2 | 隐藏 `.md` 的扩展名 | **ADR-0030**：`domain/paths.ts` 新增 `displayName` / `displayPath`（建在既有的 `isMarkdown` 上），标签页 / 标题栏 / 文件树 / 反链出链 / 快速切换 / 搜索命中 / 窗口标题 / 回收站 / 冲突横幅 / 拖拽与保存提示都改走它；导出件、宿主报错原文、移动对话框保留真实文件名 || 3 | 一份完整的 VI 设计文档（v1.0）+「整体默认字体能统一 16 号字体吗」 | **ADR-0031**：设计令牌两层命名（`--mn-*` 存储 / VI 名 `--bg-base`… 公开书写面，别名层在 app.css，可选令牌带兜底）+ **默认字号三档统一 16** + 文件树行高 26→30 + 新增"四栏不裁字 / 树行留白 ≥3px / 三档字号 = 16px"的 E2E 门禁。VI 里会推翻既有 ADR 的三条（顶栏 40px 等高度、编辑正文等宽、分屏）**一条都没动** |
+- **字号的真值在设置层**：`state/settings-store.ts` 的 `DEFAULT_SETTINGS`，由 `features/settings/font-overrides.ts`
+  以行内变量 + `!important` 写进 `<html>`。改 `app.css` 的 `:root` 或主题 JSON 里的 `--mn-font-size-*`
+  **不会有任何效果**（那两处只是兜底与令牌清单完整性）。老用户读 localStorage 里存的值，
+  所以"改了默认值而用户没变"是预期行为 —— 出路是设置页的「恢复默认字号」。
+- **VI 别名层是单向的**：写 `--bg-base` 不影响 `--mn-bg`。主题作者改值仍然改主题 JSON；
+  想加"可选皮肤"（阅读衬线、编辑等宽、品牌 hover 色）就给对应的 `--mn-*` 可选令牌，别名会自己接上。
+- 界面里还有一批 **10–13px 硬编码小字**不跟基础字号长；把它们收敛到 `--space-*` / `--font-size-*`
+  是单独一轮（会改观感）。
 
 两个细节值得记住（下一个交付项会复用）：
 
@@ -102,7 +110,7 @@ pnpm test:e2e:app              ✓ 33 条（前置：先 tauri build --no-bundle
 
 - **注释与文档一律中文，注释解释"为什么"**（取舍、代价、踩过的坑），不复述代码在做什么。
 - **提交由主会话做**：派出去的子代理**绝不执行 git 写操作**，只允许 `status`/`log`/`diff` 这类只读命令。
-  每个交付项 = feature commit + docs-sync commit；ADR 放 `docs/adr/`，**下一个编号是 0031**。
+  每个交付项 = feature commit + docs-sync commit；ADR 放 `docs/adr/`，**下一个编号是 0032**。
 - **`examples/demo-vault/` 是用户自己的草稿区**：不要动、不要提交里面的未跟踪文件（含
   `项目/未命名笔记.md` 与 `测试笔记.md` 那两处删除 —— 都是用户自己删的，保持原样）。
 - **确定性是一条纪律**：力场自己实现 xorshift32、固定遍历顺序、不用 `Math.hypot` 的地方就别用；
@@ -112,7 +120,7 @@ pnpm test:e2e:app              ✓ 33 条（前置：先 tauri build --no-bundle
   `features/dock/dock-layout.ts`，连线形状是 `features/graph/edge-routing.ts`。
 - **数字要同步**：用例数写在 `README.md`（质量门禁表 + E2E 覆盖段），功能描述写在 README 的功能表 +
   `docs/architecture.md`（§7 ADR 表、§8 边界清单）+ `docs/milestones.md`。现在改完是
-  **84 文件 / 1579 条 / UI E2E 61 条 / 应用层 E2E 33 条**（应用层那 33 条是在 callout 两处修复之前跑的）。
+  **85 文件 / 1587 条 / UI E2E 62 条 / 应用层 E2E 33 条**（应用层那 33 条是在 callout 修复与字号改动之前跑的）。
 - **验证顺序**：`pnpm typecheck` + 目标 vitest → `pnpm test` → 动了前端就 `pnpm build` + `pnpm test:e2e:ui`
   → 动了 Rust 或要跑应用层 E2E 才 `tauri build --no-bundle`（约 3–4 分钟）+ `pnpm test:e2e:app`。
 - **`pnpm test` 有已知抖动**：`tests/graph.test.tsx` 的「仅标题」用例在**并行跑整套**时偶发失败
