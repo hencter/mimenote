@@ -10,8 +10,8 @@
 
 ```
 pnpm typecheck                 ✓ 无错误
-pnpm test                      ✓ 86 个测试文件 / 1594 条
-pnpm test:e2e:ui               ✓ 62 条（前置：先 pnpm build）
+pnpm test                      ✓ 86 个测试文件 / 1596 条
+pnpm test:e2e:ui               ✓ 63 条（前置：先 pnpm build）
 pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle；release 二进制未变，未重跑）
 ```
 
@@ -120,7 +120,7 @@ pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle
   `features/dock/dock-layout.ts`，连线形状是 `features/graph/edge-routing.ts`。
 - **数字要同步**：用例数写在 `README.md`（质量门禁表 + E2E 覆盖段），功能描述写在 README 的功能表 +
   `docs/architecture.md`（§7 ADR 表、§8 边界清单）+ `docs/milestones.md`。现在改完是
-  **86 文件 / 1594 条 / UI E2E 62 条 / 应用层 E2E 34 条**（四层都在最新代码上跑过）。
+  **86 文件 / 1596 条 / UI E2E 63 条 / 应用层 E2E 34 条**（应用层那 34 条是在纯文本查看器之前跑的：它走 `note_read`，UI E2E 已覆盖同一条路）。
 - **验证顺序**：`pnpm typecheck` + 目标 vitest → `pnpm test` → 动了前端就 `pnpm build` + `pnpm test:e2e:ui`
   → 动了 Rust 或要跑应用层 E2E 才 `tauri build --no-bundle`（约 3–4 分钟）+ `pnpm test:e2e:app`。
 - **`pnpm test` 有已知抖动**：`tests/graph.test.tsx` 的「仅标题」用例在**并行跑整套**时偶发失败

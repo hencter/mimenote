@@ -828,6 +828,31 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     // 树行留白：行高 30 − 文字行盒 24 ⇒ 上下各 3px。字号再往上抬就必须一起抬行高
     expect(tight.rowGap).toBeGreaterThanOrEqual(3)
   })
+  it('文件树里点一个 `.txt`：纯文本查看器把原文显示出来（只读，ADR-0032）', async () => {
+    await ensureVaultOpen(page)
+    const file = '.mn-tree [data-rel-path="附件/说明.txt"]'
+    if ((await page.locator(file).count()) === 0) await treeRow(page, '附件').click()
+    await page.locator(file).click()
+
+    await page.waitForSelector('[data-viewer-kind="text"]', { state: 'visible' })
+    // 原文真的来自读文件（Mock 适配器的 note_read）——不是占位、也不是空白
+    expect((await page.locator('[data-viewer-text="true"]').textContent()) ?? '').toContain(
+      '非 Markdown',
+    )
+    // 标题栏中区跟着换成"我在看什么"
+    expect(await page.locator('.mn-titlebar__path').getAttribute('data-main-path')).toBe(
+      '附件/说明.txt',
+    )
+    // 折行开关可逆（纯文本查看器唯一需要的交互）
+    const wrap = page.locator('[data-viewer-action="toggle-wrap"]')
+    const before = await wrap.textContent()
+    await wrap.click()
+    expect(await wrap.textContent()).not.toBe(before)
+
+    // 打开一篇笔记就回到笔记
+    await openNoteInTree(page, '项目/设计.md')
+    expect(await page.locator('[data-viewer-kind="text"]').count()).toBe(0)
+  })
   it('callout：所见即所得与阅读视图的框内边距一致（编辑区里也有边距）', async () => {
     /*
       用户报的"callout 在编辑区域下没有边距，预览/阅读视图和实时编辑视图没法统一"。

@@ -13,6 +13,7 @@ import { displayPath } from '@/domain/paths'
 import { viewerKindOf } from '@/domain/viewable'
 
 import { ImageViewer } from './ImageViewer'
+import { TextViewer } from './TextViewer'
 import './viewer.css'
 
 export function FileViewer({ relPath }: { relPath: string }) {
@@ -20,6 +21,10 @@ export function FileViewer({ relPath }: { relPath: string }) {
 
   if (kind === 'image') {
     return <ImageViewer relPath={relPath} />
+  }
+
+  if (kind === 'text') {
+    return <TextViewer relPath={relPath} />
   }
 
   /*

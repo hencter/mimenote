@@ -20,12 +20,57 @@
 import { isImageAssetTarget } from './assets'
 
 /** 查看器种类。加一类 = 在这里加一个字面量 + 在 `features/viewer/` 里加一个组件。 */
-export type ViewerKind = 'image'
+export type ViewerKind = 'image' | 'text'
+
+/**
+ * 可以按**纯文本**打开的扩展名。
+ *
+ * 为什么是白名单而不是"凡不是图片就按文本打开"：Vault 里躺着的 `.zip` / `.exe` / `.db`
+ * 一旦被当文本读，用户看到的是乱码 —— 那比"打不开"更像 bug。二进制与未知类型保持
+ * "只选中"的既有行为。
+ *
+ * `note_read` 宿主侧**本来就不限扩展名**（只做路径防护、拒目录、限大小），所以这一类
+ * 不需要任何新 IPC；`.md` 不在这里 —— 它是**笔记**，有自己的三种视图与整条编辑流水线。
+ */
+const TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
+  'txt',
+  'text',
+  'log',
+  'json',
+  'jsonc',
+  'toml',
+  'csv',
+  'tsv',
+  'yaml',
+  'yml',
+  'ini',
+  'conf',
+  'env',
+  'xml',
+  'html',
+  'css',
+  'js',
+  'mjs',
+  'cjs',
+  'ts',
+  'tsx',
+  'jsx',
+  'py',
+  'rs',
+  'go',
+  'sh',
+  'ps1',
+  'bat',
+  'sql',
+])
 
 /** 这个相对路径该用哪种查看器打开；`null` = 不提供预览（保持"只选中"的既有行为）。 */
 export function viewerKindOf(relPath: string): ViewerKind | null {
   if (isImageAssetTarget(relPath)) return 'image'
-  return null
+  const name = relPath.trim().split(/[\\/]/).pop() ?? ''
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0 || dot === name.length - 1) return null
+  return TEXT_EXTENSIONS.has(name.slice(dot + 1).toLowerCase()) ? 'text' : null
 }
 
 /** 能否打开（供文件树的点击分派用）。 */

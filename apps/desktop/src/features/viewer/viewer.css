@@ -70,6 +70,30 @@
   max-height: none;
 }
 
+/* 纯文本：等宽、保留空白（`pre` 语义）、行号不做（那需要按行切分，几十万行会卡） */
+.mn-viewer__stage--text {
+  display: block;
+  padding: 0;
+  overflow: auto;
+}
+
+.mn-viewer__text {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  font-family: var(--font-code);
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+  color: var(--text-primary);
+  tab-size: 4;
+  white-space: pre;
+}
+
+/* 折行：长行走 `pre-wrap`，超长单词也允许断开（否则一行把整页撑宽） */
+.mn-viewer__stage--wrap .mn-viewer__text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .mn-viewer__note {
   margin: 0;
   max-width: 46em;

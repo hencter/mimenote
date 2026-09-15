@@ -90,8 +90,18 @@ describe('判据：哪些附件能打开（domain/viewable.ts）', () => {
     expect(isViewable(IMAGE)).toBe(true)
   })
 
-  it('其余一律不提供预览（笔记有它自己的三种视图，其他附件保持"只选中"）', () => {
-    for (const relPath of ['项目/设计.md', '附件/说明.txt', '归档.zip', '.gitignore', '无扩展名', 'a.']) {
+  it('文本类附件（`.txt` / `.json` / `.csv` / 源码…）走纯文本查看器', () => {
+    // 宿主 `note_read` 本来就不限扩展名（只做路径防护/拒目录/限大小），所以这一类**不需要新 IPC**
+    expect(viewerKindOf('附件/说明.txt')).toBe('text')
+    expect(viewerKindOf('数据/表.CSV')).toBe('text')
+    expect(viewerKindOf('配置/app.toml')).toBe('text')
+    expect(viewerKindOf('脚本/x.py')).toBe('text')
+  })
+
+  it('其余一律不提供预览（笔记有自己的三种视图；二进制与未知类型保持"只选中"）', () => {
+    // 白名单而不是"凡不是图片就按文本打开"：把 `.zip`/`.db` 当文本读，用户看到的是乱码，
+    // 那比"打不开"更像 bug（`.md` 也不在这里 —— 它是笔记）
+    for (const relPath of ['项目/设计.md', '归档.zip', '库.db', '图.png.exe', '.gitignore', '无扩展名', 'a.']) {
       expect(viewerKindOf(relPath), `${relPath} 不该被当成可预览`).toBeNull()
     }
   })
@@ -130,12 +140,33 @@ describe('接线：点开一张图片', () => {
     expect(document.querySelector('[data-viewer-action="toggle-fit"]')).toBeNull()
   })
 
-  it('不可预览的附件（`.txt`）保持原样：只选中，主区不动', async () => {
+  it('点一个 `.txt`：纯文本查看器把原文显示出来（只读，且不动笔记）', async () => {
     await mountWithImage()
     await clickTreeRow('附件/说明.txt')
 
+    await waitFor(() => {
+      expect(viewer()?.getAttribute('data-viewer-kind')).toBe('text')
+    })
+    // 内容真的来自磁盘（Mock 适配器的 note_read），不是占位
+    expect(document.querySelector('[data-viewer-text="true"]')?.textContent ?? '').toContain(
+      '非 Markdown 附件',
+    )
+    expect(useNoteStore.getState().doc).toBeNull()
+    expect(useTabsStore.getState().tabs).toEqual([])
+  })
+
+  it('不可预览的附件（`.zip`）保持原样：只选中，主区不动', async () => {
+    await mountWithImage()
+    await act(async () => {
+      useVaultStore.getState().registerAttachment({ relPath: '归档/打包.zip', sizeBytes: 4096 })
+    })
+    await waitFor(() => {
+      expect(treeRow('归档/打包.zip')).not.toBeNull()
+    })
+    await clickTreeRow('归档/打包.zip')
+
     expect(viewer()).toBeNull()
-    expect(useVaultStore.getState().selected).toBe('附件/说明.txt')
+    expect(useVaultStore.getState().selected).toBe('归档/打包.zip')
   })
 
   it('打开一篇笔记就离开查看器（三条收口路径之一）', async () => {
