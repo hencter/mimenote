@@ -85,6 +85,8 @@ pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle
 - 路径的旧类名 `.mn-editor__path` 曾是 E2E 里"当前打开的是哪一篇"的主力探针（约 20 处），
   现在一律是 `.mn-titlebar__path`；`openNoteInTree` 里"编辑视图读路径、否则退回树里选中态"的分支
   已经删掉（路径三种视图里都在，不需要间接信号了）。
+- **标签栏在窗口最顶上那一行**（标题栏在它下面）：顶行的空白段是拖动区（`.mn-tabs__filler`），
+  别把它删了 —— 删了之后顶行就没法拖窗口。
 - **可见文字不再承载身份**：标题栏路径元素上有 `data-note-path`（真实路径），两层 E2E 的
   `currentNotePath(page)` 读它，**别改回读 `textContent`** —— `includes('项目/设计')` 会被
   `项目/设计文档` 误命中，而且可见文字现在**不带 `.md`**。

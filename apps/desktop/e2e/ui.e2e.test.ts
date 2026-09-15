@@ -45,7 +45,8 @@ function readLayout(page: Page) {
      * 标签栏是**可选**的：没有打开的笔记时整条不渲染（组件返回 null）。
      * 用"高度 0 的空盒子"表示"没有它"，于是"主体吃满剩余高度"这条契约
      * 在有标签与没标签时是**同一条算式**（这正是 ADR-0026 把标签栏放到窗口顶部后
-     * 需要更新这条断言的原因：它现在夹在标题栏与主体之间）。
+     * 需要更新这条断言的原因：它现在夹在**标签栏与主体之间**——标签栏在窗口最顶上那一行、
+ * 标题栏排在它下面）。
      */
     const optionalRect = (selector: string) => {
       const element = document.querySelector<HTMLElement>(selector)
@@ -680,11 +681,14 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     const box = await page.evaluate(() => {
       const tabs = document.querySelector('.mn-tabs')?.getBoundingClientRect()
       const sidebar = document.querySelector('.mn-sidebar')?.getBoundingClientRect()
+      const titlebar = document.querySelector('.mn-titlebar')?.getBoundingClientRect()
       return {
         left: tabs?.left ?? -1,
         width: tabs?.width ?? -1,
+        top: tabs?.top ?? -1,
         bottom: tabs?.bottom ?? -1,
         sidebarTop: sidebar?.top ?? -1,
+        titlebarTop: titlebar?.top ?? -1,
         innerWidth: window.innerWidth,
       }
     })
@@ -692,6 +696,9 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(box.width).toBeGreaterThan(box.innerWidth - 2)
     // 侧栏在它**下面**（不是并排）：这正是"横跨全宽"的判据
     expect(box.sidebarTop).toBeGreaterThanOrEqual(box.bottom - 1)
+    // 它在**窗口最顶上那一行**：标题栏排在它下面（用户明确要求"标签栏要到标题栏上方"）
+    expect(box.top).toBeLessThanOrEqual(1)
+    expect(box.titlebarTop).toBeGreaterThanOrEqual(box.bottom - 1)
   })
 
   it('标题栏分三区：当前笔记路径落在窗口正中，三种视图里都在（ADR-0029）', async () => {

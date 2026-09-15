@@ -11,7 +11,7 @@
  * 它同时是"标签页与 note-store/vault-store 对账"的装配点（{@link installTabsSync}）——
  * 挂载即安装、卸载即撤销（副作用可逆）。
  *
- * 布局：根节点是 `flex: 0 0 auto` 的一行，挂在 **`.mn-app`** 上（标题栏之下、`.mn-body` 之上），
+ * 布局：根节点是 `flex: 0 0 auto` 的一行，挂在 **`.mn-app`** 上（**标题栏之上**、`.mn-body` 之上），
  * 因此横跨整个窗口宽度 —— 标签是"这个窗口开着哪几篇笔记"的全局信息，不该被侧栏挤窄。
  * 它曾经挂在 `.mn-main` 里并靠 `:has(> .mn-tabs)` 把主区域改成列方向；移到窗口顶部之后
  * 那条规则已删（见 `tabs.css` 的文件头）。
@@ -158,6 +158,14 @@ export function TabBar() {
 
   return (
     <div className="mn-tabs" role="tablist" aria-label="打开的笔记" ref={stripRef}>
+      {/*
+        标签之间之外的那一段空白是**拖动区**：标签栏现在在窗口最顶上那一行（标题栏之上），
+        顶行不能拖窗口会很难受。为什么只给这一截、而不是给整条 `.mn-tabs`：
+        Tauri 的拖动区会跳过 button/input/a，而标签本身是 `role="tab"` 的 `div` ——
+        整条挂上拖动区之后，按住标签想点击/想以后拖动重排都会被当成拖窗口。
+        `flex: 1` 只在标签没占满时吸收剩余宽度，标签多到要横向滚动时它缩成 0，不影响滚动。
+      */}
+      <div className="mn-tabs__filler" data-tauri-drag-region="deep" aria-hidden="true" />
       {tabs.map((relPath, index) => {
         const isActive = relPath === activeRelPath
         // 未保存状态只有当前文档可能有（note-store 只持有一份），所以标记只出现在激活标签上
