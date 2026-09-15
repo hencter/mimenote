@@ -835,6 +835,34 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     // 树行留白：行高 30 − 文字行盒 24 ⇒ 上下各 3px。字号再往上抬就必须一起抬行高
     expect(tight.rowGap).toBeGreaterThanOrEqual(3)
   })
+  it('应用菜单搬到了左侧文件导航叶子的右下角（标题栏那一行腾给标签与窗口按钮）', async () => {
+    await ensureVaultOpen(page)
+
+    const menu = page.locator('button[aria-label="应用菜单"]')
+    expect(await menu.count()).toBe(1)
+    // 它现在属于文件树那一叶，而不是标题栏
+    expect(await page.locator('[data-dock-module="tree"] button[aria-label="应用菜单"]').count()).toBe(1)
+    expect(await page.locator('.mn-titlebar button[aria-label="应用菜单"]').count()).toBe(0)
+
+    // "右下角"的判据：它在文件树这一叶的**底部**、且贴着右侧
+    const geometry = await page.evaluate(() => {
+      const button = document.querySelector('[data-dock-module="tree"] button[aria-label="应用菜单"]')
+      const leaf = button?.closest('[data-dock-module="tree"]')
+      if (button === null || leaf === null || leaf === undefined) return null
+      const a = button.getBoundingClientRect()
+      const b = leaf.getBoundingClientRect()
+      return { gapBottom: Math.round((b.bottom - a.bottom) * 10) / 10, gapRight: Math.round((b.right - a.right) * 10) / 10, leafHeight: Math.round(b.height) }
+    })
+    expect(geometry).not.toBeNull()
+    // 贴底、贴右（16px 以内），而且确实在这一叶的下半部分
+    expect(geometry?.gapBottom ?? 999).toBeLessThanOrEqual(16)
+    expect(geometry?.gapRight ?? 999).toBeLessThanOrEqual(16)
+
+    // 点它仍然能打开菜单（搬了位置不该改变行为）
+    await menu.click()
+    await page.waitForSelector('[role="menu"]', { state: 'visible' })
+    await page.keyboard.press('Escape')
+  })
   it('文件树里点一个 `.txt`：纯文本查看器把原文显示出来（只读，ADR-0032）', async () => {
     await ensureVaultOpen(page)
     const file = '.mn-tree [data-rel-path="附件/说明.txt"]'

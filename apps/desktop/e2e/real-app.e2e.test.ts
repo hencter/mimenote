@@ -277,7 +277,7 @@ describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设
     await waitUntil(async () => (await app.page.locator('.mn-settings').count()) === 0, 5_000, '设置页关闭')
   })
 
-  it('应用菜单：标题栏菜单列出命令并可直接执行', async () => {
+  it('应用菜单：左侧文件导航叶子右下角的菜单列出命令并可直接执行', async () => {
     await app.page.locator('button[aria-label="应用菜单"]').click()
     await app.page.waitForSelector('[role="menu"]', { state: 'visible', timeout: 5_000 })
     const items = await app.page.locator('[role="menuitem"]').allTextContents()

@@ -201,3 +201,22 @@
 .mn-dock--bottom .mn-dock__rail-label {
   writing-mode: horizontal-tb;
 }
+
+/*
+ * 文件树这一叶的**底部一行**：左边「最近打开的 Vault」（ADR-0027 的左下角），
+ * 右下角是应用菜单按钮（`components/AppMenu`，从标题栏搬过来）。
+ *
+ * 用 flex + `align-items: flex-end` 而不是"绝对定位到右下角"：最近 Vault 列表展开时会变高，
+ * 绝对定位的按钮会被压在上面（那正是它不该发生的事），而这一行会把它稳稳留在列表底下。
+ */
+.mn-tree-bottom {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-1);
+}
+
+.mn-tree-bottom > .mn-recent-vaults {
+  flex: 1 1 auto;
+  min-width: 0;
+}

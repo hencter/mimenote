@@ -19,7 +19,6 @@ import { useEffect, useRef } from 'react'
 
 import { syncSnippets } from '@/app/actions'
 import { useGlobalKeymap } from '@/app/keymap'
-import { AppMenu } from '@/components/AppMenu'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Icon } from '@/components/Icon'
 import { Splitter } from '@/components/Splitter'
@@ -216,7 +215,6 @@ export function App() {
       <header className="mn-titlebar" data-tauri-drag-region="deep">
         {/* 左区 = "我在哪个库"：菜单、产品名、当前 Vault */}
         <div className="mn-titlebar__left">
-          <AppMenu />
           <div className="mn-titlebar__brand">
             <Icon name="sparkle" size="md" />
             <span>Mimenote</span>

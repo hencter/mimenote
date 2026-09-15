@@ -85,6 +85,9 @@ pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle
 - 路径的旧类名 `.mn-editor__path` 曾是 E2E 里"当前打开的是哪一篇"的主力探针（约 20 处），
   现在一律是 `.mn-titlebar__path`；`openNoteInTree` 里"编辑视图读路径、否则退回树里选中态"的分支
   已经删掉（路径三种视图里都在，不需要间接信号了）。
+- **应用菜单不在标题栏里**：它在左侧文件导航叶子（`[data-dock-module="tree"]`）的**右下角**，
+  与「最近打开的 Vault」同一行（`.mn-tree-bottom`）。找它的用例一律按 `aria-label="应用菜单"` 找，
+  别按位置找。
 - **标签栏在窗口最顶上那一行**（标题栏在它下面）：顶行的空白段是拖动区（`.mn-tabs__filler`），
   别把它删了 —— 删了之后顶行就没法拖窗口。
 - **可见文字不再承载身份**：标题栏路径元素上有 `data-note-path`（真实路径），两层 E2E 的

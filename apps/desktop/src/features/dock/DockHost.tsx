@@ -33,6 +33,7 @@ import { LinksPanel } from '@/features/links/LinksPanel'
 import { OutlinePanel } from '@/features/outline/OutlinePanel'
 import { TagsPanel } from '@/features/tags/TagsPanel'
 import { FileTree } from '@/features/vault/FileTree'
+import { AppMenu } from '@/components/AppMenu'
 import { RecentVaults } from '@/features/vault/RecentVaults'
 import { TreeToolbar } from '@/features/vault/TreeToolbar'
 import { useTagsStore } from '@/state/tags-store'
@@ -115,10 +116,16 @@ function DockModuleContent({ id }: { id: DockModuleId }) {
         <>
           <TreeToolbar />
           <FileTree />
-          {/* 「最近打开的 Vault」跟着文件树走：切 Vault 是文件树这个上下文的动作，
-              视线本来就在这一块；它**不是**独立模块 —— 单独搬来搬去没有语义，
-              而"文件树在哪一区"已经由停靠模型决定了 */}
-          <RecentVaults />
+          {/*
+            底部一行：左边「最近打开的 Vault」（ADR-0027 定的左下角），右下角是**应用菜单**。
+            菜单按钮原本在标题栏最左边（跟窗口按钮一头一尾），本轮按用户要求搬到这里 ——
+            理由也说得通：它是"这个库/这个应用能做什么"的入口，与文件导航是同一个上下文，
+            而标题栏那一行要腾给文件标签与窗口按钮。
+          */}
+          <div className="mn-tree-bottom">
+            <RecentVaults />
+            <AppMenu />
+          </div>
         </>
       )
     case 'links':
