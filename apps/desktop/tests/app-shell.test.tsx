@@ -131,7 +131,7 @@ describe('外壳渲染', () => {
     })
   })
 
-  it('标题栏分左/中/右三区，当前笔记路径在中区（编辑器里不再有那一行）', async () => {
+  it('标题栏分左/中/右三区：中区是文件标签栏，路径在状态栏（ADR-0034）', async () => {
     /*
       用户的要求：路径原来在编辑器面板**内部**（只横跨中间那一列、只在编辑视图里存在，
       于是"打开一篇笔记"会让下面所有内容整体往下跳 26px），现在搬进标题栏中区（ADR-0029）。
@@ -148,19 +148,22 @@ describe('外壳渲染', () => {
       expect(document.querySelector('.mn-titlebar__right')).not.toBeNull()
     })
 
-    // 没有文档时中区是空的：不能留着上一篇的路径，也不能拿"空字符串"占位
-    expect(document.querySelector('.mn-titlebar__path')).toBeNull()
+    // 中区是**文件标签栏**（ADR-0034 把标题栏与标签栏并成一行）；没有打开笔记时那里是空的
+    expect(document.querySelector('.mn-titlebar__center .mn-tabs')).toBeNull()
+    // "我在看什么"在状态栏里，没有文档时整格不渲染
+    expect(document.querySelector('.mn-statusbar [data-main-path]')).toBeNull()
 
     await openNote('项目/设计.md')
 
     await waitFor(() => {
-      const center = document.querySelector('.mn-titlebar__center')
-      const path = center?.querySelector('.mn-titlebar__path')
+      const shown = document.querySelector('.mn-statusbar [data-main-path]')
       // **可见文字**不带 `.md`（`displayPath`，ADR-0030），而 `data-main-path` 给真实路径：
       // 自动化认身份要读它，不能读可见文字（"项目/设计" 会误配 "项目/设计文档"）
-      expect(path?.querySelector('.mn-titlebar__path-text')?.textContent).toBe('项目/设计')
-      expect(path?.getAttribute('data-main-path')).toBe('项目/设计.md')
-      expect(path?.getAttribute('title')).toBe('项目/设计.md')
+      expect(shown?.textContent).toBe('项目/设计')
+      expect(shown?.getAttribute('data-main-path')).toBe('项目/设计.md')
+      expect(shown?.getAttribute('title')).toBe('项目/设计.md')
+      // 标签栏同时出现在标题栏中区（打开一篇笔记 = 多一个标签）
+      expect(document.querySelector('.mn-titlebar__center .mn-tabs')).not.toBeNull()
     })
     expect(document.querySelector('.mn-editor__path')).toBeNull()
   })
@@ -230,7 +233,7 @@ describe('链接面板（M2）', () => {
     })
     await waitFor(() => {
       expect(
-        document.querySelector('.mn-titlebar__path')?.getAttribute('data-main-path'),
+        document.querySelector('.mn-statusbar [data-main-path]')?.getAttribute('data-main-path'),
       ).toBe('项目/路线图.md')
     })
   })
@@ -261,7 +264,7 @@ describe('链接面板（M2）', () => {
     await waitFor(() => {
       expect(useNoteStore.getState().doc?.relPath).toBe('项目/设计.md')
       expect(
-        document.querySelector('.mn-titlebar__path')?.getAttribute('data-main-path'),
+        document.querySelector('.mn-statusbar [data-main-path]')?.getAttribute('data-main-path'),
       ).toBe('项目/设计.md')
     })
     expect(useVaultStore.getState().selected).toBe('项目/设计.md')
@@ -299,7 +302,8 @@ describe('布局契约（防止再次出现"必须先选中笔记才对得齐窗
     expect(bar).toContain('grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr)')
     // 纵向不写 align-items：三区撑满 34px，窗口按钮的 align-self: stretch 才成立
     expect(bar).not.toContain('align-items')
-    expect(ownRuleBody(appCss, '.mn-titlebar__center')).toContain('justify-content: center')
+    // 中区现在是**文件标签栏**（ADR-0034），因此左对齐 + 自己滚动，不再居中放路径
+    expect(ownRuleBody(appCss, '.mn-titlebar__center')).toContain('justify-content: flex-start')
     expect(ownRuleBody(appCss, '.mn-titlebar__right')).toContain('justify-content: flex-end')
   })
 

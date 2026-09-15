@@ -157,7 +157,16 @@ export function TabBar() {
   ]
 
   return (
-    <div className="mn-tabs" role="tablist" aria-label="打开的笔记" ref={stripRef}>
+    // `data-tauri-drag-region="false"`：这一条现在长在**标题栏那一行**里（标题栏整条是拖动区，
+    // 且带 `deep` 会往下传），而标签是 `role="tab"` 的 div —— Tauri 跳不过它，
+    // 不声明例外的话按住标签会被当成拖窗口（点击切换、以后的拖动重排都会失灵）。
+    <div
+      className="mn-tabs"
+      role="tablist"
+      aria-label="打开的笔记"
+      data-tauri-drag-region="false"
+      ref={stripRef}
+    >
       {/*
         标签之间之外的那一段空白是**拖动区**：标签栏现在在窗口最顶上那一行（标题栏之上），
         顶行不能拖窗口会很难受。为什么只给这一截、而不是给整条 `.mn-tabs`：

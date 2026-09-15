@@ -41,7 +41,6 @@ import { useWindowTitle } from '@/features/status/window-title'
 import { TabBar } from '@/features/tabs/TabBar'
 import { VaultGate } from '@/features/vault/VaultGate'
 import { formatDuration } from '@/domain/format'
-import { displayPath } from '@/domain/paths'
 import { subscribeIndexStatus, useLinksStore } from '@/state/links-store'
 import { flushAutosave, hasUnsavedChanges, useNoteStore } from '@/state/note-store'
 import { useUiStore } from '@/state/ui-store'
@@ -54,15 +53,11 @@ export function App() {
   const rootPath = info?.rootPath ?? null
   const relPath = useNoteStore((state) => state.doc?.relPath ?? null)
   const dirty = useNoteStore((state) => state.dirty)
-  // 标题栏中区的「保存中…」（与状态栏读同一个字段，各说各的场合）
-  const noteStatus = useNoteStore((state) => state.status)
   const saveCount = useNoteStore((state) => state.saveCount)
 
   const viewMode = useUiStore((state) => state.viewMode)
   // 主区显示的是**附件**（只读查看器）还是笔记：见 ADR-0032 与 `domain/viewable.ts`
   const openedFile = useUiStore((state) => state.openedFile)
-  /** 标题栏中区显示谁：打开着附件就是附件，否则是当前笔记。 */
-  const shownPath = openedFile ?? relPath
   const themeId = useUiStore((state) => state.themeId)
   const snippetsEnabled = useUiStore((state) => state.snippetsEnabled)
   const setSidebarWidth = useUiStore((state) => state.setSidebarWidth)
@@ -198,19 +193,15 @@ export function App() {
   return (
     <div className="mn-app">
       {/*
-        标签栏在**窗口最顶上那一行**、横跨全宽（在标题栏**上方**、侧栏之上）：
-        它是"我开着哪几篇笔记"的全局信息，属于窗口而不是某一块面板 ——
-        挂在 `.mn-main` 里时，它会跟着主区域一起被侧栏挤窄（用户要的就是这一点改变）；
-        而"最上面那一行留给标签"是用户明确的要求：先看见"开着什么"，再看见"我在哪一篇"。
-        它空出来的那一截挂着拖动区（见 TabBar 里的 filler），所以顶行照样能拖窗口。
-      */}
-      <TabBar />
+        自绘标题栏（`decorations: false` 之后它是**唯一的**标题栏），**一行装下窗口的全部顶级信息**
+        （用户定稿的拼法）：品牌 / 库名 · **文件标签** · 统计 / 导出 · 三个窗口按钮。
 
-      {/*
-        自绘标题栏：`decorations: false` 之后它就是**唯一的**标题栏（见 features/window 的文档），
-        现在排在标签栏**下面**一行。
-        `data-tauri-drag-region="deep"` 让整条栏都能拖动窗口、双击即最大化 —— Tauri 注入的脚本
-        会自动跳过 button/input/a 这类可点击元素，所以菜单与窗口按钮照常可用。
+        - 标签栏在这个 header 的**中区**：它本来就是"我开着哪几篇笔记"的全局信息；
+        - `data-tauri-drag-region="deep"` 让整条栏都能拖动窗口、双击即最大化 —— Tauri 注入的脚本
+          会跳过 button/input/a，但**标签是 `role="tab"` 的 div，跳过不了**，所以标签条自己声明
+          `data-tauri-drag-region="false"`（与窗口按钮同一个手法），否则按住标签会被当成拖窗口；
+        - 当前笔记/附件的路径不在这一行了 —— 它挪到状态栏（标签上已经写着文件名，
+          悬停标签能看全路径）。
       */}
       <header className="mn-titlebar" data-tauri-drag-region="deep">
         {/* 左区 = "我在哪个库"：菜单、产品名、当前 Vault */}
@@ -225,29 +216,13 @@ export function App() {
         </div>
 
         {/*
-          中区 = "我在哪一篇"：当前笔记的 Vault 内相对路径。
-
-          它曾经是编辑器面板内部的一行（`features/editor/MarkdownEditor.tsx` 的
-          `.mn-editor__path`，26px），于是「打开一篇笔记」会把下面所有内容整体顶下去 26px，
-          而阅读/图谱视图里它又整行消失。搬进标题栏之后顶部高度是恒定的 34px，
-          路径在三种视图里都在（ADR-0029）。
-
-          中区的宽度由 `.mn-titlebar` 的网格给定（左右两条等宽轨道 ⇒ 路径落在窗口正中），
-          因此长路径走省略号，而不是把右区的窗口按钮挤出屏幕。
+          中区 = **文件标签栏**（用户定稿：标题栏与标签栏并成一行，中区给标签）。
+          这一格落在窗口正中（左右两条等宽网格轨道），标签多到装不下时它自己横向滚动，
+          而不是把右区的窗口按钮挤出屏幕。没有打开的笔记时这里是空的 ——
+          这一行仍然在（它就是标题栏，窗口按钮在里面）。
         */}
         <div className="mn-titlebar__center">
-          {/* 正在看附件时，中区显示的是**那个附件** —— 它才是"我现在看的是什么" */}
-          {shownPath !== null && (
-            // 可见文字去掉 `.md`（`displayPath`，ADR-0030）；`title` 与 `data-note-path` 给**真实路径** ——
-            // 前者是"悬停看全名"的出口，后者是自动化认"当前是哪一篇"的抓手（可见文字不是身份）。
-            <div className="mn-titlebar__path" title={shownPath} data-main-path={shownPath}>
-              <Icon name={openedFile === null ? 'pencil' : 'file'} size="xs" />
-              <span className="mn-titlebar__path-text">{displayPath(shownPath)}</span>
-              {openedFile === null && noteStatus === 'saving' && (
-                <span className="mn-titlebar__status">保存中…</span>
-              )}
-            </div>
-          )}
+          <TabBar />
         </div>
 
         {/* 右区 = "这个库有多大" + 出口动作：统计、导出、三个窗口按钮 */}

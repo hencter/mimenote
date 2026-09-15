@@ -6,6 +6,7 @@ import { Icon } from '@/components/Icon'
 import { formatBytes, formatClock, formatDuration } from '@/domain/format'
 import { computeStats } from '@/domain/stats'
 import { currentAdapterKind } from '@/ipc/client'
+import { displayPath } from '@/domain/paths'
 import { useNoteStore } from '@/state/note-store'
 import { toggleSnippets } from '@/app/actions'
 import { useUiStore, type ViewMode } from '@/state/ui-store'
@@ -21,6 +22,15 @@ const VIEW_MODES: ReadonlyArray<{ mode: ViewMode; label: string; icon: 'pencil' 
 export function StatusBar() {
   const info = useVaultStore((state) => state.info)
   const relPath = useNoteStore((state) => state.doc?.relPath ?? null)
+  /*
+   * "我在看什么"：打开着附件就是附件，否则是当前笔记。
+   *
+   * 这一格原先在标题栏中区（ADR-0029）；用户定稿"标题栏与标签栏并成一行、中区给标签"之后，
+   * 中区让给了标签栏，路径落到状态栏 —— 标签上已经写着文件名，悬停标签能看全路径，
+   * 所以这里要的是"完整相对路径"，恰好状态栏那一条也放得下。
+   */
+  const openedFile = useUiStore((state) => state.openedFile)
+  const shownPath = openedFile ?? relPath
   const text = useNoteStore((state) => state.doc?.text ?? '')
   const status = useNoteStore((state) => state.status)
   const dirty = useNoteStore((state) => state.dirty)
@@ -59,6 +69,19 @@ export function StatusBar() {
 
   return (
     <footer className="mn-statusbar">
+      {shownPath !== null && (
+        <div className="mn-statusbar__group">
+          <Icon name={openedFile === null ? 'pencil' : 'file'} size="xs" />
+          {/* 可见文字不带 `.md`（`displayPath`，ADR-0030）；真实路径给 `title` 与 `data-main-path` */}
+          <span title={shownPath} data-main-path={shownPath}>
+            {displayPath(shownPath)}
+          </span>
+          {openedFile === null && status === 'saving' && (
+            <span className="mn-statusbar__muted">保存中…</span>
+          )}
+        </div>
+      )}
+
       <div className="mn-statusbar__group">
         <Icon name="folder" size="xs" />
         <span title={info?.rootPath ?? ''}>{info?.name ?? '未打开 Vault'}</span>

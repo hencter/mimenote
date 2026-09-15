@@ -197,7 +197,11 @@ kbd {
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr);
   padding: 0 12px;
   gap: 12px;
-  height: 34px;
+  /*
+   * 36px：这一行现在同时装着**标签栏**（标签要 36 才不挤：16px 文字 + 上下留白）与窗口按钮，
+   * 原来单放标题栏时是 34。窗口按钮靠 `align-self: stretch` 跟着这一行，所以它们自动变高。
+   */
+  height: 36px;
   border-bottom: 1px solid var(--mn-border);
   background: var(--mn-bg-elevated);
   user-select: none;
@@ -215,9 +219,9 @@ kbd {
   gap: 12px;
 }
 
-/* 中区：内容（路径）在**自己那一格里**居中，那一格又在窗口正中 ⇒ 路径居中 */
+/* 中区 = 文件标签栏（ADR-0034）：标签多到装不下时它自己横向滚动，不挤右区的窗口按钮 */
 .mn-titlebar__center {
-  justify-content: center;
+  justify-content: flex-start;
   overflow: hidden;
 }
 

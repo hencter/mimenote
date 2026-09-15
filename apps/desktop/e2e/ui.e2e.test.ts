@@ -114,7 +114,7 @@ async function ensureTreeRow(page: Page, relPath: string): Promise<void> {
  * 没有打开的笔记时返回 `null`（那个元素根本不渲染）。
  */
 async function currentMainPath(page: Page): Promise<string | null> {
-  const node = page.locator('.mn-titlebar__path')
+  const node = page.locator('[data-main-path]')
   if ((await node.count()) === 0) return null
   return node.getAttribute('data-main-path')
 }
@@ -656,7 +656,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
   it('未选中任何笔记时布局即铺满窗口（回归：不需要先选笔记）', async () => {
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.tabs.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
 
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
@@ -667,14 +667,15 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(await page.locator('.cm-content').count()).toBe(0)
   })
 
-  it('标签栏移到窗口顶部：横跨全宽，且位于侧栏之上', async () => {
+  it('标签栏住在标题栏那一行里（标题栏与标签栏并成一行，ADR-0034）', async () => {
     /*
-      用户的要求是"标签页移动到顶部"。原来它挂在 `.mn-main` 里（主区域顶部、被侧栏挤窄），
-      现在挂在 `.mn-app` 上：标题栏之下、`.mn-body` 之上，横跨整个窗口宽度。
+      用户先后给了两条：先"标签页移动到顶部"，再"标题栏与标签栏并成一行、窗口按钮也在那一行"。
+      所以现在的形态是：**顶行 = 品牌/库名 · 文件标签 · 统计/导出 · 窗口按钮**，
+      标签条在 header 的**中区**里 —— 它跟着标题栏横跨窗口（不被侧栏挤窄），但不再单独占一行。
     */
     await ensureVaultOpen(page)
     await openNoteInTree(page, '项目/设计.md')
-    await page.waitForSelector('.mn-app > .mn-tabs', { state: 'visible' })
+    await page.waitForSelector('.mn-titlebar__center .mn-tabs', { state: 'visible' })
     // 主区域里不再有它（那条 `:has(> .mn-tabs)` 条件规则已经删掉）
     expect(await page.locator('.mn-main > .mn-tabs').count()).toBe(0)
 
@@ -682,26 +683,29 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       const tabs = document.querySelector('.mn-tabs')?.getBoundingClientRect()
       const sidebar = document.querySelector('.mn-sidebar')?.getBoundingClientRect()
       const titlebar = document.querySelector('.mn-titlebar')?.getBoundingClientRect()
+      const center = document.querySelector('.mn-titlebar__center')?.getBoundingClientRect()
       return {
-        left: tabs?.left ?? -1,
-        width: tabs?.width ?? -1,
         top: tabs?.top ?? -1,
         bottom: tabs?.bottom ?? -1,
-        sidebarTop: sidebar?.top ?? -1,
+        centerLeft: center?.left ?? -1,
         titlebarTop: titlebar?.top ?? -1,
+        titlebarBottom: titlebar?.bottom ?? -1,
         innerWidth: window.innerWidth,
+        titlebarWidth: titlebar?.width ?? -1,
+        sidebarTop: sidebar?.top ?? -1,
       }
     })
-    expect(box.left).toBe(0)
-    expect(box.width).toBeGreaterThan(box.innerWidth - 2)
-    // 侧栏在它**下面**（不是并排）：这正是"横跨全宽"的判据
-    expect(box.sidebarTop).toBeGreaterThanOrEqual(box.bottom - 1)
-    // 它在**窗口最顶上那一行**：标题栏排在它下面（用户明确要求"标签栏要到标题栏上方"）
-    expect(box.top).toBeLessThanOrEqual(1)
-    expect(box.titlebarTop).toBeGreaterThanOrEqual(box.bottom - 1)
+    // 它被标题栏这一行**包住**（同一行）
+    expect(box.top).toBeGreaterThanOrEqual(box.titlebarTop - 1)
+    expect(box.bottom).toBeLessThanOrEqual(box.titlebarBottom + 1)
+    // 它在**中区**里（不贴左边缘），而标题栏仍是横跨全宽的那一行
+    expect(box.centerLeft).toBeGreaterThan(100)
+    expect(box.titlebarWidth).toBeGreaterThan(box.innerWidth - 2)
+    // 侧栏在整行**下面**（不是并排）
+    expect(box.sidebarTop).toBeGreaterThanOrEqual(box.titlebarBottom - 1)
   })
 
-  it('标题栏分三区：当前笔记路径落在窗口正中，三种视图里都在（ADR-0029）', async () => {
+  it('标题栏分三区：中区是文件标签栏，路径在状态栏（ADR-0029 → ADR-0034）', async () => {
     /*
       用户的要求：路径原来在编辑器面板内部（`.mn-editor__path`，只横跨中间那一列、
       只在编辑视图里存在），现在要进标题栏那一行，并且那一行分左/中/右三区。
@@ -719,21 +723,29 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     // 编辑器面板里那一行已经不在了（同一信息只留一处）
     expect(await page.locator('.mn-editor__path').count()).toBe(0)
 
+    // 中区现在是**文件标签栏**（ADR-0034），"我在看什么"挪到了状态栏
+    expect(await page.locator('.mn-titlebar__center .mn-tabs').count()).toBe(1)
+    expect(await page.locator('.mn-statusbar [data-main-path]').count()).toBe(1)
+
     const geometry = await page.evaluate(() => {
       const bar = document.querySelector('.mn-titlebar')?.getBoundingClientRect()
-      const path = document.querySelector('.mn-titlebar__path')?.getBoundingClientRect()
+      const tabs = document.querySelector('.mn-titlebar__center .mn-tabs')?.getBoundingClientRect()
+      const shown = document.querySelector('.mn-statusbar [data-main-path]')?.getBoundingClientRect()
       return {
         barHeight: bar?.height ?? -1,
         barBottom: bar?.bottom ?? -1,
-        pathBottom: path?.bottom ?? -1,
-        pathCenter: path === undefined ? -1 : (path.left + path.right) / 2,
-        windowCenter: window.innerWidth / 2,
+        tabsTop: tabs?.top ?? -1,
+        tabsBottom: tabs?.bottom ?? -1,
+        shownTop: shown?.top ?? -1,
       }
     })
-    expect(geometry.barHeight).toBe(34)
-    // 路径就在标题栏那一行里（没有掉到下面去）
-    expect(geometry.pathBottom).toBeLessThanOrEqual(geometry.barBottom)
-    expect(Math.abs(geometry.pathCenter - geometry.windowCenter)).toBeLessThanOrEqual(2)
+    // 顶行 36px：这一行同时装着标签与窗口按钮
+    expect(geometry.barHeight).toBe(36)
+    // 标签条在这一行里（没有掉到下面去）
+    expect(geometry.tabsTop).toBeGreaterThanOrEqual(-1)
+    expect(geometry.tabsBottom).toBeLessThanOrEqual(geometry.barBottom)
+    // 路径在状态栏里（窗口底部那一条），不在标题栏
+    expect(geometry.shownTop).toBeGreaterThan(geometry.barBottom)
 
     // 阅读视图与图谱视图里路径仍然在
     await page.locator('button[aria-label="阅读（渲染后）"]').click()
@@ -755,12 +767,12 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     */
     await ensureVaultOpen(page)
     await openNoteInTree(page, '项目/设计.md')
-    await page.waitForSelector('.mn-app > .mn-tabs', { state: 'visible' })
+    await page.waitForSelector('.mn-titlebar .mn-tabs', { state: 'visible' })
 
     // 标题栏中区：可见文字不带 .md，title 与 data-main-path 给真实路径
-    expect((await page.locator('.mn-titlebar__path-text').textContent()) ?? '').toBe('项目/设计')
+    expect((await page.locator('.mn-statusbar [data-main-path]').textContent()) ?? '').toBe('项目/设计')
     expect(await currentMainPath(page)).toBe('项目/设计.md')
-    expect(await page.locator('.mn-titlebar__path').getAttribute('title')).toBe('项目/设计.md')
+    expect(await page.locator('[data-main-path]').getAttribute('title')).toBe('项目/设计.md')
 
     // 标签页：可见文字只有文件名主干
     expect(
@@ -875,7 +887,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       '非 Markdown',
     )
     // 标题栏中区跟着换成"我在看什么"
-    expect(await page.locator('.mn-titlebar__path').getAttribute('data-main-path')).toBe(
+    expect(await page.locator('[data-main-path]').getAttribute('data-main-path')).toBe(
       '附件/说明.txt',
     )
     // 折行开关可逆（纯文本查看器唯一需要的交互）
@@ -1202,7 +1214,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     )
 
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.tabs.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
     expect(Math.abs(layout.sidebar.height - layout.body.height)).toBeLessThanOrEqual(1)
@@ -1262,7 +1274,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     )
 
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.tabs.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
   })
@@ -1320,7 +1332,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     )
 
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.tabs.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
   })
@@ -2526,11 +2538,11 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
     // 标签栏在主区域内部：主体/侧栏/状态栏的高度契约不受影响
     const after = await readLayout(page)
-    const expectedBody = after.innerHeight - after.titlebar.height - after.tabs.height - after.statusbar.height
+    const expectedBody = after.innerHeight - after.titlebar.height - after.statusbar.height
     expect(Math.abs(after.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(after.statusbar.bottom - after.innerHeight)).toBeLessThanOrEqual(1)
     expect(Math.abs(after.sidebar.height - after.body.height)).toBeLessThanOrEqual(1)
-    expect(await page.locator('.mn-app > .mn-tabs').count()).toBe(1)
+    expect(await page.locator('.mn-titlebar .mn-tabs').count()).toBe(1)
 
     // 关闭当前标签 → 剩一个，且不会崩
     await page.locator('.mn-tabs__tab--active .mn-tabs__close').click()
@@ -2680,7 +2692,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
     // 布局不变式仍然成立
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.tabs.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
 
@@ -2930,11 +2942,11 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
     // 4) 拖拽/移动不能破坏布局契约（标签栏仍在主区域里、主区域高度不变）
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.tabs.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
     expect(Math.abs(layout.sidebar.height - layout.body.height)).toBeLessThanOrEqual(1)
-    expect(await page.locator('.mn-app > .mn-tabs').count()).toBe(1)
+    expect(await page.locator('.mn-titlebar .mn-tabs').count()).toBe(1)
 
     // 5) 收尾：拖回 项目/，让 Vault 与用例开始时一致（后面的用例与手工验收都看到干净状态）
     await ensureTreeRow(page, '日记/设计.md')
@@ -3023,9 +3035,9 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
     // 5) 布局契约不受影响（标签栏仍在主区域里）
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.tabs.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
-    expect(await page.locator('.mn-app > .mn-tabs').count()).toBe(1)
+    expect(await page.locator('.mn-titlebar .mn-tabs').count()).toBe(1)
 
     // 6) 恢复原来的名字（让后续用例与手工验收看到与初始一致的 Vault）
     await ensureTreeRow(page, '工程')

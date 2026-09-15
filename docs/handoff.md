@@ -11,7 +11,7 @@
 ```
 pnpm typecheck                 ✓ 无错误
 pnpm test                      ✓ 87 个测试文件 / 1601 条
-pnpm test:e2e:ui               ✓ 63 条（前置：先 pnpm build）
+pnpm test:e2e:ui               ✓ 64 条（前置：先 pnpm build）
 pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle；release 二进制未变，未重跑）
 ```
 
@@ -88,8 +88,12 @@ pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle
 - **应用菜单不在标题栏里**：它在左侧文件导航叶子（`[data-dock-module="tree"]`）的**右下角**，
   与「最近打开的 Vault」同一行（`.mn-tree-bottom`）。找它的用例一律按 `aria-label="应用菜单"` 找，
   别按位置找。
-- **标签栏在窗口最顶上那一行**（标题栏在它下面）：顶行的空白段是拖动区（`.mn-tabs__filler`），
-  别把它删了 —— 删了之后顶行就没法拖窗口。
+- **顶行 = 标题栏 + 文件标签 + 窗口按钮**（ADR-0034，一行 36px）：标签条挂在
+  `.mn-titlebar__center` 里，**它已经不是 `.mn-app` 的直接子节点**；布局契约式是
+  `主体 = 窗口 − 标题栏 − 状态栏`（**别再减标签栏** —— 它在标题栏里面）；
+  "我在看什么"在**状态栏最左**（`.mn-statusbar [data-main-path]`）；
+  标签条里的 `.mn-tabs__filler`（顶行拖窗口的唯一落点）与它自己的
+  `data-tauri-drag-region="false"`（防止按住标签被当成拖窗口）都别删。
 - **可见文字不再承载身份**：标题栏路径元素上有 `data-note-path`（真实路径），两层 E2E 的
   `currentNotePath(page)` 读它，**别改回读 `textContent`** —— `includes('项目/设计')` 会被
   `项目/设计文档` 误命中，而且可见文字现在**不带 `.md`**。
@@ -115,7 +119,7 @@ pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle
 
 - **注释与文档一律中文，注释解释"为什么"**（取舍、代价、踩过的坑），不复述代码在做什么。
 - **提交由主会话做**：派出去的子代理**绝不执行 git 写操作**，只允许 `status`/`log`/`diff` 这类只读命令。
-  每个交付项 = feature commit + docs-sync commit；ADR 放 `docs/adr/`，**下一个编号是 0034**。
+  每个交付项 = feature commit + docs-sync commit；ADR 放 `docs/adr/`，**下一个编号是 0035**。
 - **`examples/demo-vault/` 是用户自己的草稿区**：不要动、不要提交里面的未跟踪文件（含
   `项目/未命名笔记.md` 与 `测试笔记.md` 那两处删除 —— 都是用户自己删的，保持原样）。
 - **确定性是一条纪律**：力场自己实现 xorshift32、固定遍历顺序、不用 `Math.hypot` 的地方就别用；

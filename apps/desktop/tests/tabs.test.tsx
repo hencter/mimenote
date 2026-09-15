@@ -676,16 +676,21 @@ describe('光标位置记忆（可选增强，行为通过注入的适配器验�
  * 接线形态 + 真实编辑器。
  *
  * 这一组用**真实 CodeMirror**（而不是直接 `setText`）跑，并复刻 `App.tsx` 的结构 ——
- * 它同时是接线说明书：标签栏现在挂在 **`.mn-app`** 上（**标题栏之上**、`.mn-body` 之上），
- * 因此横跨整个窗口宽度；挂错父容器（例如又挂回 `.mn-main` 里）会让这里的结构与真实应用不一致。
+ * 它同时是接线说明书：标签栏现在挂在**标题栏的中区**里（ADR-0034 把标题栏与标签栏并成一行），
+ * 因此它跟着标题栏横跨窗口、而不是被侧栏挤窄；挂错父容器（例如又挂回 `.mn-main` 里）
+ * 会让这里的结构与真实应用不一致。
  */
 describe('接线形态与真实编辑器', () => {
-  /** 与 App.tsx 一致：标签栏是 `.mn-app` 的直接子节点，`.mn-body` 里是主区域。 */
+  /** 与 App.tsx 一致：标签栏在标题栏中区里，`.mn-body` 里是主区域。 */
   function Shell() {
     useGlobalKeymap()
     return (
       <div className="mn-app">
-        <TabBar />
+        <header className="mn-titlebar">
+          <div className="mn-titlebar__center">
+            <TabBar />
+          </div>
+        </header>
         <div className="mn-body">
           <main className="mn-main">
             <section className="mn-pane mn-pane--editor" style={{ flex: '1 1 auto' }}>
@@ -709,12 +714,12 @@ describe('接线形态与真实编辑器', () => {
   it('标签栏与编辑器共存：编辑器里改动 → 切标签 → 内容真的落盘', async () => {
     render(<Shell />)
     await openVault()
-    // 没有标签时窗口顶部只有标题栏（这里没有标题栏，于是 `.mn-app` 里一个标签栏都没有）
-    expect(document.querySelector('.mn-app > .mn-tabs')).toBeNull()
+    // 没有标签时标签条整条不渲染（标题栏那一行仍然在：窗口按钮住在里面）
+    expect(document.querySelector('.mn-tabs')).toBeNull()
 
     await open('README.md')
     await open('项目/设计.md')
-    expect(document.querySelector('.mn-app > .mn-tabs')).not.toBeNull()
+    expect(document.querySelector('.mn-titlebar .mn-tabs')).not.toBeNull()
     // 标签栏**不在**主区域里了：主区域仍然是纯 pane 容器（行方向，不需要为标签让出一行）
     expect(document.querySelector('.mn-main > .mn-tabs')).toBeNull()
     expect(document.querySelectorAll('.mn-main > .mn-pane')).toHaveLength(1)

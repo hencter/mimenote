@@ -249,7 +249,7 @@ describe('完整外壳（标签栏在窗口顶部）', () => {
     })
 
     // 标签栏：没有打开的笔记时不渲染；打开一篇之后它是 `.mn-app` 的直接子节点
-    expect(document.querySelector('.mn-app > .mn-tabs')).toBeNull()
+    expect(document.querySelector('.mn-titlebar .mn-tabs')).toBeNull()
     await act(async () => {
       await useVaultStore.getState().select('README.md')
     })
@@ -258,7 +258,7 @@ describe('完整外壳（标签栏在窗口顶部）', () => {
       await openNote('README.md')
     })
     await waitFor(() => {
-      expect(document.querySelector('.mn-app > .mn-tabs')).not.toBeNull()
+      expect(document.querySelector('.mn-titlebar .mn-tabs')).not.toBeNull()
     })
     // 它不再挂在主区域里（那条 `:has` 规则已经删掉）
     expect(document.querySelector('.mn-main > .mn-tabs')).toBeNull()

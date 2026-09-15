@@ -116,9 +116,9 @@ describe('接线：点开一张图片', () => {
       expect(viewer()?.getAttribute('data-viewer-kind')).toBe('image')
     })
     expect(document.querySelector('.mn-pane--file')).not.toBeNull()
-    // 标题栏中区是"我在看什么"：现在是那张图（`data-main-path` 给的是真实路径）
+    // "我在看什么"在**状态栏**里（ADR-0034 把标题栏中区让给了标签栏）：现在是那张图
     expect(
-      document.querySelector('.mn-titlebar__path')?.getAttribute('data-main-path'),
+      document.querySelector('.mn-statusbar [data-main-path]')?.getAttribute('data-main-path'),
     ).toBe(IMAGE)
     // 标签页只装笔记：看一张图不该冒出一个标签
     expect(useTabsStore.getState().tabs).toEqual([])
@@ -182,7 +182,7 @@ describe('接线：点开一张图片', () => {
     await waitFor(() => {
       expect(viewer()).toBeNull()
     })
-    expect(document.querySelector('.mn-titlebar__path')?.getAttribute('data-main-path')).toBe(
+    expect(document.querySelector('.mn-statusbar [data-main-path]')?.getAttribute('data-main-path')).toBe(
       '项目/设计.md',
     )
   })

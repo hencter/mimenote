@@ -296,7 +296,7 @@ describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设
  * 没有打开的笔记时返回 `null`（那个元素根本不渲染）。
  */
 async function currentMainPath(page: Page): Promise<string | null> {
-  const node = page.locator('.mn-titlebar__path')
+  const node = page.locator('[data-main-path]')
   if ((await node.count()) === 0) return null
   return node.getAttribute('data-main-path')
 }
@@ -752,7 +752,7 @@ describe.skipIf(!supported)('真实应用：本地图片（asset 协议逐文件
     )
     // 标题栏中区跟着换成"我在看的那张图"（真实路径在 data-main-path 上）
     expect(
-      await app.page.locator('.mn-titlebar__path').getAttribute('data-main-path'),
+      await app.page.locator('[data-main-path]').getAttribute('data-main-path'),
     ).toBe('附件/图.png')
 
     // 打开一篇笔记就回到笔记（查看器关掉）
