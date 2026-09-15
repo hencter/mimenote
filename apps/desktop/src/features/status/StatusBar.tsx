@@ -60,7 +60,7 @@ export function StatusBar() {
   return (
     <footer className="mn-statusbar">
       <div className="mn-statusbar__group">
-        <Icon name="folder" size={13} />
+        <Icon name="folder" size="xs" />
         <span title={info?.rootPath ?? ''}>{info?.name ?? '未打开 Vault'}</span>
         {info !== null && (
           <span className="mn-statusbar__muted">
@@ -108,7 +108,7 @@ export function StatusBar() {
             aria-pressed={viewMode === item.mode}
             onClick={() => setViewMode(item.mode)}
           >
-            <Icon name={item.icon} size={14} />
+            <Icon name={item.icon} size="sm" />
           </button>
         ))}
       </div>
@@ -122,7 +122,7 @@ export function StatusBar() {
           aria-pressed={linksPanelVisible}
           onClick={() => useUiStore.getState().toggleLinksPanel()}
         >
-          <Icon name="links" size={14} />
+          <Icon name="links" size="sm" />
         </button>
         <button
           type="button"
@@ -132,7 +132,7 @@ export function StatusBar() {
           aria-pressed={snippetsEnabled}
           onClick={() => void toggleSnippets()}
         >
-          <Icon name="palette" size={14} />
+          <Icon name="palette" size="sm" />
         </button>
         <label className="mn-statusbar__select">
           <span className="mn-visually-hidden">主题</span>

@@ -61,21 +61,51 @@ const PATHS = {
 
 export type IconName = keyof typeof PATHS
 
+/**
+ * 图标尺寸**刻度**（ADR-0033）。
+ *
+ * 为什么不是一个裸数字：这个仓库曾经有 78 个调用点、9 种字面尺寸（11/12/13/14/15/16/18/22/26），
+ * 于是"同一个地方的两个图标差 1px"这种事谁也发现不了 —— 用户报的就是这条。
+ * 现在 `size` 是**联合类型**，写刻度外的数字**编译不过**；刻度本身与 VI 规范对齐：
+ * 24×24 网格、输出 16/20/24，外加密集处需要的两档（12/14）。
+ *
+ * 五档的用法（照着它挑，不要凭手感）：
+ * - `xs` 12：密集处 —— 树行/页签里的图标、页签与面板头的关闭、状态点一类；
+ * - `sm` 14：常规控件 —— 面板头、工具条按钮；
+ * - `md` 16：默认档 —— 工具栏、正文级、对话框里的动作图标；
+ * - `lg` 20：空状态与提醒 —— 对话框的警示图标、编辑器占位里的文件图标；
+ * - `xl` 24：整块插画级的空态（例如门闸页的品牌图标）。
+ *
+ * ⚠️ 两类图标**不走**这把尺子，它们按字号走（`em`）：callout 的字形图标
+ * （`.mn-callout__icon` / `.mn-md-callout-glyph`）与编辑器行内的 `✓` ——
+ * 那些是**文字**，跟着正文字号缩放才对。
+ */
+export const ICON_SIZES = {
+  xs: 12,
+  sm: 14,
+  md: 16,
+  lg: 20,
+  xl: 24,
+} as const
+
+export type IconSize = keyof typeof ICON_SIZES
+
 export function Icon({
   name,
-  size = 16,
+  size = 'md',
   className,
 }: {
   name: IconName
-  size?: number
+  size?: IconSize
   className?: string
 }): JSX.Element {
+  const pixels = ICON_SIZES[size]
   const paths = PATHS[name]
   return (
     <svg
       className={className === undefined ? 'mn-icon' : `mn-icon ${className}`}
-      width={size}
-      height={size}
+      width={pixels}
+      height={pixels}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"

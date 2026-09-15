@@ -40,10 +40,10 @@ export function RecentVaults() {
         aria-label="最近打开的 Vault"
         onClick={() => setOpen((value) => !value)}
       >
-        <Icon name="folderOpen" size={13} />
+        <Icon name="folderOpen" size="xs" />
         <span className="mn-recent-vaults__summary-text">最近 · {recentVaults.length}</span>
         <span className={`mn-recent-vaults__chevron${open ? ' mn-recent-vaults__chevron--open' : ''}`}>
-          <Icon name="chevron" size={12} />
+          <Icon name="chevron" size="xs" />
         </span>
       </button>
       {open && (
@@ -72,7 +72,7 @@ export function RecentVaults() {
                   title="从最近列表移除"
                   onClick={() => removeRecentVault(item.rootPath)}
                 >
-                  <Icon name="x" size={12} />
+                  <Icon name="x" size="xs" />
                 </button>
               </li>
             )

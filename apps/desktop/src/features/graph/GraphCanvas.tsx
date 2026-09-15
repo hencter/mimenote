@@ -1951,7 +1951,7 @@ export function GraphCanvas() {
               onClick={() => useGraphStore.getState().setMode('focus')}
               title="只看与当前笔记相关的部分"
             >
-              <Icon name="links" size={12} />
+              <Icon name="links" size="xs" />
               关系图
             </button>
             <button
@@ -1962,7 +1962,7 @@ export function GraphCanvas() {
               onClick={() => useGraphStore.getState().setMode('vault')}
               title="整个 Vault（按文件夹分组）"
             >
-              <Icon name="folderOpen" size={12} />
+              <Icon name="folderOpen" size="xs" />
               整个 Vault
             </button>
           </div>
@@ -2283,7 +2283,7 @@ export function GraphCanvas() {
             )}
           </div>
           <button type="button" className="mn-icon-button" onClick={fitNow} title="适应窗口（Ctrl+0）" aria-label="适应窗口">
-            <Icon name="eye" size={14} />
+            <Icon name="eye" size="sm" />
           </button>
           <button type="button" className="mn-icon-button" onClick={zoomOut} title="缩小（Ctrl+-）" aria-label="缩小">
             <span className="mn-graph__zoom-glyph">−</span>
@@ -2300,7 +2300,7 @@ export function GraphCanvas() {
                 title="重新自动排布（清除手工拖动的位置）"
                 aria-label="重新自动排布"
               >
-                <Icon name="columns" size={14} />
+                <Icon name="columns" size="sm" />
               </button>
               <button
                 type="button"
@@ -2309,7 +2309,7 @@ export function GraphCanvas() {
                 title="展开全部文件夹"
                 aria-label="展开全部文件夹"
               >
-                <Icon name="folderOpen" size={14} />
+                <Icon name="folderOpen" size="sm" />
               </button>
               <button
                 type="button"
@@ -2318,12 +2318,12 @@ export function GraphCanvas() {
                 title="收起全部文件夹"
                 aria-label="收起全部文件夹"
               >
-                <Icon name="folder" size={14} />
+                <Icon name="folder" size="sm" />
               </button>
             </>
           )}
           <button type="button" className="mn-icon-button" onClick={handleRefresh} title="重新读取图谱" aria-label="重新读取图谱">
-            <Icon name="refresh" size={14} />
+            <Icon name="refresh" size="sm" />
           </button>
         </div>
       </div>
@@ -2370,7 +2370,7 @@ export function GraphCanvas() {
       */}
       {(refreshNotice !== null || showIndexNotice) && (
         <div className="mn-graph__notice" data-mn-graph-nopan>
-          <Icon name="refresh" size={12} />
+          <Icon name="refresh" size="xs" />
           <span>{refreshNotice ?? '链接索引构建中…（图谱可能还不完整）'}</span>
           <button type="button" className="mn-graph__notice-action" onClick={handleRefresh}>
             {refreshNotice === null ? '立即刷新' : '重新读取'}
@@ -2451,7 +2451,7 @@ function GraphFolder({
         }
         onClick={() => onToggle(folder.path)}
       >
-        <Icon name={folder.collapsed ? 'folder' : 'folderOpen'} size={12} />
+        <Icon name={folder.collapsed ? 'folder' : 'folderOpen'} size="xs" />
         <span className="mn-graph-folder__label">{folder.label}</span>
         <span className="mn-graph-folder__count">{folder.noteCount}</span>
       </button>

@@ -139,7 +139,7 @@ export function MarkdownEditor() {
     <div className="mn-editor">
       {relPath === null ? (
         <div className="mn-editor__placeholder">
-          <Icon name="file" size={22} />
+          <Icon name="file" size="lg" />
           <p>从左侧选择一篇笔记，或按 <kbd>Ctrl</kbd>+<kbd>N</kbd> 新建</p>
         </div>
       ) : (

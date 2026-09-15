@@ -71,7 +71,7 @@ export function TextViewer({ relPath }: { relPath: string }) {
   return (
     <div className="mn-viewer mn-viewer--text" data-viewer-kind="text" data-viewer-path={relPath}>
       <header className="mn-viewer__bar">
-        <Icon name="file" size={14} />
+        <Icon name="file" size="sm" />
         <span className="mn-viewer__title" title={relPath}>
           {displayName(relPath)}
         </span>

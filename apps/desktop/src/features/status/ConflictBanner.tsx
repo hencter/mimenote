@@ -26,7 +26,7 @@ export function ConflictBanner() {
 
   return (
     <div className="mn-conflict" role="alert">
-      <Icon name="alert" size={16} />
+      <Icon name="alert" size="md" />
       <div className="mn-conflict__body">
         <strong title={doc.relPath}>「{displayPath(doc.relPath)}」已被外部修改</strong>
         <span>

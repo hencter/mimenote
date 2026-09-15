@@ -217,7 +217,7 @@ export function OutlinePanel() {
     <aside className="mn-outline" aria-label="大纲">
       <header className="mn-outline__head">
         <span className="mn-outline__title">
-          <Icon name="outline" size={13} /> 大纲
+          <Icon name="outline" size="xs" /> 大纲
         </span>
         <span className="mn-outline__count">{countLabel}</span>
       </header>
@@ -285,7 +285,7 @@ export function OutlinePanel() {
                   }」下的子标题`}
                   onClick={() => toggleCollapse(row.ordinal)}
                 >
-                  <Icon name="chevron" size={11} />
+                  <Icon name="chevron" size="xs" />
                 </button>
               ) : (
                 // 没有子标题的条目也占住这一列：左边缘才对得齐（与文件树同一个做法）

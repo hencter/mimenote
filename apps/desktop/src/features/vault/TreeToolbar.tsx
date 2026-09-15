@@ -72,7 +72,7 @@ export function TreeToolbar() {
   return (
     <div className="mn-tree-toolbar mn-tree-toolbar--with-tags">
       <div className="mn-search-field">
-        <Icon name="search" size={14} />
+        <Icon name="search" size="sm" />
         <input
           ref={inputRef}
           type="search"
@@ -92,7 +92,7 @@ export function TreeToolbar() {
             aria-label="清除过滤"
             onClick={() => setFilter('')}
           >
-            <Icon name="x" size={13} />
+            <Icon name="x" size="xs" />
           </button>
         )}
       </div>

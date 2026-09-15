@@ -356,7 +356,7 @@ export function DockHost({ side }: { side: DockSide }) {
                 openMenu(id, event.clientX, event.clientY)
               }}
             >
-              <Icon name="move" size={12} />
+              <Icon name="move" size="xs" />
               <span className="mn-dock__title">{meta.label}</span>
               <button
                 type="button"
@@ -365,7 +365,7 @@ export function DockHost({ side }: { side: DockSide }) {
                 title="隐藏这一块（与它的快捷键等价）"
                 onClick={() => hideDockModule(id)}
               >
-                <Icon name="x" size={11} />
+                <Icon name="x" size="xs" />
               </button>
             </header>
             <div className="mn-dock__body">

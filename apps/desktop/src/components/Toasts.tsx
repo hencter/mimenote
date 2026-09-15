@@ -20,7 +20,7 @@ export function Toasts() {
     <div className="mn-toasts" role="status" aria-live="polite">
       {toasts.map((toast) => (
         <div key={toast.id} className={`mn-toast mn-toast--${toast.kind}`}>
-          <Icon name={ICONS[toast.kind] ?? 'info'} size={15} />
+          <Icon name={ICONS[toast.kind] ?? 'info'} size="md" />
           <div className="mn-toast__body">
             <div className="mn-toast__message">{toast.message}</div>
             {toast.detail !== undefined && <div className="mn-toast__detail">{toast.detail}</div>}
@@ -31,7 +31,7 @@ export function Toasts() {
             aria-label="关闭提示"
             onClick={() => dismiss(toast.id)}
           >
-            <Icon name="x" size={14} />
+            <Icon name="x" size="sm" />
           </button>
         </div>
       ))}

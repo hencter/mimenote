@@ -198,7 +198,7 @@ export function ExportDialog() {
             onClick={() => void run('html')}
           >
             <span className="mn-export__choice-title">
-              <Icon name="save" size={15} />
+              <Icon name="save" size="md" />
               自包含 HTML
             </span>
             <span className="mn-export__choice-hint">
@@ -213,7 +213,7 @@ export function ExportDialog() {
             onClick={() => void run('print')}
           >
             <span className="mn-export__choice-title">
-              <Icon name="file" size={15} />
+              <Icon name="file" size="md" />
               打印 / 另存为 PDF
             </span>
             <span className="mn-export__choice-hint">
@@ -234,7 +234,7 @@ export function ExportDialog() {
             onClick={() => void run('site')}
           >
             <span className="mn-export__choice-title">
-              <Icon name="folder" size={15} />
+              <Icon name="folder" size="md" />
               整个 Vault → 静态站点
             </span>
             <span className="mn-export__choice-hint">
@@ -253,7 +253,7 @@ export function ExportDialog() {
 
         {busy && (
           <p className="mn-export__busy" role="status" aria-live="polite">
-            <Icon name="refresh" size={13} />
+            <Icon name="refresh" size="xs" />
             {progress ?? '正在导出…'}
           </p>
         )}

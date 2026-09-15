@@ -153,7 +153,7 @@ export function TagFilterControl() {
           title="按标签收窄文件树（可多选；Esc 或「清除」随时回到全量）"
           onClick={() => setOpen((value) => !value)}
         >
-          <Icon name="sparkle" size={13} />
+          <Icon name="sparkle" size="xs" />
           <span>标签过滤</span>
         </button>
 
@@ -170,7 +170,7 @@ export function TagFilterControl() {
               data-tag-filter-clear
               onClick={clear}
             >
-              <Icon name="x" size={13} />
+              <Icon name="x" size="xs" />
             </button>
           </>
         ) : null}
@@ -290,7 +290,7 @@ export function TagFilterControl() {
       {open ? (
         <div className="mn-tag-filter__popover" data-tag-filter-popover>
           <div className="mn-search-field">
-            <Icon name="search" size={14} />
+            <Icon name="search" size="sm" />
             <input
               ref={inputRef}
               type="text"
@@ -319,7 +319,7 @@ export function TagFilterControl() {
                 aria-label="清除标签搜索"
                 onClick={() => setQuery('')}
               >
-                <Icon name="x" size={12} />
+                <Icon name="x" size="xs" />
               </button>
             ) : null}
           </div>
@@ -373,7 +373,7 @@ export function TagFilterControl() {
                     >
                       <span className="mn-tag-filter__option-name">#{item.tag}</span>
                       <span className="mn-tag-filter__option-count">{item.count}</span>
-                      {selected ? <Icon name="check" size={12} /> : null}
+                      {selected ? <Icon name="check" size="xs" /> : null}
                     </button>
                     {/*
                       「排除」是行内第二个动作：它把"有 A 且没有 B"做成一次点击，

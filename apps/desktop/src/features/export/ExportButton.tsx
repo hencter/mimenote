@@ -27,7 +27,7 @@ export function ExportButton() {
       disabled={!hasDocument}
       onClick={requestExport}
     >
-      <Icon name="save" size={14} />
+      <Icon name="save" size="sm" />
       导出
     </button>
   )

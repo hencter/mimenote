@@ -75,6 +75,14 @@
   --font-code: var(--mn-font-mono);
   --font-ui: var(--mn-font-ui);
 
+  /* 图标尺寸刻度（ADR-0033）：与 `components/Icon.tsx` 的 `ICON_SIZES` 逐字一致，
+     单测会把两边钉在一起。SVG 图标由组件按刻度渲染；CSS 里要和同一把尺子对齐时读这几个。 */
+  --icon-xs: 12px;
+  --icon-sm: 14px;
+  --icon-md: 16px;
+  --icon-lg: 20px;
+  --icon-xl: 24px;
+
   /* 间距阶梯：8pt 栅格，编号 = px ÷ 4。**只是先定义**（VI 第 2.5 节）——
      把散落在样式里的 6/10/14px 收敛到这一套是单独一轮的事，观感会变。 */
   --space-1: 4px;

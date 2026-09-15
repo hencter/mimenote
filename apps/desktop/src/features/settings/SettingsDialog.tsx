@@ -208,7 +208,7 @@ export function SettingsDialog() {
         onKeyDown={onDialogKeyDown}
       >
         <header className="mn-settings__header">
-          <Icon name="settings" size={16} />
+          <Icon name="settings" size="md" />
           <h2>设置</h2>
           <span className="mn-settings__header-spacer" />
           <kbd>Esc</kbd>
@@ -219,7 +219,7 @@ export function SettingsDialog() {
             title="关闭设置（Esc）"
             onClick={close}
           >
-            <Icon name="x" size={15} />
+            <Icon name="x" size="md" />
           </button>
         </header>
 
@@ -248,7 +248,7 @@ export function SettingsDialog() {
                     title={SETTINGS_SECTIONS_META[id].description}
                     onClick={() => setSection(id)}
                   >
-                    <Icon name={SECTION_ICONS[id]} size={14} />
+                    <Icon name={SECTION_ICONS[id]} size="sm" />
                     {SETTINGS_SECTIONS_META[id].label}
                   </button>
                 </li>

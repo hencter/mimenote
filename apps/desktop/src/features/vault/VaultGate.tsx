@@ -49,7 +49,7 @@ export function VaultGate() {
     <div className="mn-gate">
       <div className="mn-gate__card">
         <div className="mn-gate__brand">
-          <Icon name="sparkle" size={26} />
+          <Icon name="sparkle" size="xl" />
           <div>
             <h1>Mimenote</h1>
             <p className="mn-gate__tagline">本地优先的 Markdown 知识库</p>
@@ -70,7 +70,7 @@ export function VaultGate() {
             disabled={status === 'loading'}
             onClick={() => void openVaultInteractive()}
           >
-            <Icon name="folderOpen" size={15} />
+            <Icon name="folderOpen" size="md" />
             {status === 'loading' ? '正在打开…' : '打开文件夹作为 Vault'}
           </button>
 
@@ -89,7 +89,7 @@ export function VaultGate() {
 
         {error !== null && (
           <div className="mn-gate__error">
-            <Icon name="alert" size={15} />
+            <Icon name="alert" size="md" />
             <span>{error.message}</span>
           </div>
         )}

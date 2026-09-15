@@ -208,7 +208,7 @@ export function TabBar() {
                 title={MARK_TITLE[mark]}
                 aria-hidden="true"
               >
-                {mark === 'conflict' ? <Icon name="alert" size={11} /> : '●'}
+                {mark === 'conflict' ? <Icon name="alert" size="xs" /> : '●'}
               </span>
             )}
             <button
@@ -222,7 +222,7 @@ export function TabBar() {
                 void closeTab(relPath)
               }}
             >
-              <Icon name="x" size={11} />
+              <Icon name="x" size="xs" />
             </button>
           </div>
         )

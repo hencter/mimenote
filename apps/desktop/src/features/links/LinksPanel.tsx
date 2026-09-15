@@ -35,13 +35,13 @@ export function LinksPanel() {
   return (
     <aside className="mn-links" aria-label="链接面板">
       <header className="mn-links__header">
-        <Icon name="links" size={14} />
+        <Icon name="links" size="sm" />
         <span className="mn-links__title">链接</span>
         <span className="mn-links__status" title={`索引耗时 ${status.durationMs}ms`}>
           {indexStatusLabel(status)}
         </span>
         <button type="button" className="mn-icon-button" aria-label="关闭链接面板" onClick={close}>
-          <Icon name="x" size={13} />
+          <Icon name="x" size="xs" />
         </button>
       </header>
 

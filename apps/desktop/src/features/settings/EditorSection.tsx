@@ -47,7 +47,7 @@ export function EditorSection() {
 
       <section className="mn-settings__group" aria-labelledby="mn-settings-autosave-title">
         <h4 className="mn-settings__group-title" id="mn-settings-autosave-title">
-          <Icon name="save" size={14} />
+          <Icon name="save" size="sm" />
           自动保存
         </h4>
         <div className="mn-settings__row">
@@ -79,7 +79,7 @@ export function EditorSection() {
 
       <section className="mn-settings__group" aria-labelledby="mn-settings-tab-title">
         <h4 className="mn-settings__group-title" id="mn-settings-tab-title">
-          <Icon name="columns" size={14} />
+          <Icon name="columns" size="sm" />
           制表符
         </h4>
         <div className="mn-settings__row">
@@ -120,7 +120,7 @@ export function EditorSection() {
 
       <section className="mn-settings__group" aria-labelledby="mn-settings-gutter-title">
         <h4 className="mn-settings__group-title" id="mn-settings-gutter-title">
-          <Icon name="outline" size={14} />
+          <Icon name="outline" size="sm" />
           行号
         </h4>
         <div className="mn-settings__row">
@@ -150,7 +150,7 @@ export function EditorSection() {
 
       <section className="mn-settings__group" aria-labelledby="mn-settings-attachment-title">
         <h4 className="mn-settings__group-title" id="mn-settings-attachment-title">
-          <Icon name="file" size={14} />
+          <Icon name="file" size="sm" />
           附件
         </h4>
         <div className="mn-settings__row">

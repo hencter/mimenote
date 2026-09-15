@@ -194,7 +194,7 @@ export function AppMenu() {
           else setOpen(true)
         }}
       >
-        <Icon name="menu" size={15} />
+        <Icon name="menu" size="md" />
       </button>
 
       {open && (
@@ -229,7 +229,7 @@ export function AppMenu() {
             onMouseMove={() => setActive(0)}
             onClick={() => activate({ kind: 'settings' })}
           >
-            <Icon name="settings" size={14} />
+            <Icon name="settings" size="sm" />
             <span className="mn-appmenu__item-title">设置…</span>
           </button>
 

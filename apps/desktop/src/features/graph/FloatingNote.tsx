@@ -549,7 +549,7 @@ export function FloatingNote(props: FloatingNoteProps): JSX.Element {
           title="在编辑器中打开（与停靠预览同一个动作）"
           onClick={() => onOpenInEditor(relPath)}
         >
-          <Icon name="pencil" size={14} />
+          <Icon name="pencil" size="sm" />
         </button>
         <button
           type="button"
@@ -558,7 +558,7 @@ export function FloatingNote(props: FloatingNoteProps): JSX.Element {
           title="关闭浮窗（Esc）"
           onClick={onClose}
         >
-          <Icon name="x" size={14} />
+          <Icon name="x" size="sm" />
         </button>
       </header>
 

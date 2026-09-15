@@ -218,7 +218,7 @@ export function App() {
         <div className="mn-titlebar__left">
           <AppMenu />
           <div className="mn-titlebar__brand">
-            <Icon name="sparkle" size={15} />
+            <Icon name="sparkle" size="md" />
             <span>Mimenote</span>
           </div>
           <div className="mn-titlebar__vault" title={info.rootPath}>
@@ -243,7 +243,7 @@ export function App() {
             // 可见文字去掉 `.md`（`displayPath`，ADR-0030）；`title` 与 `data-note-path` 给**真实路径** ——
             // 前者是"悬停看全名"的出口，后者是自动化认"当前是哪一篇"的抓手（可见文字不是身份）。
             <div className="mn-titlebar__path" title={shownPath} data-main-path={shownPath}>
-              <Icon name={openedFile === null ? 'pencil' : 'file'} size={13} />
+              <Icon name={openedFile === null ? 'pencil' : 'file'} size="xs" />
               <span className="mn-titlebar__path-text">{displayPath(shownPath)}</span>
               {openedFile === null && noteStatus === 'saving' && (
                 <span className="mn-titlebar__status">保存中…</span>

@@ -43,7 +43,7 @@ export function VaultSection() {
 
       <section className="mn-settings__group" aria-labelledby="mn-settings-snippets-title">
         <h4 className="mn-settings__group-title" id="mn-settings-snippets-title">
-          <Icon name="palette" size={14} />
+          <Icon name="palette" size="sm" />
           Vault CSS 片段
         </h4>
         <div className="mn-settings__row">
@@ -81,7 +81,7 @@ export function VaultSection() {
 
       <section className="mn-settings__group" aria-labelledby="mn-settings-index-title">
         <h4 className="mn-settings__group-title" id="mn-settings-index-title">
-          <Icon name="refresh" size={14} />
+          <Icon name="refresh" size="sm" />
           索引与缓存
         </h4>
 
@@ -118,7 +118,7 @@ export function VaultSection() {
               void rescanVault().finally(() => setScanning(false))
             }}
           >
-            <Icon name="refresh" size={13} />
+            <Icon name="refresh" size="xs" />
             {scanning ? '扫描中…' : '重新扫描 Vault'}
           </button>
           <button
@@ -130,7 +130,7 @@ export function VaultSection() {
               void useLinksStore.getState().refreshStatus()
             }}
           >
-            <Icon name="info" size={13} />
+            <Icon name="info" size="xs" />
             刷新索引状态
           </button>
         </div>

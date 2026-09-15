@@ -137,7 +137,7 @@ export function TagsPanel() {
   return (
     <aside className="mn-tags" aria-label="标签面板">
       <header className="mn-tags__header">
-        <Icon name="sparkle" size={14} />
+        <Icon name="sparkle" size="sm" />
         <h2 className="mn-tags__title">标签与属性</h2>
         <button
           type="button"
@@ -145,7 +145,7 @@ export function TagsPanel() {
           aria-label="关闭标签面板"
           onClick={() => setOpen(false)}
         >
-          <Icon name="x" size={13} />
+          <Icon name="x" size="xs" />
         </button>
       </header>
 

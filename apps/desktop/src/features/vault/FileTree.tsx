@@ -757,12 +757,12 @@ const FileTreeRow = memo(function FileTreeRow({
         <span
           className={`mn-tree-row__chevron${showsChildren ? ' mn-tree-row__chevron--open' : ''}`}
         >
-          <Icon name="chevron" size={13} />
+          <Icon name="chevron" size="xs" />
         </span>
       ) : (
         <span className="mn-tree-row__chevron mn-tree-row__chevron--placeholder" />
       )}
-      <Icon name={iconName} size={14} className="mn-tree-row__icon" />
+      <Icon name={iconName} size="sm" className="mn-tree-row__icon" />
       <span className="mn-tree-row__name">{entry.isDir ? entry.name : displayName(relPath)}</span>
       {!entry.isDir && !markdown && <span className="mn-tree-row__badge">{entry.ext ?? '?'}</span>}
     </div>

@@ -32,7 +32,7 @@ export function AppearanceSection() {
 
       <section className="mn-settings__group" aria-labelledby="mn-settings-theme-title">
         <h4 className="mn-settings__group-title" id="mn-settings-theme-title">
-          <Icon name="palette" size={14} />
+          <Icon name="palette" size="sm" />
           主题
         </h4>
         <div className="mn-settings__row">
@@ -63,7 +63,7 @@ export function AppearanceSection() {
 
       <section className="mn-settings__group" aria-labelledby="mn-settings-font-title">
         <h4 className="mn-settings__group-title" id="mn-settings-font-title">
-          <Icon name="type" size={14} />
+          <Icon name="type" size="sm" />
           字号
         </h4>
 
@@ -148,7 +148,7 @@ export function AppearanceSection() {
             }
             onClick={resetFontSizes}
           >
-            <Icon name="refresh" size={13} />
+            <Icon name="refresh" size="xs" />
             恢复默认字号
           </button>
         </div>

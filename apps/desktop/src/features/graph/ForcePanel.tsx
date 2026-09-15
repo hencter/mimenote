@@ -54,7 +54,7 @@ export function ForcePanel({ onClose }: { onClose: () => void }): JSX.Element {
     >
       <div className="mn-force__head">
         <span className="mn-force__title">
-          <Icon name="settings" size={12} />
+          <Icon name="settings" size="xs" />
           力度管理
         </span>
         <span className="mn-force__badge" data-force-current>
@@ -66,7 +66,7 @@ export function ForcePanel({ onClose }: { onClose: () => void }): JSX.Element {
           aria-label="关闭力度管理"
           onClick={onClose}
         >
-          <Icon name="x" size={12} />
+          <Icon name="x" size="xs" />
         </button>
       </div>
 

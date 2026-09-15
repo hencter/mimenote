@@ -553,7 +553,7 @@ export function MarkdownPreview() {
       </div>
       {stale && (
         <div className="mn-preview__stale-hint">
-          <Icon name="refresh" size={12} /> 正在同步预览…
+          <Icon name="refresh" size="xs" /> 正在同步预览…
         </div>
       )}
     </div>

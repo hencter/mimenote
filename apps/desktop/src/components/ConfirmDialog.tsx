@@ -37,7 +37,7 @@ export function ConfirmDialog() {
         onClick={(event) => event.stopPropagation()}
       >
         <div className="mn-dialog__header">
-          <Icon name="alert" size={18} />
+          <Icon name="alert" size="lg" />
           <h2>{request.title}</h2>
         </div>
         <p className="mn-dialog__message">{request.message}</p>

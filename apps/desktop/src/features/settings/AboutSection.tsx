@@ -31,7 +31,7 @@ export function AboutSection() {
 
       <section className="mn-settings__group" aria-labelledby="mn-settings-version-title">
         <h4 className="mn-settings__group-title" id="mn-settings-version-title">
-          <Icon name="info" size={14} />
+          <Icon name="info" size="sm" />
           版本
         </h4>
         {versionInfo === null ? (
@@ -59,7 +59,7 @@ export function AboutSection() {
               void loadVersionInfo()
             }}
           >
-            <Icon name="refresh" size={13} />
+            <Icon name="refresh" size="xs" />
             重新读取
           </button>
         </div>
@@ -67,7 +67,7 @@ export function AboutSection() {
 
       <section className="mn-settings__group" aria-labelledby="mn-settings-vault-stat-title">
         <h4 className="mn-settings__group-title" id="mn-settings-vault-stat-title">
-          <Icon name="folder" size={14} />
+          <Icon name="folder" size="sm" />
           当前 Vault
         </h4>
         {info === null ? (
@@ -100,7 +100,7 @@ export function AboutSection() {
 
       <section className="mn-settings__group" aria-labelledby="mn-settings-log-title">
         <h4 className="mn-settings__group-title" id="mn-settings-log-title">
-          <Icon name="file" size={14} />
+          <Icon name="file" size="sm" />
           日志文件位置
         </h4>
         <p className="mn-settings__note">

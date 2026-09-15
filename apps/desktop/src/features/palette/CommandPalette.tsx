@@ -332,7 +332,7 @@ export function CommandPalette({
         onKeyDown={handleKeyDown}
       >
         <div className="mn-palette__field">
-          <Icon name={text.icon} size={14} />
+          <Icon name={text.icon} size="sm" />
           <input
             ref={inputRef}
             className="mn-palette__input"
