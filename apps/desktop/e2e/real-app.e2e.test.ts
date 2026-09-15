@@ -291,14 +291,14 @@ describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设
 /**
  * 当前打开的笔记（标题栏中区那条路径）。
  *
- * 读 `data-note-path` 而**不是可见文字**：可见文字不带 `.md`（`displayPath`，ADR-0030），
+ * 读 `data-main-path` 而**不是可见文字**：可见文字不带 `.md`（`displayPath`，ADR-0030），
  * 而自动化要的是真实路径；顺带避开"项目/设计"误配"项目/设计文档"这类前缀命中。
  * 没有打开的笔记时返回 `null`（那个元素根本不渲染）。
  */
-async function currentNotePath(page: Page): Promise<string | null> {
+async function currentMainPath(page: Page): Promise<string | null> {
   const node = page.locator('.mn-titlebar__path')
   if ((await node.count()) === 0) return null
-  return node.getAttribute('data-note-path')
+  return node.getAttribute('data-main-path')
 }
 
 /** 打开某篇笔记（自足：不依赖上一条用例留下的树/面板/视图状态）。 */
@@ -309,7 +309,7 @@ async function openNoteInTree(page: Page, relPath: string): Promise<void> {
   await treeRow(page, relPath).click()
   await waitUntil(
     // 标题栏中区的路径三种视图里都在（ADR-0029）→ 不必再退回"树里这一行被选中"那个间接信号
-    async () => (await currentNotePath(page)) === relPath,
+    async () => (await currentMainPath(page)) === relPath,
     15_000,
     `打开 ${relPath}`,
   )
@@ -466,7 +466,7 @@ describe.skipIf(!supported)('真实应用：链接索引（真实 wikilink 解�
     // 点反向链接 → 打开乙
     await app.page.locator('[data-backlink-from="笔记/乙.md"]').click()
     await waitUntil(
-      async () => ((await currentNotePath(app.page)) === '笔记/乙.md'),
+      async () => ((await currentMainPath(app.page)) === '笔记/乙.md'),
       15_000,
       '跳转到乙',
     )
@@ -489,7 +489,7 @@ describe.skipIf(!supported)('真实应用：链接索引（真实 wikilink 解�
     await app.page.locator('[data-outbound-target="丁"]').click()
     await waitUntil(() => Promise.resolve(existsSync(vault.absolute('笔记/丁.md'))), 15_000, '丁.md 被创建')
     await waitUntil(
-      async () => ((await currentNotePath(app.page)) === '笔记/丁.md'),
+      async () => ((await currentMainPath(app.page)) === '笔记/丁.md'),
       15_000,
       '创建后自动打开丁',
     )
@@ -730,6 +730,35 @@ describe.skipIf(!supported)('真实应用：本地图片（asset 协议逐文件
     expect(placeholders).toBeGreaterThanOrEqual(1)
   })
 
+  it('文件树里点一张图片：只读查看器真的把图解码出来（用户报的"图片选择后无法预览"）', async () => {
+    /*
+      这一条只能在**应用层**验：图片走 `asset:` 协议逐文件授权（ADR-0007），浏览器预览与 jsdom
+      都拿不到它（那两层断言的是"如实说明"那条路，见 `tests/viewer.test.tsx`）。
+      判据是 `naturalWidth > 0` —— 占位元素没有这个属性，裂图是 0。
+    */
+    await ensureTreeRow(app.page, '附件/图.png')
+    await app.page.locator('.mn-tree [data-rel-path="附件/图.png"]').click()
+
+    await app.page.waitForSelector('[data-viewer-kind="image"]', { state: 'visible', timeout: 10_000 })
+    // `waitUntil` 超时会抛（不返回布尔），所以这里只等、不等返回值
+    await waitUntil(
+      async () =>
+        (await app.page.evaluate(
+          () =>
+            document.querySelector<HTMLImageElement>('.mn-viewer__image')?.naturalWidth ?? 0,
+        )) > 0,
+      15_000,
+      '查看器里的图片被解码',
+    )
+    // 标题栏中区跟着换成"我在看的那张图"（真实路径在 data-main-path 上）
+    expect(
+      await app.page.locator('.mn-titlebar__path').getAttribute('data-main-path'),
+    ).toBe('附件/图.png')
+
+    // 打开一篇笔记就回到笔记（查看器关掉）
+    await openNoteInTree(app.page, '笔记/图片.md')
+    expect(await app.page.locator('[data-viewer-kind="image"]').count()).toBe(0)
+  })
   it('编辑器（所见即所得）里的图片也能点开放大 —— 这是默认视图', async () => {
     await openNoteInTree(app.page, '笔记/图片.md')
     // 默认就是编辑视图；把光标放到文档开头，图片所在行不在光标处 ⇒ 渲染成图片 widget
@@ -841,7 +870,7 @@ describe.skipIf(!supported)('真实应用：标签与属性面板（真实 IPC�
     await app.page.locator('.mn-palette__input').press('Enter')
     await waitUntil(
       async () =>
-        ((await currentNotePath(app.page)) === '项目/设计.md'),
+        ((await currentMainPath(app.page)) === '项目/设计.md'),
       15_000,
       '回车打开命中的笔记',
     )
@@ -865,7 +894,7 @@ describe.skipIf(!supported)('真实应用：标签与属性面板（真实 IPC�
     await app.page.locator('.mn-tags [data-tag-note="项目/路线图.md"]').click()
     await waitUntil(
       async () =>
-        ((await currentNotePath(app.page)) === '项目/路线图.md'),
+        ((await currentMainPath(app.page)) === '项目/路线图.md'),
       15_000,
       '点击后打开了路线图',
     )
@@ -933,7 +962,7 @@ describe.skipIf(!supported)('真实应用：重命名与全库链接改写（真
     // 正在编辑的笔记原地跟到新路径（内容不变）
     await waitUntil(
       async () =>
-        ((await currentNotePath(app.page)) === NEW),
+        ((await currentMainPath(app.page)) === NEW),
       15_000,
       '编辑器切到新路径',
     )
@@ -1081,7 +1110,7 @@ describe.skipIf(!supported)('真实应用：搜索命中跳转（真实 FTS5）'
     )
 
     // 打开的是命中那一篇
-    expect(((await currentNotePath(app.page)) === NOTE)).toBe(
+    expect(((await currentMainPath(app.page)) === NOTE)).toBe(
       true,
     )
     // 跳转只是"看"：磁盘上一个字节都没变（没有为了定位往正文里插标记）

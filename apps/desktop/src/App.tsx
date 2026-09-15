@@ -27,6 +27,7 @@ import { Toasts } from '@/components/Toasts'
 import { MarkdownEditor } from '@/features/editor/MarkdownEditor'
 import { ExportButton } from '@/features/export/ExportButton'
 import { TrashDialog } from '@/features/trash/TrashDialog'
+import { FileViewer } from '@/features/viewer/FileViewer'
 import { WindowControls } from '@/features/window/WindowControls'
 import { ExportDialog } from '@/features/export/ExportDialog'
 import { GraphCanvas } from '@/features/graph/GraphCanvas'
@@ -59,6 +60,10 @@ export function App() {
   const saveCount = useNoteStore((state) => state.saveCount)
 
   const viewMode = useUiStore((state) => state.viewMode)
+  // 主区显示的是**附件**（只读查看器）还是笔记：见 ADR-0032 与 `domain/viewable.ts`
+  const openedFile = useUiStore((state) => state.openedFile)
+  /** 标题栏中区显示谁：打开着附件就是附件，否则是当前笔记。 */
+  const shownPath = openedFile ?? relPath
   const themeId = useUiStore((state) => state.themeId)
   const snippetsEnabled = useUiStore((state) => state.snippetsEnabled)
   const setSidebarWidth = useUiStore((state) => state.setSidebarWidth)
@@ -85,6 +90,11 @@ export function App() {
   useEffect(() => {
     void useVaultStore.getState().restoreLastVault()
   }, [])
+
+  // 换 Vault 时关掉附件查看器：那个文件属于**上一个** Vault
+  useEffect(() => {
+    useUiStore.getState().closeFile()
+  }, [rootPath])
 
   // 主题：写 CSS 变量 + data-theme
   useEffect(() => {
@@ -218,13 +228,16 @@ export function App() {
           因此长路径走省略号，而不是把右区的窗口按钮挤出屏幕。
         */}
         <div className="mn-titlebar__center">
-          {relPath !== null && (
+          {/* 正在看附件时，中区显示的是**那个附件** —— 它才是"我现在看的是什么" */}
+          {shownPath !== null && (
             // 可见文字去掉 `.md`（`displayPath`，ADR-0030）；`title` 与 `data-note-path` 给**真实路径** ——
             // 前者是"悬停看全名"的出口，后者是自动化认"当前是哪一篇"的抓手（可见文字不是身份）。
-            <div className="mn-titlebar__path" title={relPath} data-note-path={relPath}>
-              <Icon name="pencil" size={13} />
-              <span className="mn-titlebar__path-text">{displayPath(relPath)}</span>
-              {noteStatus === 'saving' && <span className="mn-titlebar__status">保存中…</span>}
+            <div className="mn-titlebar__path" title={shownPath} data-main-path={shownPath}>
+              <Icon name={openedFile === null ? 'pencil' : 'file'} size={13} />
+              <span className="mn-titlebar__path-text">{displayPath(shownPath)}</span>
+              {openedFile === null && noteStatus === 'saving' && (
+                <span className="mn-titlebar__status">保存中…</span>
+              )}
             </div>
           )}
         </div>
@@ -270,19 +283,30 @@ export function App() {
           {/* 主区域只有三种形态：所见即所得编辑 / 只读预览 / 知识图谱。
               "分栏（编辑 + 预览并排）"已移除 —— 编辑器本身就是所见即所得的（ADR-0009）。 */}
           <main className="mn-main" ref={mainRef}>
-            {viewMode === 'edit' && (
+            {/*
+              主区现在显示两类对象之一：**笔记**（下面三种视图，三选一 —— ADR-0009）或
+              **附件**（只读查看器，按类型分派 —— ADR-0032）。判据只有一个：
+              `ui-store.openedFile` 有没有值；而"这个文件能不能打开"由 `domain/viewable.ts` 回答。
+            */}
+            {openedFile !== null && (
+              <section className="mn-pane mn-pane--file" style={previewStyle}>
+                <FileViewer relPath={openedFile} />
+              </section>
+            )}
+
+            {openedFile === null && viewMode === 'edit' && (
               <section className="mn-pane mn-pane--editor" style={editorStyle}>
                 <MarkdownEditor />
               </section>
             )}
 
-            {viewMode === 'read' && (
+            {openedFile === null && viewMode === 'read' && (
               <section className="mn-pane" style={previewStyle}>
                 <MarkdownPreview />
               </section>
             )}
 
-            {viewMode === 'graph' && (
+            {openedFile === null && viewMode === 'graph' && (
               <section className="mn-pane mn-pane--graph" style={previewStyle}>
                 <GraphCanvas />
               </section>

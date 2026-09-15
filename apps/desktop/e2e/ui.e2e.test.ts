@@ -108,14 +108,14 @@ async function ensureTreeRow(page: Page, relPath: string): Promise<void> {
 /**
  * 当前打开的笔记（标题栏中区那条路径）。
  *
- * 读 `data-note-path` 而**不是可见文字**：可见文字不带 `.md`（`displayPath`，ADR-0030），
+ * 读 `data-main-path` 而**不是可见文字**：可见文字不带 `.md`（`displayPath`，ADR-0030），
  * 而自动化要的是真实路径；顺带避开"项目/设计"误配"项目/设计文档"这类前缀命中。
  * 没有打开的笔记时返回 `null`（那个元素根本不渲染）。
  */
-async function currentNotePath(page: Page): Promise<string | null> {
+async function currentMainPath(page: Page): Promise<string | null> {
   const node = page.locator('.mn-titlebar__path')
   if ((await node.count()) === 0) return null
-  return node.getAttribute('data-note-path')
+  return node.getAttribute('data-main-path')
 }
 
 /** 在文件树里打开某篇笔记（编辑/阅读/图谱三种视图都能用）。 */
@@ -125,7 +125,7 @@ async function openNoteInTree(page: Page, relPath: string): Promise<void> {
   await waitUntil(
     // 标题栏中区的路径是"当前文档是谁"的**唯一**读法，三种视图里都在
     // （它从前挂在编辑器工具栏上，于是阅读/图谱视图只能退回"树里这一行被选中"这个间接信号 —— ADR-0029）
-    async () => (await currentNotePath(page)) === relPath,
+    async () => (await currentMainPath(page)) === relPath,
     10_000,
     `打开 ${relPath}`,
   )
@@ -731,11 +731,11 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     // 阅读视图与图谱视图里路径仍然在
     await page.locator('button[aria-label="阅读（渲染后）"]').click()
     await page.waitForSelector('.mn-preview__body', { state: 'visible' })
-    expect(await currentNotePath(page)).toBe('项目/设计.md')
+    expect(await currentMainPath(page)).toBe('项目/设计.md')
 
     await page.locator('button[aria-label="知识图谱"]').click()
     await page.waitForSelector('.mn-pane--graph', { state: 'visible' })
-    expect(await currentNotePath(page)).toBe('项目/设计.md')
+    expect(await currentMainPath(page)).toBe('项目/设计.md')
   })
 
   it('笔记名在各处都不带 .md，而身份与悬停仍是真实路径（ADR-0030）', async () => {
@@ -743,16 +743,16 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       用户诉求："隐藏 .md 的扩展名"。判据只有 `domain/paths.ts` 的
       `displayName` / `displayPath` 一份，这里在**真实浏览器**里钉住三个显示点
       （标题栏 / 标签页 / 文件树）：可见文字不带扩展名，而"这是哪一篇"的身份
-      （`data-note-path` / `data-tab-path` / `data-rel-path`）与悬停 `title`
+      （`data-main-path` / `data-tab-path` / `data-rel-path`）与悬停 `title`
       仍然是真实路径 —— 少了后半句，自动化就只能靠可见文字认笔记。
     */
     await ensureVaultOpen(page)
     await openNoteInTree(page, '项目/设计.md')
     await page.waitForSelector('.mn-app > .mn-tabs', { state: 'visible' })
 
-    // 标题栏中区：可见文字不带 .md，title 与 data-note-path 给真实路径
+    // 标题栏中区：可见文字不带 .md，title 与 data-main-path 给真实路径
     expect((await page.locator('.mn-titlebar__path-text').textContent()) ?? '').toBe('项目/设计')
-    expect(await currentNotePath(page)).toBe('项目/设计.md')
+    expect(await currentMainPath(page)).toBe('项目/设计.md')
     expect(await page.locator('.mn-titlebar__path').getAttribute('title')).toBe('项目/设计.md')
 
     // 标签页：可见文字只有文件名主干
@@ -1107,7 +1107,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     // 先确保有一篇打开的笔记，才能验证"主题切换不会重建编辑器"
     await page.locator('.mn-tree [data-rel-path="随手记.md"]').click()
     await page.waitForSelector('.cm-content', { state: 'visible' })
-    const pathBefore = await currentNotePath(page)
+    const pathBefore = await currentMainPath(page)
 
     const before = await page.evaluate(
       () => getComputedStyle(document.documentElement).getPropertyValue('--mn-bg').trim(),
@@ -1125,7 +1125,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(after).not.toBe(before)
     // 编辑器还在，且打开的仍是同一篇笔记（没有被重建/重置）
     expect(await page.locator('.cm-content').count()).toBe(1)
-    expect(await currentNotePath(page)).toBe(pathBefore)
+    expect(await currentMainPath(page)).toBe(pathBefore)
     // 换回深色，避免影响后续用例
     await page.selectOption('.mn-statusbar select', 'mimenote-dark')
   })
@@ -1175,7 +1175,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     if (chosen !== null && chosen.endsWith('.md')) {
       await waitUntil(
         async () =>
-          ((await currentNotePath(page)) === chosen),
+          ((await currentMainPath(page)) === chosen),
         8_000,
         `Enter 打开 ${chosen}`,
       )
@@ -1230,7 +1230,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.locator('[data-backlink-from="项目/路线图.md"]').click()
     await waitUntil(
       async () =>
-        ((await currentNotePath(page)) === '项目/路线图.md'),
+        ((await currentMainPath(page)) === '项目/路线图.md'),
       10_000,
       '点击反向链接后跳转到来源笔记',
     )
@@ -1293,7 +1293,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     // 正在编辑的笔记原地换路径（不重新读取、内容不变）
     await waitUntil(
       async () =>
-        ((await currentNotePath(page)) === '项目/架构设计.md'),
+        ((await currentMainPath(page)) === '项目/架构设计.md'),
       10_000,
       '编辑器切到新路径',
     )
@@ -1355,7 +1355,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.locator('.mn-tags [data-tag-note="项目/标签示例.md"]').click()
     await waitUntil(
       async () =>
-        ((await currentNotePath(page)) === '项目/标签示例.md'),
+        ((await currentMainPath(page)) === '项目/标签示例.md'),
       10_000,
       '点笔记后打开它',
     )
@@ -1492,7 +1492,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.locator('.mn-palette__input').press('Enter')
     await waitUntil(
       async () =>
-        ((await currentNotePath(page)) === '项目/标签示例.md'),
+        ((await currentMainPath(page)) === '项目/标签示例.md'),
       10_000,
       '回车打开命中的笔记',
     )
@@ -2459,7 +2459,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.locator('.mn-tabs__tab[data-tab-path="项目/设计.md"]').click()
     await waitUntil(
       async () =>
-        ((await currentNotePath(page)) === '项目/设计.md'),
+        ((await currentMainPath(page)) === '项目/设计.md'),
       10_000,
       '点击标签后切到那篇笔记',
     )
@@ -2583,7 +2583,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.locator('.mn-palette__input').press('Enter')
     await waitUntil(
       async () =>
-        ((await currentNotePath(page)) === '项目/路线图.md'),
+        ((await currentMainPath(page)) === '项目/路线图.md'),
       10_000,
       '打开选中的笔记',
     )
@@ -2593,7 +2593,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.waitForSelector('.mn-palette', { state: 'visible' })
     await page.keyboard.press('Escape')
     await waitUntil(async () => (await page.locator('.mn-palette').count()) === 0, 5_000, 'Esc 关闭面板')
-    expect(await currentNotePath(page)).toBe('项目/路线图.md')
+    expect(await currentMainPath(page)).toBe('项目/路线图.md')
   })
 
   it('视图模式切换：编辑 / 阅读 / 图谱（主区域只有一个 pane）', async () => {
@@ -2937,7 +2937,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await openNoteInTree(page, '工程/子项目/细节.md')
     await showEditView(page)
     await waitUntil(
-      async () => ((await currentNotePath(page)) === '工程/子项目/细节.md'),
+      async () => ((await currentMainPath(page)) === '工程/子项目/细节.md'),
       10_000,
       '子树的深层文件跟着换了路径',
     )

@@ -52,11 +52,13 @@ import {
 } from '@/domain/drag'
 import { formatBytes } from '@/domain/format'
 import { displayName, isMarkdown } from '@/domain/paths'
+import { isViewable } from '@/domain/viewable'
 import { flattenTree, type FlatRow } from '@/domain/tree'
 import { computeWindow, scrollTopToReveal } from '@/domain/virtual-list'
 import { useNoteStore } from '@/state/note-store'
 import { useTagFilterStore } from '@/state/tag-filter-store'
 import { toast } from '@/state/toast-store'
+import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 import { MoveDialog } from './MoveDialog'
 import { RenameDialog } from './RenameDialog'
@@ -371,6 +373,10 @@ export function FileTree() {
         toggleExpanded(entry.relPath)
       } else if (isMarkdown(entry.relPath)) {
         void openNote(entry.relPath)
+      } else if (isViewable(entry.relPath)) {
+        // 图片一类附件能打开成**只读预览**（ADR-0032）。其余附件（`.txt`、`.zip`…）保持原样：
+        // 只选中。判据在 `domain/viewable.ts`，加一类只改那一处。
+        useUiStore.getState().openFile(entry.relPath)
       }
     },
     [select, toggleExpanded],

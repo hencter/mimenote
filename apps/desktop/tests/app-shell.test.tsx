@@ -156,10 +156,10 @@ describe('外壳渲染', () => {
     await waitFor(() => {
       const center = document.querySelector('.mn-titlebar__center')
       const path = center?.querySelector('.mn-titlebar__path')
-      // **可见文字**不带 `.md`（`displayPath`，ADR-0030），而 `data-note-path` 给真实路径：
+      // **可见文字**不带 `.md`（`displayPath`，ADR-0030），而 `data-main-path` 给真实路径：
       // 自动化认身份要读它，不能读可见文字（"项目/设计" 会误配 "项目/设计文档"）
       expect(path?.querySelector('.mn-titlebar__path-text')?.textContent).toBe('项目/设计')
-      expect(path?.getAttribute('data-note-path')).toBe('项目/设计.md')
+      expect(path?.getAttribute('data-main-path')).toBe('项目/设计.md')
       expect(path?.getAttribute('title')).toBe('项目/设计.md')
     })
     expect(document.querySelector('.mn-editor__path')).toBeNull()
@@ -230,7 +230,7 @@ describe('链接面板（M2）', () => {
     })
     await waitFor(() => {
       expect(
-        document.querySelector('.mn-titlebar__path')?.getAttribute('data-note-path'),
+        document.querySelector('.mn-titlebar__path')?.getAttribute('data-main-path'),
       ).toBe('项目/路线图.md')
     })
   })
@@ -261,7 +261,7 @@ describe('链接面板（M2）', () => {
     await waitFor(() => {
       expect(useNoteStore.getState().doc?.relPath).toBe('项目/设计.md')
       expect(
-        document.querySelector('.mn-titlebar__path')?.getAttribute('data-note-path'),
+        document.querySelector('.mn-titlebar__path')?.getAttribute('data-main-path'),
       ).toBe('项目/设计.md')
     })
     expect(useVaultStore.getState().selected).toBe('项目/设计.md')

@@ -97,6 +97,8 @@ export async function openNote(relPath: string): Promise<boolean> {
   vault.revealPath(relPath)
   const ok = await useNoteStore.getState().open(relPath)
   if (ok) vault.select(relPath)
+  // 打开笔记 = 离开附件查看器（主区一次只显示一类对象，见 ADR-0032）
+  if (ok) useUiStore.getState().closeFile()
   return ok
 }
 

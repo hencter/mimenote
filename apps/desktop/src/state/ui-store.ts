@@ -238,6 +238,20 @@ interface UiState extends UiPreferences {
    */
   trashDialogOpen: boolean
   setTrashDialogOpen: (open: boolean) => void
+
+  /**
+   * 主区里**正在用查看器打开的附件**（Vault 相对路径；`null` = 主区显示的是笔记）。
+   *
+   * 与 `paletteMode` / `trashDialogOpen` 同一类**瞬时状态**：刻意不进 `persist()` ——
+   * 重启后不该自己弹回上次看过的那张图。它只回答一个问题："主区现在显示的是笔记还是文件"，
+   * 判断"这个文件能不能打开、用哪种查看器"是 `domain/viewable.ts` 的事（判据只有一份）。
+   *
+   * 两条清除路径：打开一篇笔记（`app/actions.openNote`）与点视图按钮（`setViewMode` /
+   * `cycleViewMode` —— "回到编辑/阅读/图谱"这个动作的语义就是"我要看笔记了"）。
+   */
+  openedFile: string | null
+  openFile: (relPath: string) => void
+  closeFile: () => void
 }
 
 function persist(state: UiState): void {
@@ -265,6 +279,8 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   trashDialogOpen: false,
 
+  openedFile: null,
+
   setTrashDialogOpen: (open) => {
     // 与 `openPalette` 一样：对话框开关不是需要记住的偏好，不调用 persist()
     set({ trashDialogOpen: open })
@@ -279,8 +295,19 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({ paletteMode: null })
   },
 
+  openFile: (relPath) => {
+    // 不调用 persist()：看过的文件不是需要记住的偏好
+    set({ openedFile: relPath })
+  },
+
+  closeFile: () => {
+    if (get().openedFile === null) return
+    set({ openedFile: null })
+  },
+
   setViewMode: (viewMode) => {
-    set({ viewMode })
+    // 视图按钮的语义是"我要看**笔记**的哪一种形态" ⇒ 顺手把附件查看器关掉
+    set({ viewMode, openedFile: null })
     persist(get())
   },
 
@@ -288,7 +315,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     const order: ViewMode[] = ['edit', 'read', 'graph']
     const current = get().viewMode
     const next = order[(order.indexOf(current) + 1) % order.length] ?? 'edit'
-    set({ viewMode: next })
+    set({ viewMode: next, openedFile: null })
     persist(get())
   },
 
