@@ -206,6 +206,23 @@ export function normalizeLayout(raw: unknown, options: NormalizeOptions = {}): T
   return parse(raw, 0) ?? fallback
 }
 
+/**
+ * 在树上**没被用过**的 id：给"切一刀"生成新节点用。
+ *
+ * 为什么不能简单地用 `${目标叶}~b`：切一刀之后**目标叶仍在树上**（它只是多了一个兄弟），
+ * 所以同一个叶被切第二次就会再造出一个同名叶 —— 两个叶子共用一个 id，`findLeaf` / 落盘
+ * 对位 / React key 全部会错位（真实踩到：对账时连续挂四个模块，树上出现四个 `main~b`）。
+ */
+function uniqueId(layout: TreeLayout, base: string): string {
+  const used = new Set<string>()
+  walk(layout, (node) => used.add(node.id))
+  if (!used.has(base)) return base
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${base}-${suffix}`
+    if (!used.has(candidate)) return candidate
+  }
+}
+
 function clampRatio(ratio: number): number {
   if (!Number.isFinite(ratio)) return 0.5
   return Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio))
@@ -243,10 +260,15 @@ export function moveItem(
   // 切一刀：把目标叶换成 split，被拖的标签独占新叶
   const axis: SplitAxis = edge === 'left' || edge === 'right' ? 'row' : 'column'
   const before = edge === 'left' || edge === 'top'
-  const newLeaf: LeafNode = { kind: 'leaf', id: `${target.leafId}~b`, items: [item], active: item }
+  const newLeaf: LeafNode = {
+    kind: 'leaf',
+    id: uniqueId(removed, `${target.leafId}~b`),
+    items: [item],
+    active: item,
+  }
   const withSplit = replaceLeaf(removed, target.leafId, (leaf) => ({
     kind: 'split',
-    id: `${target.leafId}~split`,
+    id: uniqueId(removed, `${target.leafId}~split`),
     axis,
     ratio: 0.5,
     a: before ? newLeaf : leaf,
@@ -352,46 +374,65 @@ export function defaultLayout(): TreeLayout {
 /**
  * 从 ADR-0026 的停靠布局迁移（老用户的配置不丢）。
  *
- * 映射：左区（可能有多块模块）→ 主叶左侧的竖直串；右区 → 右侧；底区 → 下侧。
- * 同一区里多块模块**各占一个叶子**（竖着平分）—— 它们今天就是"平分该区高度"，
- * 而新模型里"一个叶子一个标签"，所以用嵌套 split 表达，视觉上仍然≈平分。
+ * 形态照抄旧模型的几何：**左/右区里多块模块是上下叠（平分该侧高度）、底区里是左右排
+ * （平分该区宽度）**，而整条左带在主区左侧、右带在右侧、底带在下方。于是：
  *
- * 空区不产生节点；主叶永远在（笔记标签的家）。
+ * ```text
+ * row[ column[左带…], column[ row[ main, 右带… ], 底带… ] ]
+ * ```
+ *
+ * 一处**知道的差异**：旧模型里同一区的模块是"各自占满该区宽度、上下平分"，
+ * 而这里每个模块是一个独立叶子，中间多了可拖的分隔条 —— 观感接近，但可以分别调比例
+ * （这正是用户要的"容器切割"）。
  */
 export function fromDockLayout(
   dock: { left: readonly ViewModuleId[]; right: readonly ViewModuleId[]; bottom: readonly ViewModuleId[] },
   notes: readonly string[] = [],
 ): TreeLayout {
-  let tree: TreeLayout = {
+  const main: LeafNode = {
     kind: 'leaf',
     id: DEFAULT_MAIN_LEAF_ID,
     items: notes.map(noteItem),
     active: notes.length > 0 ? noteItem(notes[0]!) : null,
   }
 
-  /** 把一串模块挂在某一侧的叶子上（顺序 = 从外到内）。 */
-  const attach = (
+  /** 把一串模块做成一条带：**上下叠**（`column`）或**左右排**（`row`），比例各半 ⇒ 等价于旧的"平分"。 */
+  const strip = (
     side: 'left' | 'right' | 'bottom',
     modules: readonly ViewModuleId[],
-  ): void => {
+    axis: SplitAxis,
+  ): TreeLayout | null => {
+    let tree: TreeLayout | null = null
     for (const module of modules) {
-      const id = `${side}-${module}`
-      const leaf: LeafNode = { kind: 'leaf', id, items: [module], active: module }
-      const before = side !== 'right'
-      tree = {
-        kind: 'split',
-        id: `${id}~split`,
-        axis: side === 'bottom' ? 'column' : 'row',
-        ratio: 0.5,
-        a: before ? leaf : tree,
-        b: before ? tree : leaf,
-      }
+      const leaf: LeafNode = { kind: 'leaf', id: `${side}-${module}`, items: [module], active: module }
+      tree =
+        tree === null
+          ? leaf
+          : {
+              kind: 'split',
+              id: `${side}-${module}~split`,
+              axis,
+              ratio: 0.5,
+              a: tree,
+              b: leaf,
+            }
     }
+    return tree
   }
 
-  attach('right', dock.right)
-  attach('bottom', dock.bottom)
-  attach('left', dock.left)
+  const left = strip('left', dock.left, 'column')
+  const right = strip('right', dock.right, 'column')
+  const bottom = strip('bottom', dock.bottom, 'row')
+
+  let center: TreeLayout = main
+  if (right !== null) center = { kind: 'split', id: 'right~split', axis: 'row', ratio: 0.5, a: center, b: right }
+  if (bottom !== null) {
+    center = { kind: 'split', id: 'bottom~split', axis: 'column', ratio: 0.5, a: center, b: bottom }
+  }
+  const tree: TreeLayout = left === null
+    ? center
+    : { kind: 'split', id: 'left~split', axis: 'row', ratio: 0.5, a: left, b: center }
+
   return normalizeLayout(tree)
 }
 
@@ -406,7 +447,10 @@ export function attachItem(
   item: LayoutItemId,
   target: { leafId?: string; edge?: 'left' | 'right' | 'top' | 'bottom' } = {},
 ): TreeLayout {
-  const leafId = target.leafId ?? leaves(layout)[0]?.id
+  // 默认落点是**主叶**（`main`）：模块挂上去之后 DFS 的第一个叶会是"文件树那一格"，
+  // 用它当默认落点会把新打开的笔记挂进文件树里（真实踩到：对账用例抓出来的）
+  const all = leaves(layout)
+  const leafId = target.leafId ?? (all.find((leaf) => leaf.id === DEFAULT_MAIN_LEAF_ID) ?? all[0])?.id
   if (leafId === undefined) {
     return normalizeLayout({ kind: 'leaf', id: DEFAULT_MAIN_LEAF_ID, items: [item], active: item })
   }
