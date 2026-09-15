@@ -396,7 +396,7 @@ describe('设置对话框', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '恢复默认字号' }))
     expect(useSettingsStore.getState().uiFontSize).toBe(DEFAULT_SETTINGS.uiFontSize)
-    expect(document.documentElement.style.getPropertyValue('--mn-font-size-ui')).toBe('13px')
+    expect(document.documentElement.style.getPropertyValue('--mn-font-size-ui')).toBe('16px')
   })
 
   it('阅读视图字号与编辑器字号分开：各自写自己的变量、各自持久化、一起被重置', () => {
@@ -410,10 +410,12 @@ describe('设置对话框', () => {
     expect(editor.value).toBe(String(DEFAULT_SETTINGS.editorFontSize))
     expect(reading.value).toBe(String(DEFAULT_SETTINGS.readingFontSize))
 
-    // 只动编辑器字号：阅读变量**不变**（此前两者共用同一个变量，改一个必然动另一个）
+    // 只动编辑器字号：阅读变量**不变**（此前两者共用同一个变量，改一个必然动另一个）。
+    // 默认值本身是 16/16/16（三档统一，见 `DEFAULT_SETTINGS` 上面那段），所以"没被写过"
+    // 的那一档此刻应当还是 **16px** —— 改这一个数就同时钉住了"分开"与"默认统一"两件事。
     fireEvent.change(editor, { target: { value: '22' } })
     expect(document.documentElement.style.getPropertyValue('--mn-font-size-editor')).toBe('22px')
-    expect(document.documentElement.style.getPropertyValue('--mn-font-size-reading')).toBe('15px')
+    expect(document.documentElement.style.getPropertyValue('--mn-font-size-reading')).toBe('16px')
 
     // 只动阅读字号：编辑器不受影响
     fireEvent.change(reading, { target: { value: '20' } })
@@ -425,10 +427,10 @@ describe('设置对话框', () => {
     }
     expect(saved.readingFontSize).toBe(20)
 
-    // 「恢复默认字号」把三项一起拉回默认
+    // 「恢复默认字号」把三项一起拉回默认（现在的默认是三档统一 16）
     fireEvent.click(screen.getByRole('button', { name: '恢复默认字号' }))
     expect(useSettingsStore.getState().readingFontSize).toBe(DEFAULT_SETTINGS.readingFontSize)
-    expect(document.documentElement.style.getPropertyValue('--mn-font-size-reading')).toBe('15px')
+    expect(document.documentElement.style.getPropertyValue('--mn-font-size-reading')).toBe('16px')
 
     // 越界值被夹回范围（滑杆本身不会给出越界值，但持久化里可能被手工改过）
     act(() => {

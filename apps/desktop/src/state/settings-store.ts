@@ -98,10 +98,20 @@ export interface SettingsValues {
   attachmentDir: string
 }
 
+/*
+ * 默认字号：**三档统一 16**（VI 规范第 2.3 节 / 用户诉求"整体默认字体统一 16 号"）。
+ *
+ * 这三个数才是**真值**：`features/settings/font-overrides.ts` 把它们写成 `<html>` 上的行内变量
+ * 外加一条 `!important` 的作者样式，压过主题 JSON 与 `styles/app.css` 的 `:root`
+ * （—— 那两处的 `--mn-font-size-*` 是兜底与"令牌清单完整性"用的，别在那边改默认值）。
+ *
+ * 老用户读的是**自己存下来的值**（localStorage），所以升级后不会被动变字号；
+ * 设置页「外观」里的「恢复默认字号」就是按这三个数恢复。
+ */
 export const DEFAULT_SETTINGS: SettingsValues = {
-  uiFontSize: 13,
-  editorFontSize: 15,
-  readingFontSize: 15,
+  uiFontSize: 16,
+  editorFontSize: 16,
+  readingFontSize: 16,
   autosaveDelayMs: 600,
   tabWidth: 4,
   editorLineNumbers: true,
@@ -127,7 +137,7 @@ export interface SettingsState extends SettingsValues {
   setEditorLineNumbers: (on: boolean) => void
   /** 附件目录（相对 Vault 根；空串 = Vault 根）。非法值会被归一化回默认值。 */
   setAttachmentDir: (dir: string) => void
-  /** 两个字号一起恢复到主题默认值。 */
+  /** 三档字号一起恢复到默认值（见 `DEFAULT_SETTINGS` 上面那段）。 */
   resetFontSizes: () => void
 
   /** "关于"页的版本信息（`version_info`）。 */

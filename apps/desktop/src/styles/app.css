@@ -14,9 +14,82 @@
   --mn-accent: #7aa2f7;
   --mn-font-ui: 'Segoe UI', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
   --mn-font-mono: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
-  --mn-font-size-ui: 13px;
-  --mn-font-size-editor: 15px;
+  /* 默认字号：**三档统一 16**（阅读视图没被设置页写过时回落到编辑器那一档，见 .mn-preview__body）。
+     用户报过"整体默认字体统一 16 号"，这里就是那件事的落点；设置页仍然三档可调。 */
+  --mn-font-size-ui: 16px;
+  --mn-font-size-editor: 16px;
   --mn-radius: 6px;
+}
+
+/* ---------------------------------------------------------------------------
+ * 设计令牌的**别名层**（VI 规范名 ↔ 本项目的存储名，ADR-0031）
+ *
+ * 规则：
+ * 1. `--mn-*` 是**存储格式** —— 主题 JSON 的键、`REQUIRED_TOKENS` 的清单、用户 CSS 片段里
+ *    写的东西，一律不动（三套内置主题与既有片段因此一个字都不用改）；
+ * 2. VI 规范名（`--bg-base` / `--text-primary` / `--brand-primary` / `--radius-md` / `--space-4` …）
+ *    是**公开的书写面**：插件、用户样式片段、新写的组件都用它，语义更清楚；
+ * 3. 值一律是 `var(--mn-…)`，**不许写死颜色** —— 单测（`tests/design-tokens.test.ts`）会拦住；
+ * 4. 主题作者**可以**定义的可选项走"可选令牌 + 兜底"（`var(--mn-xxx, 兜底)`，与 ADR-0028 的
+ *    `--mn-edge-out` 同一个套路）：不给也能跑，给了就生效，因此**不进 `REQUIRED_TOKENS`**，
+ *    否则所有既有主题会在启动时报缺令牌。
+ * --------------------------------------------------------------------------- */
+:root {
+  /* 背景 */
+  --bg-base: var(--mn-bg);
+  --bg-subtle: var(--mn-bg-subtle, var(--mn-bg-sidebar));
+  --bg-elevated: var(--mn-bg-elevated);
+  --bg-muted: var(--mn-bg-muted, var(--mn-hover));
+  --bg-inverse: var(--mn-bg-inverse, var(--mn-fg));
+
+  /* 文字 */
+  --text-primary: var(--mn-fg);
+  --text-secondary: var(--mn-fg-muted);
+  --text-tertiary: var(--mn-fg-subtle);
+
+  /* 品牌与语义色 */
+  --brand-primary: var(--mn-accent);
+  --brand-on-primary: var(--mn-accent-fg);
+  --brand-hover: var(--mn-brand-hover, var(--mn-accent));
+  --brand-active: var(--mn-brand-active, var(--mn-accent));
+  --success: var(--mn-success);
+  --warning: var(--mn-warning);
+  --danger: var(--mn-danger);
+  --info: var(--mn-info, var(--mn-link));
+
+  /* 边框 */
+  --border-default: var(--mn-border);
+  --border-muted: var(--mn-border-muted, var(--mn-border));
+
+  /* 圆角：以 `--mn-radius` 为中心派生，换主题只改一个数 */
+  --radius-sm: calc(var(--mn-radius) - 2px);
+  --radius-md: var(--mn-radius);
+  --radius-lg: calc(var(--mn-radius) + 2px);
+  --radius-full: 999px;
+
+  /* 字体族：阅读与编辑各自一档。默认**都回落到现在的 UI 字体** ——
+     把它们变成衬线/等宽是一次观感改动，要有意为之（VI 里的 Source Serif / JetBrains Mono
+     属于"可选皮肤"，不进默认值，否则机器上没装那套字时会掉到宋体一类难看的回退上）。 */
+  --font-reading: var(--mn-font-reading, var(--mn-font-ui));
+  --font-editor: var(--mn-font-editor, var(--mn-font-ui));
+  --font-code: var(--mn-font-mono);
+  --font-ui: var(--mn-font-ui);
+
+  /* 间距阶梯：8pt 栅格，编号 = px ÷ 4。**只是先定义**（VI 第 2.5 节）——
+     把散落在样式里的 6/10/14px 收敛到这一套是单独一轮的事，观感会变。 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  /* 字号阶梯：相对基础字号（em），因此用户调大字号时整个界面**一起**长 */
+  --font-size-xs: 0.85em;
+  --font-size-sm: 0.92em;
+  --font-size-md: 1em;
+  --font-size-lg: 1.15em;
 }
 
 * {

@@ -86,7 +86,7 @@ const NOTES = FILES.filter((rel) => rel.toLowerCase().endsWith('.md'))
  * （`https://example.com/image.png`，用来试渲染外链）把"图片引用必须都在 Vault 内"这条检查点红了。
  * 用户改名/新建草稿是常态，改到这一行时只需改名字，不要放宽判据。
  */
-const NOT_FIXTURE = new Set(['Markdown 全元素测试用例.md'])
+const NOT_FIXTURE = new Set(['项目/Markdown 全元素测试用例.md'])
 const ENTRIES: AssetEntry[] = FILES.map((relPath) => ({ relPath, isDir: false }))
 
 const read = (rel: string): string => readFileSync(join(VAULT_ROOT, ...rel.split('/')), 'utf8')

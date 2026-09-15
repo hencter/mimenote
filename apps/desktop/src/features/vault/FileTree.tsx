@@ -67,7 +67,14 @@ import './drag-drop.css'
 // 而它属于"标签过滤"这个能力带来的界面，因此与控件样式放在一起；重复 import 会被打包器去重
 import './tag-filter.css'
 
-const ROW_HEIGHT = 26
+/*
+ * 行高：与**默认字号**绑在一起看 —— 当初是 13px 字号配 26px，字号默认抬到 16 之后
+ * 文字行盒 24px 只剩上下各 1px，量出来就是"挤"（E2E 里有一条"树行上下留白 ≥3px"的门禁）。
+ *
+ * 虚拟列表把这个常量当**唯一来源**（`computeWindow({ rowHeight: ROW_HEIGHT })`），
+ * 所以改这一个数就够了，滚动手感与"可见几行"会自己跟上。
+ */
+const ROW_HEIGHT = 30
 const OVERSCAN = 10
 /**
  * 尚未测量出视口高度时的兜底值。

@@ -767,6 +767,67 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect((await row.getAttribute('title')) ?? '').toContain('项目/设计.md')
   })
 
+  it('默认字号三档统一 16：令牌真的生效，写死高度的栏不裁字（VI 落地第一批）', async () => {
+    /*
+      用户诉求"整体默认字体统一 16 号"。真值在**设置层**（`DEFAULT_SETTINGS`，由
+      `font-overrides.ts` 以行内变量 + `!important` 写进 `<html>`），不是主题 JSON 也不是 `:root`
+      —— 这一条顺便把这个事实钉住。顺带门禁两件容易被漏掉的事：VI 别名层要真的解析出值；
+      写死高度的栏（标题栏 / 标签栏 / 状态栏 / 树行）不能把字裁掉。
+    */
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/设计.md')
+
+    const sizes = await page.evaluate(() => {
+      const root = getComputedStyle(document.documentElement)
+      const fontSizeOf = (selector: string): string | null => {
+        const element = document.querySelector(selector)
+        return element === null ? null : getComputedStyle(element).fontSize
+      }
+      return {
+        ui: root.getPropertyValue('--mn-font-size-ui').trim(),
+        editor: root.getPropertyValue('--mn-font-size-editor').trim(),
+        reading: root.getPropertyValue('--mn-font-size-reading').trim(),
+        body: fontSizeOf('body'),
+        // 编辑器那一档量的是 `.cm-editor`（`cm/theme.ts` 的 `&` 规则把它设成令牌值）：
+        // 量 `.cm-line` 会撞上标题行自己的倍数（`h1` 是 1.62em）
+        line: fontSizeOf('.cm-editor'),
+        // 别名层（`--bg-base` 等）要真的解析成颜色：解析不出来就是空串/透明
+        background: getComputedStyle(document.body).backgroundColor,
+      }
+    })
+    expect(sizes.ui).toBe('16px')
+    expect(sizes.editor).toBe('16px')
+    expect(sizes.reading).toBe('16px')
+    expect(sizes.body).toBe('16px')
+    expect(sizes.line).toBe('16px')
+    expect(sizes.background).not.toBe('rgba(0, 0, 0, 0)')
+
+    const tight = await page.evaluate(() => {
+      const clipped = (selector: string): boolean | null => {
+        const element = document.querySelector(selector)
+        return element === null ? null : element.scrollHeight > element.clientHeight + 1
+      }
+      const row = document.querySelector('.mn-tree-row')
+      const name = row?.querySelector('.mn-tree-row__name')
+      const gap =
+        row === null || row === undefined || name === null || name === undefined
+          ? null
+          : (row.getBoundingClientRect().height - name.getBoundingClientRect().height) / 2
+      return {
+        titlebar: clipped('.mn-titlebar'),
+        tabs: clipped('.mn-tabs'),
+        statusbar: clipped('.mn-statusbar'),
+        row: clipped('.mn-tree-row'),
+        rowGap: gap === null ? 0 : Math.round(gap * 10) / 10,
+      }
+    })
+    expect(tight.titlebar).toBe(false)
+    expect(tight.tabs).toBe(false)
+    expect(tight.statusbar).toBe(false)
+    expect(tight.row).toBe(false)
+    // 树行留白：行高 30 − 文字行盒 24 ⇒ 上下各 3px。字号再往上抬就必须一起抬行高
+    expect(tight.rowGap).toBeGreaterThanOrEqual(3)
+  })
   it('callout：所见即所得与阅读视图的框内边距一致（编辑区里也有边距）', async () => {
     /*
       用户报的"callout 在编辑区域下没有边距，预览/阅读视图和实时编辑视图没法统一"。
