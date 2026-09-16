@@ -1,122 +1,48 @@
 # 交接说明：下一个会话从这里开始
 
 > 这份文件是**临时**的会话交接，不是产品文档。新会话接手顺利之后可以直接删掉它。
-> 最后更新：进入"用户逐条提需求、主会话逐条交付"的修补轮之后（第一项 = 标题栏三区，ADR-0029）。
+> 最后更新：容器切割树（ADR-0035）**渲染器换树**交付之后。
 
 ## 0. 一句话现状
 
-13 条需求那一轮与连线重做都已交付；现在是**用户逐条提、主会话逐条做**的修补轮，
-已交付 **标题栏三区（ADR-0029）**与**界面不写 `.md`（ADR-0030）**，门禁全绿。
+13 条需求那一轮与连线重做都已交付；修补轮的布局工作以 **ADR-0035 容器切割树**收口 ——
+模型、迁移对账、落盘、**渲染器换树**（每格一条标签条 + 拖标签落点 + 分隔条 + 键盘等价物 +
+非当前笔记的只读预览）全部交付，门禁全绿。
 
 ```
 pnpm typecheck                 ✓ 无错误
-pnpm test                      ✓ 90 个测试文件 / 1640 条
-pnpm test:e2e:ui               ✓ 64 条（前置：先 pnpm build）
-pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle；release 二进制未变，未重跑）
+pnpm test                      ✓ 93 个测试文件 / 1660 条（graph.test.tsx「仅标题」并行偶发那条单独跑必过，已知抖动）
+pnpm test:e2e:ui               ✓ 64 条（本批重写过布局/标签相关断言）
+pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— 前端变了它跑的就是旧前端）
 ```
 
 工作树里**只剩用户自己在 `examples/demo-vault/` 里的草稿文件**（未跟踪，刻意不提交、不改动）。
-其中 `项目/未命名笔记.md`（**已跟踪**）与 `测试笔记.md`（未跟踪）都被用户自己删进了 `.mimenote/trash`
-—— 那两处删除**没有**进任何提交，也没有被恢复，留给用户决定。
-（`测试笔记.md` 进回收站时让 `tests/demo-vault.test.ts` 的"图片引用都要解析得到"变红，
-已在 `listFiles` 里跳过 `.mimenote/trash` —— **不是**放宽判据，回收站里的东西本来就已被用户删掉。）
 
-## 1. 这一轮交付了什么
+## 1. 这一轮交付了什么（ADR-0035 渲染器换树）
 
-### 13 条需求（原话 → 落点）
+用户确认的两条产品语义：**非当前笔记 = 只读预览**（一格可写、其余可读）；
+**全局标签栏撤掉、标签进格子**（标题栏中区回归纯拖动区）。
 
-| # | 用户原话 | 落在哪 |
-| --- | --- | --- |
-| 1 | 可以增加一个配置是只有标题（文件名）的卡片 | `graph-store.titleOnly` + HUD「仅标题」+ `measure.titleOnlyCardHeight` |
-| 2 | 鼠标悬浮 wikilink 时对应的关系连线高亮 | `link-edge.linkZones`（与 `findLinkAnchor` 共用遍历）+ canvas 里给那段文字描边 |
-| 3 | wikilink 引线太淡（仍保持虚线） | `graph.css` 的 `.mn-graph-edge--lead`：1.6 / 0.85 / `--mn-fg-muted` |
-| 4 | 卡片失去焦点后继续松开、保持浮动 | 点空白（`endPointer`）+ 选中变化（effect）两条路，都 `heat(RELEASE_HEAT)` |
-| 5 | 卡片完整展示全文 + 移除侧边预览 | `CardSize.full`（`maxHeight: Infinity`）+ 删掉 `GraphPreview.tsx`；`Esc` 改成"先关浮窗再取消选中" |
-| 6 | 卡片只能调宽度、不能调高度 | 手柄拖动改走 `setCardSize`（宽高同时改），另加「全文」档 |
-| 7 | 每个视图模块可拖拽到任意区域占位 | `features/dock/`（三区 + 区内顺序；拖拽 + `Alt+1/2/3` + 同区 `Alt+方向键`） |
-| 8 | 标签页移动到顶部 | `<TabBar />` 挂到 `.mn-app`（横跨全宽），删掉 `.mn-main:has(> .mn-tabs)` |
-| 9 | 任意模块的右键菜单 | `components/ContextMenu.tsx`，接入文件树行 / 标签页 / 停靠模块头 / 图谱卡片 |
-| 10 | 文件树排序规则可配置 | `domain/tree.ts` 的 `TreeSort` + `makeEntryComparator`，重排在数据层 |
-| 11 | 最近打开的 Vault 固定在左下角 | `features/vault/RecentVaults.tsx` + `vault-store.recentVaults`（最多 8 条、按根路径去重） |
-| 12 | 一套更适合阅读的主题色 | `theme/themes/mimenote-paper.json`（暖白纸感「纸墨」） |
-| 13 | 已完成任务加删除线 | 阅读视图/导出件/静态站点（`li` 上）+ 所见即所得（只圈文字的 mark） |
+- **渲染器**：`features/layout/TreeHost.tsx`（递归 + 收缩 + 分隔条 + 落点接线）与
+  `LeafTabs.tsx`（每格一条标签条：笔记/模块混排、标签是拖动源、右键菜单、键盘）。
+- **行为层纯函数**：`drop-target.ts`（落点几何：条内插位 / 中央并入 / 四边带切割）、
+  `tree-keys.ts`（`Alt+1/2/3` 搬到主区左/右/下 + 幂等闸、`Alt+←/→` 条内换位置）、
+  `split-size.ts`（模块切出时按旧默认像素 288/300/220 换算新刀比例）、
+  `layout-drag.ts`（拖动瞬时态）、`module-visibility.ts`（可见性唯一真相 + 隐藏/显示走原开关）。
+- **只读预览链路只一份**：新抽 `features/preview/StaticNotePreview.tsx`，
+  图谱浮窗（`FloatingNote`）与树叶子的"非当前笔记"都用它。
+- **对账**：`reconcileLayout` 新增 `activeNote`（当前文档所在的格子必须把它作为激活标签，
+  否则 wikilink 打开一篇"已在树上但那格停在别处"的笔记时编辑器无处可显示）。
+- **旧件退役**：`TabBar`/`DockHost`/`dock-drag`/`dock.css` 删除；`dock-layout.ts`
+  只剩类型/缺省/校验（迁移与回滚的读取面）；`ui-store` 卸掉 `moveDockModule`，
+  `dockLayout` 与三个旧尺寸字段仍在落盘里（回滚可读，别加新消费方）。
 
-### 两处额外修复（都是真的缺陷）
+### 两个抓出的真 bug（ADR-0035 后续修订 3 有完整记录）
 
-1. **焦点视图下卡片尺寸从不落盘**：`graph-store.rootPath` 过去只由全库视图的 `load()` 写入，
-   而默认入口是关系图 ⇒ 拖出来的宽高重启就没了（静默丢失）。现在 `loadEgo` 会补上 Vault 根
-   （优先级：store 里已有的 → 宿主那一刻的 Vault 根）。回归用例在 `tests/graph-view-prefs.test.ts`。
-2. **frontmatter 画在卡片上**：卡片正文现在进入排版前过 `frontmatterBody`（判据仍是
-   `domain/frontmatter.ts` 一份），落点是"一篇笔记文件 → 一张卡片"的唯一边界 `measure.layoutCard`。
-
-### 连线的重做（用户讨论后定稿：ADR-0028）
-
-- **语义色相**：暖 = 我指向它（`root → X`）、冷 = 它指向我（`X → root`）、中性 = 环与环之间；
-  令牌 `--mn-edge-out` / `--mn-edge-in` 是**可选**的（缺省落到 `--mn-warning` / `--mn-link`），
-  **没有**加进 `REQUIRED_TOKENS`。
-- **跳数编码粗细与透明度**，且**淡化/强调是乘性调制**（写成覆盖会让跳数权重永远看不见 —— 实现时踩过）。
-- **环向走线**：同环沿"两张卡片**最远的角**之外"的弧走（不是"中心距离 + 余量"，那会让弧穿过卡片 ——
-  也踩过）、跨环用朝外鼓的径向切线、**涉及圆心保持 ADR-0023 原样**（径向切线在径向边上会退化成直线，
-  张力旋钮会看起来失灵）。换形状时锚点换到卡片**外缘**（`outerExit`），引线随之重画以守住分界纪律。
-- HUD 上有「沿环走线」开关（缺省开、可落盘），能当场对比新旧。
-
-提交：`0cab6fd` 图谱卡片 · `2c3f8eb` 停靠/标签栏/右键菜单 · `d6540cf` 偏好与阅读体验 ·
-`07f58f8` 文档（ADR-0025/0026/0027 + 架构）；本轮连线与剩余文档见下面"下一轮"开头的说明。
-
-## 1.5 修补轮（用户逐条提、主会话逐条做）
-
-用户明确定了节奏：**"我提功能你做，提一个做一个"**。已交付：
-
-| # | 用户原话 | 落在哪 |
-| --- | --- | --- |
-| 1 | `mn-editor__path` 居中在中间页、高度不固定，希望进标题栏那一行并分成左/中/右三区 | **ADR-0029**：`.mn-titlebar` 改网格 `1fr / 2fr / 1fr`（`__left` / `__center` / `__right`），路径从编辑器面板搬进中区（`.mn-titlebar__path`），删掉 `.mn-editor__path` / `.mn-editor__status` |
-| 2 | 隐藏 `.md` 的扩展名 | **ADR-0030**：`domain/paths.ts` 新增 `displayName` / `displayPath`（建在既有的 `isMarkdown` 上），标签页 / 标题栏 / 文件树 / 反链出链 / 快速切换 / 搜索命中 / 窗口标题 / 回收站 / 冲突横幅 / 拖拽与保存提示都改走它；导出件、宿主报错原文、移动对话框保留真实文件名 || 3 | 一份完整的 VI 设计文档（v1.0）+「整体默认字体能统一 16 号字体吗」 | **ADR-0031**：设计令牌两层命名（`--mn-*` 存储 / VI 名 `--bg-base`… 公开书写面，别名层在 app.css，可选令牌带兜底）+ **默认字号三档统一 16** + 文件树行高 26→30 + 新增"四栏不裁字 / 树行留白 ≥3px / 三档字号 = 16px"的 E2E 门禁。VI 里会推翻既有 ADR 的三条（顶栏 40px 等高度、编辑正文等宽、分屏）**一条都没动** || 4 | 「图片选择后无法预览吗」 | **ADR-0032**：第二类可打开的文件 —— `domain/viewable.ts` 一份判据 + `ui-store.openedFile` + `features/viewer/`（图片只读查看器，`asset:` 逐文件授权，`naturalWidth > 0` 由应用层 E2E 把守）；标题栏中区改成"我在看什么"，`data-note-path` → `data-main-path`（E2E 探针 helper 改名 `currentMainPath`） |
-- **字号的真值在设置层**：`state/settings-store.ts` 的 `DEFAULT_SETTINGS`，由 `features/settings/font-overrides.ts`
-  以行内变量 + `!important` 写进 `<html>`。改 `app.css` 的 `:root` 或主题 JSON 里的 `--mn-font-size-*`
-  **不会有任何效果**（那两处只是兜底与令牌清单完整性）。老用户读 localStorage 里存的值，
-  所以"改了默认值而用户没变"是预期行为 —— 出路是设置页的「恢复默认字号」。
-- **VI 别名层是单向的**：写 `--bg-base` 不影响 `--mn-bg`。主题作者改值仍然改主题 JSON；
-  想加"可选皮肤"（阅读衬线、编辑等宽、品牌 hover 色）就给对应的 `--mn-*` 可选令牌，别名会自己接上。
-- 界面里还有一批 **10–13px 硬编码小字**不跟基础字号长；把它们收敛到 `--space-*` / `--font-size-*`
-  是单独一轮（会改观感）。
-
-两个细节值得记住（下一个交付项会复用）：
-
-- 路径的旧类名 `.mn-editor__path` 曾是 E2E 里"当前打开的是哪一篇"的主力探针（约 20 处），
-  现在一律是 `.mn-titlebar__path`；`openNoteInTree` 里"编辑视图读路径、否则退回树里选中态"的分支
-  已经删掉（路径三种视图里都在，不需要间接信号了）。
-- **应用菜单不在标题栏里**：它在左侧文件导航叶子（`[data-dock-module="tree"]`）的**右下角**，
-  与「最近打开的 Vault」同一行（`.mn-tree-bottom`）。找它的用例一律按 `aria-label="应用菜单"` 找，
-  别按位置找。
-- **顶行 = 标题栏 + 文件标签 + 窗口按钮**（ADR-0034，一行 36px）：标签条挂在
-  `.mn-titlebar__center` 里，**它已经不是 `.mn-app` 的直接子节点**；布局契约式是
-  `主体 = 窗口 − 标题栏 − 状态栏`（**别再减标签栏** —— 它在标题栏里面）；
-  "我在看什么"在**状态栏最左**（`.mn-statusbar [data-main-path]`）；
-  标签条里的 `.mn-tabs__filler`（顶行拖窗口的唯一落点）与它自己的
-  `data-tauri-drag-region="false"`（防止按住标签被当成拖窗口）都别删。
-- **可见文字不再承载身份**：标题栏路径元素上有 `data-note-path`（真实路径），两层 E2E 的
-  `currentNotePath(page)` 读它，**别改回读 `textContent`** —— `includes('项目/设计')` 会被
-  `项目/设计文档` 误命中，而且可见文字现在**不带 `.md`**。
-- 快速切换与图谱「定位笔记」的 `NoteIndexEntry` / `RankedNote` 多了 `displayPath` 字段：
-  匹配与高亮下标都相对它算（渲染也用同一串字符），新写消费方时别再用 `relPath` 去匹配。
-- 顺手修的门禁红：`tests/demo-vault.test.ts` 的 `listFiles` 现在跳过 `.mimenote/trash`
-  （用户删除的副本不该被当成夹具；`README` 里列着的 `.mimenote/snippets/` 仍然照查）。
-
-## 1.6 正在做：容器切割（ADR-0035 模型层已交付）
-
-用户对布局的最终要求是"**每个模块都是标签 + 内容，标签可以拖到别的容器**"，也就是
-**一棵二叉切割树**（同时取代 ADR-0026 的三区停靠与 `tabs-store` 的全窗口标签栏）。
-
-- **模型层已交付**：`features/layout/tree-layout.ts`（纯函数 + 六条不变式 + 迁移 +
-  500 步固定种子随机操作的单测）。判据、操作面、边界都写在 ADR-0035 里。
-- **接线的逻辑面也已交付**：`features/layout/layout-sync.ts`（`migrateLayout` / `reconcileLayout`）。
-- **树已经是活的落盘状态**：`ui-store.layout` 进 `mimenote.ui.v1`（旧键 `dockLayout` 不删、
-  回滚可读），对账挂在 `installTabsSync` 里，`setLayout` 结构没变时不写盘。
-  **渲染与交互仍走旧的 `dockLayout`** —— 下一批才换渲染器（必须和"每叶一条标签栏 +
-  拖标签落点提示"一起上，否则 `Alt+1/2/3` 会悬空）。
-- **UI 还没接**：拖拽落点提示、每叶一条标签栏、分隔条、键盘等价物是下一批交付。
-  接线时注意：读旧格式（`dockLayout` + `mimenote.tabs.v1`）→ 转树 → 只写树，旧键**保留一轮**
-  （回滚时还能读回来）；`note-store` 是单文档模型，所以"同一篇笔记只在一个叶子里"是硬约束。
+1. **空主叶塌缩**：不变式 2 修订为"**主叶允许为空**"（否则启动时一篇没开，main 叶不在树上，
+   下一篇笔记被挂进文件树那格）。
+2. **迁移比例一律 0.5**：文件树独占半窗 → 图谱 HUD 盖住圆心卡片、点选不中（UI E2E 全红）。
+   修法：迁移按旧像素宽度/窗口尺寸换算比例（`MigrateSizes`）。
 
 ## 2. 下一轮可以做的（按价值排序）
 
@@ -130,27 +56,29 @@ pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle
    **回收站永久删除 / 清空**、**标签面板拖拽成树**、**静态站点站内搜索与增量重导出**、
    **大文档预览的分块 + 视口窗口化**（ADR-0020 的收尾）。
 6. 图谱卡片：**同一张卡片的多条出链做束化**（地铁主干那种），以及**卡片内搜索高亮**。
+7. 切割树的收尾候选（用户提过再动）：只读预览**补图**（现在停在占位态）、
+   主叶被拖空后留在原地（VS Code 是关掉空组 —— 现在的选择是留着当"主区占位"）、
+   `Alt+↑/↓` 占用（搬到上/下相邻格子）、笔记左右对照编辑（要先做多文档模型，量级很大）。
 
 ## 3. 工程约定与红线（新会话务必遵守）
 
 - **注释与文档一律中文，注释解释"为什么"**（取舍、代价、踩过的坑），不复述代码在做什么。
 - **提交由主会话做**：派出去的子代理**绝不执行 git 写操作**，只允许 `status`/`log`/`diff` 这类只读命令。
   每个交付项 = feature commit + docs-sync commit；ADR 放 `docs/adr/`，**下一个编号是 0036**。
-- **`examples/demo-vault/` 是用户自己的草稿区**：不要动、不要提交里面的未跟踪文件（含
-  `项目/未命名笔记.md` 与 `测试笔记.md` 那两处删除 —— 都是用户自己删的，保持原样）。
+- **`examples/demo-vault/` 是用户自己的草稿区**：不要动、不要提交里面的未跟踪文件。
 - **确定性是一条纪律**：力场自己实现 xorshift32、固定遍历顺序、不用 `Math.hypot` 的地方就别用；
   同一份输入 + 同一组参数 ⇒ 同一份坐标（ADR-0021）。连线走线同样**不含任何随机量**。
 - **判据只有一份**：callout 是 `domain/callouts.ts`，任务列表是 `domain/task-list.ts`，
-  frontmatter 是 `domain/frontmatter.ts`，文件树排序是 `domain/tree.ts`，停靠模型是
-  `features/dock/dock-layout.ts`，连线形状是 `features/graph/edge-routing.ts`。
+  frontmatter 是 `domain/frontmatter.ts`，文件树排序是 `domain/tree.ts`，
+  布局模型是 `features/layout/tree-layout.ts`，落点几何是 `features/layout/drop-target.ts`，
+  键盘等价物是 `features/layout/tree-keys.ts`，连线形状是 `features/graph/edge-routing.ts`。
 - **数字要同步**：用例数写在 `README.md`（质量门禁表 + E2E 覆盖段），功能描述写在 README 的功能表 +
   `docs/architecture.md`（§7 ADR 表、§8 边界清单）+ `docs/milestones.md`。现在改完是
-  **90 文件 / 1640 条 / UI E2E 64 条 / 应用层 E2E 34 条**（UI E2E 在这一批之后跑过；应用层那 34 条是在顶行合并之后、这几批纯逻辑改动之前跑的 —— 界面没动）。
+  **93 文件 / 1660 条 / UI E2E 64 条 / 应用层 E2E 34 条**。
 - **验证顺序**：`pnpm typecheck` + 目标 vitest → `pnpm test` → 动了前端就 `pnpm build` + `pnpm test:e2e:ui`
   → 动了 Rust 或要跑应用层 E2E 才 `tauri build --no-bundle`（约 3–4 分钟）+ `pnpm test:e2e:app`。
 - **`pnpm test` 有已知抖动**：`tests/graph.test.tsx` 的「仅标题」用例在**并行跑整套**时偶发失败
-  （单独跑必过；`a9d472d` 那次把门闸改成"布局高度"只消掉了其中一条路径）。遇到它先单独重跑一次确认，
-  别急着改被测代码。
+  （单独跑必过）。遇到它先单独重跑一次确认，别急着改被测代码。
 - **子代理在本轮两次中途失败过**（B 干到一半、A 完全没跑起来）：派活时把"硬性纪律 + 文件地图 +
   交付报告格式"写全，并且**假设它随时可能死** —— 主会话要留出接手收尾的余量。
 - **这台机器上 `apps/desktop/src/**` 与 `README.md` 常被别的进程（Vite watch / VS Code）短暂占用**：
@@ -166,27 +94,36 @@ pnpm test:e2e:app              ✓ 34 条（前置：先 tauri build --no-bundle
 - 图谱的 DOM 诊断属性（自动化唯一的抓手，别乱删）：`data-graph-mode / depth / scale / offset-x /
   offset-y / canvas-cards / painted-cards / root-rect / card-rects / pinned / overlaps / selected`；
   力度面板的 `[data-force-param] / [data-force-value] / [data-force-preset] / [data-force-action]`；
-  这一轮新增的 `data-dock / data-dock-module / data-dock-module-header / data-dock-drop-line /
-  data-dock-rail / data-menu-item / data-card-height="full" / [data-graph-action="toggle-title-only"] /
-  [data-graph-action="toggle-ring-routing"]`。
-- 测试骨架可以抄现成的：`tests/dock-host.test.tsx`（停靠区 + 假 DataTransfer）、
+  切割树的 `data-leaf-id / data-leaf-tabs / data-tab-path / data-module-tab / data-split-id / data-axis /
+  data-drop-hint / data-main-path`（状态栏最左，"我在看什么"）。
+- 测试骨架可以抄现成的：`tests/tree-host.test.tsx`（树渲染 + 假 DataTransfer + 矩形 mock）、
   `tests/context-menu.test.tsx`（浮层的键鼠与夹回视口）、`tests/edge-routing.test.ts`（手算几何）、
-  `tests/graph.test.tsx`（画布 + 录制型假画布 + 指针派发）、
-  `e2e/ui.e2e.test.ts` 的 `readLayout / graphScreenPoint / settledGraphTransform / graphCardRects`。
+  `tests/graph.test.tsx`（画布 + 录制型假画布 + 指针派发）、`tests/tree-keys.test.ts`（键盘搬运）。
+- **jsdom 的 DragEvent 不带 clientX/clientY**（`fireEvent.dragOver` 给的是 undefined）：
+  落点几何的测试要改用 `new MouseEvent('dragover', { clientX, clientY })` + `Object.defineProperty(event, 'dataTransfer', …)`
+  （`tests/tree-host.test.tsx` 的 `dragEvent` helper 就是现成的写法）。
 
 ## 5. 关键文件地图
 
 - `apps/desktop/src/App.tsx` 的 `<header className="mn-titlebar">`：**唯一的标题栏**，
-  内部三区 `.mn-titlebar__left / __center / __right`（ADR-0029）；中区放当前笔记路径
-  `.mn-titlebar__path`（含 `.mn-titlebar__path-text` 与「保存中…」），它的缩放/省略样式与三区列宽
-  都在 `styles/app.css` 标题栏那一段。**`align-items` 不能加**（窗口按钮靠 `align-self: stretch`）。
+  三区 `.mn-titlebar__left / __center / __right`；中区是**纯拖动区**（标签进了格子）。
+  "我在看什么"在**状态栏最左**（`.mn-statusbar [data-main-path]`）。
+- `apps/desktop/src/features/layout/TreeHost.tsx`：切割树渲染器（递归、收缩规则、内容分派、
+  落点接线、分隔条）；`LeafTabs.tsx`：每格标签条（笔记/模块混排、菜单、键盘）。
+  内容分派与收缩规则只有一套，都写在两个文件的头注释里。
+- `apps/desktop/src/features/preview/StaticNotePreview.tsx`：任意笔记的只读预览链路
+  （`noteRead → renderMarkdown(frontmatterBody) → wikilink 标注 → openNote`），
+  浮窗与树叶子共用。
 - `apps/desktop/src/features/graph/GraphCanvas.tsx`：坐标换算、命中、指针、模拟 effect、漂浮循环、
   浮动面板、HUD、**卡片菜单**、**连线样式与走线的组装**（`edgeVisuals` 那段）。
 - `apps/desktop/src/features/graph/edge-routing.ts`：**连线形状**（弧 / 径向切线 / 交回调用方），
   文件头有完整的形状示意与三条判据。
 - `apps/desktop/src/features/graph/link-edge.ts`：引线几何（锚点 → 边界 → 张力曲线）、`linkZones`
   （悬停热区）、`leadDash`（虚线相位）、`leadPathBetween`。
-- `apps/desktop/src/features/dock/`：`dock-layout.ts`（纯模型 + 不变式）、`DockHost.tsx`（渲染 + 拖拽 +
-  键盘 + 模块菜单）、`dock.css`、`dock-drag.ts`（瞬时拖动状态）。
 - `apps/desktop/src/components/ContextMenu.tsx`：通用右键菜单（点外关 / `Esc` / 走位 / 夹回视口 / 还焦点）。
 - 渲染单一口径的榜样：`domain/callouts.ts`、`domain/task-list.ts`、`domain/frontmatter.ts`。
+- **可见文字不再承载身份**：标签/状态栏路径上都带 `data-tab-path` / `data-main-path`（真实路径），
+  两层 E2E 认身份读它们，**别改回读 `textContent`**。
+- 快速切换与图谱「定位笔记」的 `NoteIndexEntry` / `RankedNote` 多了 `displayPath` 字段：
+  匹配与高亮下标都相对它算（渲染也用同一串字符），新写消费方时别再用 `relPath` 去匹配。
+
