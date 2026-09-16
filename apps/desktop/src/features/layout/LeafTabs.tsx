@@ -50,6 +50,12 @@ import {
   type LeafNode,
 } from './tree-layout'
 
+// 标签条样式表仍住在 `features/tabs/`（它是旧全局标签栏那批样式的幸存者，坐标没跟着搬）。
+// **这一行是它进包的唯一原因**：ADR-0035 删掉 `TabBar.tsx` 时把唯一的导入方一起删了，
+// 于是这套 `.mn-tabs*` 规则整份没进产物 —— 组件照旧渲染类名，却一个声明都没有，
+// 界面上就成了"样式掉了"。别再让样式表变成孤儿（`tests/stylesheets.test.ts` 把守）。
+import '@/features/tabs/tabs.css'
+
 /** 标签上的状态标记：未保存（●）与冲突（警示图标）必须一眼分得开。 */
 type TabMark = 'dirty' | 'conflict'
 
