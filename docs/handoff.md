@@ -15,7 +15,7 @@
 
 ```
 pnpm typecheck                 ✓ 无错误
-pnpm test                      ✓ 95 个测试文件 / 1698 条
+pnpm test                      ✓ 95 个测试文件 / 1702 条
 pnpm test:e2e:ui               ✓ 64 条
 pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— 前端变了它跑的就是旧前端）
 ```
@@ -47,6 +47,16 @@ pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— �
   -highlight-dashed / -dim / -hues / -arcs / -leads / -bulges / -phantoms / -hover`（ADR-0036 有对照表）。
 - 新文件：`canvas/edge-path.ts`、`canvas/edge-paint.ts`、`canvas/context.ts`、`tests/graph-edge-paint.test.ts`（31 条）；
   退役：`features/graph/GraphEdges.tsx`。
+
+### 1.4 用户报的两个 bug（都修了）
+
+- **"点文件跑到文件树那个容器里"**：主叶的 id 会被一路切分吃掉（用户手上那份布局实测一格 `main` 都没有），
+  而"找不到 main 就退回 DFS 第一个叶"退到的正是**文件树那一格**。修法见 `tree-layout.ts` 的
+  `contentLeafId` / `adoptMainLeaf`：没有 main 时把"没有任何视图模块的那一格"认作主叶。
+  回归测试直接抄了用户那份真实布局的形状。
+- **"选中文本没有高亮"**：不是颜色淡，是 CM 把选区画在内容**下面**，而渲染出来的块
+  （callout / 表格 / 代码块）都有不透明底色 ⇒ 往块里选字必然看不见。修法：选区层抬到内容之上 +
+  半透明图案（`cm/theme.ts`），并给编辑器之外的 `::selection` 补一条零权重规则（`app.css`）。
 
 ### 1.3 顺手修掉的一条已知抖动
 
@@ -85,7 +95,7 @@ pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— �
   **连线的样式与画法是 `features/graph/canvas/edge-paint.ts`，路径语法是 `canvas/edge-path.ts`**。
 - **数字要同步**：用例数写在 `README.md`（质量门禁表 + E2E 覆盖段），功能描述写在 README 的功能表 +
   `docs/architecture.md`（§7 ADR 表、§8 边界清单）+ `docs/milestones.md`。现在改完是
-  **95 文件 / 1698 条 / UI E2E 64 条 / 应用层 E2E 34 条**。
+  **95 文件 / 1702 条 / UI E2E 64 条 / 应用层 E2E 34 条**。
 - **验证顺序**：`pnpm typecheck` + 目标 vitest → `pnpm test` → 动了前端就 `pnpm build` + `pnpm test:e2e:ui`
   → 动了 Rust 或要跑应用层 E2E 才 `tauri build --no-bundle`（约 3–4 分钟）+ `pnpm test:e2e:app`。
 - **子代理在这个环境里会死**（本轮又死了一个：派去写 `tests/graph-edge-paint.test.ts` 的子代理
