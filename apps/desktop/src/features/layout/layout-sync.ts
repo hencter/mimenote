@@ -20,6 +20,7 @@
 
 import {
   attachItem,
+  contentLeafId,
   defaultLayout,
   fromDockLayout,
   isViewModule,
@@ -197,9 +198,7 @@ export function reconcileLayout(layout: TreeLayout, input: ReconcileInput): Tree
   return layoutsEqual(normalized, layout) ? layout : normalized
 }
 
-/** 主叶的 id：`main` 那一格；没有就用最左边的那个叶（叶子一个都没有时返回 `undefined`）。 */
+/** 主叶的 id（笔记的默认落点 / 模块"切一刀"的锚点；见 `contentLeafId`）。 */
 function mainLeafId(layout: TreeLayout): string | undefined {
-  const all = leaves(layout)
-  const main = all.find((leaf) => leaf.id === 'main')
-  return (main ?? all[0])?.id
+  return contentLeafId(layout) ?? leaves(layout)[0]?.id
 }

@@ -146,6 +146,79 @@ describe('对账：树 ↔ 权威列表', () => {
     expect(itemsOf(after).filter((item) => item === noteItem('b.md'))).toHaveLength(0)
   })
 
+  /*
+    用户报的 bug：**"点文件跑到文件树那个容器里去了"**（原话："点击文件会跳转到和文件树视图一个容器，
+    需要中间容器打开并替换当前编辑内容"）。
+
+    根因：主叶的 id 会被一路切分吃掉 —— 用户把笔记从主叶拖到别的格子、再拖来拖去之后，
+    树里一格 `main` 都不剩，而那一串 id 就是实测出来的形状（`left-tree~b~b-2` 之类）。
+    这时"找不到 main 就退回 DFS 的第一个叶"退到的正是**文件树那一格**（模块的家把它放在最左），
+    于是从那以后每篇笔记都挂进文件树里。
+  */
+  it('树里没有 main 时：把"没有视图模块的那一格"认作主叶，新笔记落在那儿而不是文件树那一格', () => {
+    const broken: TreeLayout = {
+      kind: 'split',
+      id: 'left~split',
+      axis: 'row',
+      ratio: 0.8,
+      a: {
+        kind: 'split',
+        id: 'left-tree~split',
+        axis: 'row',
+        ratio: 0.8,
+        a: {
+          kind: 'split',
+          id: 'left-tree~b~split',
+          axis: 'row',
+          ratio: 0.5,
+          a: { kind: 'leaf', id: 'left-tree~b', items: ['tree'], active: 'tree' },
+          b: {
+            kind: 'leaf',
+            id: 'left-tree~b~b-2',
+            items: [noteItem('甲.md')],
+            active: noteItem('甲.md'),
+          },
+        },
+        b: { kind: 'leaf', id: 'left-tree~b~b', items: ['links'], active: 'links' },
+      },
+      b: {
+        kind: 'split',
+        id: 'right-outline~split',
+        axis: 'column',
+        ratio: 0.5,
+        a: { kind: 'leaf', id: 'right-tags', items: ['tags'], active: 'tags' },
+        b: { kind: 'leaf', id: 'right-outline', items: ['outline'], active: 'outline' },
+      },
+    }
+
+    // 规范化顺手把内容叶认成主叶（id 是内部标识，不出现在界面上）
+    const fixed = normalizeLayout(broken)
+    const main = leaves(fixed).find((leaf) => leaf.id === 'main')
+    expect(main?.items).toEqual([noteItem('甲.md')])
+
+    // 打开一篇新笔记：落在**内容那一格**（原来的笔记那一格），绝不是文件树那一格
+    const swapped = reconcileLayout(fixed, {
+      notes: ['甲.md', '乙.md'],
+      activeNote: '乙.md',
+    })
+    const noteLeaf = leafOfItem(swapped, noteItem('乙.md'))
+    expect(noteLeaf?.id).toBe('main')
+    expect(noteLeaf?.items).not.toContain('tree')
+    expect(leafOfItem(swapped, 'tree')?.id).not.toBe('main')
+    // 文件树那一格仍然只有文件树
+    expect(leafOfItem(swapped, 'tree')?.items).toEqual(['tree'])
+  })
+
+  it('主叶空掉之后**不被塌缩**：下一篇笔记还有家（否则它会掉进文件树那一格）', () => {
+    const tree = reconcileLayout(base(), { notes: ['a.md'] })
+    const emptied = reconcileLayout(tree, { notes: [] })
+    expect(leaves(emptied).some((leaf) => leaf.id === 'main')).toBe(true)
+    expect(leafOfItem(emptied, 'tree')).not.toBeNull()
+
+    const reopened = reconcileLayout(emptied, { notes: ['b.md'], activeNote: 'b.md' })
+    expect(leafOfItem(reopened, noteItem('b.md'))?.id).toBe('main')
+  })
+
   it('**幂等**：连着对账三次与一次相同（接线时每帧都可能调到它）', () => {
     const once = reconcileLayout(base(), { notes: ['a.md', 'b.md'] })
     expect(reconcileLayout(once, { notes: ['a.md', 'b.md'] })).toEqual(once)

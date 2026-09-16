@@ -237,7 +237,33 @@ export function normalizeLayout(raw: unknown, options: NormalizeOptions = {}): T
     return null
   }
 
-  return parse(raw, 0) ?? fallback
+  return adoptMainLeaf(parse(raw, 0) ?? fallback)
+}
+
+/**
+ * 树里**必须有一个主叶**：没有 `main` 时，把"没有任何视图模块的那一格"认作主叶（连同它的 id 改名）。
+ *
+ * 为什么需要它（用户报的 bug 的根因）：`leaves()` 是 DFS 序，而模块的家把**文件树放在最左**，
+ * 所以"找不到 main 就退回第一个叶"退到的通常正是文件树那一格 —— 新打开的笔记会被挂进文件树里，
+ * 用户看到的就是「点了文件，它跑到文件树那个容器去了」。而 `main` 的 id 是会被切分吃掉的：
+ * 用户把笔记从主叶拖到别的格子、主叶空掉之后，虽然 `normalizeLayout` 会**保住空的主叶**，
+ * 但用户手上那份布局经过一串切割之后 `main` 已经不在了（实测：`left-tree~b~b-2` 那样一串 id，
+ * 一格都没有 main），于是从那以后每篇笔记都落进文件树那一格。
+ *
+ * 为什么是"改名"而不是"新建一格"：位置是用户摆的，凭空插一格会改布局；而 id 是**内部**标识
+ * （不出现在界面上），把"显然就是内容区的那一格"认成主叶，既不动物理布局，又把不变式补回来 ——
+ * 而且从此以后它和其它主叶一样**允许为空**（空叶不塌缩），笔记永远有家。
+ */
+function adoptMainLeaf(layout: TreeLayout): TreeLayout {
+  const all = leaves(layout)
+  if (all.some((leaf) => leaf.id === DEFAULT_MAIN_LEAF_ID)) return layout
+  const content = all.find((leaf) => leaf.items.every((item) => !isViewModule(item)))
+  if (content === undefined) return layout
+  const rename = (node: TreeLayout): TreeLayout => {
+    if (node.kind === 'leaf') return node.id === content.id ? { ...node, id: DEFAULT_MAIN_LEAF_ID } : node
+    return { ...node, a: rename(node.a), b: rename(node.b) }
+  }
+  return rename(layout)
 }
 
 /**
@@ -414,7 +440,6 @@ function replaceLeaf(
 
 /** 默认布局的节点 id（固定值，便于测试与落盘对位）。 */
 export const DEFAULT_MAIN_LEAF_ID = 'main'
-
 /**
  * 默认布局：一个主叶（笔记标签住在里面）。
  *
@@ -542,6 +567,27 @@ export function fromDockLayout(
 }
 
 /**
+ * **内容叶**：新笔记该落到哪一格（`null` = 整棵树里一格内容区都没有）。
+ *
+ * 判据按顺序：
+ * 1. `main` 那一格 —— 切割树的**主叶**（笔记的默认落点，也是模块"往左/右/下切一刀"的锚点）；
+ * 2. 没有任何视图模块的那一格 —— 老配置里 `main` 的 id 可能已经不在了（用户手上那份布局就是这样：
+ *    一串 `left-tree~b~b-2` 之类的 id，一格 main 都没有），而"没有模块的那一格"就是内容区；
+ * 3. 都没有 ⇒ `null`，调用方自己决定（`attachItem` 会退到最左边的叶）。
+ *
+ * ⚠️ 这里（以及 `layout-sync.mainLeafId`）以前都是 `?? all[0]`。`leaves()` 是 DFS 序，
+ * 而模块的家（`DEFAULT_MODULE_HOME`）把**文件树放在最左**，于是 `all[0]` 常常正是文件树那一格
+ * —— 新笔记会被挂进文件树里，看起来就是"点了文件，它跑到文件树那个容器去了"（用户报的）。
+ */
+export function contentLeafId(layout: TreeLayout): string | null {
+  const all = leaves(layout)
+  const main = all.find((leaf) => leaf.id === DEFAULT_MAIN_LEAF_ID)
+  if (main !== undefined) return main.id
+  const content = all.find((leaf) => leaf.items.every((item) => !isViewModule(item)))
+  return content?.id ?? null
+}
+
+/**
  * 把一个标签插到某个叶子旁边（没有就在右侧切一刀）。
  *
  * 用途：打开一篇笔记 / 显示一个视图模块。**不**检查唯一性 —— 交给
@@ -552,10 +598,11 @@ export function attachItem(
   item: LayoutItemId,
   target: { leafId?: string; edge?: 'left' | 'right' | 'top' | 'bottom' } = {},
 ): TreeLayout {
-  // 默认落点是**主叶**（`main`）：模块挂上去之后 DFS 的第一个叶会是"文件树那一格"，
-  // 用它当默认落点会把新打开的笔记挂进文件树里（真实踩到：对账用例抓出来的）
+  // 默认落点是**内容叶**（`contentLeafId`：主叶 → 没有任何视图模块的那一格）。
+  // 不能退回"DFS 的第一个叶"：那通常是**文件树那一格**，新打开的笔记会挂进文件树里
+  // —— 真实踩到过两次：一次是对账用例抓到的，一次是用户报的"点文件跑到文件树那个容器里去了"。
   const all = leaves(layout)
-  const leafId = target.leafId ?? (all.find((leaf) => leaf.id === DEFAULT_MAIN_LEAF_ID) ?? all[0])?.id
+  const leafId = target.leafId ?? contentLeafId(layout) ?? all[0]?.id
   if (leafId === undefined) {
     return normalizeLayout({ kind: 'leaf', id: DEFAULT_MAIN_LEAF_ID, items: [item], active: item })
   }
