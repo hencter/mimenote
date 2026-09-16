@@ -202,4 +202,30 @@ describe('对账：树 ↔ 权威列表', () => {
     const tree = attachItem(base(), noteItem('z.md'))
     expect(leafOfItem(tree, noteItem('z.md'))?.id).toBe('main')
   })
+
+  it('activeNote：当前文档所在的格子必须把它作为激活标签（哪怕那格原来停在别处）', () => {
+    // b.md 被拖到了单独一格，但那格后来的激活标签不是它（例如先看过别的）
+    let tree = reconcileLayout(base(), { notes: ['a.md', 'b.md', 'c.md'] })
+    tree = moveItem(tree, noteItem('b.md'), { leafId: 'main', edge: 'bottom' })
+    const bLeaf = leafOfItem(tree, noteItem('b.md'))!.id
+    tree = moveItem(tree, noteItem('c.md'), { leafId: bLeaf })
+    // 现在 c.md 与 b.md 同格且 c 激活；b.md 变成当前文档 ⇒ 那格必须翻回 b.md
+    const after = reconcileLayout(tree, { notes: ['a.md', 'b.md', 'c.md'], activeNote: 'b.md' })
+    expect(leafOfItem(after, noteItem('b.md'))?.active).toBe(noteItem('b.md'))
+    // 别的格子的激活项不被顺手改动
+    expect(leafOfItem(after, noteItem('a.md'))?.active).toBe(noteItem('a.md'))
+  })
+
+  it('activeNote 缺省或为 null 时不动任何激活项；幂等性不受影响', () => {
+    const tree = reconcileLayout(base(), { notes: ['a.md', 'b.md'] })
+    const untouched = reconcileLayout(tree, { notes: ['a.md', 'b.md'], activeNote: null })
+    expect(untouched).toBe(tree)
+    const withActive = reconcileLayout(tree, { notes: ['a.md', 'b.md'], activeNote: 'b.md' })
+    expect(reconcileLayout(withActive, { notes: ['a.md', 'b.md'], activeNote: 'b.md' })).toBe(withActive)
+  })
+
+  it('activeNote 不在树上（还没挂载/已关闭）：不产生任何变化', () => {
+    const tree = reconcileLayout(base(), { notes: ['a.md'] })
+    expect(reconcileLayout(tree, { notes: ['a.md'], activeNote: '不存在.md' })).toBe(tree)
+  })
 })

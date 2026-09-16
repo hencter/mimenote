@@ -21,6 +21,7 @@
 import {
   attachItem,
   defaultLayout,
+  fromDockLayout,
   isViewModule,
   itemsOf,
   layoutsEqual,
@@ -30,7 +31,8 @@ import {
   notePathOf,
   normalizeLayout,
   removeItem,
-  type LayoutItemId,
+  setActive,
+  type MigrateSizes,
   type TreeLayout,
   type ViewModuleId,
 } from './tree-layout'
@@ -63,6 +65,15 @@ export interface ReconcileInput {
   modules?: readonly ViewModuleId[]
   /** 新模块挂哪儿；缺省用 {@link DEFAULT_MODULE_HOME}。 */
   moduleHome?: (module: ViewModuleId) => 'left' | 'right' | 'bottom'
+  /**
+   * 当前文档（`note-store.doc.relPath` 的镜像，来自 `tabs-store`）。
+   *
+   * 给了就保证：**它所在的那一格把它作为激活标签**。这是渲染层的硬前提 ——
+   * 叶子只渲染激活标签的内容，若"当前文档"所在的格子停在别的标签上，编辑器就无处可显示
+   * （典型路径：wikilink 打开一篇**已在树上**、但它那格停在别处的笔记；attach 只管新标签，
+   * 不会替那格翻页）。`null` / 缺省 = "没有或还不知道"，不动任何激活项。
+   */
+  activeNote?: string | null
 }
 
 /**
@@ -89,10 +100,18 @@ export function migrateLayout(
      */
     notes?: readonly string[]
     modules?: readonly ViewModuleId[]
+    /**
+     * 迁移几何的尺寸线索（旧的像素宽度 + 窗口尺寸）：只在"旧格式 → 树"那一刻用来
+     * 把像素换算成比例（不给的话用 1280×800 与旧默认值，见 `tree-layout.ts` 的
+     * `MigrateSizes`）。已经有树（`raw`）时完全不读它。
+     */
+    sizes?: MigrateSizes
   },
 ): TreeLayout {
   const seed =
-    raw === undefined || raw === null ? fromLegacy(legacy.dock ?? null, legacy.notes ?? []) : raw
+    raw === undefined || raw === null
+      ? fromLegacy(legacy.dock ?? null, legacy.notes ?? [], legacy.sizes)
+      : raw
   const normalized = normalizeLayout(seed)
   if (legacy.notes === undefined && legacy.modules === undefined) return normalized
   return reconcileLayout(normalized, {
@@ -108,65 +127,20 @@ function noteItemsIn(layout: TreeLayout): string[] {
     .filter((path): path is string => path !== null)
 }
 
-/** 旧的三区停靠 → 树（不改动 `fromDockLayout` 的迁移口径，只是允许 `dock` 缺失）。 */
-function fromLegacy(dock: LegacyDockLayout | null, notes: readonly string[]): TreeLayout {
+/** 旧的三区停靠 → 树（`dock` 缺失时退到默认布局 + 逐篇挂载）。 */
+function fromLegacy(
+  dock: LegacyDockLayout | null,
+  notes: readonly string[],
+  sizes?: MigrateSizes,
+): TreeLayout {
   if (dock === null) {
     let tree = defaultLayout()
     for (const note of notes) tree = attachItem(tree, noteItem(note))
     return tree
   }
-  return legacyFromDock(dock, notes)
-}
-
-/**
- * 与 `features/layout/tree-layout.ts` 的 `fromDockLayout` 同一套映射。
- *
- * 为什么不直接 import：那个函数的入参形状就是旧格式，而本模块要能在"旧格式完全不存在"的
- * 情况下独立工作（`dock === null`）。两处口径由单测钉住（同一份输入必须得到同一棵树）。
- */
-function legacyFromDock(dock: LegacyDockLayout, notes: readonly string[]): TreeLayout {
-  const main = {
-    kind: 'leaf' as const,
-    id: 'main',
-    items: notes.map(noteItem),
-    active: notes.length > 0 ? noteItem(notes[0]!) : null,
-  }
-  /** 一条带：同一区的模块**上下叠**（左/右）或**左右排**（底），比例各半 = 旧的"平分"。 */
-  const strip = (
-    side: 'left' | 'right' | 'bottom',
-    modules: readonly ViewModuleId[],
-    axis: 'row' | 'column',
-  ): TreeLayout | null => {
-    let tree: TreeLayout | null = null
-    for (const module of modules) {
-      const leaf = {
-        kind: 'leaf' as const,
-        id: `${side}-${module}`,
-        items: [module as LayoutItemId],
-        active: module as LayoutItemId,
-      }
-      tree =
-        tree === null
-          ? leaf
-          : { kind: 'split', id: `${side}-${module}~split`, axis, ratio: 0.5, a: tree, b: leaf }
-    }
-    return tree
-  }
-
-  const left = strip('left', dock.left, 'column')
-  const right = strip('right', dock.right, 'column')
-  const bottom = strip('bottom', dock.bottom, 'row')
-
-  let center: TreeLayout = main
-  if (right !== null) center = { kind: 'split', id: 'right~split', axis: 'row', ratio: 0.5, a: center, b: right }
-  if (bottom !== null) {
-    center = { kind: 'split', id: 'bottom~split', axis: 'column', ratio: 0.5, a: center, b: bottom }
-  }
-  return normalizeLayout(
-    left === null
-      ? center
-      : { kind: 'split', id: 'left~split', axis: 'row', ratio: 0.5, a: left, b: center },
-  )
+  // 直接调 `tree-layout.ts` 的迁移（同一个 feature，同一份口径 —— 曾经的本地副本已删，
+  // 尺寸换算只有那一处；单测仍钉着"同一份旧输入 → 同一棵树"）
+  return fromDockLayout(dock, notes, sizes)
 }
 
 /**
@@ -207,6 +181,12 @@ export function reconcileLayout(layout: TreeLayout, input: ReconcileInput): Tree
     const edge = home === 'left' ? 'left' : home === 'right' ? 'right' : 'bottom'
     const anchor = mainLeafId(tree)
     tree = attachItem(tree, module, { leafId: anchor, edge })
+  }
+
+  // 4) 当前文档所在的格子必须真的显示它（见 `ReconcileInput.activeNote`）
+  if (typeof input.activeNote === 'string') {
+    const leaf = leafOfItem(tree, noteItem(input.activeNote))
+    if (leaf !== null) tree = setActive(tree, leaf.id, noteItem(input.activeNote))
   }
 
   const normalized = normalizeLayout(tree, {

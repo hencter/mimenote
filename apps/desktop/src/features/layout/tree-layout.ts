@@ -24,8 +24,11 @@
  * ## 六条不变式（本模块存在的全部理由）
  * 1. **每个标签全树恰好出现一次** —— 拖过去就是**移过去**（同一篇笔记不会同时出现在两个叶子里：
  *    `note-store` 是单文档模型，冲突令牌 / 自动保存 / 撤销历史都只有一份）；
- * 2. **空叶塌缩**（父节点被兄弟替换），但**整棵树至少留一个叶子** —— 那个叶子可以为空：
- *    "还没有打开任何笔记"是一个正常状态（默认布局就是这样），不是需要塌缩掉的畸形；
+ * 2. **空叶塌缩**（父节点被兄弟替换），但有两个例外：**整棵树至少留一个叶子**（那个叶子
+ *    可以为空），以及**主叶（`main`）允许为空** —— "还没有打开任何笔记"是正常状态，
+ *    而主叶是笔记的**默认落点**：它若因为暂时为空就被塌缩掉，下一篇打开的笔记会被
+ *    对账挂到 DFS 的第一个叶子（通常是文件树那一格）里 —— 真实踩到的坑，
+ *    见 `layout-sync.ts` 与 ADR-0035 的后续修订；
  * 3. **比例夹在 [MIN_RATIO, MAX_RATIO]** —— 否则一刀就能把一格拖成 0 像素而再也拖不回来；
  * 4. **认不出的标签一律丢弃** —— 版本升级 / 功能下线之后，老配置不能把界面卡死；
  * 5. **至少一个叶子**、整棵树始终合法；不合法就退回 {@link defaultLayout}（降级方向安全）；
@@ -48,7 +51,7 @@ export type LayoutItemId = ViewModuleId | `note:${string}`
 export interface LeafNode {
   kind: 'leaf'
   id: string
-  /** 这一格的标签（顺序 = 标签栏里的顺序）。**至少一个**（不变式 2）。 */
+  /** 这一格的标签（顺序 = 标签栏里的顺序）。空 = 还没显示任何东西（**只有主叶允许为空**，见不变式 2）。 */
   items: LayoutItemId[]
   /** 这一格现在显示谁。 */
   active: LayoutItemId | null
@@ -72,6 +75,19 @@ export const MAX_RATIO = 0.85
 
 /** 四种视图模块（顺序即默认左叶里的顺序）。 */
 export const VIEW_MODULE_IDS: readonly ViewModuleId[] = ['tree', 'links', 'tags', 'outline']
+
+/**
+ * 模块元信息（标签条与菜单上给人看的字）。
+ *
+ * 原来住在 `features/dock/dock-layout.ts`（`DOCK_MODULES`）；树接管渲染之后，
+ * 模块的身份与文案归这里 —— 停靠文件只保留"旧落盘格式"的读取面。
+ */
+export const VIEW_MODULES: Readonly<Record<ViewModuleId, { label: string; hint: string }>> = {
+  tree: { label: '文件', hint: '文件树（Vault 的目录与笔记）' },
+  links: { label: '链接', hint: '反向链接与出链' },
+  tags: { label: '标签', hint: '本篇标签、属性与全库标签' },
+  outline: { label: '大纲', hint: '当前笔记的标题树' },
+}
 
 /** 把一个 Vault 相对路径包成笔记标签。 */
 export function noteItem(relPath: string): LayoutItemId {
@@ -131,6 +147,22 @@ export function itemsOf(layout: TreeLayout): LayoutItemId[] {
   return leaves(layout).flatMap((leaf) => leaf.items)
 }
 
+/**
+ * 这棵子树**该不该渲染**（渲染层的收缩判据）。
+ *
+ * 收缩的触发条件是"叶子里**有**标签但全被隐藏"（用户关掉了那些面板，见 ADR-0035
+ * 「隐藏 ≠ 移除」：树里什么都不变，只是画面上那一格暂时不在）。
+ * **空叶永远渲染**：它是"还没有打开任何笔记"的占位空态，不是需要收缩掉的隐藏面板 ——
+ * 不这么判的话，默认布局（一个空主叶 + 模块叶）在关掉全部面板后连主区都会消失。
+ */
+export function subtreeRenderable(
+  node: TreeLayout,
+  isVisible: (item: LayoutItemId) => boolean,
+): boolean {
+  if (node.kind === 'leaf') return node.items.length === 0 || node.items.some(isVisible)
+  return subtreeRenderable(node.a, isVisible) || subtreeRenderable(node.b, isVisible)
+}
+
 // ---------------------------------------------------------------------------
 // 规范化（结构校验 + 六条不变式）
 // ---------------------------------------------------------------------------
@@ -177,12 +209,14 @@ export function normalizeLayout(raw: unknown, options: NormalizeOptions = {}): T
         seen.add(item)
         items.push(item)
       }
-      // 不变式 2：空叶不留在树里（交给调用方塌缩）。整棵树都空时由下面的兜底给出默认布局
-      if (items.length === 0) return null
+      // 不变式 2：空叶不留在树里（交给调用方塌缩）—— 但**主叶允许为空**（它是笔记的默认落点，
+      // 塌缩掉它，下一篇笔记就会被挂进文件树那一格；见文件头不变式 2 的注释）。
+      // 整棵树都空时由下面的兜底给出默认布局
+      if (items.length === 0 && id !== DEFAULT_MAIN_LEAF_ID) return null
       const active =
         typeof node['active'] === 'string' && items.includes(node['active'] as LayoutItemId)
           ? (node['active'] as LayoutItemId)
-          : items[0]!
+          : (items[0] ?? null)
       return { kind: 'leaf', id, items, active }
     }
 
@@ -392,6 +426,18 @@ export function defaultLayout(): TreeLayout {
   return { kind: 'leaf', id: DEFAULT_MAIN_LEAF_ID, items: [], active: null }
 }
 
+/** 迁移时的尺寸线索：把旧的**像素**偏好换算成树的比例（只在大搬家时用一次）。 */
+export interface MigrateSizes {
+  /** 旧左区宽度（px，缺省 288 = 旧默认）。 */
+  sidebarWidth?: number
+  /** 旧右区宽度（px，缺省 300）。 */
+  linksPanelWidth?: number
+  /** 旧底区高度（px，缺省 220）。 */
+  bottomDockHeight?: number
+  /** 窗口尺寸（比例的**分母**；缺省 1280×800 = 最常见桌面窗口）。 */
+  viewport?: { width: number; height: number }
+}
+
 /**
  * 从 ADR-0026 的停靠布局迁移（老用户的配置不丢）。
  *
@@ -402,6 +448,10 @@ export function defaultLayout(): TreeLayout {
  * row[ column[左带…], column[ row[ main, 右带… ], 底带… ] ]
  * ```
  *
+ * 比例不是一律 0.5：那会让文件树独占半个窗口（旧默认是 288px）。迁移把旧的**像素宽度**
+ * 按窗口尺寸换算成比例（见 `MigrateSizes`），观感与升级前一致；换算的分母只在迁移这一刻
+ * 用一次，之后拖分隔条改的就是比例本身。
+ *
  * 一处**知道的差异**：旧模型里同一区的模块是"各自占满该区宽度、上下平分"，
  * 而这里每个模块是一个独立叶子，中间多了可拖的分隔条 —— 观感接近，但可以分别调比例
  * （这正是用户要的"容器切割"）。
@@ -409,6 +459,7 @@ export function defaultLayout(): TreeLayout {
 export function fromDockLayout(
   dock: { left: readonly ViewModuleId[]; right: readonly ViewModuleId[]; bottom: readonly ViewModuleId[] },
   notes: readonly string[] = [],
+  sizes: MigrateSizes = {},
 ): TreeLayout {
   const main: LeafNode = {
     kind: 'leaf',
@@ -416,6 +467,13 @@ export function fromDockLayout(
     items: notes.map(noteItem),
     active: notes.length > 0 ? noteItem(notes[0]!) : null,
   }
+
+  // 迁移几何的分母（见 `MigrateSizes`）：钳到合理区间，防止 0 / NaN / 极小窗口把比例算爆
+  const viewportW = Math.max(320, sizes.viewport?.width ?? 1280)
+  const viewportH = Math.max(240, sizes.viewport?.height ?? 800)
+  const leftPx = dock.left.length > 0 ? (sizes.sidebarWidth ?? 288) : 0
+  const rightPx = dock.right.length > 0 ? (sizes.linksPanelWidth ?? 300) : 0
+  const bottomPx = dock.bottom.length > 0 ? (sizes.bottomDockHeight ?? 220) : 0
 
   /** 把一串模块做成一条带：**上下叠**（`column`）或**左右排**（`row`），比例各半 ⇒ 等价于旧的"平分"。 */
   const strip = (
@@ -446,13 +504,39 @@ export function fromDockLayout(
   const bottom = strip('bottom', dock.bottom, 'row')
 
   let center: TreeLayout = main
-  if (right !== null) center = { kind: 'split', id: 'right~split', axis: 'row', ratio: 0.5, a: center, b: right }
+  if (right !== null) {
+    // 这一刀分的是"左带之外"的宽度：main 占 (剩余 − 右带)
+    const restW = viewportW - leftPx
+    center = {
+      kind: 'split',
+      id: 'right~split',
+      axis: 'row',
+      ratio: clampRatio(restW <= 0 ? 0.5 : (restW - rightPx) / restW),
+      a: center,
+      b: right,
+    }
+  }
   if (bottom !== null) {
-    center = { kind: 'split', id: 'bottom~split', axis: 'column', ratio: 0.5, a: center, b: bottom }
+    // 这一刀分的是整列高度：上半（main + 右带）占 (高度 − 底带)
+    center = {
+      kind: 'split',
+      id: 'bottom~split',
+      axis: 'column',
+      ratio: clampRatio((viewportH - bottomPx) / viewportH),
+      a: center,
+      b: bottom,
+    }
   }
   const tree: TreeLayout = left === null
     ? center
-    : { kind: 'split', id: 'left~split', axis: 'row', ratio: 0.5, a: left, b: center }
+    : {
+        kind: 'split',
+        id: 'left~split',
+        axis: 'row',
+        ratio: clampRatio(leftPx / viewportW),
+        a: left,
+        b: center,
+      }
 
   return normalizeLayout(tree)
 }

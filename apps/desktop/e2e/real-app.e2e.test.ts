@@ -373,13 +373,22 @@ describe.skipIf(!supported)('真实应用：启动与布局（不打开任何笔
         const rect = element.getBoundingClientRect()
         return { top: rect.top, bottom: rect.bottom, height: rect.height, width: rect.width }
       }
+      // 容器切割树（ADR-0035）：文件树住在"装着它的那一格"里，跟着标签走
+      const treeLeaf = document
+        .querySelector('[data-module-tab="tree"]')
+        ?.closest('[data-leaf-id]')
       return {
         innerHeight: window.innerHeight,
         innerWidth: window.innerWidth,
         titlebar: rectOf('.mn-titlebar'),
         body: rectOf('.mn-body'),
         statusbar: rectOf('.mn-statusbar'),
-        sidebar: rectOf('.mn-sidebar'),
+        treeLeaf: treeLeaf === null || treeLeaf === undefined
+          ? null
+          : (() => {
+              const rect = treeLeaf.getBoundingClientRect()
+              return { height: rect.height }
+            })(),
         tree: rectOf('.mn-tree'),
       }
     })
@@ -391,8 +400,9 @@ describe.skipIf(!supported)('真实应用：启动与布局（不打开任何笔
     // 状态栏贴在窗口底部（而不是浮在中间）
     expect(Math.abs(metrics.statusbar.bottom - metrics.innerHeight)).toBeLessThanOrEqual(1)
 
-    // 侧栏与主体等高
-    expect(Math.abs(metrics.sidebar.height - metrics.body.height)).toBeLessThanOrEqual(1)
+    // 文件树那一格与主体等高
+    expect(metrics.treeLeaf).not.toBeNull()
+    expect(Math.abs((metrics.treeLeaf?.height ?? 0) - metrics.body.height)).toBeLessThanOrEqual(1)
 
     // 文件树真的占了空间（contain: strict 下若忘了 min-height: 0 会被压成 0）
     expect(metrics.tree.height).toBeGreaterThan(100)

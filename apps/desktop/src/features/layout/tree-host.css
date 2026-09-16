@@ -1,0 +1,166 @@
+/*
+ * 容器切割树的渲染样式（ADR-0035）。
+ *
+ * 布局契约：
+ * - `.mn-tree-host` 吃满 `.mn-body`（它挂在 titlebar 与 statusbar 之间那块唯一吃剩余高度的区域）；
+ * - split 是行/列方向的 flex，两个半格用 `flex-grow = ratio / (1-ratio)` 分空间
+ *   （basis 0，所以比例就是宽度比），分隔条是中间那条 4px；
+ * - 叶子是列方向：标签条（固定高）+ 内容（吃剩余高度）。
+ *
+ * 颜色一律走主题令牌。叶子之间不需要额外的边框：分隔条本身就是 4px 的
+ * `--mn-border` 色带（与旧分隔条同一观感）。
+ */
+
+.mn-tree-host {
+  flex: 1 1 auto;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.mn-tree-split {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.mn-tree-split--row {
+  flex-direction: row;
+}
+
+.mn-tree-split--column {
+  flex-direction: column;
+}
+
+/* 半格：宽度比由内联的 flex-grow 给；min-*: 0 允许内部滚动而不是撑破 */
+.mn-tree-split__pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------------ 叶子 */
+
+.mn-leaf {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 模块格的内容沿用旧侧栏底色（笔记格保持编辑器的 `--mn-editor-bg`，由 .mn-pane--editor 自己给） */
+.mn-leaf--module .mn-leaf__content {
+  background: var(--mn-bg-sidebar);
+}
+
+.mn-leaf__content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 主视图与查看器吃满整格 */
+.mn-leaf__content > .mn-pane {
+  flex: 1 1 auto;
+}
+
+/*
+ * 面板的固定宽度在这里被"填满这一格"取代（标签 268px / 大纲 232px 是它们当初作为
+ * 独立侧栏时的宽度）。选择器写成两段是为了**不依赖样式加载顺序**（同权重，后加载赢）。
+ */
+.mn-leaf .mn-leaf__content > * {
+  width: 100%;
+  min-width: 0;
+}
+
+/* 这三块面板的内容要吃掉整块高度（文件树那一支自己声明了 flex，不受影响） */
+.mn-leaf .mn-leaf__content > .mn-tags,
+.mn-leaf .mn-leaf__content > .mn-outline,
+.mn-leaf .mn-leaf__content > .mn-links {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 非当前笔记的只读预览：自己滚动（StaticNotePreview 的根就是滚动容器） */
+.mn-leaf__preview {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ------------------------------------------------------------------ 落点提示 */
+
+/*
+ * 内容区的落点高亮：并入盖满、切一刀盖住那一半。
+ * `pointer-events: none` 是必须的：它盖在内容上，不能抢走 dragover/drop。
+ */
+.mn-leaf__drop {
+  position: absolute;
+  pointer-events: none;
+  background: var(--mn-hover);
+  border: 2px solid var(--mn-accent);
+  border-radius: var(--mn-radius);
+  opacity: 0.6;
+  z-index: 5;
+}
+
+.mn-leaf__drop--merge {
+  inset: 0;
+}
+
+.mn-leaf__drop--left {
+  inset: 0 50% 0 0;
+}
+
+.mn-leaf__drop--right {
+  inset: 0 0 0 50%;
+}
+
+.mn-leaf__drop--top {
+  inset: 0 0 50% 0;
+}
+
+.mn-leaf__drop--bottom {
+  inset: 50% 0 0 0;
+}
+
+/* 标签条里的落点线：流内占位的 2px 竖条（标签自然让位 = 预览插入效果） */
+.mn-tabs__drop-line {
+  flex: 0 0 auto;
+  width: 2px;
+  margin: 6px 0;
+  align-self: stretch;
+  background: var(--mn-accent);
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------------ 文件树那一格的底行 */
+
+/*
+ * 文件树格子的**底部一行**：左边「最近打开的 Vault」（ADR-0027 的左下角），
+ * 右下角是应用菜单按钮（`components/AppMenu`）。
+ *
+ * 用 flex + `align-items: flex-end` 而不是"绝对定位到右下角"：最近 Vault 列表展开时会变高，
+ * 绝对定位的按钮会被压在上面（那正是它不该发生的事），而这一行会把它稳稳留在列表底下。
+ */
+.mn-tree-bottom {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-1);
+}
+
+.mn-tree-bottom > .mn-recent-vaults {
+  flex: 1 1 auto;
+  min-width: 0;
+}

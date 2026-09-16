@@ -50,10 +50,11 @@ function expectInvariants(layout: TreeLayout): void {
   const items = itemsOf(layout)
   expect(new Set(items).size, `标签重复：${items.join('、')}`).toBe(items.length)
 
-  // 2. 空叶塌缩：**树里只允许剩下一个叶子，且它可以是空的**（"还没打开任何笔记"是正常状态）
-  if (allLeaves.length > 1) {
-    for (const leaf of allLeaves) {
-      expect(leaf.items.length, `空叶没塌缩：${leaf.id}`).toBeGreaterThan(0)
+  // 2. 空叶塌缩：例外的只有两种 —— **整棵树只剩一个叶子**（"还没打开任何笔记"是正常状态）、
+  //    以及**主叶允许为空**（它是笔记的默认落点；塌缩掉它，下一篇笔记会被挂进文件树那一格）
+  for (const leaf of allLeaves) {
+    if (leaf.items.length === 0 && allLeaves.length > 1) {
+      expect(leaf.id, `空叶没塌缩：${leaf.id}`).toBe(DEFAULT_MAIN_LEAF_ID)
     }
   }
 
@@ -127,10 +128,12 @@ describe('默认布局与迁移', () => {
   it('空区不产生节点；没有笔记时主叶是空的但仍在树上', () => {
     const layout = fromDockLayout({ left: ['tree'], right: [], bottom: [] })
     expectInvariants(layout)
-    // 没有笔记 ⇒ 主叶是空的 ⇒ 它**塌缩**掉，树上只剩左区那一叶（这正是"不留空白容器"）
-    const allLeaves = leaves(layout)
-    expect(allLeaves).toHaveLength(1)
-    expect(allLeaves[0]?.items).toEqual(['tree'])
+    // 没有笔记 ⇒ 主叶是空的，但它**不塌缩**（主叶是笔记的默认落点：它不在了，
+    // 下一篇打开的笔记会被对账挂进文件树那一格 —— 这正是"主叶允许为空"的由来）
+    const main = findLeaf(layout, DEFAULT_MAIN_LEAF_ID)
+    expect(main?.items).toEqual([])
+    expect(main?.active).toBeNull()
+    expect(leafOfItem(layout, 'tree')?.id).toBe('left-tree')
   })
 })
 
@@ -196,7 +199,7 @@ describe('操作：移动（拖标签的本质）', () => {
 
 describe('操作：分隔条', () => {
   it('比例被夹紧（拖到 0 也还能拖回来）', () => {
-    // 带一篇笔记：不然空的主叶会塌缩掉，树上就没有 split 可调了
+    // 带一篇笔记：主叶有内容时 split 一定存在（空的也一样在 —— 主叶不塌缩）
     const layout = fromDockLayout({ left: ['tree'], right: [], bottom: [] }, ['a.md'])
     const splitId = layout.kind === 'split' ? layout.id : ''
     expect(splitId).not.toBe('')

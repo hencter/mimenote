@@ -69,7 +69,7 @@ type PersistedMap = Record<string, PersistedTabs>
  *
  * 为什么是"注入的适配器"而不是直接在这里 import CodeMirror：
  * `state/` 层不认识编辑器（也不该认识），实现放在 `features/tabs/caret-memory.ts`，
- * 由 `TabBar` 挂载时注册、卸载时注销（副作用可逆，见 architecture.md §2 第 6 条）。
+ * 由 `TreeHost` 挂载时注册、卸载时注销（副作用可逆，见 architecture.md §2 第 6 条）。
  */
 export interface CaretMemory {
   /** 记下某篇笔记当前的光标与滚动位置（在**切走之前**调用）。 */
@@ -267,8 +267,9 @@ function handleVaultChange(rootPath: string | null, entries: readonly EntryMeta[
 /**
  * 安装标签页与其它 store 的对账（订阅 note-store / vault-store）。
  *
- * 由 `TabBar` 挂载时调用、卸载时 dispose（副作用可逆）。挂载那一刻会**先对一次账**：
- * `TabBar` 是在 `openVault` 之后才挂载的，只订阅"变化"会永远看不到那次打开 Vault。
+ * 由 `TreeHost`（`features/layout/TreeHost.tsx`）挂载时调用、卸载时 dispose（副作用可逆）。
+ * 挂载那一刻会**先对一次账**：TreeHost 是在 `openVault` 之后才挂载的，
+ * 只订阅"变化"会永远看不到那次打开 Vault。
  */
 export function installTabsSync(): Disposer {
   /*
@@ -278,7 +279,8 @@ export function installTabsSync(): Disposer {
    */
   const syncLayout = (): void => {
     const ui = useUiStore.getState()
-    ui.setLayout(reconcileLayout(ui.layout, { notes: useTabsStore.getState().tabs }))
+    const tabs = useTabsStore.getState()
+    ui.setLayout(reconcileLayout(ui.layout, { notes: tabs.tabs, activeNote: tabs.active }))
   }
   syncLayout()
   const disposeLayout = useTabsStore.subscribe(syncLayout)

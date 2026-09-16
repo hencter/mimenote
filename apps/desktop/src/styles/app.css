@@ -219,7 +219,7 @@ kbd {
   gap: 12px;
 }
 
-/* 中区 = 文件标签栏（ADR-0034）：标签多到装不下时它自己横向滚动，不挤右区的窗口按钮 */
+/* 中区 = 纯拖动区（ADR-0035 之后全局标签栏退役，标签进了各自的格子） */
 .mn-titlebar__center {
   justify-content: flex-start;
   overflow: hidden;
@@ -230,31 +230,10 @@ kbd {
   justify-content: flex-end;
 }
 
-/* 当前笔记路径（中区唯一的内容）。它曾经在编辑器面板里，见 ADR-0029 */
-.mn-titlebar__path {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  color: var(--mn-fg-muted);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.mn-titlebar__path-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 图标不参与压缩：路径再长，铅笔也该是完整的一个（该走省略号的是它旁边的文字） */
-.mn-titlebar__path > .mn-icon {
-  flex: 0 0 auto;
-}
-
-.mn-titlebar__status {
-  color: var(--mn-warning);
-  flex: 0 0 auto;
-}
+/*
+ * `.mn-titlebar__path` 已删：路径先在 ADR-0034 挪进状态栏，
+ * 容器切割树（ADR-0035）之后这一区只剩拖动区 —— 注释留档，别让它悄悄回来。
+ */
 
 .mn-titlebar__brand {
   display: flex;
@@ -339,21 +318,10 @@ kbd {
   overflow: hidden;
 }
 
-.mn-sidebar {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  flex: 0 0 auto;
-  background: var(--mn-bg-sidebar);
-  border-right: 1px solid var(--mn-border);
-}
-
-.mn-main {
-  display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 0;
-}
+/*
+ * `.mn-sidebar` 与 `.mn-main` 已随容器切割树（ADR-0035）删除：
+ * "左侧那一栏"与"主区域"不再是固定容器，而是树上的格子（`.mn-leaf`）。
+ */
 
 .mn-pane {
   display: flex;
@@ -1272,20 +1240,9 @@ kbd {
 /* ------------------------------------------------------ 链接面板（M2） */
 
 /*
- * 中间那一列：主区域在上、底部停靠区在下。
- *
- * 为什么值得多一个包装元素：底部停靠区是**行方向**的一块，而 `.mn-body` 也是行方向
- * （左 | 中 | 右）—— 把底部区直接挂进 `.mn-body` 会变成"第四列"。
- * `.mn-center` 是列方向容器：主区域 `flex: 1 1 auto` 照旧吃掉剩余高度，
- * 底部区不显示时（默认状态）这一层与没有它完全等价。
+ * `.mn-center` / `.mn-sidebar` / `.mn-main` 已随容器切割树（ADR-0035）删除：
+ * 主体不再是"左栏 | 中列 | 右栏"的固定三段，而是一棵二叉切割树（见 features/layout/）。
  */
-.mn-center {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 0;
-}
 
 .mn-links {
   display: flex;

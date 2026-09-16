@@ -108,7 +108,8 @@ describe('外壳渲染', () => {
       expect(document.querySelector('.mn-statusbar')).not.toBeNull()
     })
 
-    // 主区域一次只渲染一个 pane（编辑 / 阅读 / 图谱三选一，见 ADR-0009 与 ADR-0010）
+    // 主区域一次只渲染一个 pane（编辑 / 阅读 / 图谱三选一，见 ADR-0009 与 ADR-0010；
+    // ADR-0035 之后它渲染在"当前文档所在的格子"里，默认布局下就是主叶）
     await waitFor(() => {
       expect(document.querySelectorAll('.mn-pane').length).toBe(1)
     })
@@ -131,13 +132,14 @@ describe('外壳渲染', () => {
     })
   })
 
-  it('标题栏分左/中/右三区：中区是文件标签栏，路径在状态栏（ADR-0034）', async () => {
+  it('标题栏分左/中/右三区：中区是纯拖动区，标签住在各自的格子里（ADR-0035）', async () => {
     /*
-      用户的要求：路径原来在编辑器面板**内部**（只横跨中间那一列、只在编辑视图里存在，
-      于是"打开一篇笔记"会让下面所有内容整体往下跳 26px），现在搬进标题栏中区（ADR-0029）。
+      这条用例的主题换过两次：路径进标题栏中区（ADR-0029）→ 中区改成文件标签栏
+      （ADR-0034）→ 容器切割树（ADR-0035）让笔记标签住进了**每个格子自己的标签条**，
+      中区回归纯拖动区。
 
-      这里钉**结构**：三区都在、路径在**中区**、编辑器那一行确实没了。
-      "路径落在窗口正中"是像素级的事，jsdom 没有布局引擎，留给 Playwright（`e2e/ui.e2e.test.ts`）。
+      这里钉**结构**：三区都在、标签条在**叶子里**（不在标题栏）、"我在看什么"在状态栏。
+      像素级的验证留给 Playwright（`e2e/ui.e2e.test.ts`）。
     */
     render(<App />)
     await useVaultStore.getState().openVault('C:\\MockVault')
@@ -148,8 +150,8 @@ describe('外壳渲染', () => {
       expect(document.querySelector('.mn-titlebar__right')).not.toBeNull()
     })
 
-    // 中区是**文件标签栏**（ADR-0034 把标题栏与标签栏并成一行）；没有打开笔记时那里是空的
-    expect(document.querySelector('.mn-titlebar__center .mn-tabs')).toBeNull()
+    // 中区是纯拖动区：标签栏**不在**标题栏里（它在叶子的标签条上）
+    expect(document.querySelector('.mn-titlebar .mn-tabs')).toBeNull()
     // "我在看什么"在状态栏里，没有文档时整格不渲染
     expect(document.querySelector('.mn-statusbar [data-main-path]')).toBeNull()
 
@@ -162,8 +164,11 @@ describe('外壳渲染', () => {
       expect(shown?.textContent).toBe('项目/设计')
       expect(shown?.getAttribute('data-main-path')).toBe('项目/设计.md')
       expect(shown?.getAttribute('title')).toBe('项目/设计.md')
-      // 标签栏同时出现在标题栏中区（打开一篇笔记 = 多一个标签）
-      expect(document.querySelector('.mn-titlebar__center .mn-tabs')).not.toBeNull()
+    })
+    // 标签出现在**主叶的标签条**里（不在标题栏中区）
+    await waitFor(() => {
+      const mainLeaf = document.querySelector('[data-leaf-id="main"]')
+      expect(mainLeaf?.querySelector('[data-tab-path="项目/设计.md"]')).not.toBeNull()
     })
     expect(document.querySelector('.mn-editor__path')).toBeNull()
   })
@@ -300,9 +305,9 @@ describe('布局契约（防止再次出现"必须先选中笔记才对得齐窗
     const bar = ruleBody(appCss, '.mn-titlebar')
     expect(bar).toContain('display: grid')
     expect(bar).toContain('grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr)')
-    // 纵向不写 align-items：三区撑满 34px，窗口按钮的 align-self: stretch 才成立
+    // 纵向不写 align-items：三区撑满整行，窗口按钮的 align-self: stretch 才成立
     expect(bar).not.toContain('align-items')
-    // 中区现在是**文件标签栏**（ADR-0034），因此左对齐 + 自己滚动，不再居中放路径
+    // 中区现在是**纯拖动区**（ADR-0035：标签进了各自的格子），保持左对齐即可
     expect(ownRuleBody(appCss, '.mn-titlebar__center')).toContain('justify-content: flex-start')
     expect(ownRuleBody(appCss, '.mn-titlebar__right')).toContain('justify-content: flex-end')
   })

@@ -14,6 +14,7 @@
  */
 
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { moveDirectory, moveEntry, openNote, renameDirectory, renameEntry } from '@/app/actions'
@@ -21,7 +22,7 @@ import { requestMove, requestRename } from '@/app/dom-events'
 import { MoveDialog } from '@/features/vault/MoveDialog'
 import { RenameDialog } from '@/features/vault/RenameDialog'
 import { FileTree } from '@/features/vault/FileTree'
-import { TabBar } from '@/features/tabs/TabBar'
+import { installTabsSync } from '@/state/tabs-store'
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter, MOCK_VAULT_PATH, type MockAdapter } from '@/ipc/mock-adapter'
 import { parentOf } from '@/domain/paths'
@@ -444,20 +445,23 @@ describe('键盘路径：F2 / F6 对话框', () => {
 })
 
 describe('目录搬迁：正在编辑的文档与标签页', () => {
-  /** 标签栏与文件树一起挂：标签页的对账（`installTabsSync`）由 TabBar 安装。 */
+  /** 标签页的对账（`installTabsSync`）原来由 TabBar 安装；TabBar 退役后直接挂这个效应。 */
+  function Sync() {
+    useEffect(() => installTabsSync(), [])
+    return null
+  }
   function Harness() {
     return (
       <>
         <FileTree />
-        <TabBar />
+        <Sync />
       </>
     )
   }
 
+  /** 标签列表读 store（TabBar 退役后这些用例不挂标签组件，对账由上面的 Sync 安装）。 */
   function tabPaths(): string[] {
-    return Array.from(document.querySelectorAll<HTMLElement>('[role="tab"]')).map(
-      (node) => node.dataset['tabPath'] ?? '',
-    )
+    return [...useTabsStore.getState().tabs]
   }
 
   it('正在编辑的这一篇在子树里：原地换路径（保留内容与撤销历史），标签跟着走', async () => {

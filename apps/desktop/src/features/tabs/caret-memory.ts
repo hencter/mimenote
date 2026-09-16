@@ -67,7 +67,7 @@ function afterPaint(run: () => void): void {
   setTimeout(run, 0)
 }
 
-/** 记忆器实现：由 `TabBar` 挂载时注册到 `tabs-store`。 */
+/** 记忆器实现：由 `TreeHost` 挂载时注册到 `tabs-store`。 */
 export const editorCaretMemory: CaretMemory = {
   capture: (relPath) => {
     const view = editorView()

@@ -14,10 +14,7 @@ import { DEFAULT_TREE_SORT, isTreeSort, type TreeSort } from '@/domain/tree'
 import {
   DEFAULT_DOCK_LAYOUT,
   isDockLayout,
-  moveDockModule,
   type DockLayout,
-  type DockModuleId,
-  type DockSide,
 } from '@/features/dock/dock-layout'
 import {
   defaultLayout,
@@ -91,21 +88,19 @@ export interface UiPreferences {
   /**
    * 视图模块的停靠位置（左 / 右 / 底部三个区 + 每区内的顺序）。
    *
-   * 只存"位置"，**不存**可见性 —— 每块面板开着没开着仍由各自既有开关决定
-   * （`sidebarVisible` / `linksPanelVisible` / `outlinePanelVisible` / tags-store 的 `open`），
-   * 四条切换快捷键因此一字不用改（见 `features/dock/dock-layout.ts` 的说明）。
+   * **迁移期留档**（ADR-0035）：渲染与交互都已走 `layout`（容器切割树），这个字段
+   * 不再被读 —— 它留在落盘里只是因为**回滚到旧版本时还能读到升级前那份布局**。
+   * 别再给它加新的消费方。
    */
   dockLayout: DockLayout
   /**
    * **容器切割树**（ADR-0035）：谁在哪一格、每格显示谁、每刀的比例。
    *
-   * 与 `dockLayout` 的关系是**迁移期并存**：`dockLayout` 仍然是这一轮渲染与交互的依据
-   * （换渲染器必须和"每叶一条标签栏 + 拖拽落点"一起上，否则 `Alt+1/2/3` 那套会悬空），
-   * 而树是**新的落盘格式**：从 `dockLayout` 迁移而来、随打开的笔记对账、并且**不再删旧键**
-   * （回滚到旧版本时还能读到升级前那份布局）。
+   * 渲染与交互的唯一依据（`features/layout/TreeHost.tsx`）；从 `dockLayout` 迁移而来、
+   * 随打开的笔记对账（`layout-sync.ts`）。
    */
   layout: TreeLayout
-  /** 底部停靠区的高度（px，**按用户偏好存**：它与侧栏宽度同一性质）。 */
+  /** 底部停靠区的高度（px）。**迁移期留档**：树模型里尺寸是 split 的比例，这个字段不再被读。 */
   bottomDockHeight: number
 }
 
@@ -186,14 +181,34 @@ const initial: UiPreferences = {
   dockLayout: isDockLayout(restored.dockLayout) ? restored.dockLayout : DEFAULT_DOCK_LAYOUT,
   /*
    * 树的新旧迁移：已经有树就用树；只有旧的 dockLayout 就迁移；都没有就用**今天默认的停靠布局**
-   * 迁移出来（于是"外观不变"这条在默认情况下也成立）。
+   * 迁移出来（于是"外观不变"在默认情况下也成立）。
    *
    * **刻意不传 notes**：这一行在模块初始化时执行，那时 `tabs-store` 还没加载 ——
    * 传 `[]` 会被对账理解成"一篇都没开"，把树上的笔记标签全裁掉。传 `undefined` 的语义是
    * "还没拿到名单，别动树上的笔记"，真正的裁剪交给挂载后的对账。
+   *
+   * `sizes` 把旧的像素宽度换算成迁移比例的分母（只在这一个迁移时刻用；窗口尺寸取此刻的
+   * 真实视口，jsdom/测试里则是 1024×768 —— 迁移结果仍是合法比例，见 `MigrateSizes`）。
    */
   layout: migrateLayout(restored.layout, {
     dock: isDockLayout(restored.dockLayout) ? restored.dockLayout : DEFAULT_DOCK_LAYOUT,
+    sizes: {
+      sidebarWidth: clamp(restored.sidebarWidth ?? DEFAULTS.sidebarWidth, SIDEBAR_MIN, SIDEBAR_MAX),
+      linksPanelWidth: clamp(
+        restored.linksPanelWidth ?? DEFAULTS.linksPanelWidth,
+        LINKS_PANEL_MIN,
+        LINKS_PANEL_MAX,
+      ),
+      bottomDockHeight: clamp(
+        restored.bottomDockHeight ?? DEFAULTS.bottomDockHeight,
+        BOTTOM_DOCK_MIN,
+        BOTTOM_DOCK_MAX,
+      ),
+      viewport: {
+        width: typeof window === 'undefined' ? 1280 : window.innerWidth,
+        height: typeof window === 'undefined' ? 800 : window.innerHeight,
+      },
+    },
   }),
   bottomDockHeight: clamp(
     restored.bottomDockHeight ?? DEFAULTS.bottomDockHeight,
@@ -247,14 +262,7 @@ interface UiState extends UiPreferences {
    */
   setTreeSort: (patch: Partial<TreeSort>) => void
 
-  /**
-   * 把一个视图模块搬到某个停靠区的第 `index` 位（`index` 缺省 = 追加到末尾）。
-   *
-   * 拖拽与键盘等价物（`Alt+1/2/3`、`Alt+方向键`）都走这一个动作：落点计算在
-   * `features/dock/dock-layout.ts`（纯函数），这里只负责落盘。
-   */
-  moveDockModule: (id: DockModuleId, side: DockSide, index?: number) => void
-  /** 底部停靠区高度（夹在 `BOTTOM_DOCK_MIN..MAX`）。 */
+  /** 底部停靠区高度（夹在 `BOTTOM_DOCK_MIN..MAX`；**迁移期留档**，见 `dockLayout` 的注释）。 */
   setBottomDockHeight: (height: number) => void
 
   /**
@@ -425,14 +433,6 @@ export const useUiStore = create<UiState>((set, get) => ({
       return
     }
     set({ treeSort: next })
-    persist(get())
-  },
-
-  moveDockModule: (id, side, index) => {
-    const next = moveDockModule(get().dockLayout, id, side, index)
-    // 没动就不写 state / 不落盘：拖动过程中 `drop` 可能落在原地（那不该产生一次写盘）
-    if (next === get().dockLayout) return
-    set({ dockLayout: next })
     persist(get())
   },
 

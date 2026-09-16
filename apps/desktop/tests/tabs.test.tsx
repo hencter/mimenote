@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * 多标签页（M3）。
+ * 多标签页（M3；ADR-0035 之后标签住在容器切割树的叶子里）。
  *
  * 覆盖四件事：
  * 1. **开/切/关**：打开笔记产生标签、点标签切回正确的那篇、关闭当前标签激活相邻项、
@@ -10,11 +10,13 @@
  * 3. **持久化**：按 Vault 根存 localStorage、重开同一个 Vault 恢复（含失效路径丢弃）、
  *    换 Vault 清空；
  * 4. **契约**：DOM/ARIA 形状（`tablist`/`tab`/`aria-selected`/roving tabindex）、
- *    `Delete` 不误关标签、以及样式里的布局隔离（`.mn-main:has(> .mn-tabs)` +
- *    横向滚动 + 标签最小宽度）。
+ *    `Delete` 不误关标签、以及样式契约（横向滚动 + 标签最小宽度 + 颜色只走令牌）。
  *
  * 断言尽量落在**可观测的副作用**上（store 状态、DOM、localStorage、Mock 适配器里的
  * "磁盘"内容），而不是实现细节 —— 换实现不该让这些用例变红。
+ *
+ * Harness 直接挂**真实的 `TreeHost`**（容器切割树渲染器）：标签的对账
+ * （`installTabsSync`）与光标记忆器都由它装配，测试因此永远钉的是真实接线。
  */
 
 import { readFileSync } from 'node:fs'
@@ -29,20 +31,22 @@ import { registerBuiltinCommands } from '@/app/builtin-commands'
 import { commands } from '@/app/commands'
 import { useGlobalKeymap } from '@/app/keymap'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { MarkdownEditor } from '@/features/editor/MarkdownEditor'
-import { TabBar } from '@/features/tabs/TabBar'
+import { TreeHost } from '@/features/layout/TreeHost'
+import { defaultLayout, leafOfItem, moveItem, noteItem } from '@/features/layout/tree-layout'
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter, MOCK_VAULT_PATH, type MockAdapter } from '@/ipc/mock-adapter'
 import { useConfirmStore } from '@/state/confirm-store'
 import { useNoteStore } from '@/state/note-store'
 import { loadTabsFor, persistTabsFor, setCaretMemory, useTabsStore } from '@/state/tabs-store'
+import { useTagsStore } from '@/state/tags-store'
+import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 
-/** 标签栏 + 确认框（标签栏的"未保存 → 关闭"要走真实的确认流程）。 */
+/** 容器切割树 + 确认框（标签的"未保存 → 关闭"要走真实的确认流程）。 */
 function Harness() {
   return (
     <>
-      <TabBar />
+      <TreeHost />
       <ConfirmDialog />
     </>
   )
@@ -54,6 +58,16 @@ function resetStores(): void {
   useNoteStore.getState().close()
   useTabsStore.setState({ tabs: [], active: null, restoredRoot: null })
   useConfirmStore.setState({ request: null, answer: null })
+  // 布局树回到"只有空主叶"：四个模块由挂载时的对账补出来（与真实启动同一条路）
+  useUiStore.setState({
+    layout: defaultLayout(),
+    viewMode: 'edit',
+    openedFile: null,
+    sidebarVisible: true,
+    linksPanelVisible: false,
+    outlinePanelVisible: false,
+  })
+  useTagsStore.setState({ open: false })
   useVaultStore.setState({
     status: 'idle',
     info: null,
@@ -79,19 +93,19 @@ async function open(path: string): Promise<void> {
   })
 }
 
-/** 当前标签栏里的路径（按显示顺序）。 */
+/** 当前所有**笔记**标签的路径（按显示顺序；模块标签不在此列）。 */
 function tabPaths(): string[] {
-  return Array.from(document.querySelectorAll<HTMLElement>('[role="tab"]')).map(
+  return Array.from(document.querySelectorAll<HTMLElement>('[data-tab-path]')).map(
     (node) => node.dataset.tabPath ?? '',
   )
 }
 
 /** 按路径取标签节点（用 data 属性而不是选择器转义，路径里可能有 `/` 等字符）。 */
 function tabNode(relPath: string): HTMLElement {
-  for (const node of document.querySelectorAll<HTMLElement>('[role="tab"]')) {
+  for (const node of document.querySelectorAll<HTMLElement>('[data-tab-path]')) {
     if (node.dataset.tabPath === relPath) return node
   }
-  throw new Error(`标签栏里找不到：${relPath}（当前：${tabPaths().join('、')}）`)
+  throw new Error(`标签里找不到：${relPath}（当前：${tabPaths().join('、')}）`)
 }
 
 /** 某个标签上的 `×` 按钮。 */
@@ -117,17 +131,19 @@ afterEach(() => {
 })
 
 describe('打开与切换', () => {
-  it('打开笔记产生标签，再开一篇是两个标签且激活项跟着变', async () => {
+  it('打开笔记产生标签（落在主叶），再开一篇是两个标签且激活项跟着变', async () => {
     render(<Harness />)
     await openVault()
 
-    // 没有打开的笔记 → 标签栏不渲染（空态就是编辑器自己的占位提示，布局零变化）
-    expect(document.querySelector('.mn-tabs')).toBeNull()
+    // 没有打开的笔记 → 主叶没有标签条（空态就是主视图的空文档态，布局零变化）
+    expect(tabPaths()).toEqual([])
+    expect(document.querySelector('[data-leaf-tabs="main"]')).toBeNull()
 
     await open('README.md')
     expect(tabPaths()).toEqual(['README.md'])
-    const strip = screen.getByRole('tablist', { name: '打开的笔记' })
-    expect(strip).toBeTruthy()
+    // 标签住在**主叶**的标签条里（容器切割树：不再有全局标签栏）
+    expect(document.querySelector('[data-leaf-tabs="main"]')).not.toBeNull()
+    expect(tabNode('README.md').closest('[data-leaf-id]')?.getAttribute('data-leaf-id')).toBe('main')
     expect(tabNode('README.md').getAttribute('aria-selected')).toBe('true')
     // 标签上显示的是文件名（完整路径在 title 里），且不带 `.md`（ADR-0030）
     expect(tabNode('README.md').querySelector('.mn-tabs__label')?.textContent).toBe('README')
@@ -170,7 +186,36 @@ describe('打开与切换', () => {
     expect(tabPaths()).toEqual(['项目/路线图.md', '日记/2025-01-01.md'])
     expect(tabNode('日记/2025-01-01.md').getAttribute('aria-selected')).toBe('true')
   })
+
+  it('wikilink 打开一篇"标签在树上但那格停在别处"的笔记时，那一格会翻回它（activeNote 对账）', async () => {
+    render(<Harness />)
+    await openVault()
+    await open('README.md')
+    await open('项目/设计.md')
+
+    // 把「设计」拖出主叶、再把「路线图」并进它那一格并停在上面
+    await open('项目/路线图.md')
+    act(() => {
+      const ui = useUiStore.getState()
+      let tree = moveItem(ui.layout, noteItem('项目/设计.md'), { leafId: 'main', edge: 'bottom' })
+      tree = moveItem(tree, noteItem('项目/路线图.md'), {
+        leafId: leafOfItem(tree, noteItem('项目/设计.md'))!.id,
+      })
+      ui.setLayout(tree)
+    })
+    expect(
+      leafOfItem(useUiStore.getState().layout, noteItem('项目/设计.md'))?.active,
+    ).toBe(noteItem('项目/路线图.md'))
+
+    // 打开「设计」：对账必须把它所在的格子翻回它（否则编辑器无处可显示）
+    await open('项目/设计.md')
+    expect(
+      leafOfItem(useUiStore.getState().layout, noteItem('项目/设计.md'))?.active,
+    ).toBe(noteItem('项目/设计.md'))
+  })
 })
+
+/** 模型操作直接引自 `tree-layout`（测试钉的是真实实现，不另造一套）。 */
 
 describe('切换标签不丢未保存内容', () => {
   it('输入后立刻切走：那次编辑必须先落盘（openNote 的既有顺序约束）', async () => {
@@ -272,7 +317,7 @@ describe('关闭标签', () => {
     expect(useNoteStore.getState().doc?.relPath).toBe('项目/设计.md')
   })
 
-  it('全部关闭 → 回到"没有打开的笔记"空态', async () => {
+  it('全部关闭 → 回到"没有打开的笔记"空态（主叶标签条消失）', async () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
@@ -288,7 +333,7 @@ describe('关闭标签', () => {
       expect(useNoteStore.getState().doc).toBeNull()
     })
     expect(useTabsStore.getState().tabs).toEqual([])
-    expect(document.querySelector('.mn-tabs')).toBeNull()
+    expect(document.querySelector('[data-leaf-tabs="main"]')).toBeNull()
   })
 
   it('有未保存内容时关闭要先确认：拒绝 → 标签与内容都还在；确认 → 丢弃修改并激活相邻项', async () => {
@@ -469,7 +514,7 @@ describe('持久化（按 Vault 根）', () => {
 
     expect(useVaultStore.getState().info?.rootPath).toBe(OTHER_VAULT)
     expect(useTabsStore.getState().tabs).toEqual([])
-    expect(document.querySelector('.mn-tabs')).toBeNull()
+    expect(tabPaths()).toEqual([])
     // 上一篇笔记属于旧根，不能留着（否则下一次保存会写进新 Vault 的同名路径）
     expect(useNoteStore.getState().doc).toBeNull()
     // 旧根的列表没被删掉
@@ -526,12 +571,14 @@ describe('DOM / 可访问性契约', () => {
     await open('README.md')
     await open('项目/设计.md')
 
-    expect(screen.getByRole('tablist', { name: '打开的笔记' })).toBeTruthy()
-    expect(screen.getAllByRole('tab')).toHaveLength(2)
-    // roving tabindex：Tab 键只落在当前标签上，其余为 -1（进去之后用 ←/→ 走）
+    // 每格一条标签条（容器切割树）：主叶那条里是两个笔记标签
+    const strips = screen.getAllByRole('tablist')
+    expect(strips.length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('tab').length).toBeGreaterThanOrEqual(2)
+    // roving tabindex：Tab 键只落在"那一格正在显示"的标签上，其余为 -1
     expect(tabNode('项目/设计.md').getAttribute('tabindex')).toBe('0')
     expect(tabNode('README.md').getAttribute('tabindex')).toBe('-1')
-    // 未保存时标签的可见文案里带提示，避免"看着一样却少了内容"
+    // 未保存时标签的无障碍名里带提示，避免"看着一样却少了内容"
     act(() => {
       useNoteStore.getState().setText('# 改了\n')
     })
@@ -578,21 +625,19 @@ describe('DOM / 可访问性契约', () => {
 describe('布局与样式契约（E2E 的高度断言不能因此变化）', () => {
   const tabsCss = readTabsCss()
 
-  it('标签栏不再动主区域的布局方向（它已经搬到窗口顶部）', () => {
+  it('标签条不再动主区域的布局方向，也没有全局标签栏时代的残留规则', () => {
     /*
-      这条契约**改过一次**，原因要写下来免得后人以为测试写错了：
-      标签栏原来挂在 `.mn-main` 里，靠 `.mn-main:has(> .mn-tabs)` 把主区域改成列方向。
-      搬到窗口顶部（挂在 `.mn-app` 上、横跨全宽）之后，它不再需要动主区域 ——
-      于是那条 `:has` 规则删掉了，主区域重新是一个纯行方向的 pane 容器。
-      这一条现在钉的是**删除**：规则不该再回来（它一旦回来，主区域会在有标签时变成列方向，
-      而"标签是第一行、pane 是第二行"的旧形态正是这次要改掉的东西）。
+      这条契约**改过两次**，原因都写下来免得后人以为测试写错了：
+      1. 标签栏原来挂在 `.mn-main` 里，靠 `.mn-main:has(> .mn-tabs)` 把主区域改成列方向；
+         搬到窗口顶部之后那条规则删掉了；
+      2. 容器切割树（ADR-0035）之后标签住进每格自己的标签条，全局标签栏退役 ——
+         顶行拖动 filler（`.mn-tabs__filler`）也随之删掉。
+      断言的是"规则不存在"，不是"这段文字不存在"：注释里仍会提到旧写法（给后人看的来龙去脉）。
     */
-    // 断言的是"规则不存在"，不是"这段文字不存在"：样式注释里仍然会提到旧写法
-    // （那是给后人看的来龙去脉），带 `{` 的正则才不会把注释也算成违规
     expect(tabsCss).not.toMatch(/\.mn-main:has\(> \.mn-tabs\)\s*\{/)
-    // 仍然不改公共样式表里的类（这里不该出现 .mn-body/.mn-sidebar 的规则）
+    expect(tabsCss).not.toMatch(/\.mn-tabs__filler\s*\{/)
+    // 仍然不改公共样式表里的类（这里不该出现 .mn-body 的规则）
     expect(tabsCss).not.toContain('.mn-body {')
-    expect(tabsCss).not.toContain('.mn-sidebar {')
   })
 
   it('标签过多时横向滚动，而不是被压扁', () => {
@@ -675,30 +720,20 @@ describe('光标位置记忆（可选增强，行为通过注入的适配器验�
 /**
  * 接线形态 + 真实编辑器。
  *
- * 这一组用**真实 CodeMirror**（而不是直接 `setText`）跑，并复刻 `App.tsx` 的结构 ——
- * 它同时是接线说明书：标签栏现在挂在**标题栏的中区**里（ADR-0034 把标题栏与标签栏并成一行），
- * 因此它跟着标题栏横跨窗口、而不是被侧栏挤窄；挂错父容器（例如又挂回 `.mn-main` 里）
+ * 这一组用**真实 CodeMirror**（而不是直接 `setText`）跑，并直接挂真实的 `TreeHost` ——
+ * 它同时是接线说明书：标签条住在**每个叶子格子自己的顶部**（ADR-0035 的容器切割树），
+ * 主视图渲染在"当前文档所在的那一格"里；挂错容器（例如又造一条全局标签栏）
  * 会让这里的结构与真实应用不一致。
  */
 describe('接线形态与真实编辑器', () => {
-  /** 与 App.tsx 一致：标签栏在标题栏中区里，`.mn-body` 里是主区域。 */
+  /** 与 App.tsx 一致：全局键map + 容器切割树。 */
   function Shell() {
     useGlobalKeymap()
     return (
-      <div className="mn-app">
-        <header className="mn-titlebar">
-          <div className="mn-titlebar__center">
-            <TabBar />
-          </div>
-        </header>
-        <div className="mn-body">
-          <main className="mn-main">
-            <section className="mn-pane mn-pane--editor" style={{ flex: '1 1 auto' }}>
-              <MarkdownEditor />
-            </section>
-          </main>
-        </div>
-      </div>
+      <>
+        <TreeHost />
+        <ConfirmDialog />
+      </>
     )
   }
 
@@ -711,18 +746,20 @@ describe('接线形态与真实编辑器', () => {
     return view
   }
 
-  it('标签栏与编辑器共存：编辑器里改动 → 切标签 → 内容真的落盘', async () => {
+  it('标签条与编辑器在同一格里共存：编辑器里改动 → 切标签 → 内容真的落盘', async () => {
     render(<Shell />)
     await openVault()
-    // 没有标签时标签条整条不渲染（标题栏那一行仍然在：窗口按钮住在里面）
-    expect(document.querySelector('.mn-tabs')).toBeNull()
+    // 没有笔记标签时主叶没有标签条（主视图的空文档态仍然在）
+    expect(document.querySelector('[data-leaf-tabs="main"]')).toBeNull()
 
     await open('README.md')
     await open('项目/设计.md')
-    expect(document.querySelector('.mn-titlebar .mn-tabs')).not.toBeNull()
-    // 标签栏**不在**主区域里了：主区域仍然是纯 pane 容器（行方向，不需要为标签让出一行）
-    expect(document.querySelector('.mn-main > .mn-tabs')).toBeNull()
-    expect(document.querySelectorAll('.mn-main > .mn-pane')).toHaveLength(1)
+    // 标签条在主叶里，编辑器那一面（.mn-pane--editor）也在主叶里
+    const mainLeaf = document.querySelector('[data-leaf-id="main"]')
+    expect(mainLeaf?.querySelector('.mn-tabs')).not.toBeNull()
+    expect(mainLeaf?.querySelector('.mn-pane--editor')).not.toBeNull()
+    // 全局标签栏退役：标题栏里不该再有标签条
+    expect(document.querySelector('.mn-titlebar .mn-tabs')).toBeNull()
 
     const view = currentView()
     act(() => {

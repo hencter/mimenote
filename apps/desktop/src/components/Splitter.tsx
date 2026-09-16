@@ -8,10 +8,15 @@ export interface SplitterProps {
   onDrag: (event: PointerEvent) => void
   /** 键盘微调（方向键）回调。 */
   onNudge?: (delta: number) => void
+  /**
+   * 双击回调（布局树的分隔条用它做"均分两半"，见 `features/layout/TreeHost.tsx`）。
+   * 缺省不挂 —— 旧的单条分隔条（侧栏宽度那种）没有"均分"这个有意义的动作。
+   */
+  onEven?: () => void
   ariaLabel: string
 }
 
-export function Splitter({ orientation = 'vertical', onDrag, onNudge, ariaLabel }: SplitterProps) {
+export function Splitter({ orientation = 'vertical', onDrag, onNudge, onEven, ariaLabel }: SplitterProps) {
   const [dragging, setDragging] = useState(false)
 
   const handlePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -66,6 +71,7 @@ export function Splitter({ orientation = 'vertical', onDrag, onNudge, ariaLabel 
       onPointerMove={handlePointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
+      onDoubleClick={onEven}
       onKeyDown={handleKeyDown}
     />
   )

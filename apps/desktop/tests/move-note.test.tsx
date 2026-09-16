@@ -14,13 +14,14 @@
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { useEffect } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { moveNote, moveSelected, openNote } from '@/app/actions'
 import { commands } from '@/app/commands'
 import { registerBuiltinCommands } from '@/app/builtin-commands'
 import { FileTree } from '@/features/vault/FileTree'
-import { TabBar } from '@/features/tabs/TabBar'
+import { installTabsSync } from '@/state/tabs-store'
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter, MOCK_VAULT_PATH, type MockAdapter } from '@/ipc/mock-adapter'
 import { useNoteStore } from '@/state/note-store'
@@ -325,12 +326,16 @@ describe('键盘路径（不依赖鼠标）', () => {
 })
 
 describe('移动后的 store 收敛', () => {
-  /** 标签栏与文件树一起挂：标签页的对账（`installTabsSync`）由 TabBar 安装。 */
+  /** 标签页的对账（`installTabsSync`）原来由 TabBar 安装；TabBar 退役后直接挂这个效应。 */
+  function Sync() {
+    useEffect(() => installTabsSync(), [])
+    return null
+  }
   function Harness() {
     return (
       <>
         <FileTree />
-        <TabBar />
+        <Sync />
       </>
     )
   }
@@ -343,10 +348,9 @@ describe('移动后的 store 收敛', () => {
     })
   }
 
+  /** 标签列表读 store（TabBar 退役后这些用例不挂标签组件，对账由上面的 Sync 安装）。 */
   function tabPaths(): string[] {
-    return Array.from(document.querySelectorAll<HTMLElement>('[role="tab"]')).map(
-      (node) => node.dataset['tabPath'] ?? '',
-    )
+    return [...useTabsStore.getState().tabs]
   }
 
   it('被移动的正是当前文档：原地换路径（保留内容与撤销历史），标签跟着走', async () => {

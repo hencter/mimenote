@@ -45,30 +45,21 @@
  * `MarkdownPreview` 不接收 props：它渲染的是 `note-store.doc`，也就是"编辑器里当前打开的那一篇"
  * （并且带着大文档 Worker、图片授权那一整套管线）。浮窗要显示的是**用户点开的那一篇**，
  * 它未必是编辑器里打开的那篇 —— 挂上去只会渲染出另一篇的内容。
- * 所以这里复用的是与阅读视图**同一条**渲染链路，逐字对齐：
- * `ipc.noteRead` → `renderMarkdown(frontmatterBody(text))` → `mn-preview__body` 容器
- * （净化后的 HTML 才 `dangerouslySetInnerHTML`）→ 出链表补 wikilink 的已解析/悬空标注
- * → 点击走 `openNote`。三条路（加载中 / 出错 / 有正文）也照旧全部处理。
+ * 正文因此交给 `features/preview/StaticNotePreview.tsx`：与阅读视图**同一条**渲染链路
+ * （`ipc.noteRead` → `renderMarkdown(frontmatterBody(text))` → 净化后的 HTML 才落地
+ * → 出链表补 wikilink 标注 → 点击走 `openNote`），树布局的叶子里"非当前笔记"用的也是它。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 // `JSX` 要从 react 显式取（React 19 的类型里去掉了全局命名空间）：与 `components/Icon.tsx` 同一写法
 import type {
   JSX,
-  MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
 } from 'react'
 
-import { openNote } from '@/app/actions'
 import { isTextEntryTarget } from '@/app/keymap'
 import { Icon } from '@/components/Icon'
-import { frontmatterBody } from '@/domain/frontmatter'
-import { isInternalNoteHref, normalizeLinkTarget } from '@/domain/links'
-import { renderMarkdown } from '@/domain/markdown'
-import { ipc } from '@/ipc/client'
-import { MimenoteError, describeError } from '@/ipc/types'
-import type { ResolvedLink } from '@/ipc/types'
-import { toast } from '@/state/toast-store'
+import { StaticNotePreview } from '@/features/preview/StaticNotePreview'
 
 export interface FloatingRect {
   x: number
@@ -146,11 +137,6 @@ function releasePointer(element: Element, pointerId: number): void {
   }
 }
 
-type LoadState =
-  | { kind: 'loading' }
-  | { kind: 'ready'; html: string }
-  | { kind: 'error'; message: string }
-
 /**
  * 一次"按住"的快照：拖动与缩放共用（两者的差别只有回写哪个字段）。
  *
@@ -191,11 +177,7 @@ export function FloatingNote(props: FloatingNoteProps): JSX.Element {
   const { relPath, title, rect, zIndex, active, area, onRaise, onMove, onClose, onOpenInEditor } =
     props
 
-  const [state, setState] = useState<LoadState>({ kind: 'loading' })
-  /** 这篇笔记的出链（解析用）；拿不到就退化成"链接一律当作悬空"，正文照常显示。 */
-  const [outbound, setOutbound] = useState<readonly ResolvedLink[]>([])
   const rootRef = useRef<HTMLElement | null>(null)
-  const articleRef = useRef<HTMLElement | null>(null)
   /**
    * 打开这个浮窗时"被取代"的那个元素：关闭后把焦点还回去。
    *
@@ -270,120 +252,6 @@ export function FloatingNote(props: FloatingNoteProps): JSX.Element {
       root.removeEventListener('wheel', onWheel)
     }
   }, [])
-
-  useEffect(() => {
-    // 与 `GraphPreview` 同一套"过期响应丢弃"策略：快速换一篇时只采纳最后一次的结果
-    let disposed = false
-    setState({ kind: 'loading' })
-
-    void (async () => {
-      try {
-        const content = await ipc.noteRead(relPath)
-        if (disposed) return
-        // frontmatter 不渲染（它是元数据，渲染出来只是一条横线加几行 key: value）
-        setState({ kind: 'ready', html: renderMarkdown(frontmatterBody(content.text)) })
-      } catch (cause) {
-        if (disposed) return
-        setState({ kind: 'error', message: describeError(MimenoteError.from(cause), '无法预览') })
-      }
-    })()
-
-    return () => {
-      disposed = true
-    }
-  }, [relPath])
-
-  // 出链表：与正文那次读盘是两次独立往返，但它不阻塞正文渲染（解析结果晚到也不会让浮窗闪白）
-  useEffect(() => {
-    let disposed = false
-    setOutbound([])
-    void (async () => {
-      try {
-        const links = await ipc.noteLinks(relPath)
-        if (disposed) return
-        setOutbound(links.outbound)
-      } catch {
-        // 索引还没建好（或旧宿主没有这个命令）：正文照常显示，只是链接点了没反应
-      }
-    })()
-    return () => {
-      disposed = true
-    }
-  }, [relPath])
-
-  const html = state.kind === 'ready' ? state.html : ''
-  const rendered = useMemo(() => ({ __html: html }), [html])
-
-  /**
-   * 把索引的解析结果"贴"到渲染出来的 wikilink 上（不重新渲染 HTML）。
-   * 与 `GraphPreview` / `MarkdownPreview` 完全同一套做法（同样的类名、同样的 title），
-   * 这样"已解析 / 悬空 / 有歧义"在三处视图里的外观与含义一致。
-   */
-  useEffect(() => {
-    const root = articleRef.current
-    if (root === null) return
-    for (const element of Array.from(root.querySelectorAll('a.mn-wikilink'))) {
-      const key = normalizeLinkTarget(element.getAttribute('data-target') ?? '')
-      const match = outbound.find((link) => normalizeLinkTarget(link.rawTarget) === key)
-      const resolved = match?.resolvedRelPath ?? null
-      element.classList.toggle('mn-wikilink--unresolved', resolved === null)
-      element.classList.toggle('mn-wikilink--ambiguous', match?.ambiguous === true)
-      if (resolved === null) {
-        element.removeAttribute('data-rel-path')
-        element.setAttribute('title', `${element.getAttribute('data-target') ?? ''}（还不存在）`)
-      } else {
-        element.setAttribute('data-rel-path', resolved)
-        element.setAttribute('title', resolved)
-      }
-    }
-  }, [html, outbound])
-
-  /**
-   * 正文里的链接：`[[wikilink]]`（目标写在 `data-target` 上）与普通 Markdown 链接（`href`）。
-   *
-   * 口径与 `GraphPreview` / `MarkdownPreview` 一致：都用 `normalizeLinkTarget` 与出链表比对，
-   * 否则"阅读视图里能点、浮窗里点了没反应"这种不一致会让人怀疑整条链接链坏了。
-   *
-   * 与停靠面板**唯一**的差别：这里只 `openNote`，不做 `useGraphStore.select()`。
-   * 停靠面板跟随链接时还要把"画布上选中的那篇"切过去（那是它在画布上存在的意义）；
-   * 浮窗是用户手动开出来的第 N 个阅读窗口，跟着链接改画布的选中项，会把他刚打开的另一篇挤掉
-   * —— 而且 store 的接线（谁负责写回 `selected`）属于调用方。
-   */
-  const handleClick = useCallback(
-    (event: ReactMouseEvent<HTMLElement>) => {
-      const target = event.target
-      if (!(target instanceof Element)) return
-      const anchor = target.closest('a')
-      if (anchor === null) return
-
-      // wikilink：已解析 → 打开那篇笔记；悬空 → 只提示（浮窗是只读的，不在这里建文件）
-      if (anchor.classList.contains('mn-wikilink')) {
-        event.preventDefault()
-        const resolved = anchor.getAttribute('data-rel-path')
-        if (resolved !== null) void openNote(resolved)
-        else toast.info('目标笔记还不存在', anchor.getAttribute('data-target') ?? '')
-        return
-      }
-
-      const href = anchor.getAttribute('href') ?? ''
-      if (href === '' || href.startsWith('#')) return
-
-      // Markdown 内部链接：同样用出链表判断指向哪一篇
-      const key = normalizeLinkTarget(href)
-      const match = outbound.find((link) => normalizeLinkTarget(link.rawTarget) === key)
-      if (match?.resolvedRelPath != null) {
-        event.preventDefault()
-        void openNote(match.resolvedRelPath)
-        return
-      }
-
-      event.preventDefault()
-      if (isInternalNoteHref(href)) toast.info('目标笔记还不存在', href)
-      // 外部链接：不让 WebView 直接跳走（会丢掉整个界面），与阅读视图同一处理
-      else toast.info('外部链接未在应用内打开', `${href}（M2 之后接入系统浏览器打开）`)
-    },
-    [outbound],
-  )
 
   /**
    * 按住开始一次拖动/缩放。
@@ -562,22 +430,16 @@ export function FloatingNote(props: FloatingNoteProps): JSX.Element {
         </button>
       </header>
 
-      {/* 滚的是这一层（面板本身 `overflow: hidden`），与停靠面板一致 */}
-      <div className="mn-float-note__body">
-        {state.kind === 'loading' && <p className="mn-empty__text">正在读取…</p>}
-        {state.kind === 'error' && (
-          <p className="mn-empty__text mn-float-note__error">{state.message}</p>
-        )}
-        {state.kind === 'ready' && (
-          <article
-            className="mn-preview__body mn-float-note__article"
-            ref={articleRef}
-            // html 已由 DOMPurify 净化（见 domain/markdown.ts 的两道防线）
-            dangerouslySetInnerHTML={rendered}
-            onClick={handleClick}
-          />
-        )}
-      </div>
+      {/*
+        正文交给 StaticNotePreview（与阅读视图同一条渲染链路，见文件头）。
+        类名保持 `mn-float-note__body/__article/__error`：浮窗自己的样式与既有测试都钉在这三个钩子上。
+      */}
+      <StaticNotePreview
+        relPath={relPath}
+        className="mn-float-note__body"
+        articleClassName="mn-float-note__article"
+        errorClassName="mn-float-note__error"
+      />
 
       {/*
         右下角的把手。用 `div` + `aria-hidden` 而不是 `button`：它只响应指针拖动，
