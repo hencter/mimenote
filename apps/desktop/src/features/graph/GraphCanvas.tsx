@@ -61,8 +61,8 @@ import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
-import { GraphEdges } from './GraphEdges'
 import { ancestorFolders, buildGraphFindIndex, findGraphMatches } from './find'
+import { bulgeRatio, edgeAt, type PaintedEdge } from './canvas/edge-paint'
 import {
   canvasMeasure,
   cardChrome,
@@ -208,11 +208,24 @@ const KEYBOARD_REACH = 2400
 /**
  * 漂浮的刷新率（每秒几帧）。
  *
- * 位置一变，画布上的卡片与 SVG 层的连线都要重画，而后者是 React 渲染 —— 20fps 下
- * "缓慢漂移"看起来已经是连续的，代价只有 60fps 的三分之一。要更顺就得把连线也搬到 canvas
- * （ADR-0023 的"下一步"）。
+ * **60fps**：连线搬进 canvas 之后（ADR-0036），"位置一变就要重画的东西"只剩 canvas 这一层 ——
+ * 而卡片本来每帧都在重画，连线跟着一起画不再额外付出"一次 React 渲染"的代价。
+ * 在这之前是 20fps，唯一的理由就是 SVG 连线层是 React 渲染的（那条取舍写在 ADR-0023 里）。
+ *
+ * 代价如实记在这里：卡片的重画次数从 20 次/秒 变成 60 次/秒。真觉得重时的下一招是
+ * "只把动过的那块矩形擦掉重画"（脏矩形），而不是把帧率偷偷压回去 ——
+ * 后者会让"漂浮"重新变成一顿一顿的，而这正是用户要的观感。
  */
-const FLOAT_FPS = 20
+const FLOAT_FPS = 60
+
+/**
+ * 连线的悬停容差（**屏幕像素**）。
+ *
+ * 5px：一条 1.6px 的线（缩放到 1 倍时）其实只有 1~2px 宽，按"正好压在线上"判命中根本点不着；
+ * 而太宽（比如 12px）会让空白处也弹出提示、还会把卡片上的悬停抢走。换算成世界单位时除以缩放，
+ * 于是"容差看起来永远是 5px"（与 `hitTolerance` 同一个思路）。
+ */
+const EDGE_HIT_SLOP = 5
 
 /**
  * 浮动面板的层级基数。
@@ -449,6 +462,65 @@ export function GraphCanvas() {
   const [forcePanelOpen, setForcePanelOpen] = useState(false)
   /** 上一帧真正画出来的卡片数（视口裁剪之后）—— 只用于诊断属性，不参与渲染决策。 */
   const [paintedCards, setPaintedCards] = useState(0)
+  /**
+   * 悬停的**连线**（`null` = 不在任何一条上）。
+   *
+   * 连线搬进 canvas 之后（ADR-0036）没有 DOM 可挂 `<title>`，所以 tooltip 由这里驱动：
+   * 命中判据是"指针离那条折线多远"（`edgeAt`），文案与 SVG 那一版的 `<title>` 逐字相同。
+   *
+   * `x` / `y` 是**进入这条边时的屏幕坐标**，不跟着指针走：跟着走意味着每一次 pointermove
+   * 都要 setState（漂浮时每帧都在重画，再加上指针事件就变成两股刷新互相打），
+   * 而"悬停提示停在进入的位置"本来就是常见的做法。
+   */
+  const [hoveredEdge, setHoveredEdge] = useState<{ key: string; title: string; x: number; y: number } | null>(
+    null,
+  )
+  /**
+   * 上一帧画出来的连线（含世界坐标命令）。悬停命中读它 ——
+   * 于是"看到的线"与"命中的线"永远是同一份（见 `edge-paint.ts` 的 `PaintedEdge`）。
+   */
+  const paintedEdgesRef = useRef<readonly PaintedEdge[]>([])
+  /**
+   * 连线的诊断数字（只用于 `data-graph-*` 属性，不参与渲染决策）。
+   *
+   * 为什么是这些原始值而不是一份记录数组：这份状态每帧都可能被写（漂浮 60fps），
+   * 而"写一个内容相同的新对象"会让 React 每次都想重渲染；原始值相等就 bail out，
+   * 于是静止时不会因为诊断属性而多渲染一轮。
+   *
+   * 为什么需要这么几项：连线在 canvas 上没有 DOM 可查，这些数字是测试与 UI E2E **唯一的抓手**。
+   * 它们逐条对着搬迁前那串 SVG 类名/元素（`--dashed` / `--highlight` / `--dim` / `--out` /
+   * `<circle class="mn-graph-phantom">` / `path.mn-graph-edge--lead`）换过来 ——
+   * 断言的性质没变，只是从"元素上有哪个类"变成"这一帧画出来几条什么样的线"
+   * （见 `graph.test.tsx` 里那几条用例的注释）。
+   */
+  const [edgeStats, setEdgeStats] = useState({
+    /** 卡外那段画了几条（= 有几何可画的边数）。 */
+    span: 0,
+    /** 其中画成虚线的（悬空边、或"被选中卡片提到"的入链）。 */
+    dashed: 0,
+    /** 与圆心/选中相关的（强调档）。 */
+    highlight: 0,
+    /** 强调且虚线的（"入链画虚线、出链实线"这一条就靠这两个数的差来断言）。 */
+    highlightDashed: 0,
+    /** 与圆心/选中无关而被淡化的（淡化不等于隐藏：上下文还在）。 */
+    dim: 0,
+    /** 其中走弧的（几何层的"同环走弧"，见 `edge-paint.ts` 的 `PaintedEdge.shape`）。 */
+    arcs: 0,
+    /** 三类语义色相各几条（出链 / 入链 / 环间），写成 `出,入,环间` —— ADR-0028 的分类抓手。 */
+    hues: '0,0,0',
+    /** 卡内那段引线画了几条（关掉「从正文链接引出」时应为 0）。 */
+    leads: 0,
+    /**
+     * 卡外那些**曲线**的"鼓出比"（控制点到弦的距离 ÷ 弦长；`;` 连接，直线不参与）。
+     *
+     * 为什么值得单列：张力滑块是唯一一个连续量旋钮，而"滑块的值变了"和"曲线真的弯了"是两件事。
+     * 这个比值与位置、缩放、漂浮全都无关（`tensionPath` 的定义 ⇒ 它恒等于 `tension ÷ 4`），
+     * 是自动化唯一能逐字断言那个旋钮的抓手 —— 搬迁前它由 UI E2E 从 SVG 的 `d` 里现算。
+     */
+    bulges: '',
+    /** 悬空边标出的目标名（`;` 连接；"这里缺一篇笔记"必须一眼看得见）。 */
+    phantoms: '',
+  })
   const pointerRef = useRef<PointerState | null>(null)
 
   /**
@@ -1075,15 +1147,16 @@ export function GraphCanvas() {
     const stats = paintGraph(context, {
       transform,
       nodes: paintNodes,
-      // 连线归 SVG 层（见文件头第 2 条）：这里刻意给空数组，避免同一条线画两遍
-      edges: [],
+      // 连线（ADR-0036）：形状/色相/提亮都由上面那份 `edgeVisuals` 算好，画笔只负责画；
+      // 画出来的每条线都在 `stats.edges` 里（悬停命中与诊断属性读的就是它）
+      edgeVisuals,
       palette: palette.palette,
       measure: measure ?? (() => 0),
       mode,
       selected,
       hovered,
       // 悬停的那段 [[链接]]（卡片内坐标）：画笔给它描一个强调色的框，
-      // 与 SVG 层"提亮对应连线"是同一个动作的两半
+      // 与"提亮对应连线"是同一个动作的两半
       hoveredLink:
         hoveredLink === null ? null : { relPath: hoveredLink.relPath, zone: hoveredLink.zone },
       visible: visibleSet,
@@ -1092,10 +1165,44 @@ export function GraphCanvas() {
     // 真正画出来的张数（视口裁剪之后）也报给宿主属性：它与"交给画笔的张数"是两件事，
     // 而"这一帧到底画了几张"是排查"画布怎么空了/卡了"时第一个想看的事实
     setPaintedCards(stats.cards)
+
+    // 连线的两份出口：几何留给悬停命中（ref，不触发渲染），数字留给诊断属性（state，值相等就不重渲染）
+    paintedEdgesRef.current = stats.edges
+    const span = stats.edges.filter((edge) => edge.layer === 'span')
+    const highlighted = span.filter((edge) => edge.highlight)
+    const next = {
+      span: span.length,
+      dashed: span.filter((edge) => edge.dashed).length,
+      highlight: highlighted.length,
+      highlightDashed: highlighted.filter((edge) => edge.dashed).length,
+      dim: span.filter((edge) => edge.dim).length,
+      arcs: span.filter((edge) => edge.shape === 'arc').length,
+      hues: (['out', 'in', 'context'] as const)
+        .map((hue) => span.filter((edge) => edge.hue === hue).length)
+        .join(','),
+      leads: stats.edges.length - span.length,
+      bulges: span
+        .map((edge) => bulgeRatio(edge.commands))
+        .filter((ratio): ratio is number => ratio !== null)
+        // 4 位小数足够断言 `tension ÷ 4`（默认档 0.62 ⇒ 0.155），也压得住字符串长度
+        .map((ratio) => ratio.toFixed(4))
+        .join(';'),
+      phantoms: span
+        .map((edge) => edge.label)
+        .filter((label): label is string => label !== null)
+        .join(';'),
+    }
+    setEdgeStats((current) => {
+      for (const key of Object.keys(next) as Array<keyof typeof next>) {
+        if (current[key] !== next[key]) return next
+      }
+      return current
+    })
   }, [
     viewport,
     transform,
     paintNodes,
+    edgeVisuals,
     visibleSet,
     themeId,
     rootPath,
@@ -1518,6 +1625,19 @@ export function GraphCanvas() {
         // 停在右下角手柄上 → nwse-resize 光标（手柄画在 canvas 上，光标形状只能组件自己给）
         const link = world === null ? null : linkAt(world)
         setHoveredLink((current) => (sameHoveredLink(current, link) ? current : link))
+        // 悬停在**连线本身**上 → 悬停提示（文案就是 SVG 那一版的 `<title>`）。
+        // 卡片上的热区优先：指针同时在卡片与线上时，"指着那段字"是更具体的意图
+        // （`edgeAt` 因此只在没有 link 命中时才问）。
+        const pointer = lastPointerRef.current
+        const edge =
+          world === null || pointer === null || link !== null
+            ? null
+            : edgeAt(paintedEdgesRef.current, world, EDGE_HIT_SLOP / transform.scale)
+        setHoveredEdge((current) => {
+          if (edge === null || pointer === null) return current === null ? current : null
+          if (current !== null && current.key === edge.key) return current
+          return { key: edge.key, title: edge.title, x: pointer.x, y: pointer.y }
+        })
         setOverResizeHandle(
           hit !== null &&
             world !== null &&
@@ -1584,6 +1704,26 @@ export function GraphCanvas() {
     },
     [hitCard, worldPointOf, mode, currentRect, advanceSimulation, linkAt, transform.scale],
   )
+
+  /**
+   * 漂浮开着时，指针不动也可能"从指着这条线"变成"指着空白"（卡片与连线都在动）：
+   * 于是每次位置推进（`tick`）/ 缩放平移（`transform`）之后按当前几何重算一次命中。
+   *
+   * 与 `hoveredLink` 那条 effect 是同一个理由、同一套写法 —— 两处都不能只靠 pointermove，
+   * 否则高亮与提示会停在已经离开的地方（"线突然指错了"比"没有提示"更难解释）。
+   * 命中用的是**上一帧真画出来的**那份几何（`paintedEdgesRef`），所以不会出现
+   * "提示的是一条已经不在那儿的线"。
+   */
+  useEffect(() => {
+    if (hoveredEdge === null) return
+    const point = lastPointerRef.current
+    if (point === null) return
+    const next = edgeAt(paintedEdgesRef.current, toWorld(transform, point), EDGE_HIT_SLOP / transform.scale)
+    if (next === null) setHoveredEdge(null)
+    else if (next.key !== hoveredEdge.key) {
+      setHoveredEdge({ key: next.key, title: next.title, x: point.x, y: point.y })
+    }
+  }, [tick, transform, hoveredEdge])
 
   const endPointer = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const state = pointerRef.current
@@ -1836,8 +1976,8 @@ export function GraphCanvas() {
       className={`mn-graph${panning ? ' mn-graph--panning' : ''}${
         hovered === null ? '' : ' mn-graph--over-card'
       }${hoveredLink === null ? '' : ' mn-graph--over-link'}${
-        overResizeHandle ? ' mn-graph--over-resize' : ''
-      } mn-graph--${mode}`}
+        hoveredEdge === null ? '' : ' mn-graph--over-edge'
+      }${overResizeHandle ? ' mn-graph--over-resize' : ''} mn-graph--${mode}`}
       ref={hostRef}
       role="application"
       aria-label={
@@ -1869,6 +2009,25 @@ export function GraphCanvas() {
       data-graph-selected={selected ?? ''}
       /* 当前布局里重叠的卡片对数（碰撞是硬约束时应当恒为 0） */
       data-graph-overlaps={overlaps}
+      /*
+        连线的可断言事实（ADR-0036）。连线画在 canvas 上，没有 DOM 节点可查 ——
+        于是"这一帧画了几条线、其中几条是提亮的/虚线的/淡化的/走弧的、悬空边标出了哪些名字"
+        必须变成读得到的事实，否则两层 E2E 就只能去截图里数像素。
+        这些数字的**前身**是 SVG 元素上的那一串类名（`--dashed` / `--highlight` / `--dim` /
+        `--out`），搬迁时逐条对应过来，断言的性质没有变弱。
+      */
+      data-graph-edges={edgeStats.span}
+      data-graph-edge-dashed={edgeStats.dashed}
+      data-graph-edge-highlight={edgeStats.highlight}
+      data-graph-edge-highlight-dashed={edgeStats.highlightDashed}
+      data-graph-edge-dim={edgeStats.dim}
+      data-graph-edge-arcs={edgeStats.arcs}
+      data-graph-edge-hues={edgeStats.hues}
+      data-graph-edge-leads={edgeStats.leads}
+      data-graph-edge-bulges={edgeStats.bulges}
+      data-graph-edge-phantoms={edgeStats.phantoms}
+      /* 悬停到的那条线（key = `from\0to\0kind`；空串 = 没有悬停） */
+      data-graph-edge-hover={hoveredEdge?.key ?? ''}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={endPointer}
@@ -1876,6 +2035,7 @@ export function GraphCanvas() {
       onPointerLeave={() => {
         setHovered(null)
         setHoveredLink(null)
+        setHoveredEdge(null)
         setOverResizeHandle(false)
         lastPointerRef.current = null
       }}
@@ -1883,7 +2043,7 @@ export function GraphCanvas() {
       onContextMenu={handleContextMenu}
       onKeyDown={handleKeyDown}
     >
-      {/* 连线与文件夹容器留在 DOM 里（同一套 CSS transform），卡片画在 canvas 上 */}
+      {/* 文件夹容器留在 DOM 里（同一套 CSS transform），连线与卡片都画在 canvas 上 */}
       <div
         className="mn-graph__viewport"
         style={{
@@ -1897,9 +2057,6 @@ export function GraphCanvas() {
             height: vaultLayout?.bounds.height ?? 0,
           }}
         >
-          {/* 卡外那一段（张力曲线 + 箭头 + 虚线）留在 viewport 里：它本来就该被路过的卡片盖住 */}
-          <GraphEdges visuals={edgeVisuals} viewBox={visibleWorldRect} layer="span" />
-
           {mode === 'vault' &&
             visibleFolders.map((folder) => (
               <GraphFolder
@@ -1911,7 +2068,14 @@ export function GraphCanvas() {
         </div>
       </div>
 
-      {/* 卡片层：自己算世界 → 屏幕的换算，因此缩放时文字是**重新排版**而不是被放大 */}
+      {/*
+        卡片与连线都画在这一张 canvas 上（ADR-0036）。
+
+        原先连线是两层 `<svg>`（卡外那段垫在卡片下面、卡内引线挂在卡片上面，靠 z-index 0/2 凑出
+        "卡片盖住穿过它的线、但它自己肚子里那段引线还在"）。搬家之后这件事变成了**同一次绘制里的
+        调用顺序**：卡外那段 → 卡片 → 卡内引线（见 `paintGraph` 的入口注释）。
+        少两层 DOM、少两份 CSS transform、还少一次"每帧的 React 渲染"（漂浮因此能到 60fps）。
+      */}
       <canvas
         className="mn-graph__canvas"
         ref={canvasRef}
@@ -1920,22 +2084,22 @@ export function GraphCanvas() {
       />
 
       {/*
-        卡片**内**那段引线（从正文里的 `[[链接]]` 到卡片边界）必须画在卡片层**之上**。
-
-        为什么不能和卡外那段一起留在 viewport 里：卡片是不透明底、画在 canvas 上（`z-index: 1`），
-        而 `.mn-graph__viewport` 带 `will-change: transform`、自成一个层叠上下文 —— viewport 里
-        任何 z-index（哪怕 2）都盖不过 canvas。引线整段都在卡片矩形里，于是被整段盖掉，
-        用户看到的就是"线从卡片边缘凭空开始"，正是这一轮要修的那句报障。
-        （`.mn-graph__leads` 的样式在 `graph.css`：z-index 2 + `pointer-events: none`。）
+        连线上的悬停提示。
+        为什么必须有它：SVG 那一版的 `<title>` 其实**从来没有生效过** —— `.mn-graph__edges` 上写着
+        `pointer-events: none`，子元素继承它，鼠标永远落不到那条 path 上。搬进 canvas 之后
+        "悬停到哪条线"是自己算的（`edgeAt`），提示也就自己画：同一条边的 `count > 1`（共 N 条链接）、
+        这条线是从正文哪段 `[[链接]]` 引出来的，这些信息只有这里能看到。
       */}
-      <div
-        className="mn-graph__leads"
-        style={{
-          transform: `translate(${Math.round(view.x)}px, ${Math.round(view.y)}px) scale(${view.zoom})`,
-        }}
-      >
-        <GraphEdges visuals={edgeVisuals} viewBox={visibleWorldRect} layer="lead" />
-      </div>
+      {hoveredEdge !== null && (
+        <div
+          className="mn-graph__edge-tip"
+          role="tooltip"
+          data-graph-edge-tip={hoveredEdge.key}
+          style={{ left: hoveredEdge.x, top: hoveredEdge.y }}
+        >
+          {hoveredEdge.title}
+        </div>
+      )}
 
       {/* ---------------------------------------------------------------- HUD */}
       <div className="mn-graph__hud" data-mn-graph-nopan>

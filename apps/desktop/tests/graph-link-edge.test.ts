@@ -806,24 +806,24 @@ describe('引线虚线的相位', () => {
   it('最后一段实线正好在卡片边界处收笔（分界处不会留下一段空隙）', () => {
     // 覆盖"长度 mod 6"的全部六种余数：0 / 1 / 2 / 3 / 4 / 5 都要能收在边界上
     for (const length of [3, 6, 7, 8, 9, 10.5, 12, 17.4, 30, 61.5, 200]) {
-      const { dashArray, dashOffset } = leadDash(length)
+      const { segments, offset } = leadDash(length)
 
-      expect(dashArray).toBe(`${DASH} ${GAP}`)
+      expect(segments).toEqual([DASH, GAP])
       // 边界那一点正好落在"实线段结束"上
-      expect(patternAt(length, dashOffset)).toBeCloseTo(DASH, 9)
+      expect(patternAt(length, offset)).toBeCloseTo(DASH, 9)
       // 边界**之前**的一小段仍然在实线段上 ⇒ 卡边附近确实有墨（这就是"不留缝"）
-      expect(patternAt(length - 0.5, dashOffset)).toBeLessThan(DASH)
-      // 相位是非负数且在 [0, 周期) 内：负的 dashoffset 在不同渲染器里的解释更绕，不给自己找麻烦
-      expect(dashOffset).toBeGreaterThanOrEqual(0)
-      expect(dashOffset).toBeLessThan(PERIOD)
+      expect(patternAt(length - 0.5, offset)).toBeLessThan(DASH)
+      // 相位是非负数且在 [0, 周期) 内：负的偏移量在不同渲染器里的解释更绕，不给自己找麻烦
+      expect(offset).toBeGreaterThanOrEqual(0)
+      expect(offset).toBeLessThan(PERIOD)
     }
   })
 
   it('链接那一端的空隙不超过起点小圆点的直径（半径 2 ⇒ 4px）', () => {
     for (const length of [3, 6, 7, 8, 9, 10.5, 12, 17.4, 30, 61.5, 200]) {
-      const { dashOffset } = leadDash(length)
+      const { offset } = leadDash(length)
       // 从起点量到第一笔墨有多远：图案在实线段里就说明起点就有墨（空隙 0）
-      const head = patternAt(0, dashOffset)
+      const head = patternAt(0, offset)
       const startGap = head < DASH ? 0 : PERIOD - head
       expect(startGap).toBeLessThanOrEqual(GAP)
       expect(startGap).toBeLessThanOrEqual(4) // 圆点直径
@@ -833,8 +833,8 @@ describe('引线虚线的相位', () => {
   it('相位是可重复的：同一条引线每次算出来逐位相同（重算不会让虚线跳动）', () => {
     expect(leadDash(37.25)).toEqual(leadDash(37.25))
     // 长度合法化：NaN / 负数 / 0 都按 0 处理，不产生 NaN 的相位
-    expect(leadDash(Number.NaN).dashOffset).toBe(leadDash(0).dashOffset)
-    expect(leadDash(-5).dashOffset).toBe(leadDash(0).dashOffset)
-    expect(Number.isFinite(leadDash(Number.POSITIVE_INFINITY).dashOffset)).toBe(true)
+    expect(leadDash(Number.NaN).offset).toBe(leadDash(0).offset)
+    expect(leadDash(-5).offset).toBe(leadDash(0).offset)
+    expect(Number.isFinite(leadDash(Number.POSITIVE_INFINITY).offset)).toBe(true)
   })
 })

@@ -55,6 +55,8 @@ class RecordingPaintContext implements PaintContext {
   textAlign = 'start'
   textBaseline = 'alphabetic'
   lineJoin = 'miter'
+  /** 连线的虚线相位（本文件只关心文字顺序，这里留着只是为了满足接口契约）。 */
+  lineDashOffset = 0
 
   private readonly texts: string[] = []
 
@@ -77,6 +79,7 @@ class RecordingPaintContext implements PaintContext {
   clip(): void {}
   moveTo(): void {}
   lineTo(): void {}
+  bezierCurveTo(): void {}
   arc(): void {}
   fill(): void {}
   stroke(): void {}

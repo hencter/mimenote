@@ -177,8 +177,8 @@ async function showReadView(page: Page): Promise<void> {
 //    `(offsetX, offsetY)`；关系图里圆心那一篇正好以世界原点为中心，于是"点圆心卡片"
 //    就是点那个坐标。
 //
-// 连线（`.mn-graph-edge*`）与文件夹容器（`.mn-graph-folder*`）**仍然是 DOM**，
-// 所以它们照旧用选择器断言。
+// 连线（`data-graph-edge-*` 系列属性）与卡片一样画在 canvas 上，所以它们也走第 1 条那条路；
+// 文件夹容器（`.mn-graph-folder*`）**仍然是 DOM**（它可点、可折叠），照旧用选择器断言。
 // ---------------------------------------------------------------------------
 
 /** 读宿主上的一个数字属性（缺失或读不出数字一律报错，不静默变成 NaN）。 */
@@ -565,54 +565,21 @@ async function setGraphTension(page: Page, tension: number): Promise<void> {
   )
 }
 
-/**
- * 一条**卡片外**的边（`path.mn-graph-edge` 且不是 `--lead`）：它的 `d` 与 tooltip。
+/*
+ * 关于**连线**的自动化抓手（ADR-0036）：
  *
- * 只取**真的是张力曲线**的那一条（`d` 里有三次贝塞尔的 `C`）：两端重合的自环会退化成直线
- * （`tensionPath` 的退化分支），那种路径量不出"鼓出多少"。刻意不做等待 —— 读的是"此刻屏幕上的
- * 那条线"，调用方自己包轮询（它随时可能因为漂浮而变）。
- */
-async function readSpanEdge(page: Page): Promise<{ d: string; title: string }> {
-  const found = await page
-    .locator('path.mn-graph-edge:not(.mn-graph-edge--lead)')
-    .evaluateAll((nodes) =>
-      nodes
-        .map((node) => ({
-          d: node.getAttribute('d') ?? '',
-          title: node.querySelector('title')?.textContent ?? '',
-        }))
-        .filter((item) => item.d.includes('C')),
-    )
-  const first = found[0]
-  if (first === undefined) throw new Error('画布上没有一条卡片外的张力曲线（全是直线？）')
-  return first
-}
-
-/**
- * 从一条卡片外的边路径（`M 起点 C 控制点1, 控制点2 终点`）里量出"张力鼓出多少"。
+ * 连线搬进 canvas 之后路径不再出现在 DOM 里，于是原来那两个"读 SVG"的助手
+ * （`readSpanEdge` / `spanTensionRatio`）退役，判据改由宿主上的 `data-graph-edge-*` 系列承担：
  *
- * 返回的是**相对量**：第一个控制点到弦（起点→终点那条直线）的距离 ÷ 弦长。
- * 为什么用相对量而不是绝对坐标：
- * - 卡片随时在漂浮、镜头会因为换预设而重新适应 —— 绝对坐标每次都不同，断言不了任何东西；
- * - 而 `tensionPath` 的定义是"控制点沿弦的垂直方向偏移 `tension × 弦长 × 0.25`"，
- *   所以这个比值**就是** `tension ÷ 4`，与位置、缩放、DPR 全都无关。
- * 于是"滑块真的改变了连线几何"可以被逐字断言，而不是"d 字符串变了"（漂浮时它每次都变）。
+ * - 卡外画了几条边、其中虚线/提亮/淡化/走弧各几条 → `data-graph-edges` 与它的细分；
+ * - 卡内那段引线画了几条 → `data-graph-edge-leads`；
+ * - 悬空边标出的目标名 → `data-graph-edge-phantoms`；
+ * - 曲线的"鼓出比"（张力那个连续量旋钮唯一能逐字断言的量） → `data-graph-edge-bulges`。
+ *
+ * 这些数字都由画笔**这一帧真画出来的那张记录表**算出来（见 `canvas/edge-paint.ts`），
+ * 与从前读 SVG 属性时逐条对应；量出来的东西在 `tests/graph-edge-paint.test.ts` 里逐档钉住
+ * （那里能直接读到画笔的调用序列）。
  */
-function spanTensionRatio(d: string): number {
-  const values = (d.match(/-?\d+(?:\.\d+)?(?:e[-+]?\d+)?/giu) ?? []).map((part) => Number(part))
-  const [x0 = Number.NaN, y0 = Number.NaN, c1x = Number.NaN, c1y = Number.NaN, , , x1 = Number.NaN, y1 = Number.NaN] =
-    values
-  if (values.length < 8 || [x0, y0, c1x, c1y, x1, y1].some((value) => !Number.isFinite(value))) {
-    throw new Error(`这条边的 d 不是"起点 + 一个控制点 + 终点"的三段式：${d}`)
-  }
-  const dx = x1 - x0
-  const dy = y1 - y0
-  const chord = Math.hypot(dx, dy)
-  if (!(chord > 0)) return 0
-  // 点到弦所在直线的距离 = |(控制点 − 起点) × (终点 − 起点)| ÷ 弦长（二维叉积）；再除以弦长得到比值
-  const cross = (c1x - x0) * dy - (c1y - y0) * dx
-  return Math.abs(cross) / (chord * chord)
-}
 
 describe('UI 层（Edge + dist + Mock Vault）', () => {
   let server: StaticServer
@@ -1146,8 +1113,8 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.locator('[data-graph-action="toggle-title-only"]').click()
     const titleOnly = await settledCenterCardHeight(page, before)
     expect(titleOnly).toBeLessThan(before)
-    // 没有正文就没有"从链接引出"的引线
-    expect(await page.locator('path.mn-graph-edge--lead').count()).toBe(0)
+    // 没有正文就没有"从链接引出"的引线（ADR-0036：引线画在 canvas 上，读宿主属性）
+    expect(await graphNumber(page, 'data-graph-edge-leads')).toBe(0)
     await page.locator('[data-graph-action="toggle-title-only"]').click()
     await settledCenterCardHeight(page, titleOnly)
 
@@ -1806,14 +1773,21 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       '定位并选中了那一篇',
     )
 
-    // 入链虚线 / 出链实线：设计.md 既有入链（路线图 → 设计）也有出链（设计 → 路线图/细节）
-    // 注意 SVG 元素的 `className` 是 `SVGAnimatedString` 对象，必须读属性
-    const highlighted = await page
-      .locator('.mn-graph-edge--highlight')
-      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('class') ?? ''))
-    expect(highlighted.length).toBeGreaterThanOrEqual(2)
-    expect(highlighted.some((name) => name.includes('mn-graph-edge--dashed'))).toBe(true)
-    expect(highlighted.some((name) => !name.includes('mn-graph-edge--dashed'))).toBe(true)
+    /*
+      入链虚线 / 出链实线：设计.md 既有入链（路线图 → 设计）也有出链（设计 → 路线图/细节）。
+      ADR-0036 之后连线画在 canvas 上，断言改读宿主上的诊断数字（与 `graph.test.tsx` 同一套抓手）：
+      `data-graph-edge-highlight` = 提亮了几条，`-highlight-dashed` = 其中虚线几条。
+      "两种都有"就是 0 < dashed < highlight。
+    */
+    await waitUntil(
+      async () => (await graphNumber(page, 'data-graph-edge-highlight')) >= 2,
+      10_000,
+      '选中的卡片相关连线提亮',
+    )
+    const highlighted = await graphNumber(page, 'data-graph-edge-highlight')
+    const highlightedDashed = await graphNumber(page, 'data-graph-edge-highlight-dashed')
+    expect(highlightedDashed).toBeGreaterThanOrEqual(1)
+    expect(highlightedDashed).toBeLessThan(highlighted)
 
     // Esc 取消选中
     await page.locator('.mn-graph').press('Escape')
@@ -2019,8 +1993,12 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     // 为什么值得端到端测：ADR-0023 要的是"线从对应的 wiki link 处引出"，也就是一条边由**两段**
     // 组成 —— 卡片里从那段文字拉出的虚线引线（起点还有一个圆点）+ 卡片外的实线/张力曲线。
     // 引线的起点是 canvas 排版的结果（要按同一套字体逐 run 量字才落得准），"那段字排在第几行、
-    // 从第几列开始"只有真的排过版才知道：单测能喂一份假排版，这里跑的才是**真实正文 + 真实量字
-    // + 真实 SVG**。而"关掉开关之后引线消失、边仍在"是同一件事的另一面（老行为必须还在）。
+    // 从第几列开始"只有真的排过版才知道：单测能喂一份假排版，这里跑的才是**真实正文 + 真实量字**。
+    //
+    // ADR-0036 之后连线也画在同一张 canvas 上，于是"两段各自画出来了没有"改从宿主属性读
+    // （`data-graph-edge-leads` / `data-graph-edges`）；引线自己的几何（起点在正文里、
+    // 终点逐坐标等于卡外那段起点、相位收在卡边界）由 `tests/graph-edge-paint.test.ts` 钉住 ——
+    // 这一层要证明的是"真实排版之后它真的出现了"。
     await ensureVaultOpen(page)
     // 设计.md 的正文里正好有两处：`参考 [[路线图]] 与 [[细节]]`
     await openNoteInTree(page, '项目/设计.md')
@@ -2029,48 +2007,51 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await ensureGraphFocusMode(page)
     await waitUntil(async () => (await graphCardCount(page)) >= 3, 10_000, '关系图画出圆心与它的邻居')
 
-    const lead = page.locator('path.mn-graph-edge--lead')
-    const span = page.locator('path.mn-graph-edge:not(.mn-graph-edge--lead)')
-    await waitUntil(async () => (await lead.count()) > 0, 10_000, '出现卡片内的虚线引线')
-    await waitUntil(async () => (await span.count()) >= 2, 10_000, '卡片外的实线照旧存在')
+    await waitUntil(
+      async () => (await graphNumber(page, 'data-graph-edge-leads')) > 0,
+      10_000,
+      '出现卡片内的虚线引线',
+    )
+    // 两处 [[链接]] ⇒ 两条引线（正文里真的排出了两段可指的链接段落）
+    await waitUntil(
+      async () => (await graphNumber(page, 'data-graph-edge-leads')) >= 2,
+      10_000,
+      '正文里两处 [[链接]] 各引出一条引线',
+    )
+    await waitUntil(
+      async () => (await graphNumber(page, 'data-graph-edges')) >= 2,
+      10_000,
+      '卡片外的实线照旧存在',
+    )
 
-    // 引线必须是**可画的**线段（起点 → 卡片边界上的出点）：`d` 里出现 NaN 时浏览器会把整条
-    // 路径丢掉，而那正是"线凭空消失"的表现（`link-edge.ts` 的 `num` 就是为这件事写的）
-    const leadPaths = await lead.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('d') ?? ''))
-    expect(leadPaths.length).toBeGreaterThanOrEqual(1)
-    for (const d of leadPaths) {
-      expect(d).toMatch(/^M \S+ \S+ L \S+ \S+$/u)
-      const numbers = d
-        .split(/[ML\s]+/u)
-        .filter((token) => token !== '')
-        .map((token) => Number(token))
-      expect(numbers).toHaveLength(4)
-      expect(numbers.every((value) => Number.isFinite(value))).toBe(true)
-    }
-    // 起点那个小圆点：没有它，"线从哪句话出来"只是虚线的一个端点
-    expect(await page.locator('circle.mn-graph-edge-lead-dot').count()).toBeGreaterThanOrEqual(1)
-    // tooltip 说出它是从**哪段文字**引出的 —— 这才叫"锚到了 link 上"，而不只是"多了条虚线"
-    const onTitles = await lead.locator('title').allTextContents()
-    expect(onTitles.some((text) => text.includes('从正文里的 [['))).toBe(true)
-
-    // 关掉「从链接引出」：引线整段消失（`leadPath` 为空 ⇒ 连 `<path>` 都不渲染），
-    // 而卡片外的边一条不少 —— 降级不是"少画一条边"，只是换一种起笔方式
-    const spanBefore = await span.count()
+    /*
+      "线从哪句话出来"这条语义现在由两个可断言的事实守着：
+      1. 引线确实画出来了（上面那个数字）；
+      2. 悬停到**卡外那段**上时给出的提示会说明它是从正文里哪段 `[[链接]]` 引出的 ——
+         这是 canvas 版新补上的能力（SVG 版那层 `<title>` 因为 `pointer-events: none` 从来没生效过）。
+      提示文案的分支（有锚点 / 正文里没找到 → 从卡片边缘出发）在
+      `tests/graph.test.tsx` 里逐字断言（那里的落点可以从记录下来的路径上算，稳定可重复）。
+    */
+    const spanBefore = await graphNumber(page, 'data-graph-edges')
     await page.locator('[data-graph-action="toggle-edge-from-link"]').click()
-    await waitUntil(async () => (await lead.count()) === 0, 10_000, '关掉之后引线消失')
-    expect(await page.locator('circle.mn-graph-edge-lead-dot').count()).toBe(0)
-    expect(await span.count()).toBe(spanBefore)
-    // 降级要**说清楚**：这时的 tooltip 必须承认"正文里没找到对应的链接写法，从卡片边缘出发"
-    const offTitles = await span.locator('title').allTextContents()
-    expect(offTitles).toHaveLength(spanBefore)
-    expect(offTitles.every((text) => text.includes('从卡片边缘出发'))).toBe(true)
+    await waitUntil(
+      async () => (await graphNumber(page, 'data-graph-edge-leads')) === 0,
+      10_000,
+      '关掉之后引线消失',
+    )
+    // 降级不是"少画一条边"：换一种起笔方式而已
+    expect(await graphNumber(page, 'data-graph-edges')).toBe(spanBefore)
     expect(
       await page.locator('[data-graph-action="toggle-edge-from-link"]').getAttribute('aria-pressed'),
     ).toBe('false')
 
     // 再点回来：默认是**开**的，把它还给后面的用例（顺带覆盖"开关是双向的"）
     await page.locator('[data-graph-action="toggle-edge-from-link"]').click()
-    await waitUntil(async () => (await lead.count()) === leadPaths.length, 10_000, '引线回来')
+    await waitUntil(
+      async () => (await graphNumber(page, 'data-graph-edge-leads')) >= 2,
+      10_000,
+      '引线回来',
+    )
     expect(
       await page.locator('[data-graph-action="toggle-edge-from-link"]').getAttribute('aria-pressed'),
     ).toBe('true')
@@ -2081,11 +2062,15 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
   })
 
   it('知识图谱：张力滑块真的改变连线几何（并落进 localStorage），用完拨回默认值', async () => {
-    // 为什么值得端到端测：张力是这一轮新增的**唯一一个连续量**旋钮，而它作用在一条 SVG 路径的
-    // 控制点上 —— "滑块的值变了"和"曲线真的弯了"是两件事。这里量的不是"`d` 变了"（开着漂浮时
+    // 为什么值得端到端测：张力是这一轮新增的**唯一一个连续量**旋钮，而它作用在一条曲线的
+    // 控制点上 —— "滑块的值变了"和"曲线真的弯了"是两件事。这里量的不是"路径变了"（开着漂浮时
     // 它每一帧都在变，那种断言等于没测），而是**相对量**：控制点到弦的距离 ÷ 弦长，按
     // `tensionPath` 的定义它就等于 `tension ÷ 4`，与卡片漂到哪、镜头缩到多大全都无关。
     // 顺带钉住"这个旋钮会落盘"（偏好与几何都跟着走，才算真的接通了）。
+    //
+    // ADR-0036：连线搬进 canvas 之后路径不再出现在 DOM 里，那个相对量由宿主上的
+    // `data-graph-edge-bulges` 报出来（画笔从**真画出来的**命令上算，见 `edge-paint.ts` 的
+    // `bulgeRatio`）—— 搬的是载体，量的是同一个东西。
     await ensureVaultOpen(page)
     await openNoteInTree(page, '项目/设计.md')
     await page.keyboard.press('Control+g')
@@ -2093,30 +2078,38 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await ensureGraphFocusMode(page)
     // 跳数是持久化偏好：先拨回 1，让这条用例的起点与上一条留下什么无关
     await resetGraphDepthToOne(page)
-    const span = page.locator('path.mn-graph-edge:not(.mn-graph-edge--lead)')
-    await waitUntil(async () => (await span.count()) > 0, 10_000, '画布上有卡片外的边')
+    await waitUntil(async () => (await graphNumber(page, 'data-graph-edges')) > 0, 10_000, '画布上有卡片外的边')
 
-    /** 等到连线的鼓出比变成期望值，再返回它（比对一条还在变的曲线只能"等到"）。 */
+    /** 画布上那些曲线的鼓出比（第一条就是最靠近圆心那条边）。 */
+    const bulgeOf = async (): Promise<number> => {
+      const raw = (await page.locator('.mn-graph').getAttribute('data-graph-edge-bulges')) ?? ''
+      const first = raw.split(';')[0] ?? ''
+      const value = Number(first)
+      if (!Number.isFinite(value)) throw new Error(`画布上没有可量的曲线（bulges=${raw}）`)
+      return value
+    }
+
+    /** 等到鼓出比变成期望值，再返回它（比对一条还在重建的曲线只能"等到"）。 */
     const ratioAt = async (expected: number): Promise<number> => {
       await waitUntil(
-        async () => Math.abs(spanTensionRatio((await readSpanEdge(page)).d) - expected) < 1e-6,
+        async () => Math.abs((await bulgeOf()) - expected) < 1e-3,
         10_000,
         `连线的鼓出比变成 ${expected}`,
       )
-      return spanTensionRatio((await readSpanEdge(page)).d)
+      return bulgeOf()
     }
 
     // 起点自足：张力同样是持久化偏好（整个文件共用一个页面），先把它拨回默认值
     await setGraphTension(page, DEFAULT_GRAPH_TENSION)
     const before = await ratioAt(DEFAULT_GRAPH_TENSION * 0.25)
-    expect(before).toBeCloseTo(DEFAULT_GRAPH_TENSION * 0.25, 6)
+    expect(before).toBeCloseTo(DEFAULT_GRAPH_TENSION * 0.25, 3)
     expect(await graphTension(page)).toBeCloseTo(DEFAULT_GRAPH_TENSION, 6)
 
-    // 拉到最右（= 1）：控制点离弦 `弦长的 1/4`，比默认的 0.0875 明显更弯
+    // 拉到最右（= 1）：控制点离弦 `弦长的 1/4`，比默认的 0.155 明显更弯
     await setGraphTension(page, 1)
     const after = await ratioAt(0.25)
-    expect(after).toBeCloseTo(0.25, 6)
-    expect(after).toBeGreaterThan(before * 2)
+    expect(after).toBeCloseTo(0.25, 3)
+    expect(after).toBeGreaterThan(before * 1.5)
     // 偏好跟着落盘（刷新之后回来还是它）
     expect((await readGraphPrefs(page))?.tension).toBe(1)
 

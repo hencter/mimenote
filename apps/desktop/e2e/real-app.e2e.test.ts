@@ -214,7 +214,7 @@ describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设
       '再按一次 Esc 取消选中',
     )
 
-    // 换到"整个 Vault"：文件夹容器与悬空链接的虚影标签都留在 DOM 里（只有卡片搬进了 canvas）
+    // 换到"整个 Vault"：文件夹容器留在 DOM 里，连线与卡片都画在 canvas 上（ADR-0036）
     await app.page.locator('[data-graph-action="mode-vault"]').click()
     await waitUntil(
       async () => (await app.page.locator('.mn-graph').getAttribute('data-graph-mode')) === 'vault',
@@ -228,10 +228,17 @@ describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设
     )
     // 子目录自动成组
     await app.page.waitForSelector('.mn-graph-folder[data-folder="子"]', { state: 'visible' })
-    // 悬空链接的目标名字直接标出来（toRawTarget）
+    /*
+      悬空链接的目标名字直接标出来（toRawTarget）。
+      搬迁前它是在 DOM 里的一段 `<text>`，靠 `textContent` 就能读到；现在它由画布画笔画出，
+      于是读宿主上的 `data-graph-edge-phantoms`（写进去的正是画笔真画出来的那几个名字）——
+      性质一样，只是载体从"DOM 里的字"变成"画布上画了什么"。
+    */
     await waitUntil(
       async () =>
-        ((await app.page.locator('.mn-graph').textContent()) ?? '').includes('还不存在的丙'),
+        ((await app.page.locator('.mn-graph').getAttribute('data-graph-edge-phantoms')) ?? '').includes(
+          '还不存在的丙',
+        ),
       15_000,
       '悬空链接标出用户写下的目标名',
     )
@@ -248,13 +255,22 @@ describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设
       15_000,
       '定位并选中了甲',
     )
-    // 注意 SVG 元素的 `className` 是 `SVGAnimatedString` 对象，必须读属性
-    const classes = await app.page
-      .locator('.mn-graph-edge--highlight')
-      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('class') ?? ''))
-    expect(classes.length).toBeGreaterThanOrEqual(2)
-    expect(classes.some((name) => name.includes('mn-graph-edge--dashed'))).toBe(true)
-    expect(classes.some((name) => !name.includes('mn-graph-edge--dashed'))).toBe(true)
+    /*
+      入链虚线、出链实线（ADR-0036 之后读宿主上的诊断数字）。
+      搬迁前这里是"数 `.mn-graph-edge--highlight` 的类名、看其中有没有 `--dashed`"；
+      现在连线画在 canvas 上，同样的事实由画笔的记录算出来：
+      `data-graph-edge-highlight` = 这一帧提亮了几条，`data-graph-edge-highlight-dashed` = 其中虚线几条。
+      甲 有一条出链（甲 → 乙，实线）与一条入链（乙 → 甲，虚线），所以两个数都应当是 1。
+    */
+    await waitUntil(
+      async () => (await graphNumber(app.page, 'data-graph-edge-highlight')) >= 2,
+      15_000,
+      '选中的卡片相关连线提亮',
+    )
+    expect(await graphNumber(app.page, 'data-graph-edge-highlight-dashed')).toBeGreaterThanOrEqual(1)
+    expect(await graphNumber(app.page, 'data-graph-edge-highlight')).toBeGreaterThan(
+      await graphNumber(app.page, 'data-graph-edge-highlight-dashed'),
+    )
 
     await app.page.keyboard.press('Escape')
     await waitUntil(

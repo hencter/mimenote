@@ -45,108 +45,41 @@
 
 /* ------------------------------------------------------------------ 连线 */
 
-.mn-graph__edges {
+/*
+ * 连线的样式**不再在这里**：连线搬进 canvas 之后（ADR-0036），它由画笔直接画 ——
+ * 颜色 / 粗细 / 虚线 / 箭头几何的唯一判据是 `features/graph/canvas/edge-paint.ts` 顶部那几张常量表。
+ *
+ * 原来那批 `.mn-graph-edge* / .mn-graph-arrow* / .mn-graph-phantom* / .mn-graph__edges` 规则随之退役：
+ * 它们选择的是 SVG 元素，而画布上已经没有那些元素了 —— 留着就是一份「看着像判据、实际没人读」的代码。
+ *
+ * **自定义的边界**也在这里说清楚：颜色仍然只有一份来源 —— 主题令牌（`--mn-fg-subtle` /
+ * `--mn-accent` / `--mn-edge-out` / `--mn-edge-in` / `--mn-warning`），画笔按 `readPalette`
+ * 读的是**计算值**，所以主题与用户 CSS 片段改令牌依然生效；而「直接给 `.mn-graph-edge` 写 CSS」
+ * 这条路没有了 —— canvas 不认识选择器（这一条在 ADR-0036 里如实记着）。
+ */
+
+/*
+ * 连线上的悬停提示（ADR-0036）。
+ *
+ * 定位用绝对坐标（进入那条边时的指针位置，见 `GraphCanvas` 的 `hoveredEdge`），
+ * `pointer-events: none`：提示不能把指针从它提示的那条线上抢走
+ * （否则指针一移进提示里就立刻消失，然后又在线上出现 —— 闪个不停）。
+ */
+.mn-graph__edge-tip {
   position: absolute;
-  overflow: visible;
-  /* 连线不参与命中测试：否则点卡片的路由会被 SVG 抢走 */
+  z-index: 4;
+  max-width: 320px;
+  padding: 4px 8px;
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg-elevated);
+  color: var(--mn-fg);
+  font-size: 12px;
+  line-height: 1.5;
+  /* 挂在光标右下方一点点：正好压着光标的话，它反而挡住了「我指的到底是哪一段」 */
+  transform: translate(10px, 12px);
   pointer-events: none;
-}
-
-.mn-graph-edge {
-  fill: none;
-  stroke: var(--mn-fg-subtle);
-  stroke-width: 1.6;
-  opacity: 0.5;
-}
-
-/* 悬空链接：虚线 + 端点的小圆（"线到这里就断了，目标笔记还不存在"） */
-.mn-graph-edge--dashed {
-  stroke-dasharray: 5 4;
-}
-
-/*
- * 语义色相（ADR-0028）：**以当前笔记为参照** —— 圆心指向别人是出链（暖），
- * 别人指向圆心是入链（冷），既不碰圆心也不碰选中的是环与环之间（中性）。
- *
- * 两个令牌名是**新引入的、可选的**（`--mn-edge-out` / `--mn-edge-in`）：主题可以定义它们
- * 来微调，没定义时落到既有的 `--mn-warning`（暖）与 `--mn-link`（冷）——
- * 因此**不改任何主题 JSON 也不需要**：`REQUIRED_TOKENS` 增项会让所有用户自定义主题报警。
- *
- * ⚠️ 这三条必须写在 `--highlight` **之前**：同权重时后者胜，于是"与中心/选中相关"的
- * accent 仍然压得住色相（那才是"当前这一条"最强的信号）。
- */
-.mn-graph-edge--out {
-  stroke: var(--mn-edge-out, var(--mn-warning));
-}
-
-.mn-graph-edge--in {
-  stroke: var(--mn-edge-in, var(--mn-link));
-}
-
-.mn-graph-edge--context {
-  stroke: var(--mn-fg-subtle);
-}
-
-/* 与选中卡片相关的边：提亮 + 加粗 */
-.mn-graph-edge--highlight {
-  stroke: var(--mn-accent);
-  stroke-width: 2.2;
-  opacity: 0.95;
-}
-
-/* 与选中卡片无关的边：淡化但不隐藏 —— 上下文还在，只是不抢注意力 */
-.mn-graph-edge--dim {
-  stroke-width: 1;
-  opacity: 0.16;
-}
-
-.mn-graph-arrow--default path {
-  fill: var(--mn-fg-subtle);
-  opacity: 0.6;
-}
-
-.mn-graph-arrow--highlight path {
-  fill: var(--mn-accent);
-}
-
-.mn-graph-arrow--dim path {
-  fill: var(--mn-fg-subtle);
-  opacity: 0.2;
-}
-
-/*
- * 箭头跟着它的边一起上色（ADR-0028）：marker 里的 `path` **不继承**引用方的 stroke
- * （`currentColor` 在这里取不到边的颜色），所以色相只能按变体各写一条。
- * 只覆盖 `default` 那一档：强调档是 accent、淡化档是中性的灰，两者都不该被色相改掉。
- */
-.mn-graph-arrow--hue-out.mn-graph-arrow--default path {
-  fill: var(--mn-edge-out, var(--mn-warning));
-  opacity: 0.9;
-}
-
-.mn-graph-arrow--hue-in.mn-graph-arrow--default path {
-  fill: var(--mn-edge-in, var(--mn-link));
-  opacity: 0.9;
-}
-
-.mn-graph-phantom {
-  fill: var(--mn-bg-elevated);
-  stroke: var(--mn-warning);
-  stroke-width: 1.4;
-  stroke-dasharray: 2 2;
-}
-
-/*
- * 悬空边的目标名字：直接画在虚影旁边。
- * 小字号 + subdued 色：它是"这里缺一篇笔记"的提示，不该跟卡片标题抢注意力；
- * `pointer-events: none` 保证它不挡住下面的卡片与画布交互。
- */
-.mn-graph-phantom-label {
-  fill: var(--mn-fg-muted);
-  font-size: 10px;
-  font-family: var(--mn-font-ui);
-  pointer-events: none;
-  user-select: none;
+  box-shadow: var(--mn-shadow);
 }
 
 /* -------------------------------------------------------- 文件夹容器 */
@@ -238,63 +171,12 @@
 /*
  * 卡片里的**引线**（ADR-0023）：从正文里 `[[链接]]` 那段文字画到卡片边界的那一段虚线。
  *
- * 粗细与透明度的取舍史：最初是 1px / 0.55（"它是指示、不是边本身"），用户实测后的反馈是
- * **太淡、看不见** —— 引线恰恰是"这条边从哪句话出来"的唯一证据，看不见就等于没有。
- * 所以现在与卡外那段同粗（1.6），颜色升到 `--mn-fg-muted`、不透明度 0.85；
- * 它仍然是**虚线**（图案与相位由 `leadDash()` 给），靠线型而不是靠淡来区分
- * "指示"与"边本身"。小圆点是引线的起点（文字的左侧）。
- *
- * ⚠️ 这里**刻意不写** `stroke-dasharray`：虚线的图案与相位都要按**引线有多长**来定，
- * 好让最后一段实线正好收在卡片边界上（否则虚线会在离卡边 1~3px 的地方断在空隙里，
- * 分界处就留出一道缝）。CSS 拿不到长度，所以图案与相位由 `link-edge.ts` 的 `leadDash()`
- * 算出来、以 `stroke-dasharray` / `stroke-dashoffset` 两个**属性**写在 path 上
- * （属性会被 CSS 规则盖掉，因此这里必须留空 —— 两处都写才是真的会分家）。
+ * 它现在由 canvas 画笔直接画（ADR-0036），因此这里没有规则 —— 但那条**取舍史**值得留一句：
+ * 最初是 1px / 0.55（"它是指示、不是边本身"），用户实测后的反馈是**太淡、看不见**；
+ * 引线恰恰是"这条边从哪句话出来"的唯一证据，看不见就等于没有。所以现在是 1.6 / 0.85，
+ * 靠**线型**（虚线 + 相位收在卡片边界上）而不是靠淡来区分"指示"与"边本身"。
+ * 具体数字与相位见 `features/graph/canvas/edge-paint.ts` 的 `LEAD` 与 `link-edge.ts` 的 `leadDash()`。
  */
-.mn-graph-edge--lead {
-  stroke: var(--mn-fg-muted);
-  stroke-width: 1.6;
-  opacity: 0.85;
-  fill: none;
-}
-
-/* 悬停正文里那段 [[链接]] 时，它的引线与起点圆点提到强调色（与卡外那段的高亮同一份判据） */
-.mn-graph-edge--lead--active {
-  stroke: var(--mn-accent);
-  stroke-width: 2;
-  opacity: 1;
-}
-
-.mn-graph-edge-lead-dot--active {
-  fill: var(--mn-accent);
-  opacity: 1;
-}
-
-/*
- * 卡片**内**的引线层（`GraphEdges` 的 `layer="lead"`）。
- *
- * 为什么要单开一层、而且要挂在这里：引线整段都在卡片矩形里，而卡片是不透明底、画在
- * canvas 上（`.mn-graph__canvas` 的 `z-index: 1`）—— 引线留在连线层（z-index 0）里会被
- * 卡片**整段盖掉**，看起来就是"线从卡片边缘凭空开始"（用户报的就是这个）。
- * 卡片**外**那段仍然留在连线层：它本来就该被路过的卡片盖住（见文件头第 2 条）。
- *
- * 这一层要跟着画布一起平移缩放，所以调用方会再套一次 `.mn-graph__viewport` 的那个
- * transform —— `transform-origin` 必须也是左上角，否则世界坐标↔屏幕坐标的换算会对不上。
- */
-.mn-graph__leads {
-  position: absolute;
-  left: 0;
-  top: 0;
-  z-index: 2;
-  transform-origin: 0 0;
-  will-change: transform;
-  /* 引线不参与命中测试：卡片与空白处的点击不能被它抢走 */
-  pointer-events: none;
-}
-
-.mn-graph-edge-lead-dot {
-  fill: var(--mn-fg-muted);
-  opacity: 0.9;
-}
 
 /* --------------------------------------------------------- HUD / 状态 */
 
@@ -306,11 +188,10 @@
  * 就会变成两个互斥的判定源 —— 而滚轮、拖动、双击都要走同一套判据。
  * 文件夹标题按钮在下面那层，也必须收得到点击（它就靠这一层穿透）。
  *
- * 层级：连线层 0 < 卡片层 1 < **引线层 2**（.mn-graph__leads，卡片内那段虚线）< HUD 3。
- * 卡片盖住穿过它的连线（与"先画线后画卡片"的观感一致）—— 但**卡片里**那段引线必须例外：
- * 它整段都在卡片矩形里，留在下面那层会被卡片的不透明底整段盖掉，
- * "线从卡片边缘凭空开始"就是这么来的。
- * 空态/加载态那个覆盖层也是 z-index 2：它只在没有边的时候出现，两者不会真的抢位置。
+ * 层级（ADR-0036 之后）：**canvas 1 < HUD 3**。连线与卡片在同一张 canvas 上，
+ * 它们之间不再有 z-index 的博弈 —— "卡片盖住穿过它的线、卡片自己肚子里那段引线还在"
+ * 是同一次绘制里的调用顺序（卡外那段 → 卡片 → 卡内引线，见 `paintGraph` 的入口注释）。
+ * 空态/加载态那个覆盖层是 z-index 2：它只在没有图形的时候出现，与 canvas 不会真的抢位置。
  */
 .mn-graph__canvas {
   position: absolute;
@@ -328,6 +209,15 @@
 /* 悬停在正文里某段 [[链接]] 上：它会高亮一条连线，光标仍是手型（与卡片一致） */
 .mn-graph--over-link {
   cursor: pointer;
+}
+
+/*
+ * 停在**连线上**（ADR-0036）：`help` 而不是 `pointer` —— 线上没有"点一下会发生什么"，
+ * 它能给的是那条悬停提示（"共 N 条链接"、这条线从哪段 [[链接]] 引出来）。
+ * `pointer` 会让人以为点得动，而点了什么也不会发生。
+ */
+.mn-graph--over-edge {
+  cursor: help;
 }
 
 /* 停在右下角缩放手柄上：nwse 双向箭头（写在 over-card 之后，让这条更具体的赢） */
@@ -568,8 +458,9 @@
   border-top-style: dashed;
 }
 
-/* 图例里的色相样本：与 `.mn-graph-edge--out/--in` 同一组令牌（两处各写一遍是因为
-   "图例是 CSS 画的色块、边是 SVG 描边"，能共用的只有令牌名） */
+/* 图例里的色相样本：与画布上那两种边**同一组令牌**（`--mn-edge-out` / `--mn-edge-in`）。
+   两处各写一遍是因为"图例是 DOM 画的色块、边是 canvas 描边"—— 能共用的只有令牌名；
+   而令牌名共用就够：用户改主题时图例与线一起变，这正是"判据只有一份"该有的样子（ADR-0036） */
 .mn-graph__legend-line--out {
   border-top-color: var(--mn-edge-out, var(--mn-warning));
 }

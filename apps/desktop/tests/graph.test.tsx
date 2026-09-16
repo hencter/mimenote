@@ -26,7 +26,6 @@ import { useGlobalKeymap } from '@/app/keymap'
 import { compareEntries } from '@/domain/tree'
 import { isMarkdown } from '@/domain/paths'
 import { GraphCanvas } from '@/features/graph/GraphCanvas'
-import { GraphEdges } from '@/features/graph/GraphEdges'
 import type { PaintContext } from '@/features/graph/canvas/paint'
 import {
   CARD_GAP,
@@ -42,6 +41,7 @@ import {
   buildRectIndex,
   collectFolderPaths,
   edgeAnchors,
+  edgeKey,
   edgePath,
   edgeStyle,
   fitView,
@@ -54,7 +54,6 @@ import {
   worldViewport,
   zoomAround,
   type GraphCardBox,
-  type GraphEdgeVisual,
   type Point,
   type Rect,
 } from '@/features/graph/layout'
@@ -220,6 +219,24 @@ function resetStores(): void {
  * 这不是"测实现细节"：`fillText` 的**入参**（标题、目录、`2 出 · 1 入`）全是用户看得见的内容，
  * 只是它的载体从 DOM 文本变成了画布像素。
  */
+/**
+ * 路径里的一条命令（屏幕坐标）。只记这三种：画布画笔只用到它们
+ * （连线的椭圆弧在 `edge-path.ts` 里已经被展开成贝塞尔，到这一层看不见弧）。
+ */
+type PathOp =
+  | { readonly op: 'moveTo'; readonly x: number; readonly y: number }
+  | { readonly op: 'lineTo'; readonly x: number; readonly y: number }
+  | {
+      readonly op: 'bezierCurveTo'
+      readonly c1x: number
+      readonly c1y: number
+      readonly c2x: number
+      readonly c2y: number
+      readonly x: number
+      readonly y: number
+    }
+  | { readonly op: 'arc'; readonly x: number; readonly y: number; readonly radius: number }
+
 class RecordingPaintContext implements PaintContext {
   font = '10px sans-serif'
   fillStyle: string | CanvasGradient | CanvasPattern = '#000000'
@@ -229,12 +246,73 @@ class RecordingPaintContext implements PaintContext {
   textAlign = 'start'
   textBaseline = 'alphabetic'
   lineJoin = 'miter'
+  lineDashOffset = 0
 
   /** 画过的每一段文字（按顺序、含重复 —— 平移/缩放会让同一张卡片被重画）。 */
   private readonly texts: string[] = []
 
+  /**
+   * 画过的每一条**描边路径**（ADR-0036 之后连线也在画布上，它是连线的唯一观测面）。
+   *
+   * 为什么要记路径而不只记状态：连线在 canvas 上没有 DOM 可查，而"这条线画在哪、形状是弧
+   * 还是曲线、线宽多少"正是搬迁之前由 SVG 属性（`d` / `stroke-width` / `class`）守着的东西。
+   * 记下"这一段路径的几何 + 画它时的状态"，那些性质就能换个载体继续被钉住。
+   */
+  private readonly strokeRecords: Array<{
+    readonly path: readonly PathOp[]
+    readonly state: { strokeStyle: string; lineWidth: number; globalAlpha: number; lineDash: string; lineDashOffset: number }
+    readonly frame: number
+  }> = []
+
+  /** 画过的每个圆（引线起点的小圆点 / 悬空边的虚影 / 卡片圆角）：悬停落点靠它算。 */
+  private readonly arcRecords: Array<{ x: number; y: number; radius: number; frame: number }> = []
+
+  /** 帧号：画笔每帧开头都 `clearRect`，那一次就是分帧的地方（见 `strokesOfLastFrame`）。 */
+  private frame = 0
+
+  /** 当前这一段路径（`beginPath` 清空，`stroke` 时连同状态存进 `strokeRecords`）。 */
+  private currentPath: PathOp[] = []
+
+  /** 每一段**描边**路径（含几何与状态）。卡片边框/下划线也在其中，连线是**最前面**那几条。 */
+  strokes(): ReadonlyArray<{
+    readonly path: readonly PathOp[]
+    readonly state: { strokeStyle: string; lineWidth: number; globalAlpha: number; lineDash: string; lineDashOffset: number }
+    readonly frame: number
+  }> {
+    return this.strokeRecords
+  }
+
+  /** 画过的圆（按顺序）。 */
+  arcs(): ReadonlyArray<{ x: number; y: number; radius: number; frame: number }> {
+    return this.arcRecords
+  }
+
+  /**
+   * **最后一帧**画过的描边。
+   *
+   * 为什么按帧切：记录是累积的（一次挂载会重画好几帧：先渲染、再适应窗口、再落定），
+   * 而"这一帧画了几条多粗的线"才是要断言的东西。帧边界就是画笔每帧开头那次 `clearRect`。
+   */
+  strokesOfLastFrame(): ReadonlyArray<{
+    readonly path: readonly PathOp[]
+    readonly state: { strokeStyle: string; lineWidth: number; globalAlpha: number; lineDash: string; lineDashOffset: number }
+    readonly frame: number
+  }> {
+    const last = this.strokeRecords.at(-1)?.frame ?? 0
+    return this.strokeRecords.filter((record) => record.frame === last)
+  }
+
+  /** **最后一帧**画过的圆（口径同 `strokesOfLastFrame`）。 */
+  arcsOfLastFrame(): ReadonlyArray<{ x: number; y: number; radius: number; frame: number }> {
+    const last = this.arcRecords.at(-1)?.frame ?? 0
+    return this.arcRecords.filter((record) => record.frame === last)
+  }
+
   /** 每一段文字**画在哪**（世界坐标换算后的屏幕坐标）：断言"卡片跟着光标走了"要用它。 */
   private readonly placed: Array<{ text: string; x: number; y: number }> = []
+
+  /** 最近一次 `setLineDash` 的图案（`stroke` 时快照进记录）。 */
+  private privateLineDash = ''
 
   /** 这一段里画过的文字（去重：断言"画没画"时不该关心它被画了几遍）。 */
   drawnTexts(): string[] {
@@ -253,6 +331,10 @@ class RecordingPaintContext implements PaintContext {
   clear(): void {
     this.texts.length = 0
     this.placed.length = 0
+    this.strokeRecords.length = 0
+    this.arcRecords.length = 0
+    this.currentPath = []
+    this.frame = 0
   }
 
   // 只记 fillText，其余调用一律忽略：这一层要证明的是"卡片被画出来了、内容是什么"，
@@ -261,19 +343,53 @@ class RecordingPaintContext implements PaintContext {
   save(): void {}
   restore(): void {}
   setTransform(): void {}
-  clearRect(): void {}
-  beginPath(): void {}
+  clearRect(): void {
+    // 一帧的开始（`paintGraph` 每帧先清屏）—— 记录按帧切开就靠这一下
+    this.frame += 1
+  }
+  beginPath(): void {
+    this.currentPath = []
+  }
   closePath(): void {}
   rect(): void {}
   clip(): void {}
-  moveTo(): void {}
-  lineTo(): void {}
-  arc(): void {}
+  moveTo(x: number, y: number): void {
+    this.currentPath.push({ op: 'moveTo', x, y })
+  }
+  lineTo(x: number, y: number): void {
+    this.currentPath.push({ op: 'lineTo', x, y })
+  }
+  bezierCurveTo(c1x: number, c1y: number, c2x: number, c2y: number, x: number, y: number): void {
+    this.currentPath.push({ op: 'bezierCurveTo', c1x, c1y, c2x, c2y, x, y })
+  }
+  arc(x: number, y: number, radius: number): void {
+    this.arcRecords.push({ x, y, radius, frame: this.frame })
+    this.currentPath.push({ op: 'arc', x, y, radius })
+  }
   fill(): void {}
-  stroke(): void {}
+  stroke(): void {
+    /*
+      快照的是**假上下文自己的属性值**（画笔每画一样东西都会先把要用的属性设一遍）。
+      不实现 save/restore 的栈语义：那一层由 `tests/graph-paint.test.ts` 的记录型上下文
+      逐步重放来验（它才是"状态泄漏"的判据所在），这里只负责"画布上出现了什么"。
+    */
+    this.strokeRecords.push({
+      path: [...this.currentPath],
+      state: {
+        strokeStyle: String(this.strokeStyle),
+        lineWidth: this.lineWidth,
+        globalAlpha: this.globalAlpha,
+        lineDash: this.privateLineDash,
+        lineDashOffset: this.lineDashOffset,
+      },
+      frame: this.frame,
+    })
+  }
   fillRect(): void {}
   strokeRect(): void {}
-  setLineDash(): void {}
+  setLineDash(segments: number[]): void {
+    this.privateLineDash = segments.join(',')
+  }
 
   fillText(text: string, x: number, y: number): void {
     this.texts.push(text)
@@ -396,8 +512,74 @@ function overlapCount(): number {
   return Number(graphHost().getAttribute('data-graph-overlaps'))
 }
 
-/** 渲染出来的文件夹容器路径（连线与容器仍然留在 DOM 里）。 */
-function folderPaths(): string[] {  return Array.from(document.querySelectorAll('.mn-graph-folder')).map(
+/**
+ * 连线的诊断数字（ADR-0036）。
+ *
+ * 连线搬进 canvas 之后，搬迁之前那些"元素上有哪个类"的断言（`--dashed` / `--highlight` /
+ * `--dim` / `--out`、`circle.mn-graph-phantom`、`path.mn-graph-edge--lead`）没有载体了。
+ * 宿主上这几个属性就是替代品：它们由**这一帧真画出来的那张记录表**（`PaintedEdge[]`）算出来，
+ * 因此断言的性质与从前逐条对应（"画出来几条提亮的线"vs"几个 path 带 --highlight 类"）。
+ *
+ * `name` 直接拼进 `data-graph-edge-<name>`：`'edges'` 拼出的是**总条数**那个属性
+ * （`data-graph-edges`），其余是与它并列的细分。
+ */
+function edgeStat(
+  name: 'edges' | 'dashed' | 'highlight' | 'highlight-dashed' | 'dim' | 'arcs' | 'leads',
+): number {
+  // 总条数那个属性是 `data-graph-edges`（中间没有 `edge-` 这一节），其余是 `data-graph-edge-<细分>`
+  const attribute = name === 'edges' ? 'data-graph-edges' : `data-graph-edge-${name}`
+  const value = graphHost().getAttribute(attribute)
+  if (value === null) throw new Error(`宿主上没有 ${attribute} 属性`)
+  return Number(value)
+}
+
+/**
+ * 画布坐标（canvas 内部的屏幕像素）→ 派发指针事件用的 client 坐标。
+ *
+ * 画布铺满宿主左上角（`.mn-graph__canvas { position: absolute; left: 0; top: 0 }`），
+ * 所以两者只差宿主自己的位置。有了它，"悬停到画布上的哪个点"就能从**真画出来的那个圆/那条路径**
+ * 读出来 —— 搬迁前这些落点是 SVG 元素上的 `cx`/`cy`/`d`，口径一模一样。
+ */
+function clientFromCanvas(point: { x: number; y: number }): Point {
+  const rect = graphHost().getBoundingClientRect()
+  return { x: rect.left + point.x, y: rect.top + point.y }
+}
+
+/**
+ * 最后一帧里半径等于 `radius` 的那个圆（用来找引线起点的小圆点：半径 2 世界单位 ⇒ 2×scale）。
+ *
+ * 为什么按半径找而不是按顺序：卡片圆角（6）、悬空边虚影（4）、引线起点（2）半径各不相同，
+ * 而顺序会随卡片数与边的形状变化。半径是**契约数字**（`edge-paint.ts` 的 `LEAD.dotRadius`）。
+ */
+function arcOfLastFrameWithRadius(radius: number): { x: number; y: number; radius: number } | null {
+  return (
+    paint.arcsOfLastFrame().find((arc) => Math.abs(arc.radius - radius) < 0.001) ?? null
+  )
+}
+
+/**
+ * 路径上"足够贴线"的一点：从起点朝**第二个点**走 `distance` 像素。
+ *
+ * 为什么不取中点：卡外那段是张力曲线，其中点离弦有几十像素 —— 拿中点去派发 pointermove
+ * 会打空。起点附近曲线与弦几乎重合（二阶误差），4px 处的偏差远小于 5px 的命中容差
+ * （`GraphCanvas.EDGE_HIT_SLOP`）；第二个点对贝塞尔就是它的第一个控制点，方向即起始切向。
+ */
+function pointOnStrokePath(path: readonly PathOp[], distance = 4): { x: number; y: number } | null {
+  const start = path.find((op) => op.op === 'moveTo')
+  if (start === undefined) return null
+  const next = path.find((op) => op.op === 'lineTo' || op.op === 'bezierCurveTo')
+  if (next === undefined) return null
+  const target = next.op === 'lineTo' ? { x: next.x, y: next.y } : { x: next.c1x, y: next.c1y }
+  const dx = target.x - start.x
+  const dy = target.y - start.y
+  const length = Math.hypot(dx, dy)
+  if (!(length > 0)) return null
+  return { x: start.x + (dx / length) * distance, y: start.y + (dy / length) * distance }
+}
+
+/** 渲染出来的文件夹容器路径（文件夹容器仍然留在 DOM 里，连线与卡片都在画布上）。 */
+function folderPaths(): string[] {
+  return Array.from(document.querySelectorAll('.mn-graph-folder')).map(
     (element) => element.getAttribute('data-folder') ?? '',
   )
 }
@@ -1508,51 +1690,39 @@ describe('知识图谱画布', () => {
     await mountVault()
 
     /*
-      连线仍然留在 DOM（`GraphEdges` 的 SVG），所以这一条的断言与从前逐字相同；
-      变的只有"怎么选中那张卡片"：原来 `fireEvent.click(cardElement(…))`，
-      现在按**全库布局算出来的世界坐标**点它 —— 布局来自实现自己那两个纯函数
-      （`buildLayout` + `applyManualPositions`），所以是算出来的坐标，不是写死的像素。
+      连线现在画在 canvas 上（ADR-0036），没有类名可查 —— 这一条断言的是同一件事，
+      载体换成宿主上的诊断数字（`edgeStat`）：
+        · 与选中的卡片相关的三条边（入链 路线图→设计、出链 设计→路线图、出链 设计→细节）提亮；
+        · 其中只有入链是虚线 —— "入链虚线 / 出链实线"就看 highlight 与 highlight-dashed 的差；
+        · 与它无关的那条**仍然画出来**（总条数不变），只是进了淡化档（淡化 ≠ 隐藏）。
+
+      至于"怎么选中那张卡片"：原来 `fireEvent.click(cardElement(…))`，现在按**全库布局算出来的
+      世界坐标**点它 —— 布局来自实现自己那两个纯函数（`buildLayout` + `applyManualPositions`），
+      所以是算出来的坐标，不是写死的像素。
     */
     clickAtWorld(vaultCardCenter('项目/设计.md'))
     await waitFor(() => {
       expect(useGraphStore.getState().selected).toBe('项目/设计.md')
     })
 
-    const edges = Array.from(document.querySelectorAll('path.mn-graph-edge'))
-    const classes = new Map(
-      edges.map((element) => [
-        element.querySelector('title')?.textContent?.split('\n')[0] ?? '',
-        element.getAttribute('class') ?? '',
-      ]),
-    )
-    // 路线图 → 设计 是**入链**（别人指向它）⇒ 虚线 + 强调
-    expect(classes.get('路线图 → 设计')).toContain('mn-graph-edge--dashed')
-    expect(classes.get('路线图 → 设计')).toContain('mn-graph-edge--highlight')
-    // 设计 → 路线图 是**出链**（它指向别人）⇒ 实线 + 强调
-    expect(classes.get('设计 → 路线图')).toContain('mn-graph-edge--highlight')
-    expect(classes.get('设计 → 路线图')).not.toContain('mn-graph-edge--dashed')
-    // 与选中的卡片无关的边（细节 → 悬空）被淡化，但仍然画出来（上下文不丢）
-    expect(classes.get('细节 → 还不存在的笔记（还不存在）')).toContain('mn-graph-edge--dim')
+    await waitFor(() => {
+      expect(edgeStat('highlight')).toBe(3)
+    })
+    expect(edgeStat('highlight-dashed')).toBe(1)
+    expect(edgeStat('dim')).toBe(1)
+    expect(edgeStat('edges')).toBe(4)
   })
 
   it('没有选中时所有边都是统一的淡色实线（悬空边虚线 + 虚影圆点）', async () => {
     await mountVault()
 
-    const edges = Array.from(document.querySelectorAll('path.mn-graph-edge'))
-    expect(edges).toHaveLength(4)
-    for (const element of edges) {
-      const className = element.getAttribute('class') ?? ''
-      // 没有任何选中 ⇒ 既不强调也不淡化；只有悬空边因为"端点缺席"而画虚线
-      expect(className).not.toContain('--highlight')
-      expect(className).not.toContain('--dim')
-      // 悬空边的 title 现在是「<用户写的目标>（还不存在）」，用它来识别
-      const dangling = (element.querySelector('title')?.textContent ?? '').includes('（还不存在）')
-      expect(className).toBe(dangling ? 'mn-graph-edge mn-graph-edge--dashed' : 'mn-graph-edge')
-    }
+    expect(edgeStat('edges')).toBe(4)
+    // 没有任何选中 ⇒ 既不强调也不淡化；只有悬空边因为"端点缺席"而画虚线
+    expect(edgeStat('highlight')).toBe(0)
+    expect(edgeStat('dim')).toBe(0)
+    expect(edgeStat('dashed')).toBe(1)
     // 悬空边：虚线 + 一个小圆点 + 目标名字（用户写下的原始写法）
-    expect(document.querySelectorAll('circle.mn-graph-phantom')).toHaveLength(1)
-    const phantomLabel = document.querySelector('text.mn-graph-phantom-label')
-    expect(phantomLabel?.textContent).toBe('还不存在的笔记')
+    expect(graphHost().getAttribute('data-graph-edge-phantoms')).toBe('还不存在的笔记')
   })
 
   it('键盘：+ / - / 0 缩放与适应窗口，缩放被限制在 0.25×~2.5×', async () => {
@@ -1803,64 +1973,155 @@ describe('知识图谱画布', () => {
       expect(graphHost().getAttribute('data-graph-depth')).toBe('2')
     })
 
-    /** 一跳 → 两跳 那条边的**卡外那段**（它在 span 层；引线层里同 key 的组没有它）。 */
-    const spanOf = (): SVGPathElement | null => {
-      for (const group of document.querySelectorAll<SVGGElement>('g[data-edge]')) {
-        const span = group.querySelector<SVGPathElement>(
-          'path.mn-graph-edge:not(.mn-graph-edge--lead)',
-        )
-        if (span === null) continue
-        const title = group.querySelector('title')?.textContent ?? ''
-        if (title.includes('一跳 → 两跳')) return span
-      }
-      return null
-    }
-    /** 同一条边的引线（卡片内那段虚线，在 lead 层）。 */
-    const leadOf = (): SVGPathElement | null => {
-      for (const group of document.querySelectorAll<SVGGElement>('g[data-edge]')) {
-        const lead = group.querySelector<SVGPathElement>('path.mn-graph-edge--lead')
-        if (lead === null) continue
-        const title = group.querySelector('title')?.textContent ?? ''
-        if (title.includes('一跳 → 两跳')) return lead
-      }
-      return null
-    }
-
+    /*
+      指针落点从那条边的**引线起点小圆点**读（它就是锚点 = 那段文字的左侧），
+      再往右挪 4px 进文字内部 —— 全程不猜像素。
+      搬迁前读的是 SVG 圆点的 `cx`/`cy`；现在那个圆画在画布上，于是读画布上真画出来的那个圆
+      （半径 2 世界单位 ⇒ 屏幕上 2×scale；卡片圆角是 6、虚影是 4，不会认错）。
+    */
+    const scale = Number(graphHost().getAttribute('data-graph-scale'))
     const dot = await waitFor(() => {
-      for (const group of document.querySelectorAll<SVGGElement>('g[data-edge]')) {
-        const title = group.querySelector('title')?.textContent ?? ''
-        if (!title.includes('一跳 → 两跳')) continue
-        const found = group.querySelector<SVGCircleElement>('.mn-graph-edge-lead-dot')
-        if (found !== null) return found
-      }
-      throw new Error('还没有 一跳 → 两跳 的引线')
+      const found = arcOfLastFrameWithRadius(2 * scale)
+      if (found === null) throw new Error('还没有引线起点的小圆点')
+      return found
     })
-    const anchor = { x: Number(dot.getAttribute('cx')), y: Number(dot.getAttribute('cy')) }
-    expect(Number.isFinite(anchor.x) && Number.isFinite(anchor.y)).toBe(true)
 
     // 默认：这条边不碰圆心 ⇒ 淡化（对照组：没有它，下面的"提亮"可能是恒真的）
+    const before = { highlight: edgeStat('highlight'), dim: edgeStat('dim') }
     await waitFor(() => {
-      expect(spanOf()?.getAttribute('class') ?? '').toContain('mn-graph-edge--dim')
+      expect(before.dim).toBeGreaterThan(0)
     })
 
-    // 悬停到那段 [[两跳]] 上：边提亮、引线提亮、宿主给出 over-link 光标
-    const at = screenPoint({ x: anchor.x + 4, y: anchor.y })
+    // 悬停到那段 [[两跳]] 上：多出一条提亮的边、少一条淡化的（就是 一跳 → 两跳 那条）
+    const at = clientFromCanvas({ x: dot.x + 4, y: dot.y })
     pointer(graphHost(), 'pointermove', { x: at.x, y: at.y })
     await waitFor(() => {
-      const spanClass = spanOf()?.getAttribute('class') ?? ''
-      expect(spanClass).toContain('mn-graph-edge--highlight')
-      expect(spanClass).not.toContain('mn-graph-edge--dim')
+      expect(edgeStat('highlight')).toBe(before.highlight + 1)
     })
-    expect(leadOf()?.getAttribute('class') ?? '').toContain('mn-graph-edge--lead--active')
+    expect(edgeStat('dim')).toBe(before.dim - 1)
     expect(graphHost().className).toContain('mn-graph--over-link')
 
     // 移开到空白：恢复淡化（高亮不是"点过一次就亮着"）
     const away = screenPoint({ x: 1_000_000, y: 1_000_000 })
     pointer(graphHost(), 'pointermove', { x: away.x, y: away.y })
     await waitFor(() => {
-      expect(spanOf()?.getAttribute('class') ?? '').toContain('mn-graph-edge--dim')
+      expect(edgeStat('highlight')).toBe(before.highlight)
     })
+    expect(edgeStat('dim')).toBe(before.dim)
     expect(graphHost().className).not.toContain('mn-graph--over-link')
+  })
+
+  it('悬停到**连线本身**上：给出悬停提示，移开即消失（ADR-0036 的新能力）', async () => {
+    /*
+      这一条守的是搬迁带来的**新**东西：SVG 那一版的 `<title>` 其实从来没有出现过
+      （`.mn-graph__edges` 上写着 `pointer-events: none`，子元素继承它，鼠标永远落不到线上）。
+      现在"悬停到哪条线"是组件自己算的（`edgeAt` 按"指针离折线多远"判），提示也就自己画。
+
+      落点从**这一帧真画出来的路径**上取（起点朝第二个点走 4px）：曲线中点离弦有几十像素，
+      取中点会打不中；起点附近曲线与弦几乎重合，4px 处的偏差远小于 5px 的命中容差。
+    */
+    setIpcAdapter(createMockAdapter({ rootPath: VAULT_ROOT, notes: CHAIN_NOTES }))
+    await act(async () => {
+      await useVaultStore.getState().openVault(VAULT_ROOT)
+    })
+    await mountFocus('中心.md')
+    await waitFor(() => {
+      expect(edgeStat('edges')).toBeGreaterThan(0)
+    })
+
+    const spanCount = edgeStat('edges')
+    // 卡外那段是**最先**画的（在卡片之前），所以前 `spanCount` 条描边就是它们
+    const span = paint.strokesOfLastFrame().slice(0, spanCount)[0]
+    expect(span).toBeDefined()
+    const onLine = pointOnStrokePath(span!.path, 4)
+    expect(onLine).not.toBeNull()
+
+    const at = clientFromCanvas(onLine!)
+    pointer(graphHost(), 'pointermove', { x: at.x, y: at.y })
+    const tip = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-graph-edge-tip]')
+      if (found === null) throw new Error('还没有出现连线的悬停提示')
+      return found
+    })
+    // 提示上写着"谁 → 谁"（与 SVG 那一版的 <title> 同一份文案），
+    // 而宿主的 `data-graph-edge-hover` 给出那条边的 **key**（`from\0to\0kind`）——
+    // 自动化据此断言"命中的到底是不是我以为的那一条"，不必去认提示里的文字
+    expect(tip.textContent ?? '').toContain('→')
+    expect(graphHost().getAttribute('data-graph-edge-hover')).toBe(
+      edgeKey({
+        fromRelPath: '中心.md',
+        toRelPath: '一跳.md',
+        toRawTarget: '一跳',
+        kind: 'wiki',
+        count: 1,
+      }),
+    )
+    expect(graphHost().className).toContain('mn-graph--over-edge')
+
+    // 移开：提示消失、key 清空
+    const away = screenPoint({ x: 1_000_000, y: 1_000_000 })
+    pointer(graphHost(), 'pointermove', { x: away.x, y: away.y })
+    await waitFor(() => {
+      expect(document.querySelector('[data-graph-edge-tip]')).toBeNull()
+    })
+    expect(graphHost().getAttribute('data-graph-edge-hover')).toBe('')
+    expect(graphHost().className).not.toContain('mn-graph--over-edge')
+  })
+
+  it('连线提示说清楚"从正文哪段 [[链接]] 引出"，降级时也必须承认（ADR-0023）', async () => {
+    /*
+      搬迁之前这条性质写在 UI E2E 里：读 SVG 上的 `<title>`，断言至少有一条写着
+      "从正文里的 [["，关掉开关之后每一条都写着"从卡片边缘出发"。
+      连线进 canvas 之后那些 `<title>` 没了，而提示本身反倒第一次真的**看得见**
+      （SVG 版那层挂着 `pointer-events: none`，`<title>` 从来不会弹出来）——
+      于是这条性质搬到这里：逐条悬停卡外那段，读**真出现的**提示文案。
+    */
+    await mountFocus('项目/设计.md')
+    await waitFor(() => {
+      expect(edgeStat('edges')).toBeGreaterThan(0)
+    })
+
+    /** 逐条悬停卡外那段，返回每条边的提示文案。 */
+    const tipsOfSpanEdges = async (): Promise<string[]> => {
+      const strokes = paint.strokesOfLastFrame().slice(0, edgeStat('edges'))
+      const tips: string[] = []
+      for (const stroke of strokes) {
+        const on = pointOnStrokePath(stroke.path, 6)
+        if (on === null) continue
+        const at = clientFromCanvas(on)
+        pointer(graphHost(), 'pointermove', { x: at.x, y: at.y })
+        const tip = await waitFor(() => {
+          const found = document.querySelector<HTMLElement>('[data-graph-edge-tip]')
+          if (found === null) throw new Error('悬停到线上却没有出现提示')
+          return found
+        })
+        tips.push(tip.textContent ?? '')
+      }
+      // 移开：免得下一条边的判断被上一条的提示状态影响
+      const away = screenPoint({ x: 1_000_000, y: 1_000_000 })
+      pointer(graphHost(), 'pointermove', { x: away.x, y: away.y })
+      await waitFor(() => {
+        expect(document.querySelector('[data-graph-edge-tip]')).toBeNull()
+      })
+      return tips
+    }
+
+    const anchored = await tipsOfSpanEdges()
+    expect(anchored.length).toBeGreaterThan(0)
+    // 至少有一条真的锚到了正文里那段文字上（"线从哪句话出来"的唯一证据）
+    expect(anchored.some((text) => text.includes('从正文里的 [['))).toBe(true)
+    expect(edgeStat('leads')).toBeGreaterThan(0)
+
+    // 关掉「从链接引出」：引线没了，而且提示必须**承认**降级（不能悄悄换一种起笔方式）
+    act(() => {
+      useGraphStore.getState().setEdgeFromLink(false)
+    })
+    await waitFor(() => {
+      expect(edgeStat('leads')).toBe(0)
+    })
+    const degraded = await tipsOfSpanEdges()
+    expect(degraded.length).toBeGreaterThan(0)
+    expect(degraded.every((text) => text.includes('从卡片边缘出发'))).toBe(true)
   })
 
   it('刷新期间不闪白：旧卡片继续显示，只在 HUD 上给一个"刷新中"的轻量指示', async () => {
@@ -2239,153 +2500,32 @@ describe('知识图谱画布', () => {
     /*
       用户要的那件事："连接线不是凭空渲染在卡片边缘，要通过虚线从对应的 wiki link 处
       到卡片边缘再转为实线"。这里守两件事：
-        1. 有对应文字时 → 每个 `[[链接]]` 都产生一段**卡片内的虚线**（`.mn-graph-edge--lead`）；
+        1. 有对应文字时 → 每个 `[[链接]]` 都产生一段**卡片内的虚线**；
         2. 关掉这个开关 → 那些虚线消失（退回"从卡片边界出发"的老行为），不是"永远画着"。
       Mock Vault 里 `项目/设计.md` 正文写着 `[[路线图]]` 与 `[[细节]]`，所以圆心那张卡片
       应当有两条引线。
+
+      载体换成 `data-graph-edge-leads`（画了几条引线）：搬迁前数是
+      `path.mn-graph-edge--lead` 的个数，判据是同一个（"引线画出来了没有"）。
+      引线自己的几何与相位由 `tests/graph-edge-paint.test.ts` 与
+      `tests/graph-link-edge.test.ts` 逐条钉住，这里只问"有没有"。
     */
     await mountFocus('项目/设计.md')
 
-    const leadPaths = (): SVGPathElement[] =>
-      Array.from(document.querySelectorAll<SVGPathElement>('path.mn-graph-edge--lead'))
     await waitFor(() => {
-      expect(leadPaths().length).toBeGreaterThanOrEqual(2)
+      expect(edgeStat('leads')).toBeGreaterThanOrEqual(2)
     })
-    // 引线真的有几何（`d` 非空），并且从**卡片内部**的某一点开始（不是一个零长度点）
-    for (const path of leadPaths()) {
-      const d = path.getAttribute('d') ?? ''
-      expect(d.startsWith('M')).toBe(true)
-      expect(d.length).toBeGreaterThan(8)
-    }
-    // 起点的小圆点也在（"线从哪句话出来"的指示）
-    expect(document.querySelectorAll('.mn-graph-edge-lead-dot').length).toBeGreaterThanOrEqual(2)
+    // 卡外那几条边也在（引线不是"代替"了边，而是它的前一段）
+    expect(edgeStat('edges')).toBeGreaterThan(0)
 
     // 关掉开关：引线消失，但边还在（退回从卡片边界出发）
     act(() => {
       useGraphStore.getState().setEdgeFromLink(false)
     })
     await waitFor(() => {
-      expect(leadPaths()).toHaveLength(0)
+      expect(edgeStat('leads')).toBe(0)
     })
-    expect(document.querySelectorAll('path.mn-graph-edge').length).toBeGreaterThan(0)
-  })
-
-  it('分界处严丝合缝：引线是虚线、相位收在卡片边界上，卡外那段是实线、箭头只在目标端（ADR-0023）', async () => {
-    /*
-      用户那句话的后半句是"卡片边缘处实线出连接到卡片"，判据全落在**分界点**上：
-
-        1. 两段的 `d` 在分界点上逐坐标相同（"缝"就是在这里出现的）；
-        2. 卡内那段带 `stroke-dasharray`，并把相位调到最后一段实线**正好收在分界点**上
-           （相位取 0 时，长度 mod 周期 不巧就会让虚线停在离卡边 1~3px 的空隙里）；
-        3. 卡外那段（出链 ⇒ 实线）没有虚线的图案，也不带 `--dashed` 类；
-        4. 箭头只在目标端（`marker-end` 在卡外那段上，引线上没有）；
-        5. 两端都是 butt 线帽：分界处齐平切断，不会多出一个圆头。
-
-      入链/上下文边在卡外**刻意**仍是虚线（那是 ADR-0023 的语义：虚线表示"被别人提到"），
-      所以第 3 条只对**出链**（标题里 `设计 → …` 那几条）断言。
-    */
-    /*
-      上一条用例（"连接线从正文里的 [[链接]] 引出"）结尾把这个开关关掉了验证"关掉就没有引线"，
-      而 store 里这份状态不在 `resetStores()` 的重置范围内（它只重置全库视图那一半）——
-      先显式打开，用例才不会依赖"谁先跑"。
-    */
-    act(() => {
-      useGraphStore.getState().setEdgeFromLink(true)
-    })
-    await mountFocus('项目/设计.md')
-
-    const leads = (): SVGPathElement[] =>
-      Array.from(document.querySelectorAll<SVGPathElement>('path.mn-graph-edge--lead'))
-    await waitFor(() => {
-      expect(leads().length).toBeGreaterThanOrEqual(2)
-    })
-
-    /**
-     * 同一条边的卡片外那段。
-     *
-     * 两段现在分居**两个 `<svg>`**（引线必须盖在卡片层之上才看得见，见 `GraphEdges` 文件头），
-     * 所以配对靠 `<g data-edge>` 上那个同一份 `key`，而不是"同一个父节点"。
-     * 用 `getAttribute` 比较而不是拼选择器：`key` 里是中文路径，拼进选择器要处理转义。
-     */
-    const spanOf = (lead: SVGPathElement): SVGPathElement | null => {
-      const key = lead.closest('g')?.getAttribute('data-edge')
-      if (key === null || key === undefined) return null
-      for (const group of document.querySelectorAll<SVGGElement>('g[data-edge]')) {
-        if (group.getAttribute('data-edge') !== key) continue
-        const found = group.querySelector<SVGPathElement>(
-          'path.mn-graph-edge:not(.mn-graph-edge--lead)',
-        )
-        if (found !== null) return found
-      }
-      return null
-    }
-
-    /** `d` 里的数字（引线与卡外那段都是 `d` 一比就清楚的路径）。 */
-    const pointsOf = (d: string): Point[] => {
-      const values = (d.match(/-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/g) ?? []).map(Number)
-      const out: Point[] = []
-      for (let index = 0; index + 1 < values.length; index += 2) {
-        out.push({ x: values[index] ?? Number.NaN, y: values[index + 1] ?? Number.NaN })
-      }
-      return out
-    }
-    const firstOf = (d: string): Point => pointsOf(d)[0] ?? { x: Number.NaN, y: Number.NaN }
-    const lastOf = (d: string): Point => {
-      const all = pointsOf(d)
-      return all[all.length - 1] ?? { x: Number.NaN, y: Number.NaN }
-    }
-
-    let outbound = 0
-    /** 相位被算成 0 的引线（长度正好 mod 周期 = 实线段长度）—— 那几条不靠修正也是对的。 */
-    let aligned = 0
-    for (const lead of leads()) {
-      const span = spanOf(lead)
-      if (span === null) throw new Error('引线没有同一条边的卡片外那段（`<g>` 里应当成对）')
-      const start = firstOf(lead.getAttribute('d') ?? '')
-      const end = lastOf(lead.getAttribute('d') ?? '')
-      const spanD = span.getAttribute('d') ?? ''
-
-      // 1. 两段首尾相接：引线的终点与卡外那段的起点是同一个点（分界点），逐坐标相同
-      expect(lastOf(lead.getAttribute('d') ?? '')).toEqual(firstOf(spanD))
-      expect(Number.isFinite(end.x) && Number.isFinite(end.y)).toBe(true)
-
-      // 2. 卡内那段是虚线，且相位把最后一段实线收在分界点上（周期 = 3 + 3 = 6）
-      expect(lead.getAttribute('stroke-dasharray')).toBe('3 3')
-      const offset = Number(lead.getAttribute('stroke-dashoffset'))
-      expect(Number.isFinite(offset)).toBe(true)
-      const length = Math.hypot(end.x - start.x, end.y - start.y)
-      expect(length).toBeGreaterThan(0)
-      expect((length + offset) % 6).toBeCloseTo(3, 6)
-
-      // 相位选了"分界处收笔"，代价是链接那一端可能空出最多 3px ——
-      // 那个取舍能不能成立，全看起点的小圆点盖不盖得住（半径 2 ⇒ 4px 的墨）
-      const dot = lead.parentElement?.querySelector('.mn-graph-edge-lead-dot')
-      const radius = Number(dot?.getAttribute('r') ?? Number.NaN)
-      expect(Number.isFinite(radius)).toBe(true)
-      const head = offset % 6
-      const startGap = head < 3 ? 0 : 6 - head
-      expect(startGap).toBeLessThanOrEqual(radius * 2)
-      if (offset === 0) aligned += 1
-
-      // 4 + 5. 线帽与箭头：分界处齐平、箭头只在目标端
-      expect(lead.getAttribute('stroke-linecap')).toBe('butt')
-      expect(span.getAttribute('stroke-linecap')).toBe('butt')
-      expect(lead.getAttribute('marker-end')).toBeNull()
-      expect(span.getAttribute('marker-end')).not.toBeNull()
-
-      // 3. 出链在卡外是实线：不塞任何虚线的图案
-      const title = lead.querySelector('title')?.textContent ?? ''
-      if (title.includes('设计 →')) {
-        outbound += 1
-        expect(span.getAttribute('stroke-dasharray')).toBeNull()
-        expect(span.getAttribute('class')?.includes('mn-graph-edge--dashed')).toBe(false)
-      }
-    }
-    // 圆心那张卡片上写着两条链接（`[[路线图]]` 与 `[[细节]]`）⇒ 至少两条出链各自验过一遍
-    expect(outbound).toBeGreaterThanOrEqual(2)
-    // 而且至少有一条引线的相位**真的**被修正过（相位恒为 0 就意味着这条用例没在验任何东西：
-    // 那种长度下"从链接那端起算"恰好也能收在边界上）
-    expect(aligned).toBeLessThan(leads().length)
+    expect(edgeStat('edges')).toBeGreaterThan(0)
   })
 
   it('连线的语义分层与环向走线（ADR-0028）：出链暖 / 入链冷、越远越细、同环走弧', async () => {
@@ -2394,7 +2534,14 @@ describe('知识图谱画布', () => {
         · 中心 → 甲 / 中心 → 乙：都是**出链**（暖色，最粗）
         · 甲 → 乙：两端同为 1 跳 ⇒ **同一环** ⇒ 沿环外弧走（中性色）
         · 乙 → 丙：1 跳 → 2 跳 ⇒ **跨环** ⇒ 朝外鼓的曲线（中性色，按 2 跳的权重更细）
-      判据都摆在宿主属性与 SVG 属性上，不靠肉眼看画布。
+
+      判据摆在宿主属性与**画布上真画出来的那几条线**上，不靠肉眼看画布：
+        · `data-graph-edge-hues` = 三类色相各几条（搬迁前数的是 `--out` / `--context` / `--in` 类名）；
+        · 线宽与不透明度从记录型画布读（搬迁前读的是 path 上的 `stroke-width` / `opacity` 属性）。
+          ⚠️ 搬迁顺带修掉一个**一直没生效**的落差：那两个属性在 SVG 里会被 `graph.css` 的类规则
+          按优先级盖掉，所以"越远越细越淡"此前只写在属性上、屏幕上其实是 CSS 那一档；
+          canvas 里没有这种优先级暗礁，`EdgeStyle.width/opacity`（跳数权重 × 强调/淡化调制）
+          现在真的画得出来了 —— 这条用例因此比从前更接近"用户看到的"。
     */
     setIpcAdapter(createMockAdapter({ rootPath: VAULT_ROOT, notes: RING_NOTES }))
     await act(async () => {
@@ -2405,105 +2552,90 @@ describe('知识图谱画布', () => {
     await waitFor(() => {
       expect(graphHost().getAttribute('data-graph-depth')).toBe('2')
     })
-
-    /** 卡外那段（`span` 层）的路径：按 tooltip 里的"甲 → 乙"找，避开引线那一层。 */
-    const spanOf = (from: string, to: string): SVGPathElement | null => {
-      for (const group of document.querySelectorAll<SVGGElement>('g[data-edge]')) {
-        const span = group.querySelector<SVGPathElement>(
-          'path.mn-graph-edge:not(.mn-graph-edge--lead)',
-        )
-        if (span === null) continue
-        const title = group.querySelector('title')?.textContent ?? ''
-        if (title.includes(`${from} → ${to}`)) return span
-      }
-      return null
-    }
-
     await waitFor(() => {
-      expect(spanOf('甲', '乙')).not.toBeNull()
+      expect(edgeStat('edges')).toBe(4)
     })
 
-    // 1) 色相：出链暖（`--out`）、环间的边是上下文（`--context`）、这里没有入链
-    const outEdge = spanOf('中心', '甲')
-    expect(outEdge?.getAttribute('class') ?? '').toContain('mn-graph-edge--out')
-    expect(spanOf('甲', '乙')?.getAttribute('class') ?? '').toContain('mn-graph-edge--context')
-    expect(document.querySelectorAll('path.mn-graph-edge--in')).toHaveLength(0)
+    // 1) 色相：两条出链（中心 → 甲 / 中心 → 乙）、两条环间（甲→乙、乙→丙）、没有入链
+    expect(graphHost().getAttribute('data-graph-edge-hues')).toBe('2,0,2')
 
     /*
-      2) 权重是"跳数基准 × 强调/淡化调制"（见 GraphCanvas 里那两个因子）：
-         与圆心相关的一跳边（强调）：宽 max(2, 2.2) = 2.2、透明度 min(1, 0.95+0.22) = 1；
-         环与环之间的二跳边（淡化）：宽 max(1, 1.5×0.7) = 1.05、透明度 0.72×0.3 ≈ 0.216。
-         关键判据是"**二跳的线比一跳的细且淡**"——这正是"越远越细越淡"能被看见的地方。
+      2) 权重：卡外那段是**最先**画的（在卡片与引线之前），所以"最后一帧"的前 `edges` 条描边
+         就是那四条边 —— 线宽按跳数权重 × 调制给出来：
+           · 与圆心相关的一跳边（强调）：max(2, 2.2) = 2.2，不透明度 min(1, 0.95+0.22) = 1；
+           · 环与环之间的一跳边（淡化）：max(1, 2×0.7) = 1.4，0.95×0.3 = 0.285；
+           · 跨环那条按**两端较大的跳数**（2 跳）算（淡化）：max(1, 1.5×0.7) = 1.05，0.72×0.3 ≈ 0.216。
+         关键判据是"**越远的线越细越淡**"—— 这正是"越远越细越淡"能被看见的地方。
+
+         记下来的线宽还要**除以缩放**才是世界单位：画的时候线宽按 `width × scale` 给
+         （与 SVG 那一版 viewBox 替我们做的事完全一样），所以断言前先归一化。
     */
-    expect(outEdge?.getAttribute('stroke-width')).toBe('2.2')
-    expect(Number(outEdge?.getAttribute('opacity'))).toBeCloseTo(1, 6)
-    const farEdge = spanOf('乙', '丙')
-    expect(Number(farEdge?.getAttribute('stroke-width'))).toBeCloseTo(1.05, 6)
-    expect(Number(farEdge?.getAttribute('opacity'))).toBeCloseTo(0.216, 6)
-    const sameRing = spanOf('甲', '乙')
-    expect(Number(sameRing?.getAttribute('stroke-width'))).toBeCloseTo(1.4, 6)
-    expect(Number(sameRing?.getAttribute('opacity'))).toBeCloseTo(0.285, 6)
+    const zoom = Number(graphHost().getAttribute('data-graph-scale'))
+    expect(zoom).toBeGreaterThan(0)
+    const spanStrokes = paint.strokesOfLastFrame().slice(0, edgeStat('edges'))
+    expect(spanStrokes).toHaveLength(4)
+    const widths = spanStrokes
+      .map((stroke) => stroke.state.lineWidth / zoom)
+      .sort((a, b) => a - b)
+    expect(widths[0]).toBeCloseTo(1.05, 9)
+    expect(widths[1]).toBeCloseTo(1.4, 9)
+    expect(widths[2]).toBeCloseTo(2.2, 9)
+    expect(widths[3]).toBeCloseTo(2.2, 9)
+    const far = spanStrokes.find((stroke) => Math.abs(stroke.state.lineWidth / zoom - 1.05) < 1e-9)
+    expect(far?.state.globalAlpha).toBeCloseTo(0.216, 6)
 
-    // 3) 同环 ⇒ 弧（`A` 命令），跨环 ⇒ 贝塞尔（`C` 命令）
-    expect(spanOf('甲', '乙')?.getAttribute('d') ?? '').toContain(' A ')
-    expect(farEdge?.getAttribute('d') ?? '').toContain(' C ')
-    // 引线仍然与它严丝合缝：换锚点之后引线的终点 = 卡外那段的起点
-    const leadOf = (from: string, to: string): SVGPathElement | null => {
-      for (const group of document.querySelectorAll<SVGGElement>('g[data-edge]')) {
-        const lead = group.querySelector<SVGPathElement>('path.mn-graph-edge--lead')
-        if (lead === null) continue
-        const title = group.querySelector('title')?.textContent ?? ''
-        if (title.includes(`${from} → ${to}`)) return lead
-      }
-      return null
-    }
-    const lastPoint = (path: string): [number, number] =>
-      (path.match(/-?\d+(?:\.\d+)?/g) ?? []).slice(-2).map(Number) as [number, number]
-    const firstPoint = (path: string): [number, number] =>
-      (path.match(/-?\d+(?:\.\d+)?/g) ?? []).slice(0, 2).map(Number) as [number, number]
-    const pair = spanOf('甲', '乙')
-    const lead = leadOf('甲', '乙')
-    expect(pair).not.toBeNull()
-    expect(lead).not.toBeNull()
-    expect(lastPoint(lead?.getAttribute('d') ?? '')).toEqual(firstPoint(pair?.getAttribute('d') ?? ''))
+    // 3) 同环 ⇒ 走弧（`data-graph-edge-arcs` 数的是"这一帧有几条画成了弧"）
+    expect(edgeStat('arcs')).toBeGreaterThanOrEqual(1)
 
-    // 4) 开关：关掉"沿环走线"⇒ 退回两点一条曲线，且偏好落盘
+    // 4) 开关：关掉"沿环走线"⇒ 一条弧都没有了（退回两点一条曲线），且偏好落盘
     fireEvent.click(hudButton('toggle-ring-routing'))
     await waitFor(() => {
-      expect(spanOf('甲', '乙')?.getAttribute('d') ?? '').not.toContain(' A ')
+      expect(edgeStat('arcs')).toBe(0)
     })
-    expect(spanOf('甲', '乙')?.getAttribute('d') ?? '').toContain(' C ')
     expect(JSON.parse(window.localStorage.getItem(PREFS_KEY) ?? '{}')).toMatchObject({
       ringRouting: false,
     })
     // 收尾：打开（后面的用例按默认观感断言）
     fireEvent.click(hudButton('toggle-ring-routing'))
     await waitFor(() => {
-      expect(spanOf('甲', '乙')?.getAttribute('d') ?? '').toContain(' A ')
+      expect(edgeStat('arcs')).toBeGreaterThanOrEqual(1)
     })
   })
+
   it('张力旋钮真的作用在连线上：调大之后路径的控制点变了，而且落盘', async () => {
     /*
-      "张力"如果不能从画出来的路径上看出来，它就只是个滑块。这里断言 `d` 变了（同一条边），
-      并断言它写进偏好 —— 后者是"下次打开还是这个手感"的前提。
+      "张力"如果不能从画出来的路径上看出来，它就只是个滑块。这里断言**画布上那条线的路径**
+      变了（同一条边），并断言它写进偏好 —— 后者是"下次打开还是这个手感"的前提。
+      搬迁前读的是 SVG path 的 `d`；现在读记录型画布上那一段描边的路径（同一件事：线画到哪了）。
     */
     await mountFocus('项目/设计.md')
-    const dOf = (): string =>
-      document.querySelector('path.mn-graph-edge:not(.mn-graph-edge--lead)')?.getAttribute('d') ?? ''
+    const spanPathOf = (): string =>
+      JSON.stringify(paint.strokesOfLastFrame().slice(0, edgeStat('edges'))[0]?.path ?? [])
 
     await waitFor(() => {
-      expect(dOf()).not.toBe('')
+      expect(edgeStat('edges')).toBeGreaterThan(0)
     })
-    const before = dOf()
+    const before = spanPathOf()
+    expect(before).not.toBe('[]')
 
     act(() => {
       useGraphStore.getState().setTension(0.9)
     })
     await waitFor(() => {
-      expect(dOf()).not.toBe(before)
+      expect(spanPathOf()).not.toBe(before)
     })
     expect(JSON.parse(window.localStorage.getItem(PREFS_KEY) ?? '{}')['tension']).toBeCloseTo(0.9, 5)
   })
+
+  /*
+  /*
+    这里原先还有一条"分界处严丝合缝"（ADR-0023 的五条判据全落在卡片边界那一点上）。
+    连线搬进 canvas 之后（ADR-0036），它没有丢，只是搬到了**能直接读到画笔记录**的那一层：
+    `tests/graph-edge-paint.test.ts` 直接调 `paintEdgeLayer` 并断言 —— 两段首尾逐坐标相接、
+    引线的图案与相位（`lineDashOffset`）、卡外那段没有图案、箭头只画在卡外那段的终点；
+    而"两端都是 butt 线帽"是**结构上**成立的（`PaintContext` 里根本没有 `lineCap` 这个成员，
+    画布默认就是 butt），不需要再断言一次。
+  */
 
   it('卡片尺寸可调：HUD 上选一档"高度上限"、拉一次缩放手柄、再重置', async () => {
     /*
@@ -2736,14 +2868,27 @@ describe('知识图谱画布', () => {
     await waitFor(() => {
       expect(heightOfRoot()).toBeLessThan(fullHeight)
     })
-    // 正文与"目录/度数"那一行都不在了；标题还在
-    expect(drawnTexts().some((text) => text.includes('原子写'))).toBe(false)
-    expect(drawnTexts()).not.toContain('项目')
+
+    /*
+      采样窗口：**先等布局落定，再清空记录，再要一帧**。
+      为什么不能"清空 → 点开关 → 立刻断言"：那样清完之后到断言之间可能插进一帧**切换前**的重绘
+      （漂浮/力场落定都会推帧），记录里就还留着正文 —— 这正是这条用例过去"并行跑整套时偶发失败"
+      的原因（交接说明里记着这条抖动）。ADR-0036 把漂浮从 20fps 提到 60fps，推帧更密，
+      于是把它改成确定性的：清空之后用一次**指针移动**（hover 变化 ⇒ 必然重绘）拿到"切换后"的那一帧。
+    */
+    resetDrawnTexts()
+    // 指针移到圆心那张卡片上：hover 状态从 null 变成它 ⇒ 必然重渲染 + 重画一帧
+    const onRoot = screenPoint({ x: 0, y: 0 })
+    pointer(graphHost(), 'pointermove', { x: onRoot.x, y: onRoot.y })
     await waitFor(() => {
       expect(drawnTexts()).toContain('设计')
     })
+    // 正文与"目录/度数"那一行都不在了；标题还在
+    expect(drawnTexts().some((text) => text.includes('原子写'))).toBe(false)
+    expect(drawnTexts()).not.toContain('项目')
     // 卡片内那段虚线引线来自"正文里的 [[链接]]"：没有正文就没有引线
-    expect(document.querySelectorAll('path.mn-graph-edge--lead')).toHaveLength(0)
+    // （搬迁前数的是 `path.mn-graph-edge--lead` 的个数，判据还是"画了几条引线"）
+    expect(edgeStat('leads')).toBe(0)
     // 高度档与纯标题无关，整行收起
     expect(document.querySelector('[data-card-height="auto"]')).toBeNull()
     expect(JSON.parse(window.localStorage.getItem(PREFS_KEY) ?? '{}')).toMatchObject({
@@ -2802,91 +2947,21 @@ describe('知识图谱画布', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 连线的两层（卡片内那段引线必须能单独画在卡片层之上）
+// 连线的图层关系（引线必须画在卡片之上）
 // ---------------------------------------------------------------------------
 
-/**
- * 为什么单开一组：卡片是**不透明底**画在 canvas 上，而 canvas 的 `z-index` 比连线层高。
- * 引线整段都在卡片矩形里 —— 留在连线层里会被卡片整段盖掉，用户看到的就是"线从卡片边缘
- * 凭空开始"（这正是报障里的现象）。修复要把引线单独挂一层、画到卡片层**之上**，
- * 所以 `GraphEdges` 得能只渲染其中一层。这几条钉的就是那个开关：
- * 引线层只有引线（+ 起点小圆点），卡外层才有箭头与虚影。
+/*
+ * 这一组原先钉的是 `GraphEdges` 的 `layer` 开关（"只画引线那一层"），
+ * 那套东西在 ADR-0036 里退役了 —— 连线搬进 canvas 之后，"卡片盖住穿过它的线、卡片自己
+ * 肚子里那段引线还在"不再是两个 DOM 图层的叠加，而是**同一次绘制里的调用顺序**：
+ * 卡外那段 → 卡片 → 卡内引线（见 `paintGraph` 的入口注释）。
+ *
+ * 因此同样的性质搬到能断言顺序的那一层去了，一条都没有丢：
+ * - 「引线画在卡片之后」→ `tests/graph-paint.test.ts` 的
+ *   "卡内那段引线画在**卡片之后**"（用记录型上下文断 draw order）；
+ * - 「引线层只有引线 + 起点小圆点、没有箭头/虚影」与
+ *   「卡外层才有箭头与虚影」→ 新增的 `tests/graph-edge-paint.test.ts`
+ *   （直接调 `paintEdgeLayer(ctx, input, 'lead' | 'span')` 断言两层的绘制内容）；
+ * - 「虚线的相位按引线长度算」→ `tests/graph-link-edge.test.ts`（相位本身）+ 上面那个新文件
+ *   （画笔把它换算成 `lineDashOffset` 的方式）。
  */
-describe('连线的两层', () => {
-  afterEach(() => {
-    cleanup()
-  })
-
-  const edge: GraphEdge = {
-    fromRelPath: '甲.md',
-    toRelPath: '乙.md',
-    toRawTarget: '乙',
-    kind: 'wiki',
-    count: 1,
-  }
-
-  const visual: GraphEdgeVisual = {
-    key: 'k',
-    edge,
-    style: { dashed: false, dim: false, highlight: true },
-    // 卡片外那段：从卡片边界 (220, 100) 到目标卡片边界 (400, 200)
-    d: 'M 220 100 C 280 100, 340 200, 400 200',
-    start: { x: 220, y: 100 },
-    end: { x: 400, y: 200 },
-    phantom: false,
-    title: '甲 → 乙',
-    // 卡片内那段：从正文里的链接 (30, 103) 到卡片边界 (220, 100) —— 长度 190.023…
-    leadPath: 'M 30 103 L 220 100',
-    leadFrom: { x: 30, y: 103 },
-  }
-
-  const box = { x: 0, y: 0, width: 800, height: 600 }
-
-  it('引线层只画引线与起点小圆点：没有卡外那段、没有箭头、没有虚影', () => {
-    const { container } = render(<GraphEdges visuals={[visual]} viewBox={box} layer="lead" />)
-
-    const leads = container.querySelectorAll('path.mn-graph-edge--lead')
-    expect(leads).toHaveLength(1)
-    expect(container.querySelectorAll('path.mn-graph-edge:not(.mn-graph-edge--lead)')).toHaveLength(0)
-    expect(container.querySelectorAll('.mn-graph-edge-lead-dot')).toHaveLength(1)
-    // 箭头只有卡外那段用得到 ⇒ 引线层里连 marker 定义都不生成
-    expect(container.querySelectorAll('marker')).toHaveLength(0)
-
-    // 引线的相位按 `leadFrom → start` 的长度算（同一条引线在两层里的长度必须一致）
-    const lead = leads[0] as SVGPathElement
-    const length = Math.hypot(visual.start.x - visual.leadFrom!.x, visual.start.y - visual.leadFrom!.y)
-    expect(lead.getAttribute('stroke-dasharray')).toBe('3 3')
-    expect(Number(lead.getAttribute('stroke-dashoffset'))).toBeCloseTo((3 - (length % 6) + 6) % 6, 9)
-  })
-
-  it('卡外层只画卡外那段：带箭头与虚影圆点，一条引线都不画', () => {
-    const phantom: GraphEdgeVisual = {
-      ...visual,
-      key: 'p',
-      phantom: true,
-      edge: { ...edge, toRelPath: null, toRawTarget: '还不存在的笔记' },
-    }
-    const { container } = render(
-      <GraphEdges visuals={[visual, phantom]} viewBox={box} layer="span" />,
-    )
-
-    expect(container.querySelectorAll('path.mn-graph-edge--lead')).toHaveLength(0)
-    expect(container.querySelectorAll('path.mn-graph-edge:not(.mn-graph-edge--lead)')).toHaveLength(2)
-    expect(container.querySelectorAll('.mn-graph-edge-lead-dot')).toHaveLength(0)
-    expect(container.querySelectorAll('.mn-graph-phantom')).toHaveLength(1)
-    /*
-      箭头定义在卡外层：marker 的 id 要能被 `marker-end` 引到。
-      数量是 **3 色相 × 3 状态 = 9**（ADR-0028 加了"出链暖 / 入链冷 / 环间中性"，
-      而 marker 里的 path 不继承引用方的 stroke，只能按变体各写一份）。
-    */
-    expect(container.querySelectorAll('marker')).toHaveLength(9)
-  })
-
-  it('不给 layer 时两条段还在同一个 SVG 里（默认行为不变）', () => {
-    const { container } = render(<GraphEdges visuals={[visual]} viewBox={box} />)
-
-    expect(container.querySelectorAll('svg.mn-graph__edges')).toHaveLength(1)
-    expect(container.querySelectorAll('path.mn-graph-edge--lead')).toHaveLength(1)
-    expect(container.querySelectorAll('path.mn-graph-edge:not(.mn-graph-edge--lead)')).toHaveLength(1)
-  })
-})

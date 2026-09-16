@@ -47,8 +47,10 @@
  * 本文件里所有分支都只依赖入参。
  */
 
-import type { Point, Rect } from '../layout'
+import type { GraphEdgeVisual, Rect } from '../layout'
 import type { InlineRun } from './blocks'
+import { type PaintContext, type ViewTransform } from './context'
+import { paintEdgeLayer, type PaintedEdge } from './edge-paint'
 import type { CardLayout, MeasureText } from './measure'
 import { CARD_PADDING, CARD_TITLE_SCALE, cardChrome, fontString } from './measure'
 import { calloutAccent, type GraphPalette } from './palette'
@@ -64,61 +66,12 @@ import {
 } from './text-layout'
 
 /**
- * 我们用到的那一小撮 2D 上下文。
- *
- * 为什么是结构类型而不是 `CanvasRenderingContext2D`：测试要喂一个"记录每次调用与属性赋值"的
- * 假上下文，而 node 里没有画布（装 jsdom + node-canvas 只为了这点断言不成比例）。
- * 结构类型让真上下文与假上下文**同一份签名**都过：真实 `CanvasRenderingContext2D` 可以直接传进来
- * （它的 `fillStyle` 是 `string | CanvasGradient | CanvasPattern`，比这里的 `string` 宽，赋值方向对得上）。
- *
- * `setTransform` / `arc` / `strokeRect` 这几个成员本层基本不用（或一次都不用），
- * 留着是因为"我需要什么就声明什么"比"抄一份完整接口"更安全：多声明一个不用的成员没有代价，
- * 少声明一个就会让真调用方在这里编译不过。
+ * 上下文接口、视口变换与那条唯一的坐标换算都搬到了 ./context：
+ * 连线画笔（./edge-paint）也要用同一份，留在本文件里就成了循环依赖。
+ * 这里继续 re-export，既有的导入方（组件与测试）不必改。
  */
-export interface PaintContext {
-  font: string
-  /**
-   * 这两个属性的类型**故意**写成联合类型（而不是 `string`）：真实的
-   * `CanvasRenderingContext2D.fillStyle` 就是 `string | CanvasGradient | CanvasPattern`。
-   * 写成 `string` 时，`getContext('2d')` 的返回值不能直接传进来（缺的那一支让它不满足本接口），
-   * 调用方就只能加一个 `as` 或包一层转发 —— 那是把类型系统当障碍物绕，而不是用它描述事实。
-   * 画笔自己只会赋字符串，这里宽一点没有任何损失。
-   */
-  fillStyle: string | CanvasGradient | CanvasPattern
-  strokeStyle: string | CanvasGradient | CanvasPattern
-  lineWidth: number
-  globalAlpha: number
-  textAlign: string
-  textBaseline: string
-  lineJoin: string
-  save(): void
-  restore(): void
-  setTransform(a: number, b: number, c: number, d: number, e: number, f: number): void
-  beginPath(): void
-  closePath(): void
-  rect(x: number, y: number, width: number, height: number): void
-  clip(): void
-  moveTo(x: number, y: number): void
-  lineTo(x: number, y: number): void
-  arc(x: number, y: number, radius: number, startAngle: number, endAngle: number): void
-  fill(): void
-  stroke(): void
-  fillRect(x: number, y: number, width: number, height: number): void
-  strokeRect(x: number, y: number, width: number, height: number): void
-  fillText(text: string, x: number, y: number): void
-  measureText(text: string): { width: number }
-  setLineDash(segments: number[]): void
-}
-
-/** 视口与缩放：`screen = world × scale + offset`；`width`/`height` 是画布尺寸（CSS 像素）。 */
-export interface ViewTransform {
-  scale: number
-  offsetX: number
-  offsetY: number
-  width: number
-  height: number
-}
-
+export type { PaintContext, ViewTransform } from './context'
+export { screenPoint } from './context'
 export interface PaintNode {
   relPath: string
   title: string
@@ -140,18 +93,21 @@ export interface PaintNode {
   compactLines?: readonly string[]
 }
 
-/** 一条边：两个**世界坐标**端点。 */
-export interface PaintEdge {
-  from: Point
-  to: Point
-  /** 虚线（`layout.ts` 的 `EdgeStyle.muted`）：跨文件夹/弱关联的边弱化显示。 */
-  muted: boolean
-}
-
 export interface PaintInput {
   transform: ViewTransform
   nodes: readonly PaintNode[]
-  edges: readonly PaintEdge[]
+  /**
+   * 连线（ADR-0036）：形状、色相与"哪条提亮"都由调用方算好（`GraphCanvas` 的 `edgeVisuals`），
+   * 画笔只负责按 `paintEdgeLayer` 的规则画出来。缺省 = 没有连线可画。
+   *
+   * 为什么把连线的输入从"两个点的 `PaintEdge`"换成几何层的 `GraphEdgeVisual`：
+   * 连线在两段（卡内引线 + 卡外曲线）、三种形状（直线 / 张力曲线 / 环向弧）、
+   * 四五种状态（色相 × 强调 × 淡化 × 虚线）上都有语义，那些语义**已经**在几何层实现过一遍
+   * （`link-edge.ts` / `edge-routing.ts`，各自有成套测试）。画笔再发明一套简化版就等于
+   * 把"线长什么样"变成两份可能分家的判据 —— 这正是这次搬迁要消掉的东西
+   * （旧的简化版只有"两点一线的灰线"，实际上从来没被任何视图用过：调用方一直给空数组）。
+   */
+  edgeVisuals?: readonly GraphEdgeVisual[]
   palette: GraphPalette
   measure: MeasureText
   mode: 'focus' | 'vault'
@@ -174,8 +130,13 @@ export interface PaintInput {
 export interface PaintStats {
   /** 真正画出来的卡片数。 */
   cards: number
-  /** 真正画出来的边数。 */
-  edges: number
+  /**
+   * 这一帧画出来的**每一条线**（卡外那段与卡内引线各一条记录，见 `PaintedEdge`）。
+   *
+   * 为什么不是"画了几条"一个数字：连线在 canvas 上没有 DOM 可查，
+   * 悬停命中（`edgeAt`）与自动化断言（提亮了哪几条、悬空边的目标名画了没有）都要那份记录。
+   */
+  edges: readonly PaintedEdge[]
   /** 因为不在视口内（或不在 `visible` 里）而跳过的卡片数。 */
   culled: number
 }
@@ -198,9 +159,6 @@ const INLINE_CODE_PAD = 2
 const ELLIPSIS = '…'
 /** 省略号左边的底色补丁多盖这么宽，免得行尾最后一个字的边缘从省略号后面露出来。 */
 const ELLIPSIS_PAD = 2
-/** 普通边的不透明度（`graph.css` 的边本来就该"退到背景里"，卡片才是主体）。 */
-const EDGE_ALPHA = 0.45
-const EDGE_DASH: readonly [number, number] = [5, 4]
 /** 下划线：实线给普通链接、虚线给 `[[wikilink]]`（与阅读视图的 `border-bottom: dashed` 一致）。 */
 const LINK_DASH: readonly [number, number] = [2, 2]
 /** 项目符号右缘与文字之间留的缝（在排版层留出来的 `markerWidth` 里）。 */
@@ -256,7 +214,18 @@ export function paintGraph(context: PaintContext, input: PaintInput): PaintStats
     accentOf: (type) => calloutAccent(tokenReader(input), type),
   }
 
-  const edges = drawEdges(context, input, env)
+  // 顺序是硬契约（见下），并且不受输入顺序影响：
+  // 1. 先卡外那段连线（它本来就该被沿途的卡片盖住 —— 卡片是不透明底）；
+  // 2. 再卡片（按 `nodes` 数组顺序，最后一个在最上面）；
+  // 3. 最后卡内那段引线（例外中的例外：它整段在卡片矩形里，画在卡片**之前**会被整段盖掉，
+  //    用户看到的就是"线从卡片边缘凭空开始"—— 这是 ADR-0023 用一整个 DOM 图层换来的教训，
+  //    现在只是一次调用顺序的事）。
+  const edgeVisuals = input.edgeVisuals ?? []
+  const spanEdges = paintEdgeLayer(
+    context,
+    { visuals: edgeVisuals, transform: input.transform, scale, palette: input.palette },
+    'span',
+  )
 
   let cards = 0
   let culled = 0
@@ -276,7 +245,13 @@ export function paintGraph(context: PaintContext, input: PaintInput): PaintStats
     cards += 1
   }
 
-  return { cards, edges, culled }
+  const leadEdges = paintEdgeLayer(
+    context,
+    { visuals: edgeVisuals, transform: input.transform, scale, palette: input.palette },
+    'lead',
+  )
+
+  return { cards, edges: [...spanEdges, ...leadEdges], culled }
 }
 
 // ---------------------------------------------------------------------------
@@ -352,10 +327,6 @@ function tokenReader(input: PaintInput): (name: string) => string | null {
 // 坐标换算
 // ---------------------------------------------------------------------------
 
-function screenPoint(point: Point, transform: ViewTransform, scale: number): Point {
-  return { x: point.x * scale + transform.offsetX, y: point.y * scale + transform.offsetY }
-}
-
 function screenRect(rect: Rect, transform: ViewTransform, scale: number): Rect {
   return {
     x: rect.x * scale + transform.offsetX,
@@ -390,62 +361,6 @@ function scaleFont(font: FontSpec, scale: number): FontSpec {
 // ---------------------------------------------------------------------------
 // 边
 // ---------------------------------------------------------------------------
-
-/**
- * 画所有边，返回画了几条。
- *
- * 这里**不做视口裁剪**：`edges` 由调用方给出（它已经按子图/深度筛过一轮），
- * 而边是两个点、没有"卡片矩形"可判；真要按视口裁线段属于另一层（几何裁剪），
- * 在这一层顺手做一个半吊子的版本只会让它看起来"已经裁过了"。
- *
- * 活跃判定只能用**几何**："两端任一 hasFocus，或与 hovered/selected 相连"要成立，
- * 需要知道"这条边连着谁"，而 `PaintEdge` 只有两个点（没有 relPath）。
- * 判据因此是"端点落在哪张卡片的矩形里"—— 端点由调用方放在卡片上（中心或边框锚点），
- * 这与 `layout-ego.ts` 的 `cardAt` 是同一套命中口径（从后往前找，与绘制顺序一致）。
- */
-function drawEdges(context: PaintContext, input: PaintInput, env: PaintEnv): number {
-  let drawn = 0
-  for (const edge of input.edges) {
-    const from = screenPoint(edge.from, env.transform, env.scale)
-    const to = screenPoint(edge.to, env.transform, env.scale)
-    const active =
-      env.focused.has(pathAt(input.nodes, edge.from)) || env.focused.has(pathAt(input.nodes, edge.to))
-
-    context.globalAlpha = active ? 1 : EDGE_ALPHA
-    context.strokeStyle = active ? env.palette.edgeActive : env.palette.edge
-    // 线宽也跟着缩放（与卡片、文字同一个整体缩放）；不缩的话缩小时边会比卡片还粗
-    context.lineWidth = (active ? 2 : 1.6) * env.scale
-    context.lineJoin = 'round'
-    context.setLineDash(edge.muted ? [...EDGE_DASH] : [])
-    context.beginPath()
-    context.moveTo(from.x, from.y)
-    context.lineTo(to.x, to.y)
-    context.stroke()
-    drawn += 1
-  }
-  // 收尾复位：后面的卡片会自己设颜色与虚线，但 `globalAlpha` 若留在 0.45，整张卡会变半透明
-  context.globalAlpha = 1
-  context.setLineDash([])
-  return drawn
-}
-
-/** 世界坐标点落在哪张卡片上（后画的在上，与 `cardAt` 一致）；没有命中返回空串。 */
-function pathAt(nodes: readonly PaintNode[], point: Point): string {
-  for (let index = nodes.length - 1; index >= 0; index -= 1) {
-    const node = nodes[index]
-    if (node === undefined) continue
-    const { rect } = node
-    if (
-      point.x >= rect.x &&
-      point.x <= rect.x + rect.width &&
-      point.y >= rect.y &&
-      point.y <= rect.y + rect.height
-    ) {
-      return node.relPath
-    }
-  }
-  return ''
-}
 
 // ---------------------------------------------------------------------------
 // 卡片

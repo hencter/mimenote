@@ -56,6 +56,7 @@ class RecordingContext implements PaintContext {
   textAlign = 'left'
   textBaseline = 'alphabetic'
   lineJoin = 'miter'
+  lineDashOffset = 0
   readonly texts: string[] = []
   save(): void {}
   restore(): void {}
@@ -66,6 +67,7 @@ class RecordingContext implements PaintContext {
   clip(): void {}
   moveTo(): void {}
   lineTo(): void {}
+  bezierCurveTo(): void {}
   arc(): void {}
   fill(): void {}
   stroke(): void {}
@@ -167,8 +169,8 @@ function paintFocusView(): {
     // 原点贴左上角时负坐标那几张会被裁剪掉（画笔的裁剪是对的，只是这条用例不该考它）
     transform: { scale: 1, offsetX: 3000, offsetY: 3000, width: 6000, height: 6000 },
     nodes,
-    // 连线归 SVG 层（见 GraphCanvas 的说明），这里只关心卡片正文
-    edges: [],
+    // 连线由调用方算好后交给画笔（ADR-0036）；这条用例只关心卡片正文，因此没有连线
+    edgeVisuals: [],
     palette,
     measure,
     mode: 'focus',

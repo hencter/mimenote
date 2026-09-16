@@ -56,6 +56,14 @@ export interface GraphPalette {
   quoteBorder: string
   edge: string
   edgeActive: string
+  /** 出链的色相（`--mn-edge-out`，缺省落到 `--mn-warning`）。 */
+  edgeOut: string
+  /** 入链的色相（`--mn-edge-in`，缺省落到 `--mn-link`）。 */
+  edgeIn: string
+  /** 警示色：悬空链接的虚影圆环用它（`graph.css` 的 `.mn-graph-phantom`）。 */
+  warning: string
+  /** 界面字体族：悬空边的目标名要按 `--mn-font-ui` 画（`graph.css` 的 `.mn-graph-phantom-label`）。 */
+  uiFont: string
   imageBox: string
 }
 
@@ -73,7 +81,7 @@ export interface GraphPalette {
  * `imageBox` 取 `--mn-bg-elevated`：与 `.mn-image-placeholder { background: var(--mn-bg-elevated) }` 一致
  * （占位框的颜色本来就是"和卡片底一样、靠虚线边框看出来"）。
  */
-const TOKENS: Readonly<Record<keyof GraphPalette, string>> = {
+const TOKENS: Readonly<Record<Exclude<keyof GraphPalette, 'edgeOut' | 'edgeIn'>, string>> = {
   background: '--mn-bg',
   cardBg: '--mn-bg-elevated',
   cardBorder: '--mn-border',
@@ -87,7 +95,22 @@ const TOKENS: Readonly<Record<keyof GraphPalette, string>> = {
   quoteBorder: '--mn-quote-border',
   edge: '--mn-fg-subtle',
   edgeActive: '--mn-accent',
+  warning: '--mn-warning',
+  uiFont: '--mn-font-ui',
   imageBox: '--mn-bg-elevated',
+}
+
+/**
+ * 语义色相那两个令牌是**可选**的：`graph.css` 写的是
+ * `stroke: var(--mn-edge-out, var(--mn-warning))` —— 主题不定义也能用，落到既有的
+ * 暖/冷两色上。`REQUIRED_TOKENS` 因此**不能**加它们（加了会让所有用户自定义主题在启动时报缺令牌）。
+ * 这里的映射顺序就是那条兜底链：可选令牌 → 兜底令牌 → 内置深色主题的值。
+ */
+const HUE_TOKENS: Readonly<
+  Record<'edgeOut' | 'edgeIn', readonly [string, Exclude<keyof GraphPalette, 'edgeOut' | 'edgeIn'>]>
+> = {
+  edgeOut: ['--mn-edge-out', 'warning'],
+  edgeIn: ['--mn-edge-in', 'link'],
 }
 
 /**
@@ -111,6 +134,12 @@ const FALLBACK: GraphPalette = {
   quoteBorder: '#3a4358',
   edge: '#6b7480',
   edgeActive: '#7aa2f7',
+  // 可选色相：深色主题没定义 `--mn-edge-out` / `--mn-edge-in`，兜底到暖色与冷色
+  // —— 与 `graph.css` 的 `var(--mn-edge-out, var(--mn-warning))` 是同一个结论
+  edgeOut: '#e0af68',
+  edgeIn: '#7dcfff',
+  warning: '#e0af68',
+  uiFont: "'Segoe UI', 'Microsoft YaHei', system-ui, -apple-system, sans-serif",
   imageBox: '#1b1e24',
 }
 
@@ -143,9 +172,17 @@ const FALLBACK_CALLOUT_ACCENT = FALLBACK.quoteBorder
  * 接受带空白的颜色串；替调用方揉一遍字符串只会让"我到底读到了什么"变得不可见。
  */
 export function paletteFrom(token: (name: string) => string | null): GraphPalette {
-  const read = (name: keyof GraphPalette): string => {
+  const read = (name: Exclude<keyof GraphPalette, 'edgeOut' | 'edgeIn'>): string => {
     const value = usable(token(TOKENS[name]))
     return value === null ? FALLBACK[name] : value
+  }
+  /** 可选令牌：先问它自己，再问它的兜底令牌，最后才是内置主题的值（`HUE_TOKENS` 那条链）。 */
+  const readHue = (name: 'edgeOut' | 'edgeIn'): string => {
+    const [own, fallbackName] = HUE_TOKENS[name]
+    const value = usable(token(own))
+    if (value !== null) return value
+    const backing = usable(token(TOKENS[fallbackName]))
+    return backing === null ? FALLBACK[name] : backing
   }
   return {
     background: read('background'),
@@ -161,6 +198,10 @@ export function paletteFrom(token: (name: string) => string | null): GraphPalett
     quoteBorder: read('quoteBorder'),
     edge: read('edge'),
     edgeActive: read('edgeActive'),
+    edgeOut: readHue('edgeOut'),
+    edgeIn: readHue('edgeIn'),
+    warning: read('warning'),
+    uiFont: read('uiFont'),
     imageBox: read('imageBox'),
   }
 }

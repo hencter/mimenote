@@ -33,7 +33,6 @@ import { calloutAccent, paletteFrom, type GraphPalette } from '@/features/graph/
 import {
   paintGraph,
   type PaintContext,
-  type PaintEdge,
   type PaintInput,
   type PaintNode,
   type PaintStats,
@@ -45,7 +44,7 @@ import {
   totalHeight,
   type LaidOutBlock,
 } from '@/features/graph/canvas/text-layout'
-import type { Rect } from '@/features/graph/layout'
+import type { EdgeStyle, GraphEdgeVisual, Point, Rect } from '@/features/graph/layout'
 
 // ---------------------------------------------------------------------------
 // 记录型假上下文
@@ -63,6 +62,15 @@ type Op =
   | { readonly op: 'rect'; readonly x: number; readonly y: number; readonly width: number; readonly height: number }
   | { readonly op: 'moveTo'; readonly x: number; readonly y: number }
   | { readonly op: 'lineTo'; readonly x: number; readonly y: number }
+  | {
+      readonly op: 'bezierCurveTo'
+      readonly c1x: number
+      readonly c1y: number
+      readonly c2x: number
+      readonly c2y: number
+      readonly x: number
+      readonly y: number
+    }
   | {
       readonly op: 'arc'
       readonly x: number
@@ -99,6 +107,7 @@ const INITIAL_STATE: PropState = {
   textBaseline: 'alphabetic',
   lineJoin: 'miter',
   lineDash: '',
+  lineDashOffset: 0,
 }
 
 /**
@@ -168,6 +177,14 @@ class RecordingContext implements PaintContext {
     this.recordProp('lineJoin', value)
   }
 
+  /** 虚线的相位（与 `setLineDash` 配套）：引线靠它把最后一段实线收在卡片边界上。 */
+  get lineDashOffset(): number {
+    return this.numberProp('lineDashOffset')
+  }
+  set lineDashOffset(value: number) {
+    this.recordProp('lineDashOffset', value)
+  }
+
   save(): void {
     this.ops.push({ op: 'save' })
   }
@@ -195,6 +212,9 @@ class RecordingContext implements PaintContext {
   }
   lineTo(x: number, y: number): void {
     this.ops.push({ op: 'lineTo', x, y })
+  }
+  bezierCurveTo(c1x: number, c1y: number, c2x: number, c2y: number, x: number, y: number): void {
+    this.ops.push({ op: 'bezierCurveTo', c1x, c1y, c2x, c2y, x, y })
   }
   arc(x: number, y: number, radius: number, startAngle: number, endAngle: number): void {
     this.ops.push({ op: 'arc', x, y, radius, startAngle, endAngle })
@@ -382,10 +402,59 @@ const palette: GraphPalette = {
   quoteBorder: '#0b0b0b',
   edge: '#0c0c0c',
   edgeActive: '#0d0d0d',
+  edgeOut: '#0f0f0f',
+  edgeIn: '#101010',
+  warning: '#111111',
+  uiFont: '哨兵界面字体',
   imageBox: '#0e0e0e',
 }
 
 const VIEW: ViewTransform = { scale: 1, offsetX: 0, offsetY: 0, width: 800, height: 600 }
+
+/**
+ * 一条连线（`GraphEdgeVisual` 的最小完整形态）。
+ *
+ * 为什么在这里**自己造**这一份而不是调 `buildEdgeVisuals`：本文件要钉的是"画笔按什么顺序、
+ * 用什么状态画"，与"这条线是怎么算出来的"无关；后者由 `tests/graph-link-edge.test.ts` 与
+ * `tests/edge-routing.test.ts` 各自把守（判据不重复，也不互相依赖）。
+ *
+ * 路径串用**直线**（`M … L …`）写死：手算出来的端点坐标能在断言里逐字出现，
+ * 而曲线要断言就得先算贝塞尔 —— 那是 `edge-path.ts` 那一层的事。
+ */
+function edgeVisual(options: {
+  from: Point
+  to: Point
+  key?: string
+  leadFrom?: Point
+  phantom?: boolean
+  title?: string
+  style?: Partial<EdgeStyle>
+}): GraphEdgeVisual {
+  const key = options.key ?? `${options.from.x},${options.from.y}→${options.to.x},${options.to.y}`
+  const phantom = options.phantom === true
+  const visual: GraphEdgeVisual = {
+    key,
+    edge: {
+      fromRelPath: 'a.md',
+      toRelPath: phantom ? null : 'b.md',
+      toRawTarget: phantom ? '还不存在的丙' : 'b',
+      kind: 'wiki',
+      count: 1,
+    },
+    style: { dashed: false, dim: false, highlight: false, ...options.style },
+    d: `M ${options.from.x} ${options.from.y} L ${options.to.x} ${options.to.y}`,
+    start: options.from,
+    end: options.to,
+    phantom,
+    title: options.title ?? '甲 → 乙',
+  }
+  if (options.leadFrom === undefined) return visual
+  return {
+    ...visual,
+    leadPath: `M ${options.leadFrom.x} ${options.leadFrom.y} L ${options.from.x} ${options.from.y}`,
+    leadFrom: options.leadFrom,
+  }
+}
 
 const CARD_WIDTH = DEFAULT_METRICS.width + CARD_PADDING * 2
 
@@ -402,7 +471,7 @@ function paint(overrides: Partial<PaintInput> = {}): {
   const stats = paintGraph(context, {
     transform: VIEW,
     nodes: [],
-    edges: [],
+    edgeVisuals: [],
     palette,
     measure,
     mode: 'focus',
@@ -493,6 +562,12 @@ describe('paletteFrom / calloutAccent', () => {
       quoteBorder: '#3a4358',
       edge: '#6b7480',
       edgeActive: '#7aa2f7',
+      // 两个可选色相：深色主题里没有 `--mn-edge-out` / `--mn-edge-in`，
+      // 兜底与 `graph.css` 的 `var(--mn-edge-out, var(--mn-warning))` 同值（暖色 / 冷色）
+      edgeOut: '#e0af68',
+      edgeIn: '#7dcfff',
+      warning: '#e0af68',
+      uiFont: "'Segoe UI', 'Microsoft YaHei', system-ui, -apple-system, sans-serif",
       imageBox: '#1b1e24',
     })
   })
@@ -509,12 +584,24 @@ describe('paletteFrom / calloutAccent', () => {
     expect(result.background).toBe('  #001122  ')
     expect(result.text).toBe('#d7dce5')
     expect(result.cardBorder).toBe('#272b33')
-    // 14 个字段各问一次：没有哪个字段偷懒直接用常量（那样换主题时它会永远停在兜底上）
-    expect(asked).toHaveLength(14)
+    /*
+      每个字段都要**真的问一次**令牌：没有哪个字段偷懒直接用常量
+      （那样换主题时它会永远停在兜底上）。
+      20 次调用的构成：16 个字段各问一次（含 `--mn-warning` 与 `--mn-font-ui`）
+      + 两个可选色相（`--mn-edge-out` / `--mn-edge-in`）各一次
+      + 它们的兜底盘（`--mn-warning` / `--mn-link`）各一次 —— 可选令牌读不到时才问兜底盘，
+      这正是 `graph.css` 那条 `var(--a, var(--b))` 的求值顺序（ADR-0036）。
+    */
+    expect(asked).toHaveLength(20)
     expect(asked.every((name) => name.startsWith('--mn-'))).toBe(true)
     expect(asked).toContain('--mn-quote-border')
     expect(asked).toContain('--mn-fg-subtle')
     expect(asked).toContain('--mn-code-bg')
+    // 可选色相：先问自己、读不到再问兜底盘
+    expect(asked).toContain('--mn-edge-out')
+    expect(asked).toContain('--mn-warning')
+    expect(asked).toContain('--mn-edge-in')
+    expect(asked).toContain('--mn-link')
   })
 
   it('calloutAccent：问的是 CALLOUT_TYPES 里那个类型的令牌名，未知类型回落 note', () => {
@@ -724,23 +811,48 @@ describe('createCardLayoutCache', () => {
 // ---------------------------------------------------------------------------
 
 describe('paintGraph：整体契约', () => {
-  it('先画边后画卡片；卡片按数组顺序、每张的标题都被画出来', () => {
+  it('先画卡外那段连线、再画卡片；卡片按数组顺序、每张的标题都被画出来', () => {
     const first = noteCard({ relPath: 'a.md', title: '甲', x: 100, y: 100 })
     const second = noteCard({ relPath: 'b.md', title: '乙', x: 500, y: 100 })
-    const edges: PaintEdge[] = [
-      { from: { x: 240, y: 150 }, to: { x: 640, y: 150 }, muted: false },
-      { from: { x: 240, y: 170 }, to: { x: 640, y: 170 }, muted: true },
+    const edges: GraphEdgeVisual[] = [
+      edgeVisual({ from: { x: 240, y: 150 }, to: { x: 640, y: 150 }, key: 'a→b' }),
+      edgeVisual({ from: { x: 240, y: 170 }, to: { x: 640, y: 170 }, key: 'a→c', style: { dashed: true } }),
     ]
 
-    const { context, stats } = paint({ nodes: [first, second], edges })
+    const { context, stats } = paint({ nodes: [first, second], edgeVisuals: edges })
 
-    expect(stats).toEqual({ cards: 2, edges: 2, culled: 0 })
-    // 边（stroke）全部发生在第一张卡片的底色（fill）之前 —— 卡片要盖住穿过它的线段
-    const firstStroke = context.ops.findIndex((op) => op.op === 'stroke')
-    expect(firstStroke).toBeGreaterThanOrEqual(0)
-    expect(firstFillIndexOf(context, palette.cardBg)).toBeGreaterThan(firstStroke)
+    expect(stats.cards).toBe(2)
+    /*
+      连线（stroke）全部发生在第一张卡片的底色（fill）之前 —— 卡片要盖住穿过它的线段。
+      卡片自己也会描边（边框、分隔线），所以这里只看**最前面**那两次：画笔先画卡外那段连线。
+    */
+    const strokes = context.ops.flatMap((op, position) => (op.op === 'stroke' ? [position] : []))
+    expect(strokes.length).toBeGreaterThanOrEqual(2)
+    expect(firstFillIndexOf(context, palette.cardBg)).toBeGreaterThan(strokes[1]!)
     // 标题顺序 = 数组顺序（后画的在上）
     expect(textsOf(context).filter((text) => text === '甲' || text === '乙')).toEqual(['甲', '乙'])
+    expectBalancedSaveRestore(context)
+  })
+
+  it('卡内那段引线画在**卡片之后**（否则会被卡片的不透明底整段盖掉）', () => {
+    const node = noteCard({ relPath: 'a.md', title: '甲', x: 100, y: 100 })
+    const visual = edgeVisual({
+      from: { x: 340, y: 150 },
+      to: { x: 640, y: 150 },
+      key: 'a→b',
+      leadFrom: { x: 380, y: 150 },
+    })
+
+    const { context, stats } = paint({ nodes: [node], edgeVisuals: [visual] })
+
+    // 两条记录：卡外那段（span）与卡内引线（lead），key 相同 —— 它们本来就是同一条边
+    expect(stats.edges.map((edge) => edge.layer)).toEqual(['span', 'lead'])
+    expect(stats.edges.map((edge) => edge.key)).toEqual(['a→b', 'a→b'])
+    // 引线的 stroke 发生在卡片底色之后：顺序就是"谁盖住谁"的唯一判据
+    const leadStroke = context.ops.findIndex(
+      (op, position) => op.op === 'stroke' && context.stateAt(position).strokeStyle === palette.muted,
+    )
+    expect(leadStroke).toBeGreaterThan(firstFillIndexOf(context, palette.cardBg))
     expectBalancedSaveRestore(context)
   })
 
@@ -783,14 +895,17 @@ describe('paintGraph：整体契约', () => {
       ],
     })
 
-    const { context } = paint({ nodes: [node], edges: [{ from: { x: 240, y: 150 }, to: { x: 400, y: 400 }, muted: false }] })
+    const { context } = paint({
+      nodes: [node],
+      edgeVisuals: [edgeVisual({ from: { x: 240, y: 150 }, to: { x: 400, y: 400 }, key: 'a→b' })],
+    })
 
     expect(countOps(context, 'setTransform')).toBe(0)
     expectBalancedSaveRestore(context)
     // 卡片自己一次 + 代码超宽行的嵌套裁剪 + 图片标签的裁剪 —— 至少三处 save/restore
-    expect(countOps(context, 'save')).toBeGreaterThanOrEqual(3)
+    expect(countOps(context, 'save')).toBeGreaterThanOrEqual(4)
     expect(countOps(context, 'clip')).toBeGreaterThanOrEqual(3)
-    // 一帧结束时透明度必须复位（留在 0.45 会让下一帧整张卡半透明）
+    // 一帧结束时透明度必须复位（留在连线的 0.5 会让下一帧整张卡半透明）
     const last = context.ops.length - 1
     expect(context.stateAt(last).globalAlpha).toBe(1)
   })
@@ -800,10 +915,12 @@ describe('paintGraph：整体契约', () => {
       noteCard({ relPath: 'a.md', title: '甲', x: 100, y: 100 }),
       noteCard({ relPath: 'b.md', title: '乙', x: 500, y: 100 }),
     ]
-    const edges: PaintEdge[] = [{ from: { x: 240, y: 150 }, to: { x: 640, y: 150 }, muted: true }]
+    const edgeVisuals: GraphEdgeVisual[] = [
+      edgeVisual({ from: { x: 240, y: 150 }, to: { x: 640, y: 150 }, style: { dashed: true, hue: 'out' } }),
+    ]
 
-    const first = paint({ nodes, edges, hovered: 'a.md' })
-    const second = paint({ nodes, edges, hovered: 'a.md' })
+    const first = paint({ nodes, edgeVisuals, hovered: 'a.md' })
+    const second = paint({ nodes, edgeVisuals, hovered: 'a.md' })
 
     expect(second.context.ops).toEqual(first.context.ops)
   })
@@ -1036,7 +1153,10 @@ describe('paintGraph：正文块', () => {
 
     const { context, stats } = paint({ nodes, mode: 'vault' })
 
-    expect(stats).toEqual({ cards: 2, edges: 0, culled: 0 })
+    // 没有连线时 `edges` 是空数组（记录型）：全库模式不额外画任何线
+    expect(stats.cards).toBe(2)
+    expect(stats.edges).toEqual([])
+    expect(stats.culled).toBe(0)
     expect(textsOf(context)).toEqual(
       expect.arrayContaining(['甲', '乙', '第一行', '第二行', '只有一行']),
     )
@@ -1052,36 +1172,35 @@ describe('paintGraph：正文块', () => {
 // ---------------------------------------------------------------------------
 
 describe('paintGraph：边与焦点', () => {
-  /** 取第 `index` 次 `stroke` 时的状态（边先画，所以前几次是边）。 */
-  function strokeState(context: RecordingContext, index: number): PropState {
-    const strokes = context.ops.flatMap((op, position) => (op.op === 'stroke' ? [position] : []))
-    const position = strokes[index]
-    if (position === undefined) throw new Error(`没有第 ${index} 次 stroke`)
-    return context.stateAt(position)
-  }
+  it('连线的样式与几何**不进**这一层：颜色/粗细/箭头由 edge-paint 决定（判据不重复）', () => {
+    // 这条用例存在的理由：画笔（本文件）与连线画笔（`edge-paint.ts`）是两个层次，
+    // 它们对"线的观感"必须**只有一份**判据。这里钉的是那条分界线 —— `paintGraph` 只负责
+    // 把 `edgeVisuals` 转交给 `paintEdgeLayer`，自己不掺任何颜色/线宽决策。
+    const visual = edgeVisual({
+      from: { x: 240, y: 150 },
+      to: { x: 640, y: 150 },
+      style: { highlight: true, hue: 'in', width: 1.25, opacity: 0.55 },
+    })
 
-  it('普通边 alpha 0.45；与 hovered 相连的边用 edgeActive、alpha 1；muted 的边用虚线', () => {
-    const a = noteCard({ relPath: 'a.md', title: '甲', rect: { x: 0, y: 0, width: 280, height: 80 } })
-    const b = noteCard({ relPath: 'b.md', title: '乙', rect: { x: 300, y: 0, width: 280, height: 80 } })
-    const c = noteCard({ relPath: 'c.md', title: '丙', rect: { x: 600, y: 300, width: 280, height: 80 } })
-    const edges: PaintEdge[] = [
-      { from: { x: 440, y: 40 }, to: { x: 740, y: 340 }, muted: false },
-      { from: { x: 140, y: 40 }, to: { x: 440, y: 40 }, muted: false },
-      { from: { x: 440, y: 60 }, to: { x: 740, y: 360 }, muted: true },
-    ]
+    const { context, stats } = paint({ nodes: [], edgeVisuals: [visual] })
 
-    const { context, stats } = paint({ nodes: [a, b, c], edges, hovered: 'a.md' })
-
-    expect(stats.edges).toBe(3)
-    // 第 1 条：两端都不是活跃卡片 ⇒ 弱化显示、实线
-    expect(strokeState(context, 0).globalAlpha).toBe(0.45)
-    expect(strokeState(context, 0).strokeStyle).toBe(palette.edge)
-    expect(strokeState(context, 0).lineDash).toBe('')
-    // 第 2 条：端点落在 hovered 的卡片里 ⇒ 高亮、alpha 1
-    expect(strokeState(context, 1).strokeStyle).toBe(palette.edgeActive)
-    expect(strokeState(context, 1).globalAlpha).toBe(1)
-    // 第 3 条：muted ⇒ 虚线
-    expect(String(strokeState(context, 2).lineDash)).not.toBe('')
+    expect(stats.edges).toHaveLength(1)
+    // 样式由记录交回给调用方（悬停提示与诊断属性读它），而不是留在这层做判断
+    expect(stats.edges[0]).toMatchObject({
+      key: visual.key,
+      layer: 'span',
+      hue: 'in',
+      highlight: true,
+      dashed: false,
+      phantom: false,
+      title: '甲 → 乙',
+    })
+    // 线宽的判据是"几何层给的 width × 缩放"，这一层不做二次加工：scale = 1 ⇒ 逐字等于 1.25
+    const states = context.ops.flatMap((op, position) =>
+      op.op === 'stroke' ? [context.stateAt(position)] : [],
+    )
+    expect(states.map((state) => state.lineWidth)).toContain(1.25)
+    expect(states.map((state) => state.globalAlpha)).toContain(0.55)
   })
 
   it('焦点卡片（hasFocus / selected）用 cardBorderFocus 且线宽 2，其余用 cardBorder / 1', () => {

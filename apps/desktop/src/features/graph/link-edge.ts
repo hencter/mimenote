@@ -835,10 +835,20 @@ const LEAD_GAP = 3
  * 相位只由长度决定（不含时间/随机量）：同一条引线每次算出来逐位相同，重算不会让虚线跳动。
  * 长度不是有限正数（拿不到起点、退化成零长度）时按 0 处理，不给 SVG 送一个 `NaN`。
  */
-export function leadDash(length: number): { dashArray: string; dashOffset: number } {
+/**
+ * 引线虚线的图案与相位。
+ *
+ * 返回的是**数字**（`segments` / `offset`）而不是 `stroke-dasharray` 那串文本：
+ * 连线搬进 canvas 之后（ADR-0036），唯一的使用方是 `ctx.setLineDash()` + `ctx.lineDashOffset`，
+ * 而这两个 API 要的正是数字数组与数字。相位语义与 SVG 的 `stroke-dashoffset` 完全一致
+ * （`p(s) = (s + offset) mod 周期`），上面那套推导原样成立。
+ *
+ * 单位是**世界单位**：调用方负责乘缩放（SVG 那一版是 viewBox 替我们做的这件事）。
+ */
+export function leadDash(length: number): { segments: readonly [number, number]; offset: number } {
   const period = LEAD_DASH + LEAD_GAP
   const safe = Number.isFinite(length) && length > 0 ? length : 0
-  // 结果恒在 [0, 周期) 内：负的 `stroke-dashoffset` 在不同渲染器里的解释更绕，不给自己找麻烦
-  const dashOffset = (LEAD_DASH - (safe % period) + period) % period
-  return { dashArray: `${LEAD_DASH} ${LEAD_GAP}`, dashOffset }
+  // 结果恒在 [0, 周期) 内：负的偏移量在不同渲染器里的解释更绕，不给自己找麻烦
+  const offset = (LEAD_DASH - (safe % period) + period) % period
+  return { segments: [LEAD_DASH, LEAD_GAP], offset }
 }
