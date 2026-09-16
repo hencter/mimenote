@@ -17,7 +17,7 @@ import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from '@
 import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { moveDirectory, moveEntry, openNote, renameDirectory, renameEntry } from '@/app/actions'
+import { moveDirectory, moveEntry, openNote, openNoteInNewTab, renameDirectory, renameEntry } from '@/app/actions'
 import { requestMove, requestRename } from '@/app/dom-events'
 import { MoveDialog } from '@/features/vault/MoveDialog'
 import { RenameDialog } from '@/features/vault/RenameDialog'
@@ -489,7 +489,7 @@ describe('目录搬迁：正在编辑的文档与标签页', () => {
     await openVault()
     render(<Harness />)
     await openNote('项目/设计.md')
-    await openNote('别的/引用.md')
+    await openNoteInNewTab('别的/引用.md')
     expect(tabPaths()).toEqual(['项目/设计.md', '别的/引用.md'])
 
     await renameDirectory('项目', '工程')

@@ -26,7 +26,7 @@ import { EditorView } from '@codemirror/view'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { openNote } from '@/app/actions'
+import { openNote, openNoteInNewTab } from '@/app/actions'
 import { registerBuiltinCommands } from '@/app/builtin-commands'
 import { commands } from '@/app/commands'
 import { useGlobalKeymap } from '@/app/keymap'
@@ -93,6 +93,18 @@ async function open(path: string): Promise<void> {
   })
 }
 
+/**
+ * 在**新标签**里打开一篇笔记（`Ctrl/⌘ + 点击` 与中键走的就是这条路）。
+ *
+ * 默认的打开行为是"顶掉当前那条标签"（用户约定），所以"需要多于一条标签"的用例
+ * 必须显式用它 —— 这也正是那些用例真正在测的东西（多标签机制本身并没有被删掉）。
+ */
+async function openNewTab(path: string): Promise<void> {
+  await act(async () => {
+    await openNoteInNewTab(path)
+  })
+}
+
 /** 当前所有**笔记**标签的路径（按显示顺序；模块标签不在此列）。 */
 function tabPaths(): string[] {
   return Array.from(document.querySelectorAll<HTMLElement>('[data-tab-path]')).map(
@@ -113,6 +125,29 @@ function closeButton(relPath: string): HTMLElement {
   return screen.getByRole('button', { name: `关闭 ${relPath}` })
 }
 
+/**
+ * 发起一次"打开"，在**弹出的确认框上给一个回答**，然后等它结束。
+ *
+ * 打开流程会 `await` 那个确认（冲突态：`app/actions.openNote` 里唯一会拦的分支），
+ * 所以不能先 `await` 打开再回答问题 —— 那会永远等下去。这里手动编排三步：
+ * 起手不 await → 等确认框出现 → 回答 → 等打开结束。
+ */
+async function openAnsweringConfirm(path: string, answer: boolean): Promise<void> {
+  let pending: Promise<boolean> = Promise.resolve(false)
+  act(() => {
+    pending = openNote(path)
+  })
+  await waitFor(() => {
+    expect(useConfirmStore.getState().request).not.toBeNull()
+  })
+  act(() => {
+    useConfirmStore.getState().respond(answer)
+  })
+  await act(async () => {
+    await pending
+  })
+}
+
 /** Mock 适配器里的"磁盘内容"（`dump()` 就是唯一的事实来源）。 */
 function onDisk(relPath: string): string | undefined {
   return adapter.dump().find((note) => note.relPath === relPath)?.text
@@ -131,7 +166,7 @@ afterEach(() => {
 })
 
 describe('打开与切换', () => {
-  it('打开笔记产生标签（落在主叶），再开一篇是两个标签且激活项跟着变', async () => {
+  it('打开笔记产生标签（落在主叶）；再开一篇是**顶掉**当前那条（默认）', async () => {
     render(<Harness />)
     await openVault()
 
@@ -148,20 +183,122 @@ describe('打开与切换', () => {
     // 标签上显示的是文件名（完整路径在 title 里），且不带 `.md`（ADR-0030）
     expect(tabNode('README.md').querySelector('.mn-tabs__label')?.textContent).toBe('README')
 
+    /*
+      用户约定（原话）：「默认的新文件替换中的叶标签，即已打开的直接被新的替换掉」。
+      于是"打开第二篇"不再往标签条上堆：中间那格始终是"你正在看的那一篇"。
+    */
     await open('项目/设计.md')
-    expect(tabPaths()).toEqual(['README.md', '项目/设计.md'])
-    expect(tabNode('README.md').getAttribute('aria-selected')).toBe('false')
+    expect(tabPaths()).toEqual(['项目/设计.md'])
     expect(tabNode('项目/设计.md').getAttribute('aria-selected')).toBe('true')
     // 标签上的可见文字不带 .md（ADR-0030）；**身份**仍然由 data-tab-path 承载（上面那两行）
     expect(tabNode('项目/设计.md').querySelector('.mn-tabs__label')?.textContent).toBe('设计')
     expect(tabNode('项目/设计.md').getAttribute('title')).toBe('项目/设计.md')
   })
 
+  it('`Ctrl/⌘ + 点击`（`openNoteInNewTab`）= 保留当前那条，追加成新标签', async () => {
+    render(<Harness />)
+    await openVault()
+
+    await open('README.md')
+    await openNewTab('项目/设计.md')
+
+    expect(tabPaths()).toEqual(['README.md', '项目/设计.md'])
+    expect(tabNode('README.md').getAttribute('aria-selected')).toBe('false')
+    expect(tabNode('项目/设计.md').getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('顶掉的是"那条标签"，新标签排在末尾（顺序与标签条上看到的一致）', async () => {
+    render(<Harness />)
+    await openVault()
+    await open('README.md')
+    await openNewTab('项目/设计.md')
+    await openNewTab('项目/路线图.md')
+    expect(tabPaths()).toEqual(['README.md', '项目/设计.md', '项目/路线图.md'])
+
+    // 切到中间那条（"正在看它"），再打开一篇新的 ⇒ 顶掉它，新的排在末尾
+    await act(async () => {
+      await useTabsStore.getState().activate('项目/设计.md')
+    })
+    await open('日记/2025-01-01.md')
+
+    /*
+      为什么是末尾而不是"接着被顶掉那条的位置"：标签条上的顺序由**布局**决定
+      （`attachItem` 把新标签挂在该格标签序列的末尾），而 `Ctrl+1..9` / `Ctrl+Tab` /
+      「关闭其他」都按 `tabs` 的顺序算 —— 两边若各说各话，"第 2 个标签"在键盘与鼠标下会是两个东西。
+    */
+    expect(tabPaths()).toEqual(['README.md', '项目/路线图.md', '日记/2025-01-01.md'])
+    // 被顶掉的那条真的从标签条上消失了（不是"藏起来"）
+    expect(document.querySelector('[data-tab-path="项目/设计.md"]')).toBeNull()
+  })
+
+  it('打开一篇**已经在标签里**的笔记 = 切换，不顶掉任何东西', async () => {
+    render(<Harness />)
+    await openVault()
+    await open('README.md')
+    await openNewTab('项目/设计.md')
+
+    await open('README.md')
+
+    expect(tabPaths()).toEqual(['README.md', '项目/设计.md'])
+    expect(useNoteStore.getState().doc?.relPath).toBe('README.md')
+  })
+
+  it('顶掉的那条正处在**冲突态**时要先问；拒绝 → 整体取消，确认 → 换过去', async () => {
+    render(<Harness />)
+    await openVault()
+    await open('README.md')
+
+    // 造一个冲突态：`note-store.open` 里**唯一**不落盘的分支（磁盘上的改动要由用户决定）
+    act(() => {
+      useNoteStore.setState({
+        conflict: { currentMtimeMs: 1, detectedAt: Date.now() },
+        dirty: true,
+      })
+    })
+
+    // 拒绝：标签与文档都不动（与「关闭标签」被拒绝时的结果一致）
+    await openAnsweringConfirm('项目/设计.md', false)
+    expect(tabPaths()).toEqual(['README.md'])
+    expect(useNoteStore.getState().doc?.relPath).toBe('README.md')
+
+    // 确认：放弃那次待决改动，换过去（标签也顶掉了）
+    await openAnsweringConfirm('项目/设计.md', true)
+    await waitFor(() => {
+      expect(tabPaths()).toEqual(['项目/设计.md'])
+    })
+    expect(useNoteStore.getState().doc?.relPath).toBe('项目/设计.md')
+  })
+
+  it('顶掉的那条有未保存修改（非冲突）时不弹确认：切换前会先落盘，什么都不丢', async () => {
+    render(<Harness />)
+    await openVault()
+    await open('README.md')
+    expect(useNoteStore.getState().doc?.relPath).toBe('README.md')
+
+    // 编辑器输入路径就是 setText（只写内存 + 调度防抖保存）
+    act(() => {
+      useNoteStore.getState().setText('改了一笔\n')
+    })
+    expect(useNoteStore.getState().dirty).toBe(true)
+    expect(onDisk('README.md')).not.toBe('改了一笔\n')
+
+    await open('项目/设计.md')
+
+    /*
+      没有弹确认：`note-store.open` 的语义是"切走前先落盘"，这次编辑在切换时被保存了下来
+      —— 在这里弹一个"会丢修改"的确认是假话（也会把确认框训练成噪音：边打字边点文件树都要弹）。
+      真正要拦的只有冲突态（上一条用例）。
+    */
+    expect(useConfirmStore.getState().request).toBeNull()
+    expect(onDisk('README.md')).toBe('改了一笔\n')
+    expect(tabPaths()).toEqual(['项目/设计.md'])
+  })
+
   it('点标签切回：note-store 的当前文档与文件树选中项都跟着走', async () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     fireEvent.click(tabNode('README.md'))
 
@@ -181,7 +318,7 @@ describe('打开与切换', () => {
 
     // 模拟"从别的入口打开"：直接调用高层动作（文件树、wikilink、快速切换都走它）
     await open('项目/路线图.md')
-    await open('日记/2025-01-01.md')
+    await openNewTab('日记/2025-01-01.md')
 
     expect(tabPaths()).toEqual(['项目/路线图.md', '日记/2025-01-01.md'])
     expect(tabNode('日记/2025-01-01.md').getAttribute('aria-selected')).toBe('true')
@@ -191,10 +328,10 @@ describe('打开与切换', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     // 把「设计」拖出主叶、再把「路线图」并进它那一格并停在上面
-    await open('项目/路线图.md')
+    await openNewTab('项目/路线图.md')
     act(() => {
       const ui = useUiStore.getState()
       let tree = moveItem(ui.layout, noteItem('项目/设计.md'), { leafId: 'main', edge: 'bottom' })
@@ -208,7 +345,7 @@ describe('打开与切换', () => {
     ).toBe(noteItem('项目/路线图.md'))
 
     // 打开「设计」：对账必须把它所在的格子翻回它（否则编辑器无处可显示）
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
     expect(
       leafOfItem(useUiStore.getState().layout, noteItem('项目/设计.md'))?.active,
     ).toBe(noteItem('项目/设计.md'))
@@ -222,7 +359,7 @@ describe('切换标签不丢未保存内容', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     // 编辑器输入路径就是 setText（只写内存 + 调度防抖保存）
     act(() => {
@@ -246,7 +383,7 @@ describe('切换标签不丢未保存内容', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     act(() => {
       useNoteStore.getState().setText('# 还没写完\n')
@@ -269,8 +406,8 @@ describe('关闭标签', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
-    await open('项目/路线图.md')
+    await openNewTab('项目/设计.md')
+    await openNewTab('项目/路线图.md')
 
     // 把中间的「设计」设为当前，再关掉它 → 应该切到右边的「路线图」
     fireEvent.click(tabNode('项目/设计.md'))
@@ -292,7 +429,7 @@ describe('关闭标签', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     // 当前是列表最后一项
     fireEvent.click(closeButton('项目/设计.md'))
@@ -308,7 +445,7 @@ describe('关闭标签', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     fireEvent.click(closeButton('README.md'))
     await waitFor(() => {
@@ -321,7 +458,7 @@ describe('关闭标签', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     fireEvent.click(closeButton('README.md'))
     fireEvent.click(closeButton('项目/设计.md'))
@@ -340,7 +477,7 @@ describe('关闭标签', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     act(() => {
       useNoteStore.getState().setText('# 还没写完\n')
@@ -403,8 +540,8 @@ describe('关闭标签', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
-    await open('项目/路线图.md')
+    await openNewTab('项目/设计.md')
+    await openNewTab('项目/路线图.md')
 
     // Mod+W：关闭当前（路线图）→ 激活左边的设计
     await act(async () => {
@@ -450,7 +587,7 @@ describe('关闭标签', () => {
       render(<Harness />)
       await openVault()
       await open('README.md')
-      await open('项目/设计.md')
+      await openNewTab('项目/设计.md')
 
       // 注册表才是快捷键的唯一事实来源：按下去必须真的切标签，
       // 而不是"store 里有个没人调的方法"
@@ -478,7 +615,7 @@ describe('持久化（按 Vault 根）', () => {
     const first = render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     // 落盘了一份"按 Vault 根"的列表
     expect(loadTabsFor(MOCK_VAULT_PATH)).toEqual({
@@ -506,7 +643,7 @@ describe('持久化（按 Vault 根）', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     // 换到另一个 Vault：条目表也换成新根的那份
     setIpcAdapter(createMockAdapter({ rootPath: OTHER_VAULT }))
@@ -550,7 +687,7 @@ describe('持久化（按 Vault 根）', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     // 模拟外部删除（deleteSelected 会更新条目表；这里只验证标签的对账）
     const entries = useVaultStore
@@ -569,7 +706,7 @@ describe('DOM / 可访问性契约', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     // 每格一条标签条（容器切割树）：主叶那条里是两个笔记标签
     const strips = screen.getAllByRole('tablist')
@@ -590,7 +727,7 @@ describe('DOM / 可访问性契约', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     fireEvent.keyDown(tabNode('项目/设计.md'), { key: 'Delete' })
     fireEvent.keyDown(tabNode('项目/设计.md'), { key: 'Backspace' })
@@ -609,7 +746,7 @@ describe('DOM / 可访问性契约', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     const active = tabNode('项目/设计.md')
     active.focus()
@@ -753,7 +890,7 @@ describe('接线形态与真实编辑器', () => {
     expect(document.querySelector('[data-leaf-tabs="main"]')).toBeNull()
 
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
     // 标签条在主叶里，编辑器那一面（.mn-pane--editor）也在主叶里
     const mainLeaf = document.querySelector('[data-leaf-id="main"]')
     expect(mainLeaf?.querySelector('.mn-tabs')).not.toBeNull()
@@ -779,7 +916,7 @@ describe('接线形态与真实编辑器', () => {
     render(<Shell />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     const view = currentView()
     act(() => {
@@ -811,8 +948,8 @@ describe('接线形态与真实编辑器', () => {
       render(<Shell />)
       await openVault()
       await open('README.md')
-      await open('项目/设计.md')
-      await open('项目/路线图.md')
+      await openNewTab('项目/设计.md')
+      await openNewTab('项目/路线图.md')
 
       // 下一个（右）/ 上一个（左）
       fireEvent.keyDown(window, { key: 'ArrowLeft', ctrlKey: true, altKey: true })

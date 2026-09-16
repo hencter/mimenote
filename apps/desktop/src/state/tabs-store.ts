@@ -22,11 +22,21 @@
  *
  * ## 标签从哪里来
  * 任何入口（文件树、快速切换、wikilink、标签面板、命令面板…）打开笔记，最终都会落到
- * `note-store.doc`。因此这里**订阅 note-store**，看到新路径就把它补进列表 ——
+ * `note-store.doc`。因此这里**订阅 note-store**，看到新路径就处理列表 ——
  * 否则"点了 wikilink 却没有新标签"这种事就要求每个调用点都记得加一行。
  *
+ * ## 默认是"替换"，不是"追加"（用户约定）
+ *
+ * 打开一篇**还不在列表里**的笔记时，列表里那条"刚才正在看"的标签会被它**顶掉**
+ * （{@link syncFromNote} → `insertReplacingTab`，新标签接着那一条的位置）：中间那格于是始终是
+ * "你正在看的那一篇"，而不是越堆越多的标签条。用户原话：
+ * 「默认的新文件替换中的叶标签，即已打开的直接被新的替换掉」。
+ *
+ * 想"在新标签里打开"（多标签仍要有路可走）时，入口举起 {@link openNextNoteInNewTab}
+ * 那面一次性旗子，这一次就退回追加。
+ *
  * ## 单一写入者约定
- * 1. `tabs` 的增删：{@link syncFromNote}（补进新路径）、{@link closeTab}（用户关闭）、
+ * 1. `tabs` 的增删：{@link syncFromNote}（顶掉或追加新路径）、{@link closeTab}（用户关闭）、
  *    {@link pruneMissing}/{@link handleVaultChange}（条目表与 Vault 根的对账）；
  * 2. `active` 的写入：{@link syncFromNote}（跟着 `note-store.doc` 走）、{@link closeTab}、
  *    {@link handleVaultChange}（换 Vault 时清空）。
@@ -83,6 +93,17 @@ let caretMemory: CaretMemory | null = null
 /** 注册/注销光标记忆器（`null` = 注销）。 */
 export function setCaretMemory(memory: CaretMemory | null): void {
   caretMemory = memory
+}
+
+/**
+ * 记下某篇笔记的光标/滚动位置。
+ *
+ * 为什么把它暴露出来：默认的打开行为是"顶掉当前那条标签"，**替换之前**（此时编辑器里还是那一篇）
+ * 记一笔，重新打开它时才回得到原处 —— 与「关闭标签」的处理一致（那边是 `closeTab` 里调的）。
+ * 替换发生在 `syncFromNote`（订阅回调）里，那时编辑器已经换成新文档，再 capture 记下的就是别人的位置。
+ */
+export function captureCaretFor(relPath: string): void {
+  caretMemory?.capture(relPath)
 }
 
 interface TabsState {
@@ -192,10 +213,61 @@ function relocateTabs(oldRel: string, newRel: string): void {
  */
 let switchingVault = false
 
+/**
+ * 下一次"新笔记进编辑器"时**不要**顶掉当前那条标签。
+ *
+ * 用户的约定是「打开新文件 = 顶掉正在看的那条」，而"在新标签里打开"必须有条路走
+ * （否则多标签只剩"把标签拖到别的格子"这一种来源，`Ctrl+Tab` / `Ctrl+1..9` / 关闭其他
+ * 这些入口就都成了摆设）。入口是文件树上的 `Ctrl/⌘ + 点击` 与中键 —— 它们调
+ * {@link openNextNoteInNewTab} 举起这面旗，然后照常走 `openNote`。
+ *
+ * 为什么用"一次性旗子"而不是给 `openNote` 加参数：标签列表的唯一写入者是
+ * {@link syncFromNote}，它是 note-store 的**订阅回调**（没有参数可传）。同一种做法在这个文件里
+ * 已经有先例（`switchingVault`）；旗子在 `syncFromNote` 的每条分支上都会被消费掉，
+ * 于是"打开失败"也不会把它留给下一次打开。
+ */
+let keepCurrentTabForNextNote = false
+
+/** 让**下一次**打开变成"加入列表"而不是"顶掉当前那条"（文件树的新标签入口用）。 */
+export function openNextNoteInNewTab(): void {
+  keepCurrentTabForNextNote = true
+}
+
+/** 取出并放下那面旗（一次性：消费掉之后下一次打开回到默认的"顶掉"行为）。 */
+function takeKeepCurrentTab(): boolean {
+  const value = keepCurrentTabForNextNote
+  keepCurrentTabForNextNote = false
+  return value
+}
+
+/**
+ * 新笔记进列表：**默认顶掉刚在看的那条**，旗子举起时退回"追加"。
+ *
+ * 用户的原话是「默认的新文件替换中的叶标签，即已打开的直接被新的替换掉」——
+ * 于是"打开第 N 篇"不再往标签条上堆，中间那格始终是"你正在看的那一篇"。
+ *
+ * 新标签排在**末尾**（而不是接着被顶掉那条的位置）：标签条上的顺序由**布局**决定
+ * （`attachItem` 把新标签挂在该格标签序列的末尾），而"打开一篇已经在标签里的笔记"不会重排任何东西
+ * —— 列表顺序若在这里另搞一套，屏幕上看到的顺序与 `tabs` 的顺序就会各说各话，
+ * 而 `Ctrl+1..9` / `Ctrl+Tab` / 「关闭其他」都按 `tabs` 的顺序算。
+ * 被顶掉的那条不在列表里（例如刚被条目表剪过）时等价于追加。
+ */
+function insertReplacingTab(
+  tabs: readonly string[],
+  replaced: string | null,
+  next: string,
+  keepCurrent: boolean,
+): string[] {
+  if (keepCurrent) return [...tabs, next]
+  if (replaced === null || !tabs.includes(replaced)) return [...tabs, next]
+  return [...tabs.filter((path) => path !== replaced && path !== next), next]
+}
+
 /** 新路径进入编辑器 → 补进标签列表（已经在列表里的只更新激活项，不改变顺序）。 */
 function syncFromNote(relPath: string | null, prevRelPath: string | null): void {
   if (switchingVault) return
   if (relPath === prevRelPath) return
+  const keepCurrent = takeKeepCurrentTab()
   const { tabs } = useTabsStore.getState()
 
   if (relPath === null) {
@@ -204,7 +276,11 @@ function syncFromNote(relPath: string | null, prevRelPath: string | null): void 
     if (useTabsStore.getState().active !== null) commit(tabs, null)
     return
   }
-  commit(tabs.includes(relPath) ? tabs : [...tabs, relPath], relPath)
+  if (tabs.includes(relPath)) {
+    commit(tabs, relPath)
+    return
+  }
+  commit(insertReplacingTab(tabs, prevRelPath, relPath, keepCurrent), relPath)
 }
 
 /** 条目表变化（删除、改名、重扫）→ 剪掉已经不存在的标签，避免点开就是一个 NOT_FOUND。 */

@@ -113,10 +113,17 @@ async function currentMainPath(page: Page): Promise<string | null> {
   return node.getAttribute('data-main-path')
 }
 
-/** 在文件树里打开某篇笔记（编辑/阅读/图谱三种视图都能用）。 */
-async function openNoteInTree(page: Page, relPath: string): Promise<void> {
+/**
+ * 在文件树里打开某篇笔记（编辑/阅读/图谱三种视图都能用）。
+ *
+ * `newTab` 为真 = **在新标签里打开**（`Ctrl + 点击`，用户路径上中键等价）：
+ * 默认的打开行为是"顶掉当前那条标签"（用户约定），所以"要两条以上标签"的用例走这条。
+ */
+async function openNoteInTree(page: Page, relPath: string, options: { newTab?: boolean } = {}): Promise<void> {
   await ensureTreeRow(page, relPath)
-  await treeRow(page, relPath).click()
+  const row = treeRow(page, relPath)
+  if (options.newTab === true) await row.click({ modifiers: ['Control'] })
+  else await row.click()
   await waitUntil(
     // 标题栏中区的路径是"当前文档是谁"的**唯一**读法，三种视图里都在
     // （它从前挂在编辑器工具栏上，于是阅读/图谱视图只能退回"树里这一行被选中"这个间接信号 —— ADR-0029）
@@ -1025,7 +1032,9 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
   it('模块右键菜单：文件树行、标签页各有一套，Esc 关掉', async () => {
     await ensureVaultOpen(page)
     await openNoteInTree(page, '项目/设计.md')
-    await openNoteInTree(page, 'README.md')
+    // 第二篇走"在新标签里打开"：默认的打开行为会顶掉当前那条标签（ADR-0037），
+    // 而这条用例要的是"有两个笔记标签，右键其中一个 → 关闭其他"
+    await openNoteInTree(page, 'README.md', { newTab: true })
 
     // 文件树行：右键 → 菜单（打开/新建/重命名/移动/定位/复制路径/删除）
     await treeRow(page, '项目/设计.md').click({ button: 'right' })
@@ -2584,17 +2593,22 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     )
   })
 
-  it('多标签页：打开多篇成标签、点击切换、关闭当前，且布局契约不变', async () => {
+  it('多标签页：`Ctrl+点击` 在新标签里打开、点击切换、关闭当前，且布局契约不变', async () => {
     // 标签列表是**跨用例累积**的（同一个页面、同一个 Vault 根，还写进了 localStorage），
     // 前面的用例已经开过好几篇笔记。所以这里必须先清空，否则"恰好两个标签"永远不会成立。
     await closeAllTabs(page)
 
+    /*
+      默认打开的语义已经变成"顶掉当前那条标签"（用户约定：「默认的新文件替换中的叶标签」），
+      所以"两条标签"必须由**在新标签里打开**那条路来造：文件树上的 `Ctrl + 点击`
+      （`openNoteInNewTab`，同一条路上还有中键）。这里顺带端到端地钉住那条路真的通。
+    */
     await openNoteInTree(page, '项目/设计.md')
-    await openNoteInTree(page, '项目/路线图.md')
+    await openNoteInTree(page, '项目/路线图.md', { newTab: true })
     await waitUntil(
       async () => (await page.locator('.mn-tabs__tab[data-tab-path]').count()) === 2,
       10_000,
-      '两篇笔记成为两个标签',
+      '两篇笔记成为两个标签（第二篇走的是"在新标签里打开"）',
     )
     // 激活项跟着当前文档
     expect(

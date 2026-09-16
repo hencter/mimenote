@@ -17,7 +17,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { useEffect } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { moveNote, moveSelected, openNote } from '@/app/actions'
+import { moveNote, moveSelected, openNote, openNoteInNewTab } from '@/app/actions'
 import { commands } from '@/app/commands'
 import { registerBuiltinCommands } from '@/app/builtin-commands'
 import { FileTree } from '@/features/vault/FileTree'
@@ -405,7 +405,7 @@ describe('移动后的 store 收敛', () => {
   it('被移动的不是当前文档：指向旧路径的后台标签被剪掉（不留死标签）', async () => {
     await renderShell()
     await openNote('项目/设计.md')
-    await openNote('项目/路线图.md')
+    await openNoteInNewTab('项目/路线图.md')
     expect(tabPaths()).toEqual(['项目/设计.md', '项目/路线图.md'])
 
     await moveNote('项目/设计.md', '日记')

@@ -34,7 +34,14 @@
 
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import { createNoteHere, deleteSelected, moveEntry, openNote, renameSelected } from '@/app/actions'
+import {
+  createNoteHere,
+  deleteSelected,
+  moveEntry,
+  openNote,
+  openNoteInNewTab,
+  renameSelected,
+} from '@/app/actions'
 import { commands } from '@/app/commands'
 import { REVEAL_ROW_EVENT } from '@/app/dom-events'
 import { ContextMenu, type ContextMenuItem } from '@/components/ContextMenu'
@@ -366,13 +373,14 @@ export function FileTree() {
   const visibleRows = rows.slice(range.start, range.end)
 
   const activateRow = useCallback(
-    (row: FlatRow): void => {
+    (row: FlatRow, newTab = false): void => {
       const entry = row.node.entry
       select(entry.relPath)
       if (entry.isDir) {
+        // 目录：修饰键在这里没有别的意思，照旧展开/收起（"在新标签里打开目录"没有语义）
         toggleExpanded(entry.relPath)
       } else if (isMarkdown(entry.relPath)) {
-        void openNote(entry.relPath)
+        void (newTab ? openNoteInNewTab(entry.relPath) : openNote(entry.relPath))
       } else if (isViewable(entry.relPath)) {
         // 图片一类附件能打开成**只读预览**（ADR-0032）。其余附件（`.txt`、`.zip`…）保持原样：
         // 只选中。判据在 `domain/viewable.ts`，加一类只改那一处。
@@ -675,7 +683,14 @@ type RowDropState = 'none' | 'valid' | 'invalid'
 
 interface RowProps {
   row: FlatRow
-  onActivate: (row: FlatRow) => void
+  /**
+   * 点开这一行。
+   *
+   * `newTab` 为真表示"在新标签里打开"（`Ctrl/⌘ + 点击` 或中键）：默认行为是
+   * **顶掉当前那条标签**（用户约定：「默认的新文件替换中的叶标签」），
+   * 而多标签仍然要有路可走（`Ctrl+Tab` / `Ctrl+1..9` / 关闭其他 / 拖到别的格子都要它）。
+   */
+  onActivate: (row: FlatRow, newTab: boolean) => void
   /** 右键：菜单由**父组件**持有（一行一份状态会让虚拟列表里几十行各挂一个菜单） */
   onContextMenu: (row: FlatRow, event: React.MouseEvent<HTMLDivElement>) => void
   onDragStart: (row: FlatRow, event: React.DragEvent<HTMLDivElement>) => void
@@ -744,7 +759,19 @@ const FileTreeRow = memo(function FileTreeRow({
       aria-level={row.depth + 1}
       style={{ paddingLeft: `${6 + row.depth * 14}px`, height: ROW_HEIGHT }}
       title={`${relPath}${entry.isDir ? '' : ` · ${formatBytes(entry.sizeBytes)}`}`}
-      onClick={() => onActivate(row)}
+      onClick={(event) => onActivate(row, event.ctrlKey || event.metaKey)}
+      /*
+        中键 = 在新标签里打开（浏览器里就是这么用的，用户不用学）。
+        `onAuxClick` 只在**按下中键之后**触发，所以这里还要挡掉中键自带的自动滚动：
+        `onMouseDown` 里对 `button === 1` 调 `preventDefault`（同一件事在标签条上也是这么做的）。
+      */
+      onAuxClick={(event) => {
+        if (event.button !== 1) return
+        onActivate(row, true)
+      }}
+      onMouseDown={(event) => {
+        if (event.button === 1) event.preventDefault()
+      }}
       onContextMenu={(event) => onContextMenu(row, event)}
       // 笔记与文件夹都可拖（见上面的 `draggable`）；目录行仍然是**合法的落点**
       draggable={draggable}

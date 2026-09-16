@@ -10,7 +10,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { openNote } from '@/app/actions'
+import { openNote, openNoteInNewTab } from '@/app/actions'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { TreeHost } from '@/features/layout/TreeHost'
 import { useLayoutDrag } from '@/features/layout/layout-drag'
@@ -80,6 +80,18 @@ async function openVault(): Promise<void> {
 async function open(path: string): Promise<void> {
   await act(async () => {
     await openNote(path)
+  })
+}
+
+/**
+ * 在**新标签**里打开一篇笔记（`Ctrl/⌘ + 点击` 与中键走的就是这条路）。
+ *
+ * 默认的打开行为是"顶掉当前那条标签"（用户约定），所以"需要多于一条标签"的用例
+ * 必须显式用它 —— 这也正是那些用例真正在测的东西（多标签机制本身并没有被删掉）。
+ */
+async function openNewTab(path: string): Promise<void> {
+  await act(async () => {
+    await openNoteInNewTab(path)
   })
 }
 
@@ -203,7 +215,7 @@ describe('渲染：格子与内容分派', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md') // 当前 = 设计
+    await openNewTab('项目/设计.md') // 当前 = 设计
 
     // 把 README 拖到主叶下方独占一格：那一格的激活是 README，但当前文档是设计
     act(() => {
@@ -334,7 +346,7 @@ describe('拖拽标签', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     const main = leafEl(DEFAULT_MAIN_LEAF_ID)
     const strip = main.querySelector('[data-leaf-tabs]') as HTMLElement
@@ -377,7 +389,7 @@ describe('键盘与菜单', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     fireEvent.keyDown(noteTab('README.md'), { key: 'ArrowRight', altKey: true })
     expect(findLeaf(layout(), DEFAULT_MAIN_LEAF_ID)?.items).toEqual([
@@ -408,7 +420,7 @@ describe('键盘与菜单', () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
-    await open('项目/设计.md')
+    await openNewTab('项目/设计.md')
 
     fireEvent.contextMenu(noteTab('README.md'))
     expect(await screen.findByText('关闭其他')).toBeTruthy()

@@ -16,7 +16,11 @@ import { useConfirmStore } from '@/state/confirm-store'
 import { refreshGraphData } from '@/state/graph-store'
 import { useLinksStore } from '@/state/links-store'
 import { hasUnsavedChanges, useNoteStore, flushAutosave } from '@/state/note-store'
-import { relocateTabsForDirectory } from '@/state/tabs-store'
+import {
+  captureCaretFor,
+  openNextNoteInNewTab,
+  relocateTabsForDirectory,
+} from '@/state/tabs-store'
 import { useTagsStore } from '@/state/tags-store'
 import { toast } from '@/state/toast-store'
 import { useUiStore } from '@/state/ui-store'
@@ -87,12 +91,33 @@ export async function closeVault(): Promise<void> {
 // 笔记
 // ---------------------------------------------------------------------------
 
-/** 打开笔记（先展开路径、切走前保存旧文档）。 */
+/**
+ * 打开笔记（先展开路径、切走前保存旧文档）。
+ *
+ * ## 默认"顶掉"当前那条标签，而不是追加
+ *
+ * 用户的约定：「默认的新文件替换中的叶标签，即已打开的直接被新的替换掉」——
+ * 列表动作本身在 `tabs-store` 的 `syncFromNote`（标签列表的唯一写入者）里，这里只负责
+ * **在切换之前**问清一件事：当前那篇正处于**冲突态**时不要闷头换掉。
+ *
+ * 为什么只对冲突态要确认：`note-store.open` 的语义是"切走前先落盘"，所以普通的
+ * "有未保存的修改"会在切换时被保存下来（什么都不丢），而冲突态是**唯一**不落盘的分支
+ * （磁盘上的改动要由用户决定"覆盖还是重新加载"）—— 在那里弹"会丢修改"的确认才是诚实的；
+ * 给每次"边打字边点文件树"都弹一个确认，只会把确认框训练成噪音。
+ */
 export async function openNote(relPath: string): Promise<boolean> {
   if (!isMarkdown(relPath)) {
     toast.warn('M1 只能打开 Markdown 笔记', relPath)
     return false
   }
+  if (!(await confirmReplaceCurrentNote(relPath))) return false
+  /*
+    离开这一篇之前记一笔光标/滚动位置：默认的打开行为会**顶掉**它那条标签，
+    重新打开它时因此回得到原处（与「关闭标签」走的是同一个记忆器）。
+    必须在切换**之前**调 —— 切换之后编辑器里已经是新文档了。
+  */
+  const leaving = useNoteStore.getState().doc
+  if (leaving !== null && leaving.relPath !== relPath) captureCaretFor(leaving.relPath)
   const vault = useVaultStore.getState()
   vault.revealPath(relPath)
   const ok = await useNoteStore.getState().open(relPath)
@@ -100,6 +125,36 @@ export async function openNote(relPath: string): Promise<boolean> {
   // 打开笔记 = 离开附件查看器（主区一次只显示一类对象，见 ADR-0032）
   if (ok) useUiStore.getState().closeFile()
   return ok
+}
+
+/**
+ * 打开笔记并**保留当前那条标签**（加入列表而不是顶掉它）。
+ *
+ * 入口是文件树的 `Ctrl/⌘ + 点击` 与中键 —— 多标签仍然要有路可走：`Ctrl+Tab` / `Ctrl+1..9` /
+ * 「关闭其他」/ 把标签拖到另一格，这些都要列表里能多于一条。
+ * 旗子在 `tabs-store` 里，是一次性的（见 `openNextNoteInNewTab` 的说明）。
+ */
+export async function openNoteInNewTab(relPath: string): Promise<boolean> {
+  openNextNoteInNewTab()
+  return openNote(relPath)
+}
+
+/**
+ * 切换笔记前确认"要顶掉的那条"有没有不该丢的东西。
+ *
+ * 只有**冲突态**才拦（理由见 `openNote` 上那段）。返回 `false` = 用户选择留在原处，
+ * 这次打开整体取消（标签与文档都不动）—— 与「关闭标签」被拒绝时的结果一致。
+ */
+async function confirmReplaceCurrentNote(relPath: string): Promise<boolean> {
+  const current = useNoteStore.getState()
+  if (current.doc === null || current.doc.relPath === relPath) return true
+  if (current.conflict === null) return true
+  return useConfirmStore.getState().ask({
+    title: '打开另一篇笔记？',
+    message: `「${current.doc.relPath}」在磁盘上被外部改动过，还没决定怎么处理；打开「${relPath}」会放弃这次改动，当前显示的那条标签也会被它顶掉。`,
+    confirmLabel: '放弃改动并打开',
+    danger: true,
+  })
 }
 
 /**
