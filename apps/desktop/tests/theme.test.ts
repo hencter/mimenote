@@ -1,5 +1,8 @@
 /** 主题完整性：所有内置主题必须提供全部令牌（防止改了 CSS 忘了改 JSON）。 */
 
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
 import { DEFAULT_THEME_ID, THEMES, getTheme, nextThemeId } from '@/theme/apply'
@@ -65,5 +68,41 @@ describe('主题', () => {
     }
     expect(new Set(seen).size).toBe(THEMES.length)
     expect(nextThemeId(seen[seen.length - 1] as string)).toBe(DEFAULT_THEME_ID)
+  })
+})
+
+/**
+ * 选中高亮（用户报："选中文本没有高亮，无法确认是否选中了"）。
+ *
+ * 这两条是**结构性**判据，不是观感偏好：
+ * 1. CM 的选区层默认画在内容**下面**（`layer({ above: false })`），而正文里渲染出来的块
+ *    （callout / 表格 / 代码块 / 图片）都带不透明底色 —— 不把这一层抬上来，往块里选字就是**必然**
+ *    看不见高亮（不是"颜色淡"的问题）；
+ * 2. 抬到内容之上后，图案必须是**半透明**的：不透明的色块会把选中的字整个糊住。
+ *
+ * 颜色仍然只有一份来源：主题令牌 `--mn-selection`（`color-mix` 只给它加透明度）。
+ *
+ * 为什么读**源码文本**而不是读 `mnEditorTheme.spec`：CM 的 `EditorView.theme()` 返回的是
+ * 编译后的样式扩展，原始 spec 不再对外暴露；而这一层要钉的恰恰是"写下来的那两条 CSS 声明"。
+ * 同一套做法在 `tests/design-tokens.test.ts` / `tests/tabs.test.tsx` 里已经用过。
+ */
+describe('编辑器的选中高亮', () => {
+  const source = readFileSync(
+    resolve(process.cwd(), 'src/features/editor/cm/theme.ts').replace(/\\/gu, '/'),
+    'utf8',
+  )
+
+  it('选区层抬到内容之上（否则被渲染块的底色整段盖住）', () => {
+    const matched = /'\.cm-selectionLayer':\s*\{\s*zIndex:\s*(\d+)/u.exec(source)
+    expect(matched, '主题里应当把 .cm-selectionLayer 的 zIndex 抬起来').not.toBeNull()
+    expect(Number(matched?.[1])).toBeGreaterThan(0)
+  })
+
+  it('选区图案是半透明的，且颜色仍然来自 --mn-selection', () => {
+    const matched = /\.cm-selectionBackground[^']*':\s*\{\s*backgroundColor:\s*'([^']+)'/u.exec(source)
+    expect(matched, '主题里应当有 .cm-selectionBackground 的背景声明').not.toBeNull()
+    const background = matched?.[1] ?? ''
+    expect(background).toContain('var(--mn-selection)')
+    expect(background).toContain('transparent')
   })
 })

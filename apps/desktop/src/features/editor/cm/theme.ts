@@ -45,8 +45,28 @@ export const mnEditorTheme = EditorView.theme({
   },
   '&.cm-focused': { outline: 'none' },
   '&.cm-focused .cm-cursor, .cm-cursor': { borderLeftColor: 'var(--mn-accent)' },
-  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, .cm-content ::selection': {
-    backgroundColor: 'var(--mn-selection)',
+  /*
+    选中高亮（用户报："选中文本没有高亮，无法确认是否选中了"）。
+
+    CM 把选区画在**内容下面**（`layer({ above: false })`），而正文里那些"渲染出来的块"
+    —— callout、表格、代码块、图片 —— 都带不透明底色：往它们里面选字时高亮被整块盖住，
+    屏幕上就只剩"选中了却看不出来"。
+
+    两处一起改才成立：
+    1. 把选区层抬到内容之上（`zIndex`）—— 否则它永远被块底盖住；
+    2. 图案换成**半透明**（`color-mix(… 55%, transparent)`）—— 抬上来之后若还用不透明的色块，
+       选中的字会被整个糊住；半透明才能既盖过块底、又让字读得出来（VS Code / Obsidian 就是这么做的）。
+
+    颜色仍然只有一份来源：主题的 `--mn-selection`（`color-mix` 只是给它加透明度，
+    没有引入第二个颜色令牌）。
+  */
+  '.cm-selectionLayer': { zIndex: 3 },
+  '.cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground': {
+    backgroundColor: 'color-mix(in srgb, var(--mn-selection) 55%, transparent)',
+  },
+  /* 内容里的**原生**选区（drawSelection 未启用、或选区落在被浏览器直接渲染的部分）用同一份颜色 */
+  '.cm-content ::selection': {
+    backgroundColor: 'color-mix(in srgb, var(--mn-selection) 70%, transparent)',
   },
   '.cm-selectionMatch': { backgroundColor: 'var(--mn-active)' },
   '.cm-searchMatch': { backgroundColor: 'var(--mn-active)', outline: '1px solid var(--mn-accent)' },
