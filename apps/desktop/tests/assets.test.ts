@@ -104,7 +104,9 @@ describe('createAssetResolver（带全库索引的图片解析）', () => {
 
   it('同名多张时选"路径更短 → 字典序"，结果可复现', () => {
     expect(resolve('项目/设计.md', '图.png')).toBe('项目/图.png') // 本目录存在，直接命中
-    expect(resolve('其它/笔记.md', '图.png')).toBe('附件/图.png') // 两个候选同长 → 字典序
+    // 两个候选（附件/图.png 与 素材/图.png）同长 → 字典序；字典序是码位序
+    // （素 U+7D20 < 附 U+9644），与运行环境的 locale 无关，CI 与本机结果一致
+    expect(resolve('其它/笔记.md', '图.png')).toBe('素材/图.png')
   })
 
   it('外部地址与空地址不会伪造出路径；都找不到时交回相对解析结果', () => {

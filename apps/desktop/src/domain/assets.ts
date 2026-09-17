@@ -124,9 +124,11 @@ export function createAssetResolver(entries: readonly AssetEntry[]): AssetResolv
     if (list === undefined) byName.set(name, [entry.relPath])
     else list.push(entry.relPath)
   }
-  // 同名多张：按"路径更短 → 字典序"定序，保证同一份 Vault 每次解析结果一致
+  // 同名多张：按"路径更短 → 字典序"定序，保证同一份 Vault 每次解析结果一致。
+  // 字典序用**码位序**（与 `tag-filter.ts` 的 comparePaths 同一约定）：`localeCompare`
+  // 的默认 locale 随运行环境变（中文 Windows 是拼音序，CI 是码位序），会破坏"结果可复现"。
   for (const list of byName.values()) {
-    list.sort((left, right) => left.length - right.length || left.localeCompare(right))
+    list.sort((left, right) => left.length - right.length || (left < right ? -1 : left > right ? 1 : 0))
   }
 
   return (noteRelPath, href) => {
