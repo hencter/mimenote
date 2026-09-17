@@ -74,17 +74,17 @@ Mimenote 在 `v0.1.0` 之前已经完成 M1、M1.5、M2、M3 的主要范围。�
 
 ---
 
-# 接下来
+## 接下来
 
-## v0.1.1 — 稳定性与发布
+### v0.1.1 — 稳定性与发布
 
 **目标：把已经具备的产品能力变成更可靠的可发布版本。**
 
 这个阶段优先解决发布工程、自动化门禁、跨语言契约和依赖供应链问题，不新增大型产品功能。
 
-### Scope
+#### Scope
 
-#### 1. 发版版本一致性
+##### 1. 发版版本一致性
 
 Issue: [#1 — 发版版本校验覆盖 Cargo workspace version](https://github.com/hencter/mimenote/issues/1)
 
@@ -96,7 +96,7 @@ Issue: [#1 — 发版版本校验覆盖 Cargo workspace version](https://github.
 - `apps/desktop/src-tauri/tauri.conf.json`
 - 根 `Cargo.toml [workspace.package].version`
 
-### 2. 真实应用 E2E 进入发布门禁
+##### 2. 真实应用 E2E 进入发布门禁
 
 Issue: [#2 — 将真实应用 E2E 纳入 PR / Release 质量门禁](https://github.com/hencter/mimenote/issues/2)
 
@@ -107,7 +107,7 @@ Issue: [#2 — 将真实应用 E2E 纳入 PR / Release 质量门禁](https://git
 - Release 必须通过真实应用 smoke E2E
 - 测试失败保留日志、截图和诊断产物
 
-### 3. Rust ↔ TypeScript IPC 契约一致性
+##### 3. Rust ↔ TypeScript IPC 契约一致性
 
 Issue: [#3 — Rust ↔ TypeScript IPC 契约增加自动一致性检查](https://github.com/hencter/mimenote/issues/3)
 
@@ -117,7 +117,7 @@ Issue: [#3 — Rust ↔ TypeScript IPC 契约增加自动一致性检查](https:
 - Rust / TS ErrorCode 不一致可被 CI 发现
 - 关键 DTO 不再完全依赖人工同步
 
-### 4. 依赖安全与自动更新
+##### 4. 依赖安全与自动更新
 
 Issue: [#4 — 增加依赖安全扫描与自动更新](https://github.com/hencter/mimenote/issues/4)
 
@@ -128,7 +128,7 @@ Issue: [#4 — 增加依赖安全扫描与自动更新](https://github.com/henct
 - GitHub Actions 自动更新
 - 高严重度问题具备明确 Release 阻断策略
 
-### Done when
+#### Done when
 
 - [ ] #1 完成
 - [ ] #2 完成
@@ -137,7 +137,7 @@ Issue: [#4 — 增加依赖安全扫描与自动更新](https://github.com/henct
 - [ ] Release workflow 能对核心发布风险提供自动门禁
 - [ ] 发布文档与实际版本来源一致
 
-### Non-goals
+#### Non-goals
 
 本里程碑不包含：
 
@@ -149,13 +149,13 @@ Issue: [#4 — 增加依赖安全扫描与自动更新](https://github.com/henct
 
 ---
 
-## v0.2.0 — 跨平台与桌面体验
+### v0.2.0 — 跨平台与桌面体验
 
 **目标：从“Windows 正式可用”向明确、可验证的跨平台支持推进。**
 
 Issue: [#5 — 明确平台支持矩阵，并建立跨平台 CI](https://github.com/hencter/mimenote/issues/5)
 
-### Scope
+#### Scope
 
 - 明确 Windows / macOS / Linux 支持等级
 - CI 至少覆盖 Windows 与 macOS 的核心构建 / 测试
@@ -169,7 +169,7 @@ Issue: [#5 — 明确平台支持矩阵，并建立跨平台 CI](https://github.
 - 正式发布 macOS 前完成签名 / notarization 方案
 - 对 Linux 做出明确支持决策
 
-### Done when
+#### Done when
 
 - [ ] README 中的平台矩阵与实际发布状态一致
 - [ ] Windows + macOS 至少有核心 CI 验证
@@ -177,7 +177,7 @@ Issue: [#5 — 明确平台支持矩阵，并建立跨平台 CI](https://github.
 - [ ] 平台差异有测试或明确文档
 - [ ] Linux 支持范围有明确结论
 
-### Non-goals
+#### Non-goals
 
 - 不要求本阶段同时正式发布所有 Linux 发行版
 - 不为跨平台适配重写 `mn-core`
@@ -185,7 +185,7 @@ Issue: [#5 — 明确平台支持矩阵，并建立跨平台 CI](https://github.
 
 ---
 
-## M4 — 插件系统
+### M4 — 插件系统
 
 **目标：在不破坏本地文件安全边界的前提下，为 Mimenote 建立可演进的第三方扩展模型。**
 
@@ -193,13 +193,13 @@ Issue: [#5 — 明确平台支持矩阵，并建立跨平台 CI](https://github.
 
 插件模型的总体方向已经在 ADR 中确定：Manifest、权限声明、隔离、API versioning、错误边界和卸载清理。
 
-### Phase A — Capability boundary
+#### Phase A — Capability boundary
 
 - 宿主 IPC commands 按领域拆分
 - 明确 `vault / notes / tags / search / graph / assets / export / system` 等能力边界
 - 保持 `mn-core` 为纯 Rust，不依赖 Tauri / UI
 
-### Phase B — Plugin Manifest
+#### Phase B — Plugin Manifest
 
 至少定义：
 
@@ -217,21 +217,21 @@ permissions
 - 插件 ID 稳定
 - API / App 最低版本约束明确
 
-### Phase C — Permission Model
+#### Phase C — Permission Model
 
 - 插件显式声明权限
 - 安装前展示权限确认
 - 默认最小权限
 - 插件无法绕过宿主能力边界直接获得通用 FS / Shell / HTTP 能力
 
-### Phase D — Isolation & Error Boundary
+#### Phase D — Isolation & Error Boundary
 
 - 插件逻辑与主 UI / 核心状态隔离
 - 优先 Worker 等隔离模型
 - 插件崩溃不能拖垮整个应用
 - 超时 / 异常有统一处理策略
 
-### Phase E — Lifecycle
+#### Phase E — Lifecycle
 
 - 安装
 - 启用 / 禁用
@@ -240,7 +240,7 @@ permissions
 - 插件数据清理规则
 - 兼容性检查
 
-### Done when
+#### Done when
 
 - [ ] #6 完成
 - [ ] Manifest schema 稳定
@@ -250,7 +250,7 @@ permissions
 - [ ] 安装 / 禁用 / 更新 / 卸载完整闭环可验证
 - [ ] 至少一个内部 / 示例插件验证完整 API
 
-### Non-goals
+#### Non-goals
 
 M4 首版不追求：
 
