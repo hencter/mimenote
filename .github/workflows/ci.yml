@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    name: 质量门禁（typecheck / vitest / cargo test / clippy / fmt）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 启用 pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Rust 工具链（含 clippy / rustfmt）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cargo 缓存
+        uses: Swatinem/rust-cache@v2
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查（tsc --noEmit 严格模式）
+        run: pnpm typecheck
+
+      - name: 前端测试（vitest）
+        run: pnpm test
+
+      - name: Rust 测试
+        run: cargo test --workspace
+
+      - name: Clippy（-D warnings）
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: rustfmt 检查
+        run: cargo fmt --all --check

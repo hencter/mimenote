@@ -126,6 +126,19 @@ pnpm --filter @mimenote/desktop exec tauri build --no-bundle   # 只出可执行
 > 启动后窗口会去连 `http://127.0.0.1:1420` 并显示"网络错误"。
 > 同理，`target/debug/mimenote.exe` 也总是要连 dev server —— 调试请用 `pnpm tauri:dev`。
 
+### 版本与发布
+
+版本号遵循[语义化版本 2.0.0](https://semver.org/lang/zh-CN/)，发布以打标签为准：
+
+- 格式 `主版本号.次版本号.修订号`：不兼容修改升主版本号、向下兼容的新功能升次版本号、向下兼容的修正升修订号；
+- 当前处于 `0.y.z` 初始开发阶段，公共 API 不承诺稳定，每次发行递增次版本号；
+- 发布前把新版本号同步写进三处（必须一致，CI 会校验）：`package.json`、`Cargo.toml` 的 `workspace.package.version`、`apps/desktop/src-tauri/tauri.conf.json`；
+- **已发行的版本禁止改动**，任何修改都以新版本发行。
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0   # 触发 Release 工作流：构建 NSIS/MSI 并发布到 GitHub Release
+```
+
 ### 测试与质量门禁
 
 ```bash
