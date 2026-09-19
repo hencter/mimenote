@@ -4,3 +4,9 @@ packages:
 # pnpm 10+ 默认阻止依赖的安装脚本；仅放行确实需要构建步骤的依赖。
 onlyBuiltDependencies:
   - esbuild
+
+# 传递依赖修复（GHSA-93q8-gq69-wqmw，ReDoS）：@testing-library/dom → pretty-format
+# 链上的 ansi-regex 5.0.0，5.0.1 已修且该链只接受 5.x —— override 到修复版。
+overrides:
+  ansi-regex: ^5.0.1
+

@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # 每周一 02:00（北京）跑一轮完整 UI E2E，兜住"合入后才发现"的回归
+    - cron: '0 18 * * 0'
 
 jobs:
   check:
@@ -33,6 +36,12 @@ jobs:
       - name: 安装前端依赖
         run: pnpm install --frozen-lockfile
 
+      - name: 四处版本一致性检查
+        run: pnpm check:version
+
+      - name: IPC 契约一致性检查（命令 / 错误码 / DTO / 枚举）
+        run: pnpm check:ipc
+
       - name: 类型检查（tsc --noEmit 严格模式）
         run: pnpm typecheck
 
@@ -47,3 +56,128 @@ jobs:
 
       - name: rustfmt 检查
         run: cargo fmt --all --check
+
+  check-macos:
+    # 跨平台核心门禁（平台支持矩阵见 README）：macOS 是实验支持 ——
+    # 核心逻辑与构建必须在 macOS 上不回归；UI smoke 用系统 Edge（macOS 镜像自带）；
+    # 最后 `tauri build --no-bundle` 验证宿主在 macOS 可编译可链接（不出安装包）。
+    # 真实应用 E2E（WebView2 远程调试）只在 Windows 存在，见 e2e/real-app.e2e.test.ts 的显式跳过。
+    name: 跨平台核心（macOS：测试 / cargo / 构建 + UI smoke）
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 启用 pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo 缓存
+        uses: Swatinem/rust-cache@v2
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 版本与 IPC 契约一致性检查
+        run: pnpm check:version && pnpm check:ipc
+
+      - name: 类型检查（tsc --noEmit 严格模式）
+        run: pnpm typecheck
+
+      - name: 前端测试（vitest）
+        run: pnpm test
+
+      - name: Rust 测试
+        run: cargo test --workspace
+
+      - name: 前端构建（dist/）
+        run: pnpm build
+
+      - name: macOS 最小 smoke build（宿主可编译可链接，不出安装包）
+        run: pnpm --filter @mimenote/desktop exec tauri build --no-bundle
+
+      - name: UI smoke E2E（系统 Edge）
+        run: pnpm test:e2e:ui:smoke
+
+      - name: 上传失败产物（截图）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-ui-macos-artifacts
+          path: apps/desktop/e2e-artifacts/
+          if-no-files-found: ignore
+
+  security:
+    # 依赖供应链审计：Rust 侧全量（RustSec 数据库判定）+ JS/TS 侧高危及以上阻断。
+    # PR / main / 每周定时都会跑 —— 定时那轮兜住"代码没动但新 CVE 出现"的情况。
+    name: 依赖安全审计（cargo audit + pnpm audit）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 启用 pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: Rust 依赖审计（cargo audit，发现漏洞即失败）
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: JS/TS 依赖审计（pnpm audit，高危及以上即失败）
+        run: pnpm audit --audit-level=high
+
+  e2e-ui:
+    # UI 层 E2E（系统 Edge + dist 构建产物 + Mock Vault，无需构建应用二进制）：
+    # - PR：只跑稳定的 smoke 子集（打开 Vault / 打开笔记 / 过滤 / 搜索 / 链接跳转）
+    # - main 与每周定时：跑完整套件
+    name: UI E2E（PR = smoke / main 与定时 = 完整）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 启用 pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建前端产物（dist/）
+        run: pnpm build
+
+      - name: UI smoke E2E（PR）
+        if: github.event_name == 'pull_request'
+        run: pnpm test:e2e:ui:smoke
+
+      - name: 完整 UI E2E（main / 定时）
+        if: github.event_name != 'pull_request'
+        run: pnpm test:e2e:ui
+
+      - name: 上传失败产物（截图）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-ui-artifacts
+          path: apps/desktop/e2e-artifacts/
+          if-no-files-found: ignore

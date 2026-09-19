@@ -14,13 +14,18 @@
     "tauri:build": "pnpm --filter @mimenote/desktop tauri:build",
     "build": "pnpm --filter @mimenote/desktop build",
     "typecheck": "pnpm --filter @mimenote/desktop typecheck",
-    "test": "pnpm --filter @mimenote/desktop test",
+    "test": "pnpm test:scripts && pnpm --filter @mimenote/desktop test",
+    "test:scripts": "node --test scripts/*.test.mjs",
+    "check:version": "node scripts/check-version.mjs",
+    "check:ipc": "node scripts/check-ipc.mjs",
     "test:e2e": "pnpm --filter @mimenote/desktop test:e2e",
     "test:e2e:app": "pnpm --filter @mimenote/desktop test:e2e:app",
+    "test:e2e:app:smoke": "pnpm --filter @mimenote/desktop test:e2e:app:smoke",
     "test:e2e:ui": "pnpm --filter @mimenote/desktop test:e2e:ui",
+    "test:e2e:ui:smoke": "pnpm --filter @mimenote/desktop test:e2e:ui:smoke",
     "test:rust": "cargo test --workspace",
     "lint:rust": "cargo clippy --workspace --all-targets -- -D warnings",
     "fmt:rust": "cargo fmt --all",
-    "check": "pnpm typecheck && pnpm test && cargo test --workspace"
+    "check": "pnpm check:version && pnpm check:ipc && pnpm typecheck && pnpm test && cargo test --workspace"
   }
 }

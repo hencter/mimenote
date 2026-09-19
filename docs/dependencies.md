@@ -92,3 +92,16 @@ SQLite 的 FTS5 是这几件事的成熟实现，且它带来的缓存是**纯�
 - 运行时不发起任何网络请求（无遥测、无更新检查、无 CDN 资源）。
 - 前端 CSP 为 `default-src 'self'`，`script-src 'self'`（见 `tauri.conf.json`），`connect-src` 仅允许 Tauri IPC。
 - 新增依赖前需要在本文件登记：理由、体积、许可证、安全影响。
+
+## 供应链安全（扫描与自动更新）
+
+- **Dependabot**（`.github/dependabot.yml`）：pnpm / Cargo / GitHub Actions 三条供应链每周批量提 PR
+  （同类产品线的包分组一起升）；安全更新不受计划限制，CVE 修复随时提 PR。
+- **CI `security` job**（PR / main / 每周定时）：`rustsec/audit-check` 跑 `cargo audit`
+  （RustSec 数据库命中即失败）+ `pnpm audit --audit-level=high`（高危及以上即失败），
+  完整报告在 job 日志里；定时那轮兜住"代码没动但新 CVE 出现"的情况。
+- **Release 阻断**：构建安装包之前先过同两道审计，任一失败即不出包。
+- **本地自查**：`pnpm audit --audit-level=high`；使用镜像 registry（如 npmmirror）时
+  审计端点不存在，需要显式 `pnpm audit --audit-level=high --registry=https://registry.npmjs.org`。
+- **修复顺序**：先升直接依赖；传递依赖被旧范围卡住时用 `pnpm-workspace.yaml` 的 `overrides`
+  钉到修复版（当前一例：`ansi-regex` 钉 `^5.0.1`，理由见该文件注释）。

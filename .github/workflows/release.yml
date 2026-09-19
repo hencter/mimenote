@@ -1,9 +1,5 @@
 name: Release
 
-# 版本发布遵循语义化版本 2.0.0（https://semver.org/lang/zh-CN/）：
-# 打 `vX.Y.Z` 标签即发布；标签版本必须与 tauri.conf.json / package.json 完全一致，
-# 且已发行的版本内容禁止改变 —— 任何修改都必须以新版本发行。
-
 on:
   push:
     tags: ["v*"]
@@ -18,22 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 校验标签是合法 semver 且与代码中的版本一致
-        shell: pwsh
-        run: |
-          $tag = "${{ github.ref_name }}"
-          if ($tag -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-((0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?$') {
-            Write-Error "标签 $tag 不是合法的语义化版本（期望 vX.Y.Z）"; exit 1
-          }
-          $tagVersion = $tag.Substring(1)
-          $conf = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
-          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
-          if ($conf.version -ne $tagVersion -or $pkg.version -ne $tagVersion) {
-            Write-Error "版本不一致：标签 $tagVersion / tauri.conf.json $($conf.version) / package.json $($pkg.version)"
-            exit 1
-          }
-          Write-Host "版本校验通过：$tag"
-
       - name: 启用 pnpm
         uses: pnpm/action-setup@v4
 
@@ -42,6 +22,10 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+
+      - name: 校验发布标签与四处版本一致
+        shell: pwsh
+        run: node scripts/check-version.mjs "$env:GITHUB_REF_NAME"
 
       - name: Rust 工具链
         uses: dtolnay/rust-toolchain@stable
@@ -55,8 +39,31 @@ jobs:
       - name: 质量门禁
         run: pnpm check
 
+      # 发布阻断级：依赖里有已知漏洞（Rust 全量 / JS 高危及以上）就不出包
+      - name: Rust 依赖审计（cargo audit）
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: JS/TS 依赖审计（pnpm audit，高危及以上即失败）
+        run: pnpm audit --audit-level=high
+
       - name: 构建安装包（NSIS + MSI）
         run: pnpm tauri:build
+
+      # 直接对刚出炉的 release 二进制跑 smoke（复用同一次构建，不重复编译）：
+      # 打开 Vault / 打开笔记 / 编辑保存（真实磁盘）/ 搜索 / 链接导航。
+      # 任一步失败即阻断发布。
+      - name: 真实应用 smoke E2E（Release 阻断级）
+        run: pnpm test:e2e:app:smoke
+
+      - name: 上传失败产物（截图）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-app-smoke-artifacts
+          path: apps/desktop/e2e-artifacts/
+          if-no-files-found: ignore
 
       - name: 发布到 GitHub Release
         uses: softprops/action-gh-release@v2

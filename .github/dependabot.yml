@@ -1,0 +1,48 @@
+# 依赖自动更新（安全与常规版本演进）
+#
+# 三条供应链全覆盖：pnpm（前端）/ Cargo（Rust）/ GitHub Actions（CI 自身）。
+# 安全更新（security updates）不受此计划限制：Dependabot 发现已修复的 CVE 会随时提 PR。
+# 常规版本更新按周批量来，避免天天被 PR 打扰；开着的 PR 数量设了上限。
+
+version: 2
+updates:
+  # 前端（pnpm workspace，锁文件在仓库根）
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    groups:
+      # 同一产品线的包一起升，减少"升一半"的 CI 红
+      codemirror:
+        patterns: ['@codemirror/*', '@lezer/*']
+      tauri:
+        patterns: ['@tauri-apps/*']
+      react:
+        patterns: ['react', 'react-dom', '@types/react', '@types/react-dom']
+
+  # Rust（workspace 锁文件 Cargo.lock 在仓库根）
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    groups:
+      tauri:
+        patterns: ['tauri*', '@tauri-apps/*']
+
+  # CI 自身用的 Actions 版本
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5

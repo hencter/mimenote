@@ -99,6 +99,22 @@ export function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
 }
 
+/**
+ * 用例失败时留证据：把当前页面截到 `e2e-artifacts/`（CI 会上传这个目录）。
+ *
+ * 失败截图只在失败时产生，所以正常跑完目录是空的 —— 上传步骤配 `if: failure()`
+ * 与 `if-no-files-found: ignore` 即可。截图失败（页面已崩等）不再抛出，
+ * 免得把原始失败原因盖掉。
+ */
+export async function saveFailureScreenshot(page: Page, testName: string): Promise<void> {
+  const dir = join(packageRoot(), 'e2e-artifacts')
+  const safe = testName.replaceAll(/[^\p{L}\p{N}._-]+/gu, '-').slice(0, 80)
+  await mkdir(dir, { recursive: true }).catch(() => undefined)
+  await page
+    .screenshot({ path: join(dir, `${Date.now()}-${safe}.png`), fullPage: true })
+    .catch(() => undefined)
+}
+
 export interface LaunchedApp {
   page: Page
   browser: Browser
