@@ -15,7 +15,7 @@ jobs:
     name: 构建 Windows 安装包并发布
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 启用 pnpm
         uses: pnpm/action-setup@v4
