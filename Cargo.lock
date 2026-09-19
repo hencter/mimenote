@@ -1998,7 +1998,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "mimenote"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "env_logger",
  "log",
@@ -2047,7 +2047,7 @@ dependencies = [
 
 [[package]]
 name = "mn-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2057,7 +2057,7 @@ dependencies = [
 
 [[package]]
 name = "mn-index"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "log",
  "mn-core",
