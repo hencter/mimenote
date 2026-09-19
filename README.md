@@ -189,11 +189,11 @@ pnpm test:e2e     # 两层端到端测试（见下）
 | --- | --- |
 | PR | `check`（版本 / IPC 契约 / typecheck / vitest / cargo / clippy / fmt）+ **UI smoke E2E**（`test:e2e:ui:smoke`，5 条稳定主路径）+ **依赖安全审计**（cargo audit + pnpm audit 高危）+ **macOS 跨平台核心** |
 | main 推送 / 每周定时 | `check` + **完整 UI E2E**（`test:e2e:ui`）+ **依赖安全审计** + **macOS 跨平台核心** |
-| `v*` 标签 Release | `check` + **依赖安全审计** + 构建后跑**真实应用 smoke E2E**（`test:e2e:app:smoke`），失败即阻断发布 |
+| `v*` 标签 Release | `check` + **依赖安全审计** + 构建 NSIS/MSI 并发布；**真实应用 smoke E2E 不在 CI 里跑**（GitHub 托管 runner 起不了带窗口的 WebView2，CDP 端口一直不开），它是**本地发布前的手动门禁** |
 
 `macOS 跨平台核心`（`check-macos` job）：版本/契约检查、typecheck、前端测试、`cargo test --workspace`、前端构建、`.app` 可编译链接（`tauri build --no-bundle`，不出安装包）、系统 Edge 的 UI smoke E2E。真实应用 E2E 只在 Windows 存在（WebView2 远程调试），macOS 侧由构建 + UI smoke 等价兜底，平台分工见「平台支持矩阵」。
 
-各层覆盖范围：**单测**（vitest / cargo test）钉住纯逻辑与解析细节；**UI E2E** 钉住真实 Chromium 下的布局与交互链路（快、可进 PR）；**真实应用 E2E** 钉住 release 二进制的 WebView2 启动、IPC 接线与真实磁盘写入（Release 阻断级）。E2E 失败时截图写入 `apps/desktop/e2e-artifacts/`，CI / Release 会以 artifact 形式上传。smoke 套件只起一个应用实例、Release 直接复用 `tauri build` 刚产出的二进制，不重复编译。
+各层覆盖范围：**单测**（vitest / cargo test）钉住纯逻辑与解析细节；**UI E2E** 钉住真实 Chromium 下的布局与交互链路（快、可进 PR）；**真实应用 E2E** 钉住 release 二进制的 WebView2 启动、IPC 接线与真实磁盘写入（**本地发布前手动门禁**：GitHub 托管 runner 起不了带窗口的 WebView2）。E2E 失败时截图写入 `apps/desktop/e2e-artifacts/`，CI 会以 artifact 形式上传。smoke 套件只起一个应用实例，直接复用 `tauri build` 刚产出的二进制，不重复编译。
 
 ### 端到端测试（E2E）
 
@@ -202,7 +202,7 @@ pnpm test:e2e     # 两层端到端测试（见下）
 | 层 | 命令 | 被测对象 | 平台 |
 | --- | --- | --- | --- |
 | **真实应用** | `pnpm test:e2e:app` | `tauri build` 产出的 **release 二进制**：真实 WebView2、真实 IPC、**真实磁盘写入** | 仅 Windows（需要 WebView2 的远程调试） |
-| **真实应用 smoke** | `pnpm test:e2e:app:smoke` | 同一二进制，但只跑 5 条主路径（打开 Vault / 打开笔记 / 编辑保存 / 搜索 / 链接导航），Release 门禁用 | 仅 Windows |
+| **真实应用 smoke** | `pnpm test:e2e:app:smoke` | 同一二进制，但只跑 5 条主路径（打开 Vault / 打开笔记 / 编辑保存 / 搜索 / 链接导航）；**本地发布前手动跑**（CI runner 起不了 WebView2） | 仅 Windows |
 | **UI 层** | `pnpm test:e2e:ui` | **系统 Edge** + `dist/` 构建产物 + 内存 Mock Vault：真实 Chromium 布局与交互 | 跨平台，秒级，适合 CI |
 | **UI 层 smoke** | `pnpm test:e2e:ui:smoke` | 同一底座，按名称过滤出 5 条稳定主路径，PR 门禁用 | 跨平台，秒级 |
 
@@ -382,7 +382,7 @@ macOS 上 `Ctrl` 自动换成 `Cmd`（`Mod`）。命令表在 `src/app/builtin-c
 | `pnpm test:e2e:ui` | 65 个用例通过（系统 Edge，真实 Chromium，约 30 秒；静态服务器带上与 `tauri.conf.json` **同一份 CSP**） |
 | `pnpm test:e2e:ui:smoke` | 5 个用例通过（同一底座的稳定子集，约 5 秒；PR 门禁） |
 | `pnpm test:e2e:app` | 34 个用例通过（真实 release 二进制 + 真实磁盘；其中「外部改动自动同步」2 条、「标签面板增删标签」1 条、「标签重命名/合并」1 条、「标签层级编辑」3 条、**「大文档预览的 Worker」2 条**、「回收站恢复」2 条、「窗口拖动区与窗口按钮」1 条） |
-| `pnpm test:e2e:app:smoke` | 5 个用例通过（真实 release 二进制，约 5 秒；Release 阻断级门禁） |
+| `pnpm test:e2e:app:smoke` | 5 个用例通过（真实 release 二进制，约 5 秒；本地发布前手动门禁 —— GitHub 托管 runner 起不了带窗口的 WebView2） |
 | `pnpm check` | 以上三类一次跑完，全绿 |
 | `pnpm typecheck` | 无错误（TypeScript 严格模式 + `noUncheckedIndexedAccess`） |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 无告警 |

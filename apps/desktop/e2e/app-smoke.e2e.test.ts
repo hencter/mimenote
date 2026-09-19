@@ -1,5 +1,5 @@
 /**
- * 真实应用 smoke E2E —— PR / Release 质量门禁用的最小主路径集。
+ * 真实应用 smoke E2E —— **本地发布前手动跑**的最小主路径集。
  *
  * 覆盖发布门禁清单（五条主路径，共用一个应用实例，不重复构建二进制）：
  * 1. 打开 Vault（命令行参数 → 文件树渲染）
@@ -57,7 +57,7 @@ async function currentMainPath(page: Page): Promise<string | null> {
   return node.getAttribute('data-main-path')
 }
 
-describe.skipIf(!supported)('真实应用 smoke：主路径门禁（Release 阻断级）', () => {
+describe.skipIf(!supported)('真实应用 smoke：主路径门禁（本地发布前手动跑）', () => {
   let app: LaunchedApp
   let vault: TempVault
 
