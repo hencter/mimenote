@@ -59,7 +59,7 @@ jobs:
       # 实测整步 30s 超时）。它是**本地发布前的手动门禁**（命令与用法见 README 质量门禁表）。
 
       - name: 发布到 GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: Mimenote ${{ github.ref_name }}
           generate_release_notes: true
