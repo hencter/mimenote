@@ -17,6 +17,20 @@
  * 拖拽（HTML5）：标签是拖动源，落点计算在 `LeafPane`（条上 = 插到第几位、内容区 =
  * 并入或切一刀，见 `drop-target.ts`）。本组件只负责**渲染**：拖动状态与落点 hint
  * 都由父组件持有并作为 props 传进来。
+ *
+ * ## 顶部空间的三段（ADR-0038）
+ *
+ * ```
+ * ┌──────────────────────────── 36px ────────────────────────────┐
+ * │ [标签滚动区 role=tablist]            │ [窗口按钮槽（只有主叶）] │
+ * └──────────────────────────────────────────────────────────────┘
+ * ```
+ *
+ * - 整条标签条带 `data-tauri-drag-region="deep"`：空白处按住拖动窗口、双击最大化。
+ *   Tauri 的拖动脚本会**自动跳过**可点击元素（`role=tab`、`button` 等，见 tauri 的
+ *   `window/scripts/drag.js`），所以标签、关闭按钮、窗口按钮都不会被拖动吞掉点击；
+ * - 窗口按钮槽**不参与横向滚动**（它在 `.mn-tabs__scroll` 外面）：标签再多也挤不掉
+ *   最小化/最大化/关闭（ADR-0038：这三个按钮住进**主叶标签条**的右端）。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -29,8 +43,9 @@ import type {
 
 import { REVEAL_ROW_EVENT } from '@/app/dom-events'
 import { ContextMenu, type ContextMenuItem } from '@/components/ContextMenu'
-import { Icon } from '@/components/Icon'
+import { Icon, type IconName } from '@/components/Icon'
 import { basename, displayName } from '@/domain/paths'
+import { WindowControls } from '@/features/window/WindowControls'
 import { useNoteStore } from '@/state/note-store'
 import { useTabsStore } from '@/state/tabs-store'
 import { useUiStore } from '@/state/ui-store'
@@ -48,6 +63,7 @@ import {
   VIEW_MODULES,
   type LayoutItemId,
   type LeafNode,
+  type ViewModuleId,
 } from './tree-layout'
 
 // 标签条样式表仍住在 `features/tabs/`（它是旧全局标签栏那批样式的幸存者，坐标没跟着搬）。
@@ -64,15 +80,35 @@ const MARK_TITLE: Record<TabMark, string> = {
   conflict: '这篇笔记在磁盘上被外部改动过：需要你决定「覆盖」还是「重新加载」',
 }
 
+/**
+ * 功能型标签（文件 / 链接 / 标签 / 大纲）的图标。
+ *
+ * 它们是**面板开关**，不是文档：显示图标而不是文字，与工具栏的图标按钮同一套视觉语言，
+ * 一眼就能和笔记标签区分开（笔记标签保持"文件名 + 关闭"）。图标尺寸用 `md`（16px）——
+ * 与文件树工具栏同一档；命中区是整条标签（约 32×52），不必瞄准图标本身。
+ * 映射写在渲染层而不是 `VIEW_MODULES`：布局模型是纯函数，不该认识图标组件。
+ */
+const MODULE_ICONS: Record<ViewModuleId, IconName> = {
+  tree: 'folder',
+  links: 'links',
+  tags: 'tag',
+  outline: 'outline',
+}
+
 export interface LeafTabsProps {
   leaf: LeafNode
   /** 这一格**可见**的标签（隐藏面板的标签不在其中，顺序 = 树上的顺序）。 */
   items: readonly LayoutItemId[]
   /** 拖动中的插入位（`null` = 没有在拖/不落在本条上）。 */
   dropIndex: number | null
+  /**
+   * 这一格是不是**主叶**：是则右端常驻三个窗口按钮（ADR-0038）。
+   * 主叶即使一个标签都没有也会渲染标签条 —— 否则窗口按钮会随"空态"一起消失。
+   */
+  windowControls?: boolean
 }
 
-export function LeafTabs({ leaf, items, dropIndex }: LeafTabsProps) {
+export function LeafTabs({ leaf, items, dropIndex, windowControls = false }: LeafTabsProps) {
   const activate = useTabsStore((state) => state.activate)
   const closeTab = useTabsStore((state) => state.closeTab)
 
@@ -265,116 +301,128 @@ export function LeafTabs({ leaf, items, dropIndex }: LeafTabsProps) {
   return (
     <div
       className="mn-tabs mn-tabs--leaf"
-      role="tablist"
-      aria-label="这一格的标签"
       data-leaf-tabs={leaf.id}
+      // 整条是拖动区：空白处拖动窗口、双击最大化。Tauri 的脚本自动跳过
+      // role=tab / button 等可点击元素，因此标签与窗口按钮不受影响（见文件头）。
+      data-tauri-drag-region="deep"
       ref={stripRef}
     >
-      {items.map((item, index) => {
-        const note = notePathOf(item)
-        const isShown = item === shown
-        const tab = (
-          <div
-            key={item}
-            className={[
-              'mn-tabs__tab',
-              isShown ? 'mn-tabs__tab--active' : '',
-              note === null ? 'mn-tabs__tab--module' : '',
-            ]
-              .filter(Boolean)
-              .join(' ')}
-            role="tab"
-            aria-selected={isShown}
-            // roving tabindex：Tab 键只落在"这一格正在显示"的标签上，进入后用 ←/→ 走
-            tabIndex={isShown ? 0 : -1}
-            data-tab-path={note ?? undefined}
-            data-module-tab={note === null ? item : undefined}
-            // 标签就是拖动源（ADR-0035：「拖拽的内容是标签」）
-            draggable
-            onDragStart={(event: ReactDragEvent<HTMLDivElement>) => {
-              useLayoutDrag.getState().begin(item)
-              event.dataTransfer.effectAllowed = 'move'
-              // 有些平台要求 dragstart 时写入数据，拖拽才会真的开始（值本身没人读）
-              event.dataTransfer.setData('text/plain', item)
-            }}
-            onDragEnd={() => useLayoutDrag.getState().end()}
-            onClick={() => activateItem(item)}
-            onKeyDown={(event) => onKeyDown(event, index, item)}
-            onContextMenu={(event: ReactMouseEvent<HTMLDivElement>) => {
-              event.preventDefault()
-              setMenu({ item, x: event.clientX, y: event.clientY })
-            }}
-            {...(note !== null
-              ? (() => {
-                  // 未保存/冲突后缀同时进 title 与 aria-label：可见文案只圈文件名，
-                  // 状态给悬停与读屏（与旧全局标签栏同一契约）
-                  const isCurrent = currentDoc === note
-                  const statusSuffix = !isCurrent
-                    ? ''
-                    : conflicted
-                      ? '（冲突）'
-                      : dirty
-                        ? '（未保存）'
-                        : ''
-                  return {
-                    title: `${note}${statusSuffix}`,
-                    'aria-label': `${note}${statusSuffix}`,
-                    onAuxClick: (event: ReactMouseEvent<HTMLDivElement>) => {
-                      if (event.button !== 1) return // 只有中键
-                      event.preventDefault()
-                      void closeTab(note)
-                    },
-                    // 中键默认会触发自动滚动，先挡掉
-                    onMouseDown: (event: ReactMouseEvent<HTMLDivElement>) => {
-                      if (event.button === 1) event.preventDefault()
-                    },
-                  }
-                })()
-              : {
-                  title: `${VIEW_MODULES[item as keyof typeof VIEW_MODULES].hint}\n拖动换位置；${LAYOUT_KEYBOARD_HINT}`,
-                  'aria-label': `${VIEW_MODULES[item as keyof typeof VIEW_MODULES].label} 面板标签`,
-                })}
-          >
-            <span className="mn-tabs__label">
-              {note !== null ? displayName(note) : VIEW_MODULES[item as keyof typeof VIEW_MODULES].label}
-            </span>
-            {note !== null && currentDoc === note && (conflicted || dirty) && (
-              <span
-                className={`mn-tabs__mark mn-tabs__mark--${conflicted ? 'conflict' : 'dirty'}`}
-                title={MARK_TITLE[conflicted ? 'conflict' : 'dirty']}
-                aria-hidden="true"
-              >
-                {conflicted ? <Icon name="alert" size="xs" /> : '●'}
-              </span>
-            )}
-            <button
-              type="button"
-              className="mn-tabs__close"
-              aria-label={
-                note !== null
-                  ? `关闭 ${note}`
-                  : `隐藏${VIEW_MODULES[item as keyof typeof VIEW_MODULES].label}面板`
-              }
-              title={note !== null ? '关闭（Ctrl+W 关闭当前标签）' : '隐藏这一块（与它的快捷键等价）'}
-              onClick={(event) => {
-                // 不要让点击穿透到标签本身（那会先切过去再关掉/隐藏，白翻一次页）
-                event.stopPropagation()
-                if (note !== null) void closeTab(note)
-                else if (isViewModule(item)) hideModule(item)
+      {/*
+        横向滚动区：标签与落点线住在这里。窗口按钮槽在外面，所以标签再多也挤不掉它。
+        `role=tablist` 只包标签（不含窗口按钮），读屏的"这一格的标签"语义才准确。
+      */}
+      <div className="mn-tabs__scroll" role="tablist" aria-label="这一格的标签">
+        {items.map((item, index) => {
+          const note = notePathOf(item)
+          const isShown = item === shown
+          const tab = (
+            <div
+              key={item}
+              className={[
+                'mn-tabs__tab',
+                isShown ? 'mn-tabs__tab--active' : '',
+                note === null ? 'mn-tabs__tab--module' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              role="tab"
+              aria-selected={isShown}
+              // roving tabindex：Tab 键只落在"这一格正在显示"的标签上，进入后用 ←/→ 走
+              tabIndex={isShown ? 0 : -1}
+              data-tab-path={note ?? undefined}
+              data-module-tab={note === null ? item : undefined}
+              // 标签就是拖动源（ADR-0035：「拖拽的内容是标签」）
+              draggable
+              onDragStart={(event: ReactDragEvent<HTMLDivElement>) => {
+                useLayoutDrag.getState().begin(item)
+                event.dataTransfer.effectAllowed = 'move'
+                // 有些平台要求 dragstart 时写入数据，拖拽才会真的开始（值本身没人读）
+                event.dataTransfer.setData('text/plain', item)
               }}
+              onDragEnd={() => useLayoutDrag.getState().end()}
+              onClick={() => activateItem(item)}
+              onKeyDown={(event) => onKeyDown(event, index, item)}
+              onContextMenu={(event: ReactMouseEvent<HTMLDivElement>) => {
+                event.preventDefault()
+                setMenu({ item, x: event.clientX, y: event.clientY })
+              }}
+              {...(note !== null
+                ? (() => {
+                    // 未保存/冲突后缀同时进 title 与 aria-label：可见文案只圈文件名，
+                    // 状态给悬停与读屏（与旧全局标签栏同一契约）
+                    const isCurrent = currentDoc === note
+                    const statusSuffix = !isCurrent
+                      ? ''
+                      : conflicted
+                        ? '（冲突）'
+                        : dirty
+                          ? '（未保存）'
+                          : ''
+                    return {
+                      title: `${note}${statusSuffix}`,
+                      'aria-label': `${note}${statusSuffix}`,
+                      onAuxClick: (event: ReactMouseEvent<HTMLDivElement>) => {
+                        if (event.button !== 1) return // 只有中键
+                        event.preventDefault()
+                        void closeTab(note)
+                      },
+                      // 中键默认会触发自动滚动，先挡掉
+                      onMouseDown: (event: ReactMouseEvent<HTMLDivElement>) => {
+                        if (event.button === 1) event.preventDefault()
+                      },
+                    }
+                  })()
+                : {
+                    title: `${VIEW_MODULES[item as keyof typeof VIEW_MODULES].hint}\n拖动换位置；${LAYOUT_KEYBOARD_HINT}`,
+                    'aria-label': `${VIEW_MODULES[item as keyof typeof VIEW_MODULES].label} 面板标签`,
+                  })}
             >
-              <Icon name="x" size="xs" />
-            </button>
-          </div>
-        )
-        // 落点线插在第 dropIndex 位之前（流内占位，标签自然让位 —— 与旧停靠区同一手法）
-        return (
-          <TabWithDropLine key={item} lineBefore={dropIndex === index}>
-            {tab}
-          </TabWithDropLine>
-        )
-      })}
-      {dropIndex === items.length && <div className="mn-tabs__drop-line" data-drop-line="end" />}
+              {note !== null ? (
+                <span className="mn-tabs__label">{displayName(note)}</span>
+              ) : (
+                // 功能型标签 = 图标（见 MODULE_ICONS 的注释）；文字说明留在 title/aria-label
+                <Icon name={MODULE_ICONS[item as ViewModuleId]} size="md" className="mn-tabs__module-icon" />
+              )}
+              {note !== null && currentDoc === note && (conflicted || dirty) && (
+                <span
+                  className={`mn-tabs__mark mn-tabs__mark--${conflicted ? 'conflict' : 'dirty'}`}
+                  title={MARK_TITLE[conflicted ? 'conflict' : 'dirty']}
+                  aria-hidden="true"
+                >
+                  {conflicted ? <Icon name="alert" size="xs" /> : '●'}
+                </span>
+              )}
+              <button
+                type="button"
+                className="mn-tabs__close"
+                aria-label={
+                  note !== null
+                    ? `关闭 ${note}`
+                    : `隐藏${VIEW_MODULES[item as keyof typeof VIEW_MODULES].label}面板`
+                }
+                title={note !== null ? '关闭（Ctrl+W 关闭当前标签）' : '隐藏这一块（与它的快捷键等价）'}
+                onClick={(event) => {
+                  // 不要让点击穿透到标签本身（那会先切过去再关掉/隐藏，白翻一次页）
+                  event.stopPropagation()
+                  if (note !== null) void closeTab(note)
+                  else if (isViewModule(item)) hideModule(item)
+                }}
+              >
+                <Icon name="x" size="xs" />
+              </button>
+            </div>
+          )
+          // 落点线插在第 dropIndex 位之前（流内占位，标签自然让位 —— 与旧停靠区同一手法）
+          return (
+            <TabWithDropLine key={item} lineBefore={dropIndex === index}>
+              {tab}
+            </TabWithDropLine>
+          )
+        })}
+        {dropIndex === items.length && <div className="mn-tabs__drop-line" data-drop-line="end" />}
+      </div>
+      {/* 窗口按钮槽：只有主叶有；在滚动区之外，因此永远贴在窗口/格子右上角 */}
+      {windowControls && <WindowControls />}
       {menu !== null && (
         <ContextMenu
           items={

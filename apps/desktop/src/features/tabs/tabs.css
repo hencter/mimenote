@@ -3,22 +3,33 @@
  *
  * 全部颜色/圆角/间距走 `--mn-*` 变量（主题 JSON 提供），因此新增主题不需要动这个文件。
  *
- * 布局契约（ADR-0035 之后）：
+ * 布局契约（ADR-0035 / 0038）：
  * - 标签条是**每个叶子格子自己的**一行（`.mn-tabs--leaf`），不再是窗口顶部的全局标签栏
  *   （容器切割树：笔记与视图模块都是"某一格的标签"，见 `features/layout/TreeHost.tsx`）；
- * - `overflow-x: auto` + 每个标签的 `min-width`：标签多了是横向滚动，而不是被压成看不清；
- * - 标签同时是**拖动源**（拖到别的格子 = 搬过去）：`user-select: none` 防止拖动变成选文字。
+ * - 一行分两段：`.mn-tabs__scroll`（标签滚动区，`overflow-x: auto` + 每个标签的
+ *   `min-width`：标签多了是横向滚动而不是被压扁）与右端的**窗口按钮槽**（只有主叶有，
+ *   在滚动区之外，因此标签再多也挤不掉最小化/最大化/关闭）；
+ * - 整条是窗口拖动区（`data-tauri-drag-region="deep"`，见 LeafTabs 文件头）：
+ *   `user-select: none` 防止拖动变成选文字。
  */
 
 .mn-tabs {
   flex: 0 0 auto;
   display: flex;
   align-items: stretch;
-  gap: 2px;
   height: 36px;
-  padding: 0 6px;
   background: var(--mn-bg-elevated);
   border-bottom: 1px solid var(--mn-border);
+}
+
+/* 标签滚动区：吃掉剩余宽度；`min-width: 0` 允许它在窄格子里收缩到 0 */
+.mn-tabs__scroll {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+  padding: 0 6px;
   overflow-x: auto;
   overflow-y: hidden;
 }
@@ -115,11 +126,24 @@
 }
 
 /*
- * 顶行的空白段（`mn-tabs__filler`）已随全局标签栏一起退役：
- * 叶子格子的标签条不需要给窗口拖动留白（窗口拖动区在标题栏）。
+ * 顶行的空白段（`mn-tabs__filler`）已随全局标签栏一起退役：拖动区不再靠"专门留一段白"，
+ * 而是整条标签条 `data-tauri-drag-region="deep"`（Tauri 自动跳过可点击元素，见 LeafTabs 文件头）。
+ * 窗口按钮槽（右上叶右端）的样式在 `styles/app.css` 的 `.mn-window-controls`。
  */
 
-/* 模块标签：文案短（"文件"/"大纲"），窄格子里不该占满 104px 的笔记标签最小宽 */
+/*
+ * 功能型标签（文件 / 链接 / 标签 / 大纲）：**图标 + 关闭**，不是"文件名 + 关闭"。
+ *
+ * - 图标 16px（`md`，与文件树工具栏同一档），不参与压缩；文字说明在 `title` / `aria-label` 里；
+ * - 不给笔记标签的 104px 最小宽：命中区就是整条标签（约 32px 高 × 52px 宽），
+ *   鼠标点图标、点标签空白、点 × 都有效，不必瞄准；
+ * - 关闭 × 沿用"悬停才显形"（默认透明但仍可键盘聚焦），所以静息态看起来就是一枚图标按钮。
+ */
 .mn-tabs--leaf .mn-tabs__tab--module {
   min-width: 0;
+  padding: 0 4px 0 10px;
+}
+
+.mn-tabs__module-icon {
+  flex: 0 0 auto;
 }

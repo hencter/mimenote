@@ -1,5 +1,6 @@
 /**
- * 文件树工具栏：过滤、展开/折叠、新建、重扫、切换 Vault。
+ * 文件树工具栏：过滤、展开/折叠、新建、重扫、切换 Vault，以及**导出**（ADR-0038：
+ * 业务控件从标题栏下移到这里，不再和窗口按钮挤出一条独立的 chrome）。
  *
  * 第二行是**标签过滤控件**（`TagFilterControl`）：它同样属于文件树头部 ——
  * 两个入口并排放在一起，"文本收窄"与"标签收窄"在同一处可发现、可清除。
@@ -13,6 +14,7 @@ import { FOCUS_FILTER_EVENT } from '@/app/dom-events'
 import { createNoteHere, moveSelected, openVaultInteractive, renameSelected, rescanVault } from '@/app/actions'
 import { Icon } from '@/components/Icon'
 import type { TreeSort } from '@/domain/tree'
+import { ExportButton } from '@/features/export/ExportButton'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 import { TagFilterControl } from './TagFilterControl'
@@ -227,6 +229,8 @@ export function TreeToolbar() {
         >
           <Icon name="folderOpen" />
         </button>
+        {/* 导出从标题栏下移到这里（ADR-0038）：与新建/重命名/移动同属"对文档的操作" */}
+        <ExportButton />
       </div>
 
       <TagFilterControl />

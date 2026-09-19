@@ -18,6 +18,13 @@
  * **空叶永远渲染**（它是占位空态，不是被隐藏的面板）—— 判据是 `tree-layout.ts` 的
  * `subtreeRenderable`（就一份，别在组件里再写）。
  *
+ * ## 顶部空间（ADR-0038）
+ *
+ * 独立标题栏退役后，**右上叶**（贴着窗口右上角的那一格，判据是 `topRightLeafId`）
+ * 的标签条**即使没有标签也渲染**：它是三个窗口按钮的宿主，也是整窗保证存在的拖动区
+ * （`data-tauri-drag-region="deep"`，Tauri 自动跳过 `role=tab` / `button` 等可点击元素）。
+ * 按钮跟着"最右一格"走而不是跟着主叶走：右停靠面板的家就在主叶右边，跟主叶会停在窗口中间。
+ *
  * ## 拖标签的落点
  *
  * 标签是拖动源（`LeafTabs`），落点由这里算（`drop-target.ts` 出判据）：
@@ -59,18 +66,18 @@ import { LeafTabs } from './LeafTabs'
 import { useModuleVisibility } from './module-visibility'
 import { adjustNewSplitRatio } from './split-size'
 import {
-  DEFAULT_MAIN_LEAF_ID,
+  clampRatioForExtent,
   evenSplit,
-  findLeaf,
   isViewModule,
   leafOfItem,
-  leaves,
   moveItem,
+  NARROW_LEAF_PIXELS,
   noteItem,
   notePathOf,
   setActive,
   setRatio,
   subtreeRenderable,
+  topRightLeafId,
   type LayoutItemId,
   type LeafNode,
   type SplitNode,
@@ -98,8 +105,11 @@ function hintEqual(a: DropHint | null, b: DropHint | null): boolean {
 interface RenderContext {
   /** 一个标签此刻可见吗（模块看开关、笔记永远可见）。 */
   isVisibleItem: (item: LayoutItemId) => boolean
-  /** 主叶 id：当前文档所在的格子；没有当前文档时是 `main`（再没有就第一个叶子）。 */
-  primaryLeafId: string | null
+  /**
+   * 右上叶 id（贴着窗口右上角的那一格，判据 `tree-layout.topRightLeafId`）：
+   * 三个窗口按钮挂在它的标签条右端（ADR-0038）。
+   */
+  windowControlsLeafId: string | null
   /** 当前文档的相对路径（`null` = 没有打开）。 */
   currentDoc: string | null
 }
@@ -140,26 +150,30 @@ export function TreeHost() {
     [visibility],
   )
 
-  const primaryLeafId = useMemo(() => {
-    if (currentDoc !== null) {
-      const leaf = leafOfItem(layout, noteItem(currentDoc))
-      if (leaf !== null) return leaf.id
-    }
-    return (findLeaf(layout, DEFAULT_MAIN_LEAF_ID) ?? leaves(layout)[0])?.id ?? null
-  }, [layout, currentDoc])
+  /**
+   * 窗口按钮的宿主 = **右上叶**（ADR-0038；`topRightLeafId` 的注释里写了为什么不是主叶：
+   * 右停靠面板的家在主叶右边，跟着主叶走按钮会停在窗口中间）。
+   * 判据只认"渲染器实际画出来的树"（不可渲染的半边跳过），因此与 `LeafPane` 的渲染一致。
+   */
+  const windowControlsLeafId = useMemo(
+    () => topRightLeafId(layout, isVisibleItem),
+    [layout, isVisibleItem],
+  )
 
-  const ctx: RenderContext = { isVisibleItem, primaryLeafId, currentDoc }
+  const ctx: RenderContext = { isVisibleItem, windowControlsLeafId, currentDoc }
 
   return (
     <div className="mn-tree-host">
       {/*
         整棵树都不可渲染（所有格子都只剩被隐藏的模块 —— 例如四块面板全关且没开笔记）时，
         也不能让主区空白：退回一格"主视图空态"（与旧布局"主区域永远在"同一底线）。
+        这一格同样要带上标签条 —— 窗口按钮住在那里，不能随空态一起消失（ADR-0038）。
       */}
       {subtreeRenderable(layout, isVisibleItem) ? (
         <NodeView node={layout} ctx={ctx} />
       ) : (
         <div className="mn-leaf" data-leaf-id="fallback">
+          <LeafTabs leaf={FALLBACK_LEAF} items={[]} dropIndex={null} windowControls />
           <div className="mn-leaf__content">
             <MainViews />
           </div>
@@ -168,6 +182,9 @@ export function TreeHost() {
     </div>
   )
 }
+
+/** 空态兜底格子的合成叶（只为给标签条一个身份；没有标签）。 */
+const FALLBACK_LEAF: LeafNode = { kind: 'leaf', id: 'fallback', items: [], active: null }
 
 /** 递归渲染一个节点。 */
 function NodeView({ node, ctx }: { node: TreeLayout; ctx: RenderContext }) {
@@ -214,8 +231,13 @@ function SplitView({ node, ctx }: { node: SplitNode; ctx: RenderContext }) {
         onDrag={(event) => {
           const ratio = ratioFrom(event)
           if (ratio === null) return
+          // 像素下限与比例钳制取更严者：嵌套切割时 0.15 连乘仍能切出几十像素的
+          // 废格（用户真实踩到），这一刀拦住它（`clampRatioForExtent` 的注释）
+          const el = ref.current
+          const rect = el?.getBoundingClientRect()
+          const extent = node.axis === 'row' ? (rect?.width ?? 0) : (rect?.height ?? 0)
           const ui = useUiStore.getState()
-          ui.setLayout(setRatio(ui.layout, node.id, ratio))
+          ui.setLayout(setRatio(ui.layout, node.id, clampRatioForExtent(ratio, extent)))
         }}
         onNudge={(delta) => {
           const el = ref.current
@@ -224,7 +246,9 @@ function SplitView({ node, ctx }: { node: SplitNode; ctx: RenderContext }) {
           const size = node.axis === 'row' ? rect.width : rect.height
           if (size <= 0) return
           const ui = useUiStore.getState()
-          ui.setLayout(setRatio(ui.layout, node.id, node.ratio + delta / size))
+          ui.setLayout(
+            setRatio(ui.layout, node.id, clampRatioForExtent(node.ratio + delta / size, size)),
+          )
         }}
         onEven={() => {
           const ui = useUiStore.getState()
@@ -248,6 +272,33 @@ function LeafPane({ leaf, ctx }: { leaf: LeafNode; ctx: RenderContext }) {
   const dragging = useLayoutDrag((state) => state.dragging)
   const [hint, setHint] = useState<DropHint | null>(null)
   const rootRef = useRef<HTMLElement | null>(null)
+
+  /**
+   * 窄格降级：小于阈值时把内容收起、只留标签条。
+   *
+   * 为什么需要：像素下限（`MIN_LEAF_PIXELS`）只拦得住**新的**拖动；已落盘的旧窄叶、
+   * 以及窗口被缩到比两个下限还小时，格子照样会窄成废条 —— 那种形态下正文逐字竖排，
+   * 既不可读也把分隔条藏进垃圾里。收起内容之后标签条仍在：标签可点、可拖走，
+   * 这就是窄格的自救出口（搭配命令面板的「重置布局」兜底）。
+   */
+  const [narrow, setNarrow] = useState(false)
+  useEffect(() => {
+    const element = rootRef.current
+    if (element === null || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect
+      if (rect === undefined) return
+      const isNarrow = rect.width < NARROW_LEAF_PIXELS || rect.height < NARROW_LEAF_PIXELS
+      setNarrow((prev) => (prev === isNarrow ? prev : isNarrow))
+    })
+    observer.observe(element)
+    return () => {
+      observer.disconnect()
+    }
+  }, [])
+
+  /** 这一格是不是**右上叶**：三个窗口按钮与"空态标签条"都挂在它身上（ADR-0038）。 */
+  const hostsWindowControls = leaf.id === ctx.windowControlsLeafId
 
   /** 有标签但全被隐藏 ⇒ 整格收缩（空叶永远渲染，见文件头）。 */
   const collapsed = leaf.items.length > 0 && visibleItems.length === 0
@@ -345,18 +396,25 @@ function LeafPane({ leaf, ctx }: { leaf: LeafNode; ctx: RenderContext }) {
 
   return (
     <section
-      className={`mn-leaf${shown !== null && isViewModule(shown) ? ' mn-leaf--module' : ''}`}
+      className={`mn-leaf${shown !== null && isViewModule(shown) ? ' mn-leaf--module' : ''}${narrow ? ' mn-leaf--narrow' : ''}`}
       data-leaf-id={leaf.id}
+      data-narrow={narrow ? '' : undefined}
       ref={rootRef}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {visibleItems.length > 0 && (
+      {/*
+        右上叶**即使没有标签也渲染标签条**：三个窗口按钮住在它的右端（ADR-0038），
+        空态下不能让它们消失；顺带它也是整窗唯一保证存在的拖动区。
+        其余格子沿用"有标签才有条"（空模块格不占一行）。
+      */}
+      {(visibleItems.length > 0 || hostsWindowControls) && (
         <LeafTabs
           leaf={leaf}
           items={visibleItems}
           dropIndex={dragging !== null && hint?.kind === 'tab' ? hint.index : null}
+          windowControls={hostsWindowControls}
         />
       )}
       <div className="mn-leaf__content">
@@ -386,8 +444,8 @@ function LeafContent({ shown, ctx }: { shown: LayoutItemId | null; ctx: RenderCo
     // 非当前文档：只读预览（单文档模型：编辑器全局只有一份，点它的标签把它变成当前）
     return <StaticNotePreview relPath={note} className="mn-leaf__preview" />
   }
-  // 当前文档、或空叶（`shown === null` 时这只可能是主叶 —— 不变式 2 保证空叶是整树最后一格，
-  // 而主叶落空时 `primaryLeafId` 就指它）：主视图/查看器都渲染在这里
+  // 当前文档、或空叶（`shown === null` 时这只可能是主叶 —— 不变式 2 保证空叶是整树最后一格）：
+  // 主视图/查看器都渲染在这里
   return <MainViews />
 }
 

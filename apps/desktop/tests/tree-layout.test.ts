@@ -12,8 +12,10 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_MAIN_LEAF_ID,
   MAX_RATIO,
+  MIN_LEAF_PIXELS,
   MIN_RATIO,
   attachItem,
+  clampRatioForExtent,
   defaultLayout,
   evenSplit,
   findLeaf,
@@ -29,6 +31,7 @@ import {
   removeItem,
   setActive,
   setRatio,
+  topRightLeafId,
   type LayoutItemId,
   type TreeLayout,
 } from '@/features/layout/tree-layout'
@@ -343,5 +346,115 @@ describe('随机操作序列（固定种子）：不变式在 500 步之后仍�
       }
       expectInvariants(layout)
     }
+  })
+})
+
+describe('clampRatioForExtent：像素下限（嵌套切割切不出废格）', () => {
+  it('大容器上退回比例钳制（下限比 MIN_RATIO 更宽时不起作用）', () => {
+    // 2000px 容器：120px 下限 = 0.06 份额，比 0.15 松 → 仍是 [0.15, 0.85]
+    expect(clampRatioForExtent(0.02, 2000)).toBeCloseTo(MIN_RATIO, 6)
+    expect(clampRatioForExtent(0.98, 2000)).toBeCloseTo(MAX_RATIO, 6)
+    expect(clampRatioForExtent(0.5, 2000)).toBeCloseTo(0.5, 6)
+  })
+
+  it('小容器上像素下限更严：两级嵌套后的绝对宽度仍 ≥ MIN_LEAF_PIXELS', () => {
+    // 400px 容器：下限份额 = 120/400 = 0.3 → 夹进 [0.3, 0.7]
+    expect(clampRatioForExtent(0.15, 400)).toBeCloseTo(0.3, 6)
+    expect(clampRatioForExtent(0.85, 400)).toBeCloseTo(0.7, 6)
+    // 真实踩到的场景：2000px 窗口里两级 0.15 嵌套 → 内层 300px，
+    // 再拖内层那刀时下限是 120/300 = 0.4，切不出 45px 的窄叶
+    expect(clampRatioForExtent(0.15, 300)).toBeCloseTo(0.4, 6)
+    expect(300 * clampRatioForExtent(0.15, 300)).toBeGreaterThanOrEqual(MIN_LEAF_PIXELS)
+  })
+
+  it('容器不足两个下限时退回比例钳制（小窗口不制造"怎么夹都不合法"）', () => {
+    expect(clampRatioForExtent(0.4, 2 * MIN_LEAF_PIXELS - 1)).toBeCloseTo(0.4, 6)
+    expect(clampRatioForExtent(0.02, 100)).toBeCloseTo(MIN_RATIO, 6)
+  })
+
+  it('量不到尺寸（jsdom / 非有限值）时退回比例钳制', () => {
+    expect(clampRatioForExtent(0.02, 0)).toBeCloseTo(MIN_RATIO, 6)
+    expect(clampRatioForExtent(0.02, Number.NaN)).toBeCloseTo(MIN_RATIO, 6)
+    expect(clampRatioForExtent(0.02, Number.POSITIVE_INFINITY)).toBeCloseTo(MIN_RATIO, 6)
+  })
+})
+
+describe('右上叶：窗口按钮的宿主（ADR-0038）', () => {
+  /** 全部可见（笔记与模块都不隐藏）。 */
+  const allVisible = (): boolean => true
+
+  it('单叶：就是它自己；row 刀往右、column 刀往上', () => {
+    expect(topRightLeafId(defaultLayout(), allVisible)).toBe(DEFAULT_MAIN_LEAF_ID)
+
+    // row[main, links] → 右侧的 links
+    let layout: TreeLayout = {
+      kind: 'split',
+      id: 's1',
+      axis: 'row',
+      ratio: 0.5,
+      a: defaultLayout(),
+      b: { kind: 'leaf', id: 'links', items: ['links'], active: 'links' },
+    }
+    expect(topRightLeafId(layout, allVisible)).toBe('links')
+
+    // column[main, links]（上下叠）→ 同宽，取**上**边那格（按钮才在窗口顶边）
+    layout = { ...layout, axis: 'column' }
+    expect(topRightLeafId(layout, allVisible)).toBe(DEFAULT_MAIN_LEAF_ID)
+
+    // row[ main, column[links(上), tags(下)] ] → 右上角的 links
+    layout = {
+      kind: 'split',
+      id: 's2',
+      axis: 'row',
+      ratio: 0.5,
+      a: defaultLayout(),
+      b: {
+        kind: 'split',
+        id: 's3',
+        axis: 'column',
+        ratio: 0.5,
+        a: { kind: 'leaf', id: 'links', items: ['links'], active: 'links' },
+        b: { kind: 'leaf', id: 'tags', items: ['tags'], active: 'tags' },
+      },
+    }
+    expect(topRightLeafId(layout, allVisible)).toBe('links')
+  })
+
+  it('被隐藏的模块不占空间：半边不可渲染就跳过，按钮回到剩下的最右一格', () => {
+    /*
+      真实场景：默认布局是 row[tree, main, links]，links 默认隐藏。
+      若按"主叶"找，按钮会停在窗口中间（main 的标签条）；按"右上叶"找，
+      links 不渲染时它就是 main —— 用户看到的才是贴窗口右上角。
+    */
+    const layout: TreeLayout = {
+      kind: 'split',
+      id: 's1',
+      axis: 'row',
+      ratio: 0.5,
+      a: { kind: 'leaf', id: 'tree', items: ['tree'], active: 'tree' },
+      b: {
+        kind: 'split',
+        id: 's2',
+        axis: 'row',
+        ratio: 0.5,
+        a: defaultLayout(),
+        b: { kind: 'leaf', id: 'links', items: ['links'], active: 'links' },
+      },
+    }
+    const onlyTree = (item: LayoutItemId): boolean => item === 'tree'
+    expect(topRightLeafId(layout, onlyTree)).toBe(DEFAULT_MAIN_LEAF_ID)
+
+    // 连文件树也收起来（main 是空叶，永远渲染）→ 还是 main
+    const noneVisible = (): boolean => false
+    expect(topRightLeafId(layout, noneVisible)).toBe(DEFAULT_MAIN_LEAF_ID)
+
+    // 整棵树都不可渲染（所有叶都只剩被隐藏的模块）→ null，由渲染层兜底
+    const allHidden: TreeLayout = {
+      kind: 'leaf',
+      id: 'links',
+      items: ['links'],
+      active: 'links',
+    }
+    expect(topRightLeafId(allHidden, noneVisible)).toBeNull()
   })
 })

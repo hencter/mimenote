@@ -73,6 +73,42 @@ export type TreeLayout = LeafNode | SplitNode
 export const MIN_RATIO = 0.15
 export const MAX_RATIO = 0.85
 
+/**
+ * 一格在切割方向上的**绝对最小尺寸**（px）。
+ *
+ * 不变式 3 的比例钳制是**相对父容器**的：嵌套切割时 0.15 连乘，绝对宽度可以任意小
+ * （真实踩到：两级 0.15 嵌套在 2000px 窗口里切出 ≈31px 的窄叶，面板内容被压成
+ * 逐字竖排，既不可读、几像素宽的分隔条也几乎拖不回来）。拖分隔条与"切一刀给家尺寸"
+ * 都必须同时满足这一下限 —— 见 {@link clampRatioForExtent}。
+ */
+export const MIN_LEAF_PIXELS = 120
+
+/**
+ * 窄格的**降级阈值**（px）：小于它时渲染层把内容收起、只留标签条。
+ *
+ * 已落盘的旧窄叶与极端小窗口绕不过 {@link MIN_LEAF_PIXELS}（比例钳制拦不住历史数据），
+ * 这一档保证它们呈现为"一条标签条"而不是逐字竖排的废条 —— 标签仍然可点可拖，
+ * 把标签拖走就是窄格的自救出口。取值约为最小尺寸的一半强：既不误伤"小但可用"的格子，
+ * 也兜住几十像素的病态窄叶。
+ */
+export const NARROW_LEAF_PIXELS = 72
+
+/**
+ * 比例钳制的**像素加强版**：在 {@link MIN_RATIO}..{@link MAX_RATIO} 之上，再保证
+ * 切完之后两边都不小于 {@link MIN_LEAF_PIXELS}（像素下限换算成这一刀的比例份额，
+ * 与比例钳制取更严者）。
+ *
+ * 容器本身不足两个下限（窗口太小）时退回比例钳制 —— 下限是为了"不造出废格"，
+ * 不该在小窗口上制造"怎么夹都不合法"。`extentPx` 量不到（jsdom）时同样退回。
+ */
+export function clampRatioForExtent(ratio: number, extentPx: number): number {
+  const base = clampRatio(ratio)
+  if (!Number.isFinite(extentPx) || extentPx <= 0) return base
+  const minShare = MIN_LEAF_PIXELS / extentPx
+  if (minShare * 2 >= 1) return base
+  return Math.min(1 - minShare, Math.max(minShare, base))
+}
+
 /** 四种视图模块（顺序即默认左叶里的顺序）。 */
 export const VIEW_MODULE_IDS: readonly ViewModuleId[] = ['tree', 'links', 'tags', 'outline']
 
@@ -585,6 +621,32 @@ export function contentLeafId(layout: TreeLayout): string | null {
   if (main !== undefined) return main.id
   const content = all.find((leaf) => leaf.items.every((item) => !isViewModule(item)))
   return content?.id ?? null
+}
+
+/**
+ * **右上叶**：贴着窗口右上角的那一格（窗口按钮的宿主，ADR-0038）。
+ *
+ * 走法就一句：`row` 刀往右（`b`）、`column` 刀往上（`a`）—— 递归到底就是"最右侧、且在同列里
+ * 最靠上"的那一格。**不可渲染的半边直接跳过**（被隐藏的面板不占空间），所以这个判据与
+ * 渲染器实际画出来的树逐格一致：用户把右侧面板收起来时，按钮自然回到剩下的最右一格。
+ *
+ * 为什么不按 `main` / 当前文档格找：右停靠面板（链接/标签/大纲）的家就在主叶右边，
+ * 按钮跟着主叶走会停在窗口**中间**（用户报的"放错位置了"）。
+ *
+ * `null` = 整棵树都不可渲染（渲染层会退回兜底空态，按钮由那里自己兜住）。
+ */
+export function topRightLeafId(
+  layout: TreeLayout,
+  isVisible: (item: LayoutItemId) => boolean,
+): string | null {
+  // 不可渲染的叶（有标签但全被隐藏）不占空间 ⇒ 它没有"右上"可言
+  if (layout.kind === 'leaf') return subtreeRenderable(layout, isVisible) ? layout.id : null
+  const a = topRightLeafId(layout.a, isVisible)
+  const b = topRightLeafId(layout.b, isVisible)
+  // 半边不可渲染就取另一半；都在时 row 取右（b）、column 取上（a）
+  if (a === null) return b
+  if (b === null) return a
+  return layout.axis === 'row' ? b : a
 }
 
 /**

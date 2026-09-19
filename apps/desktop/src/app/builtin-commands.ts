@@ -11,6 +11,9 @@ import { useVaultStore } from '@/state/vault-store'
 import { requestExportKind } from '@/features/export/export-events'
 import { formatTableCommand } from '@/features/editor/cm/table-format'
 import { findEditorView } from '@/features/editor/line-jump'
+import { DEFAULT_DOCK_LAYOUT } from '@/features/dock/dock-layout'
+import { reconcileLayout } from '@/features/layout/layout-sync'
+import { fromDockLayout } from '@/features/layout/tree-layout'
 import { isMarkdown } from '@/domain/paths'
 import {
   closeVault,
@@ -383,6 +386,24 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     keybinding: 'Mod+B',
     run: () => {
       useUiStore.getState().toggleSidebar()
+    },
+  },
+  {
+    // 布局坏死（例如旧版本切出的窄叶）时的兜底出口：分隔条拖不回来时用它一键还原。
+    // 重置目标与**首次启动逐像素一致**（默认停靠布局 + 像素家尺寸按此刻视口换算），
+    // 而不是一串 0.5 连砍 —— 后者会把主叶越切越小，紧跟着的 Alt+1/2/3 反而造出新窄格。
+    // 最后再走一次对账：打开的笔记挂回主叶、当前文档所在格真的显示它
+    // （与 `tabs-store` 里 `syncLayout` 同一份输入，重置后不会出现"模块/标签消失"）。
+    id: 'view.resetLayout',
+    title: '重置布局（回到默认分栏）',
+    category: '视图',
+    run: () => {
+      const ui = useUiStore.getState()
+      const tabs = useTabsStore.getState()
+      const fresh = fromDockLayout(DEFAULT_DOCK_LAYOUT, tabs.tabs, {
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+      })
+      ui.setLayout(reconcileLayout(fresh, { notes: tabs.tabs, activeNote: tabs.active }))
     },
   },
 

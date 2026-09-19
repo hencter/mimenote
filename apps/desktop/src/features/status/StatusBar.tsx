@@ -19,6 +19,14 @@ const VIEW_MODES: ReadonlyArray<{ mode: ViewMode; label: string; icon: 'pencil' 
   { mode: 'graph', label: '知识图谱', icon: 'links' },
 ]
 
+/**
+ * 文档视图（编辑 / 阅读）与知识图谱**分开成两组**（用户反馈："图谱独立按钮不和编辑/预览的
+ * 快捷键放一块"）：前两个是"同一篇笔记的两种呈现"，图谱是另一个视图 —— 中间用一条细竖线
+ * 隔开，点错组的概率更低。
+ */
+const DOCUMENT_VIEW_MODES = VIEW_MODES.filter((item) => item.mode !== 'graph')
+const GRAPH_VIEW_MODE = VIEW_MODES.find((item) => item.mode === 'graph')!
+
 export function StatusBar() {
   const info = useVaultStore((state) => state.info)
   const relPath = useNoteStore((state) => state.doc?.relPath ?? null)
@@ -88,6 +96,8 @@ export function StatusBar() {
         {info !== null && (
           <span className="mn-statusbar__muted">
             {info.noteCount} 篇 · {info.entryCount} 条目 · 扫描 {formatDuration(info.scanMs)}
+            {/* 标题栏退役后（ADR-0038）这一份是**唯一**的库统计，截断标记也得跟过来 */}
+            {info.truncated && ' · 已截断'}
           </span>
         )}
       </div>
@@ -121,7 +131,7 @@ export function StatusBar() {
       </div>
 
       <div className="mn-statusbar__group mn-statusbar__group--buttons">
-        {VIEW_MODES.map((item) => (
+        {DOCUMENT_VIEW_MODES.map((item) => (
           <button
             key={item.mode}
             type="button"
@@ -134,6 +144,22 @@ export function StatusBar() {
             <Icon name={item.icon} size="sm" />
           </button>
         ))}
+      </div>
+
+      {/* 图谱单独一组：它不是"这一篇的另一种呈现"，与编辑/阅读之间画一条细竖线 */}
+      <span className="mn-statusbar__divider" aria-hidden="true" />
+
+      <div className="mn-statusbar__group mn-statusbar__group--buttons">
+        <button
+          type="button"
+          className={`mn-icon-button${viewMode === GRAPH_VIEW_MODE.mode ? ' mn-icon-button--active' : ''}`}
+          title={`${GRAPH_VIEW_MODE.label}（Ctrl+G）`}
+          aria-label={GRAPH_VIEW_MODE.label}
+          aria-pressed={viewMode === GRAPH_VIEW_MODE.mode}
+          onClick={() => setViewMode(GRAPH_VIEW_MODE.mode)}
+        >
+          <Icon name={GRAPH_VIEW_MODE.icon} size="sm" />
+        </button>
       </div>
 
       <div className="mn-statusbar__group">

@@ -1,13 +1,16 @@
 /**
  * 应用外壳：布局、全局副作用装配。
  *
- * 布局（容器切割树，ADR-0035）：
+ * 布局（容器切割树，ADR-0035；标题栏退役见 ADR-0038）：
  * ```
- * ┌──────────── titlebar ────────────┐   flex: 0 0 auto
  * ├─ 冲突横幅（可选，无冲突时不渲染） ─┤   flex: 0 0 auto
  * │  TreeHost（二叉切割树）           │   .mn-body → flex: 1 1 auto
  * ├──────────── statusbar ───────────┤   flex: 0 0 auto
  * ```
+ *
+ * **顶部不再有独立标题栏**：内容（切割树）从窗口最顶边开始，有效垂直空间多出
+ * 原来那 36px。窗口级控件（品牌/库名/统计/导出）全部下移 —— 统计在状态栏
+ * （那里本来就有一份）、导出在文件树工具栏、三个窗口按钮住进**主叶标签条右端**。
  *
  * ⚠️ 布局不变式：外壳必须是**列方向 flex**，不能让任何区域依赖"自己是第几个子节点"。
  * 冲突横幅是可选的，用位置化的 `grid-template-rows` 会让主体错位
@@ -20,11 +23,8 @@ import { useEffect } from 'react'
 import { syncSnippets } from '@/app/actions'
 import { useGlobalKeymap } from '@/app/keymap'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { Icon } from '@/components/Icon'
 import { Toasts } from '@/components/Toasts'
-import { ExportButton } from '@/features/export/ExportButton'
 import { TrashDialog } from '@/features/trash/TrashDialog'
-import { WindowControls } from '@/features/window/WindowControls'
 import { ExportDialog } from '@/features/export/ExportDialog'
 import { ImageLightbox } from '@/features/lightbox/ImageLightbox'
 import { PaletteHost } from '@/features/palette/PaletteHost'
@@ -34,7 +34,6 @@ import { StatusBar } from '@/features/status/StatusBar'
 import { useWindowTitle } from '@/features/status/window-title'
 import { TreeHost } from '@/features/layout/TreeHost'
 import { VaultGate } from '@/features/vault/VaultGate'
-import { formatDuration } from '@/domain/format'
 import { subscribeIndexStatus, useLinksStore } from '@/state/links-store'
 import { flushAutosave, hasUnsavedChanges, useNoteStore } from '@/state/note-store'
 import { useUiStore } from '@/state/ui-store'
@@ -149,9 +148,9 @@ export function App() {
       <>
         <VaultGate />
         <ConfirmDialog />
-        {/* 门闸页没有标题栏，这里是"未打开 Vault 时也能进设置/改主题"的唯一入口；
-            组件在关闭时自己返回 null，但 effect 仍活着（字号与自动保存延迟靠它维护），
-            所以**不能**写成条件挂载。 */}
+        {/* 门闸页也没有独立标题栏（ADR-0038 之后主界面也没有），这里是"未打开 Vault 时
+            也能进设置/改主题"的唯一入口；组件在关闭时自己返回 null，但 effect 仍活着
+            （字号与自动保存延迟靠它维护），所以**不能**写成条件挂载。 */}
         <SettingsDialog />
         {/* 导出的目标路径只能由用户在系统保存对话框里选，门闸页也要能打开（会说明"还没有打开 Vault"）；
             必须常驻挂载：它同时是导出命令的进度面板与打印样式的挂载点 */}
@@ -167,41 +166,10 @@ export function App() {
   return (
     <div className="mn-app">
       {/*
-        自绘标题栏（`decorations: false` 之后它是**唯一的**标题栏），一行装下窗口的顶级信息：
-        品牌 / 库名 · （中区留空，是纯拖动区）· 统计 / 导出 · 三个窗口按钮。
-
-        - 文件标签**曾经**住在中区（ADR-0034）；容器切割树（ADR-0035）之后，笔记标签与
-          模块标签一样是"某一格的标签"，全局标签栏随之退役 —— 中区回归纯拖动区；
-        - `data-tauri-drag-region="deep"` 让整条栏都能拖动窗口、双击即最大化；
-        - 当前笔记/附件的路径不在这一行 —— 它在状态栏最左（`data-main-path`）。
+        顶部**不再有独立标题栏**（ADR-0038）：窗口内容（切割树）从最顶边开始，
+        窗口按钮住进主叶标签条右端，拖动区由标签条自己承担（`data-tauri-drag-region="deep"`）。
+        业务信息各自归位：库名/统计在状态栏，导出在文件树工具栏，"我在看什么"在状态栏最左。
       */}
-      <header className="mn-titlebar" data-tauri-drag-region="deep">
-        {/* 左区 = "我在哪个库"：产品名、当前 Vault */}
-        <div className="mn-titlebar__left">
-          <div className="mn-titlebar__brand">
-            <Icon name="sparkle" size="md" />
-            <span>Mimenote</span>
-          </div>
-          <div className="mn-titlebar__vault" title={info.rootPath}>
-            {info.name}
-          </div>
-        </div>
-
-        {/* 中区 = 纯拖动区（ADR-0035 之后标签进了各自的格子，全局标签栏退役） */}
-        <div className="mn-titlebar__center" />
-
-        {/* 右区 = "这个库有多大" + 出口动作：统计、导出、三个窗口按钮 */}
-        <div className="mn-titlebar__right">
-          <div className="mn-titlebar__meta">
-            {info.noteCount} 篇笔记 · {info.entryCount} 条目 · 扫描 {formatDuration(info.scanMs)}
-            {info.truncated && ' · 已截断'}
-          </div>
-          <ExportButton />
-          <WindowControls />
-        </div>
-      </header>
-
-
       <ConflictBanner />
 
       {/*

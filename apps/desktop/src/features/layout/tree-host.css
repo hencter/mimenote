@@ -2,7 +2,8 @@
  * 容器切割树的渲染样式（ADR-0035）。
  *
  * 布局契约：
- * - `.mn-tree-host` 吃满 `.mn-body`（它挂在 titlebar 与 statusbar 之间那块唯一吃剩余高度的区域）；
+ * - `.mn-tree-host` 吃满 `.mn-body`（窗口顶部到状态栏之间那块唯一吃剩余高度的区域；
+ *   ADR-0038 之后顶部没有独立标题栏，它从窗口最顶边开始）；
  * - split 是行/列方向的 flex，两个半格用 `flex-grow = ratio / (1-ratio)` 分空间
  *   （basis 0，所以比例就是宽度比），分隔条是中间那条 4px；
  * - 叶子是列方向：标签条（固定高）+ 内容（吃剩余高度）。
@@ -142,6 +143,15 @@
   align-self: stretch;
   background: var(--mn-accent);
   pointer-events: none;
+}
+
+/*
+ * 窄格降级（`mn-leaf--narrow`，阈值见 tree-layout.ts 的 `NARROW_LEAF_PIXELS`）：
+ * 只留标签条、把内容整格收起 —— 几十像素宽的格子里正文只会逐字竖排成废条，
+ * 而标签条仍然可点、可拖（把标签拖走就是窄格的自救出口）。
+ */
+.mn-leaf--narrow .mn-leaf__content {
+  display: none;
 }
 
 /* ------------------------------------------------------------------ 文件树那一格的底行 */

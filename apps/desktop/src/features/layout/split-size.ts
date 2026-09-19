@@ -12,10 +12,9 @@
  */
 
 import {
+  clampRatioForExtent,
   isViewModule,
   leafOfItem,
-  MAX_RATIO,
-  MIN_RATIO,
   setRatio,
   type LayoutItemId,
   type TreeLayout,
@@ -46,7 +45,8 @@ export function preferredSplitRatio(
 ): number | null {
   if (!isViewModule(item) || !Number.isFinite(extentPx) || extentPx <= 0) return null
   const px = edge === 'left' || edge === 'right' ? MODULE_HOME_PX[item].width : MODULE_HOME_PX[item].height
-  const share = Math.min(MAX_RATIO, Math.max(MIN_RATIO, px / extentPx))
+  // 家尺寸也要过像素下限：被切的格子本身不大时，不能让新叶窄成废条（ADR-0035 后续修订）
+  const share = clampRatioForExtent(px / extentPx, extentPx)
   return edge === 'left' || edge === 'top' ? share : 1 - share
 }
 

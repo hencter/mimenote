@@ -195,119 +195,40 @@ kbd {
 }
 
 /*
- * 标题栏 = 左 / 中 / 右三区（ADR-0029）。
- *
- * 为什么用 `1fr 2fr 1fr` 而不是 `flex` 加 `margin: auto`：中区要落在**窗口正中**
- * （当前笔记路径，见下），而左右两区的内容宽度完全由数据决定（Vault 名长短、
- * 统计数字位数）。两条等宽的 `1fr` 轨道让"居中"成为网格的性质，而不是
- * "两边内容刚好一样宽"这个巧合 —— 窗口一缩、库名一长，flex 那种写法就会歪。
- *
- * 中区拿到 2fr 而不是 `auto`：`auto` 会被一条长路径撑开，把右区的窗口按钮挤出可视区；
- * 给死一半宽度之后，长路径走省略号（完整路径在 title 提示里）。
- *
- * 纵向**刻意不写 `align-items`**（默认 stretch）：三区都撑满 34px，
- * `.mn-window-controls` 靠 `align-self: stretch` 贴满整条高度才成立（见它自己的注释）。
- */
-.mn-titlebar {
-  flex: 0 0 auto;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr);
-  padding: 0 12px;
-  gap: 12px;
-  /*
-   * 36px：这一行现在同时装着**标签栏**（标签要 36 才不挤：16px 文字 + 上下留白）与窗口按钮，
-   * 原来单放标题栏时是 34。窗口按钮靠 `align-self: stretch` 跟着这一行，所以它们自动变高。
-   */
-  height: 36px;
-  border-bottom: 1px solid var(--mn-border);
-  background: var(--mn-bg-elevated);
-  user-select: none;
-}
-
-.mn-titlebar__left,
-.mn-titlebar__center,
-.mn-titlebar__right {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.mn-titlebar__left {
-  gap: 12px;
-}
-
-/* 中区 = 纯拖动区（ADR-0035 之后全局标签栏退役，标签进了各自的格子） */
-.mn-titlebar__center {
-  justify-content: flex-start;
-  overflow: hidden;
-}
-
-.mn-titlebar__right {
-  gap: 12px;
-  justify-content: flex-end;
-}
-
-/*
- * `.mn-titlebar__path` 已删：路径先在 ADR-0034 挪进状态栏，
- * 容器切割树（ADR-0035）之后这一区只剩拖动区 —— 注释留档，别让它悄悄回来。
+ * 独立标题栏已退役（ADR-0038）：`.mn-titlebar / __left / __center / __right /
+ * __brand / __vault / __meta` 整组删除 —— 内容从窗口最顶边开始，有效垂直空间多出 36px。
+ * 业务信息各自归位：库名/统计在状态栏，导出在文件树工具栏，路径在状态栏最左。
+ * 唯一留下的是窗口按钮（下面），它住进主叶标签条的右端（`LeafTabs` 的窗口按钮槽）。
  */
 
-.mn-titlebar__brand {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  /* 产品名永不压缩：窗口再窄，"这是什么应用"也该看得见，让别的让位 */
-  flex: 0 0 auto;
-  font-weight: 600;
-  color: var(--mn-accent);
-}
-
 /*
- * Vault 名与统计都**允许被省略**（完整值分别在 title 提示与状态栏里）：
- * 三区制之后左右两区各只有窗口的四分之一，长库名/多位数统计挤不下时
- * 该走省略号，而不是把中区的路径或右区的窗口按钮顶出窗口。
- */
-.mn-titlebar__vault {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-  color: var(--mn-fg);
-  font-weight: 600;
-}
-
-.mn-titlebar__meta {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-  color: var(--mn-fg-subtle);
-  font-size: 12px;
-}
-
-/*
- * 窗口按钮：紧贴标题栏右端、撑满整条高度（Windows 上点"关闭"时不该要求用户瞄准一个 10px 的方块）。
- * `margin-left: auto` 把它们推到最右，同时**不改变标题栏高度**（既有布局契约与 E2E 都按 34px 断言）。
+ * 窗口按钮：住在**右上叶**标签条的右端（ADR-0038）。
+ *
+ * 视觉参考 shadcn/ui 的 ghost icon button：**不画边框、不画分隔线**，命中区靠圆角 hover 底色
+ * 表达（`--mn-hover`）；按钮组整体竖直居中、贴住格子右缘。槽在 `.mn-tabs__scroll` 之外，
+ * 标签横向滚动不会把它带走。
  */
 .mn-window-controls {
+  flex: 0 0 auto;
   display: flex;
-  align-items: stretch;
-  align-self: stretch;
-  margin-left: auto;
-  /* 抵消标题栏的右内边距，让最后一个按钮真的贴到窗口边缘 */
-  margin-right: -12px;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px;
 }
 
 .mn-window-controls__button {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 42px;
+  width: 30px;
+  height: 30px;
   border: none;
-  background: none;
-  color: var(--mn-fg-subtle);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--mn-fg-muted);
   cursor: default;
   padding: 0;
+  transition: background 120ms ease, color 120ms ease;
 }
 
 .mn-window-controls__button:hover {
@@ -926,6 +847,17 @@ kbd {
 
 .mn-statusbar__spacer {
   flex: 1 1 auto;
+}
+
+/*
+ * 状态栏里的细竖线：把"文档视图（编辑/阅读）"与"知识图谱"两组按钮分开
+ * （用户反馈：图谱独立按钮不和编辑/预览的快捷键放一块）。
+ */
+.mn-statusbar__divider {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 14px;
+  background: var(--mn-border);
 }
 
 .mn-statusbar__select select {

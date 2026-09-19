@@ -10,10 +10,14 @@
  */
 
 .mn-export-launch {
-  /* 标题栏里靠右：把剩下的空间都吃掉，按钮自然贴边（不改 app.css 的标题栏布局） */
-  margin-left: auto;
+  /*
+   * 文件树工具栏里的入口（ADR-0038：业务操作随标题栏一起下移）。
+   * 与同一行的 22px 图标按钮等高对齐；不再需要"靠右吃剩余空间"（那个 margin-left: auto
+   * 是标题栏时代的产物，留在这里会把工具栏的搜索框顶变形）。
+   */
   flex: 0 0 auto;
-  padding: 3px 9px;
+  height: 22px;
+  padding: 0 8px;
   font-size: 12px;
 }
 

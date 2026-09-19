@@ -98,12 +98,13 @@ describe('外壳渲染', () => {
     expect(await screen.findByText('打开文件夹作为 Vault')).toBeTruthy()
   })
 
-  it('打开 Vault 后四个区域齐全，且文件树有可见行', async () => {
+  it('打开 Vault 后各区域齐全，且文件树有可见行', async () => {
     render(<App />)
     await useVaultStore.getState().openVault('C:\\MockVault')
 
     await waitFor(() => {
-      expect(document.querySelector('.mn-titlebar')).not.toBeNull()
+      // ADR-0038：独立标题栏退役，内容从窗口最顶边开始
+      expect(document.querySelector('.mn-titlebar')).toBeNull()
       expect(document.querySelector('.mn-body')).not.toBeNull()
       expect(document.querySelector('.mn-statusbar')).not.toBeNull()
     })
@@ -121,6 +122,23 @@ describe('外壳渲染', () => {
     })
   })
 
+  it('导出按钮在文件树工具栏（业务控件随标题栏一起下移，ADR-0038）', async () => {
+    /*
+      用户的要求（Issue #8）：统计/导出从标题栏下移，不再和窗口按钮挤出一条 chrome。
+      统计落到状态栏（那里本来就有一份）；导出落到文件树工具栏（与新建/重命名/移动同一行）。
+      这里钉**归属**：导出在 `.mn-tree-toolbar` 里，且界面里没有标题栏可放它。
+    */
+    render(<App />)
+    await useVaultStore.getState().openVault('C:\\MockVault')
+
+    await waitFor(() => {
+      const toolbar = document.querySelector('.mn-tree-toolbar')
+      expect(toolbar).not.toBeNull()
+      expect(toolbar?.querySelector('.mn-export-launch')).not.toBeNull()
+    })
+    expect(document.querySelector('.mn-titlebar')).toBeNull()
+  })
+
   it('没有冲突横幅时，主体与状态栏仍然存在（横幅是可选的，不能影响布局）', async () => {
     render(<App />)
     await useVaultStore.getState().openVault('C:\\MockVault')
@@ -132,26 +150,36 @@ describe('外壳渲染', () => {
     })
   })
 
-  it('标题栏分左/中/右三区：中区是纯拖动区，标签住在各自的格子里（ADR-0035）', async () => {
+  it('顶部没有独立标题栏：右上叶标签条常驻（窗口按钮与拖动区都在它上面）', async () => {
     /*
-      这条用例的主题换过两次：路径进标题栏中区（ADR-0029）→ 中区改成文件标签栏
-      （ADR-0034）→ 容器切割树（ADR-0035）让笔记标签住进了**每个格子自己的标签条**，
-      中区回归纯拖动区。
+      这条用例的主题换过三次：路径进标题栏中区（ADR-0029）→ 中区改成文件标签栏
+      （ADR-0034）→ 容器切割树（ADR-0035）让标签住进每格自己的标签条 → 标题栏整体退役
+      （ADR-0038：业务控件下移，窗口按钮住进**右上叶**标签条右端）。
 
-      这里钉**结构**：三区都在、标签条在**叶子里**（不在标题栏）、"我在看什么"在状态栏。
+      这里钉**结构**：没有 `.mn-titlebar`；右上叶**即使没有标签**也有标签条（窗口按钮的宿主、
+      整窗保证存在的拖动区）；标签住在叶子里；"我在看什么"在状态栏。
       像素级的验证留给 Playwright（`e2e/ui.e2e.test.ts`）。
     */
     render(<App />)
     await useVaultStore.getState().openVault('C:\\MockVault')
 
     await waitFor(() => {
-      expect(document.querySelector('.mn-titlebar__left')).not.toBeNull()
-      expect(document.querySelector('.mn-titlebar__center')).not.toBeNull()
-      expect(document.querySelector('.mn-titlebar__right')).not.toBeNull()
+      expect(document.querySelector('.mn-app')).not.toBeNull()
+      expect(document.querySelector('[data-leaf-tabs="main"]')).not.toBeNull()
     })
 
-    // 中区是纯拖动区：标签栏**不在**标题栏里（它在叶子的标签条上）
-    expect(document.querySelector('.mn-titlebar .mn-tabs')).toBeNull()
+    // 独立标题栏及其三区全部退役
+    expect(document.querySelector('.mn-titlebar')).toBeNull()
+    expect(document.querySelector('.mn-titlebar__left')).toBeNull()
+    expect(document.querySelector('.mn-titlebar__center')).toBeNull()
+    expect(document.querySelector('.mn-titlebar__right')).toBeNull()
+
+    // 空态（还没有打开笔记）右上叶标签条也在：它同时是窗口按钮的宿主与拖动区
+    // （默认布局是 文件树 | 主叶，主叶就是右上叶；右侧面板打开时宿主会跟着最右一格走）
+    const emptyStrip = document.querySelector('[data-leaf-tabs="main"]')
+    expect(emptyStrip?.getAttribute('data-tauri-drag-region')).toBe('deep')
+    expect(emptyStrip?.querySelectorAll('.mn-tabs__tab').length).toBe(0)
+
     // "我在看什么"在状态栏里，没有文档时整格不渲染
     expect(document.querySelector('.mn-statusbar [data-main-path]')).toBeNull()
 
@@ -165,7 +193,7 @@ describe('外壳渲染', () => {
       expect(shown?.getAttribute('data-main-path')).toBe('项目/设计.md')
       expect(shown?.getAttribute('title')).toBe('项目/设计.md')
     })
-    // 标签出现在**主叶的标签条**里（不在标题栏中区）
+    // 标签出现在**主叶的标签条**里
     await waitFor(() => {
       const mainLeaf = document.querySelector('[data-leaf-id="main"]')
       expect(mainLeaf?.querySelector('[data-tab-path="项目/设计.md"]')).not.toBeNull()
@@ -289,27 +317,30 @@ describe('布局契约（防止再次出现"必须先选中笔记才对得齐窗
     expect(body).toContain('min-height: 0')
   })
 
-  it('标题栏与状态栏不参与剩余空间分配', () => {
-    expect(ruleBody(appCss, '.mn-titlebar')).toContain('flex: 0 0 auto')
+  it('状态栏不参与剩余空间分配；标题栏的规则已整组退役（ADR-0038）', () => {
     expect(ruleBody(appCss, '.mn-statusbar')).toContain('flex: 0 0 auto')
     expect(ruleBody(appCss, '.mn-conflict')).toContain('flex: 0 0 auto')
+    // 独立标题栏退役：选择器一个都不该留下（留档说明可以提，规则不行）
+    expect(appCss).not.toContain('.mn-titlebar {')
+    expect(appCss).not.toContain('.mn-titlebar__left')
   })
 
-  it('标题栏三区列宽是 1fr / 2fr / 1fr（中区的"居中"是网格的性质，不是巧合）', () => {
+  it('窗口按钮是标签条右端的固定槽：不随标签滚动、无边框（shadcn ghost）', () => {
     /*
-      ADR-0029：路径要落在**窗口正中**。左右两条轨道等宽是这条性质的来源 ——
-      用 flex + `margin: auto` 也能"看起来居中"，但那是"两边内容刚好一样宽"的巧合：
-      库名一长、统计数字多一位，路径就会歪。中区是 2fr 而不是 auto，则是为了让一条
-      长路径走省略号而不是把右区的窗口按钮顶出窗口。
+      ADR-0038：三个窗口按钮住进**右上叶**标签条的右端。三条性质必须成立：
+      1. 槽在 `.mn-tabs__scroll` **之外**（标签横向滚动不会把它带走）；
+      2. `flex: 0 0 auto`：按钮组不被标签压缩；
+      3. **不画边框 / 分隔线**（用户要求，参考 shadcn 的 ghost icon button）：
+         命中区靠 30×30 的圆角 hover 底色表达，而不是靠一条边线。
     */
-    const bar = ruleBody(appCss, '.mn-titlebar')
-    expect(bar).toContain('display: grid')
-    expect(bar).toContain('grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr)')
-    // 纵向不写 align-items：三区撑满整行，窗口按钮的 align-self: stretch 才成立
-    expect(bar).not.toContain('align-items')
-    // 中区现在是**纯拖动区**（ADR-0035：标签进了各自的格子），保持左对齐即可
-    expect(ownRuleBody(appCss, '.mn-titlebar__center')).toContain('justify-content: flex-start')
-    expect(ownRuleBody(appCss, '.mn-titlebar__right')).toContain('justify-content: flex-end')
+    const controls = ownRuleBody(appCss, '.mn-window-controls')
+    expect(controls).toContain('flex: 0 0 auto')
+    expect(controls).toContain('align-items: center')
+    expect(controls).not.toContain('border')
+
+    const button = ownRuleBody(appCss, '.mn-window-controls__button')
+    expect(button).toContain('border: none')
+    expect(button).toContain('border-radius: var(--radius-md)')
   })
 
   it('文件树显式允许收缩（contain: strict 让它没有固有高度）', () => {

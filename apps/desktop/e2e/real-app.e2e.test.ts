@@ -305,7 +305,7 @@ describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设
 })
 
 /**
- * 当前打开的笔记（标题栏中区那条路径）。
+ * 当前打开的笔记（状态栏最左那条路径，`data-main-path`）。
  *
  * 读 `data-main-path` 而**不是可见文字**：可见文字不带 `.md`（`displayPath`，ADR-0030），
  * 而自动化要的是真实路径；顺带避开"项目/设计"误配"项目/设计文档"这类前缀命中。
@@ -324,7 +324,7 @@ async function openNoteInTree(page: Page, relPath: string): Promise<void> {
   await ensureTreeRow(page, relPath)
   await treeRow(page, relPath).click()
   await waitUntil(
-    // 标题栏中区的路径三种视图里都在（ADR-0029）→ 不必再退回"树里这一行被选中"那个间接信号
+    // 状态栏最左的路径三种视图里都在（ADR-0029）→ 不必再退回"树里这一行被选中"那个间接信号
     async () => (await currentMainPath(page)) === relPath,
     15_000,
     `打开 ${relPath}`,
@@ -396,7 +396,8 @@ describe.skipIf(!supported)('真实应用：启动与布局（不打开任何笔
       return {
         innerHeight: window.innerHeight,
         innerWidth: window.innerWidth,
-        titlebar: rectOf('.mn-titlebar'),
+        // 顶部没有独立标题栏（ADR-0038）：主体从窗口最顶边开始
+        hasTitlebar: document.querySelector('.mn-titlebar') !== null,
         body: rectOf('.mn-body'),
         statusbar: rectOf('.mn-statusbar'),
         treeLeaf: treeLeaf === null || treeLeaf === undefined
@@ -409,8 +410,9 @@ describe.skipIf(!supported)('真实应用：启动与布局（不打开任何笔
       }
     })
 
-    // 主体高度 = 窗口高度 - 标题栏 - 状态栏（允许 2px 边框/取整误差）
-    const expectedBody = metrics.innerHeight - metrics.titlebar.height - metrics.statusbar.height
+    // 独立标题栏已退役（ADR-0038）：主体高度 = 窗口高度 - 状态栏（允许 2px 边框/取整误差）
+    expect(metrics.hasTitlebar).toBe(false)
+    const expectedBody = metrics.innerHeight - metrics.statusbar.height
     expect(Math.abs(metrics.body.height - expectedBody)).toBeLessThanOrEqual(2)
 
     // 状态栏贴在窗口底部（而不是浮在中间）
@@ -776,7 +778,7 @@ describe.skipIf(!supported)('真实应用：本地图片（asset 协议逐文件
       15_000,
       '查看器里的图片被解码',
     )
-    // 标题栏中区跟着换成"我在看的那张图"（真实路径在 data-main-path 上）
+    // 状态栏最左跟着换成"我在看的那张图"（真实路径在 data-main-path 上）
     expect(
       await app.page.locator('[data-main-path]').getAttribute('data-main-path'),
     ).toBe('附件/图.png')
@@ -1948,19 +1950,22 @@ describe.skipIf(!supported)('真实应用：回收站恢复（真实磁盘）', 
 })
 
 /**
- * 自绘标题栏（`decorations: false` + 我们自己的窗口按钮）。
+ * 窗口拖动区与三个窗口按钮（`decorations: false`）。
  *
  * 为什么必须在**真实应用**这一层验：这组行为一半在 Rust 侧（窗口装饰、能力声明），
  * 一半在前端（拖动区、按钮、最大化状态订阅）—— Mock 适配器与 jsdom 都没有真实窗口，
  * 单测只能验证"按钮调了哪个 API"，只有真实 Tauri 窗口能回答"点了真的会最大化、图标真的会跟着变"。
- * 顺带把「系统标题栏已经关掉」这件事钉住：标题栏里必须有一条可拖动的自绘栏 + 三个窗口按钮。
+ *
+ * ADR-0038 之后独立标题栏退役：拖动区由标签条承担（`data-tauri-drag-region="deep"`，
+ * Tauri 的脚本自动跳过 `role=tab` / `button` 等可点击元素），三个窗口按钮住在
+ * **右上叶**（贴着窗口右上角的那一格，`topRightLeafId`）标签条的右端。
  */
-describe.skipIf(!supported)('真实应用：自绘标题栏与窗口按钮', () => {
+describe.skipIf(!supported)('真实应用：窗口拖动区与窗口按钮', () => {
   let app: LaunchedApp
   let vault: TempVault
 
   beforeAll(async () => {
-    vault = await createTempVault({ 'README.md': '# 标题栏\n' })
+    vault = await createTempVault({ 'README.md': '# 窗口\n' })
     app = await launchApp({ vaultPath: vault.path })
     await app.page.waitForSelector('.mn-tree-row', { state: 'visible', timeout: 20_000 })
   }, 120_000)
@@ -1970,18 +1975,45 @@ describe.skipIf(!supported)('真实应用：自绘标题栏与窗口按钮', () 
     if (vault !== undefined) await vault.cleanup()
   })
 
-  it('标题栏是自绘的（可拖动 + 三个窗口按钮），最大化按钮与真实窗口状态同步', async () => {
-    // 1) 自绘标题栏存在，并且带着 Tauri 的拖动区属性（Tauri 注入的脚本按它发起拖动）
-    const dragRegion = app.page.locator('.mn-titlebar[data-tauri-drag-region="deep"]')
-    await waitUntil(async () => (await dragRegion.count()) === 1, 10_000, '标题栏是可拖动区')
+  it('右上叶标签条是拖动区，窗口按钮跟着最右一格走，最大化与真实窗口状态同步', async () => {
+    /** 此刻窗口按钮住在哪一格里（读 DOM 的归属，不看坐标）。 */
+    const controlsLeafId = async (): Promise<string | null> =>
+      await app.page.evaluate(() => {
+        const controls = document.querySelector('.mn-window-controls')
+        return controls?.closest('[data-leaf-id]')?.getAttribute('data-leaf-id') ?? null
+      })
+    const moduleLeafId = async (module: string): Promise<string | null> =>
+      await app.page.evaluate((id) => {
+        const tab = document.querySelector(`[data-module-tab="${id}"]`)
+        return tab?.closest('[data-leaf-id]')?.getAttribute('data-leaf-id') ?? null
+      }, module)
 
-    // 2) 三个窗口按钮在真实 Tauri 环境里必须可见（拿不到窗口 API 时它们整组不渲染）
+    // 1) 独立标题栏已经不存在；默认布局（文件树 | 主叶，右侧面板默认收起）里
+    //    右上叶就是主叶，它的标签条带着 Tauri 的拖动区属性
+    expect(await app.page.locator('.mn-titlebar').count()).toBe(0)
+    const dragRegion = app.page.locator(
+      '[data-leaf-id="main"] .mn-tabs[data-tauri-drag-region="deep"]',
+    )
+    await waitUntil(async () => (await dragRegion.count()) === 1, 10_000, '右上叶标签条是可拖动区')
+
+    // 2) 三个窗口按钮在真实 Tauri 环境里必须可见（拿不到窗口 API 时它们整组不渲染），
+    //    并且真的住在右上叶标签条的右端（在滚动区之外，标签再多也挤不掉）
     const minimize = app.page.getByLabel('最小化')
     const maximize = app.page.getByLabel('最大化')
     const closeButton = app.page.getByLabel('关闭窗口')
     await waitUntil(async () => (await minimize.count()) === 1, 10_000, '最小化按钮可见')
     expect(await maximize.count()).toBe(1)
     expect(await closeButton.count()).toBe(1)
+    await waitUntil(
+      async () => (await controlsLeafId()) === 'main',
+      10_000,
+      '按钮住在右上叶（默认布局 = 主叶）',
+    )
+    expect(
+      await app.page
+        .locator('[data-leaf-id="main"] .mn-tabs__scroll .mn-window-controls')
+        .count(),
+    ).toBe(0)
 
     // 3) 点最大化 → 真实窗口最大化 → 按钮自己变成「还原」（状态是从窗口读回来的，不是本地猜的）
     await maximize.click()
@@ -1992,5 +2024,22 @@ describe.skipIf(!supported)('真实应用：自绘标题栏与窗口按钮', () 
     // 4) 再点一次还原 → 回到最大化按钮（可逆，不是单向开关）
     await restore.click()
     await waitUntil(async () => (await app.page.getByLabel('最大化').count()) === 1, 10_000, '还原后按钮变回最大化')
+
+    // 5) 打开右侧链接面板：它成为**最右一格**，窗口按钮必须跟着搬过去 ——
+    //    这正是"放错位置"那条用户反馈的回归门禁（按钮不能停在各叶中间）
+    await app.page.keyboard.press('Control+Shift+L')
+    await app.page.waitForSelector('[data-module-tab="links"]', { state: 'visible' })
+    const linksLeafId = await moduleLeafId('links')
+    expect(linksLeafId).not.toBeNull()
+    await waitUntil(
+      async () => (await controlsLeafId()) === linksLeafId,
+      10_000,
+      '链接面板打开后按钮搬到最右一格',
+    )
+
+    // 6) 收起链接面板 → 右上叶回到主叶，按钮跟着回来（可逆）
+    await app.page.keyboard.press('Control+Shift+L')
+    await app.page.waitForSelector('[data-module-tab="links"]', { state: 'detached' })
+    await waitUntil(async () => (await controlsLeafId()) === 'main', 10_000, '收起后按钮回到主叶')
   }, 120_000)
 })

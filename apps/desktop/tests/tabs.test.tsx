@@ -170,9 +170,10 @@ describe('打开与切换', () => {
     render(<Harness />)
     await openVault()
 
-    // 没有打开的笔记 → 主叶没有标签条（空态就是主视图的空文档态，布局零变化）
+    // 没有打开的笔记 → 右上叶（默认布局里就是主叶）标签条仍在但一条标签都没有（ADR-0038）
     expect(tabPaths()).toEqual([])
-    expect(document.querySelector('[data-leaf-tabs="main"]')).toBeNull()
+    expect(document.querySelector('[data-leaf-tabs="main"]')).not.toBeNull()
+    expect(document.querySelectorAll('[data-leaf-tabs="main"] .mn-tabs__tab').length).toBe(0)
 
     await open('README.md')
     expect(tabPaths()).toEqual(['README.md'])
@@ -454,7 +455,7 @@ describe('关闭标签', () => {
     expect(useNoteStore.getState().doc?.relPath).toBe('项目/设计.md')
   })
 
-  it('全部关闭 → 回到"没有打开的笔记"空态（主叶标签条消失）', async () => {
+  it('全部关闭 → 回到"没有打开的笔记"空态（主叶标签条留下，但没有标签）', async () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
@@ -470,7 +471,9 @@ describe('关闭标签', () => {
       expect(useNoteStore.getState().doc).toBeNull()
     })
     expect(useTabsStore.getState().tabs).toEqual([])
-    expect(document.querySelector('[data-leaf-tabs="main"]')).toBeNull()
+    // 标签条本身不消失（右上叶是窗口按钮与拖动区的宿主），只是没有标签
+    expect(document.querySelector('[data-leaf-tabs="main"]')).not.toBeNull()
+    expect(document.querySelectorAll('[data-leaf-tabs="main"] .mn-tabs__tab').length).toBe(0)
   })
 
   it('有未保存内容时关闭要先确认：拒绝 → 标签与内容都还在；确认 → 丢弃修改并激活相邻项', async () => {
@@ -723,6 +726,32 @@ describe('DOM / 可访问性契约', () => {
     expect(tabNode('项目/设计.md').textContent).toContain('●')
   })
 
+  it('功能型标签用图标（笔记标签用文件名）：图标是 md 档，命中区是整条标签', async () => {
+    /*
+      用户反馈：笔记标签与功能型标签长得一样（都是"文字 + ×"），分不清"文档"与"面板开关"。
+      功能型标签（文件/链接/标签/大纲）改成**图标**：与工具栏的图标按钮同一套视觉语言；
+      尺寸用 `md`（16px，与文件树工具栏同一档），命中区是整条标签而不是图标本身。
+    */
+    render(<Harness />)
+    await openVault()
+
+    const moduleTab = document.querySelector<HTMLElement>('[data-module-tab="tree"]')
+    expect(moduleTab).not.toBeNull()
+    // 没有文字标签，有一枚 16px 的图标
+    expect(moduleTab?.querySelector('.mn-tabs__label')).toBeNull()
+    const icon = moduleTab?.querySelector('svg.mn-tabs__module-icon')
+    expect(icon).not.toBeNull()
+    expect(icon?.getAttribute('width')).toBe('16')
+    expect(icon?.getAttribute('height')).toBe('16')
+    // 无障碍名仍是完整文案（图标本身 aria-hidden，读屏靠 aria-label）
+    expect(moduleTab?.getAttribute('aria-label')).toContain('文件')
+
+    await open('README.md')
+    const noteTab = tabNode('README.md')
+    expect(noteTab.querySelector('.mn-tabs__label')?.textContent).toBe('README')
+    expect(noteTab.querySelector('.mn-tabs__module-icon')).toBeNull()
+  })
+
   it('Delete / Backspace 不会误关标签；中键可以关', async () => {
     render(<Harness />)
     await openVault()
@@ -886,8 +915,9 @@ describe('接线形态与真实编辑器', () => {
   it('标签条与编辑器在同一格里共存：编辑器里改动 → 切标签 → 内容真的落盘', async () => {
     render(<Shell />)
     await openVault()
-    // 没有笔记标签时主叶没有标签条（主视图的空文档态仍然在）
-    expect(document.querySelector('[data-leaf-tabs="main"]')).toBeNull()
+    // 没有笔记标签时右上叶（默认布局里就是主叶）标签条仍在（窗口按钮的宿主，ADR-0038）
+    expect(document.querySelector('[data-leaf-tabs="main"]')).not.toBeNull()
+    expect(document.querySelectorAll('[data-leaf-tabs="main"] .mn-tabs__tab').length).toBe(0)
 
     await open('README.md')
     await openNewTab('项目/设计.md')
@@ -895,8 +925,8 @@ describe('接线形态与真实编辑器', () => {
     const mainLeaf = document.querySelector('[data-leaf-id="main"]')
     expect(mainLeaf?.querySelector('.mn-tabs')).not.toBeNull()
     expect(mainLeaf?.querySelector('.mn-pane--editor')).not.toBeNull()
-    // 全局标签栏退役：标题栏里不该再有标签条
-    expect(document.querySelector('.mn-titlebar .mn-tabs')).toBeNull()
+    // 独立标题栏退役（ADR-0038）：整棵树里不该再有标题栏
+    expect(document.querySelector('.mn-titlebar')).toBeNull()
 
     const view = currentView()
     act(() => {

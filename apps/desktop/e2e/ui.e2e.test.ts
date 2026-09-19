@@ -15,9 +15,9 @@ import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { chromium, type Browser, type Locator, type Page } from 'playwright-core'
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { delay, findFreePort, packageRoot } from './support/harness'
+import { delay, findFreePort, packageRoot, saveFailureScreenshot } from './support/harness'
 import { startStaticServer, type StaticServer } from './support/static-server'
 
 async function waitUntil(check: () => Promise<boolean>, timeoutMs: number, what: string): Promise<void> {
@@ -42,8 +42,9 @@ function readLayout(page: Page) {
       return box(element)
     }
     /*
-     * 容器切割树（ADR-0035）之后的读法：
+     * 容器切割树（ADR-0035）+ 标题栏退役（ADR-0038）之后的读法：
      * - 没有"全局标签栏"了（标签住在每个格子的标签条里），也没有固定的 `.mn-sidebar` / `.mn-main`；
+     * - **没有 `.mn-titlebar`**：主体从窗口最顶边开始，`主体 = 窗口 − 状态栏`；
      * - `main` = 主叶（`[data-leaf-id="main"]`，笔记的默认落点，允许为空、永不塌缩）；
      * - `treeLeaf` = 文件树所在的格子（跟着它的标签走，被拖走过也能找到）。
      */
@@ -52,7 +53,6 @@ function readLayout(page: Page) {
     return {
       innerHeight: window.innerHeight,
       innerWidth: window.innerWidth,
-      titlebar: rectOf('.mn-titlebar'),
       body: rectOf('.mn-body'),
       statusbar: rectOf('.mn-statusbar'),
       tree: rectOf('.mn-tree'),
@@ -101,7 +101,7 @@ async function ensureTreeRow(page: Page, relPath: string): Promise<void> {
 }
 
 /**
- * 当前打开的笔记（标题栏中区那条路径）。
+ * 当前打开的笔记（状态栏最左那条路径，`data-main-path`）。
  *
  * 读 `data-main-path` 而**不是可见文字**：可见文字不带 `.md`（`displayPath`，ADR-0030），
  * 而自动化要的是真实路径；顺带避开"项目/设计"误配"项目/设计文档"这类前缀命中。
@@ -125,7 +125,7 @@ async function openNoteInTree(page: Page, relPath: string, options: { newTab?: b
   if (options.newTab === true) await row.click({ modifiers: ['Control'] })
   else await row.click()
   await waitUntil(
-    // 标题栏中区的路径是"当前文档是谁"的**唯一**读法，三种视图里都在
+    // 状态栏最左的路径是"当前文档是谁"的**唯一**读法，三种视图里都在
     // （它从前挂在编辑器工具栏上，于是阅读/图谱视图只能退回"树里这一行被选中"这个间接信号 —— ADR-0029）
     async () => (await currentMainPath(page)) === relPath,
     10_000,
@@ -613,6 +613,13 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     if (server !== undefined) await server.close()
   })
 
+  /** 失败时把当前页面截到 `e2e-artifacts/`（CI 会在 failure 时上传这个目录）。 */
+  afterEach(async ({ task }) => {
+    if (task.result?.state === 'fail' && page !== undefined) {
+      await saveFailureScreenshot(page, task.name)
+    }
+  })
+
   /**
    * 每个用例都从"编辑（所见即所得）"视图开始。
    *
@@ -635,7 +642,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
   it('未选中任何笔记时布局即铺满窗口（回归：不需要先选笔记）', async () => {
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.statusbar.height
 
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
@@ -648,76 +655,94 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(await page.locator('.cm-content').count()).toBe(0)
   })
 
-  it('标签住在每个格子自己的标签条里（全局标签栏退役，ADR-0035）', async () => {
+  it('标签住在每个格子自己的标签条里，右上叶条常驻（ADR-0035 / 0038）', async () => {
     /*
       标签的位置变过三次：主区域顶部 → 窗口最顶行 → 标题栏那一行（ADR-0034）；
       容器切割树之后，笔记标签与模块标签一样是**某一格的标签** —— 每个格子顶部有自己的
-      一条标签条，标题栏中区回归纯拖动区。
+      一条标签条。标题栏退役（ADR-0038）后**右上叶**的标签条**常驻**：窗口按钮住右端、
+      整条是拖动区，空态也不消失。
     */
     await ensureVaultOpen(page)
     await openNoteInTree(page, '项目/设计.md')
     await page.waitForSelector('[data-leaf-id="main"] .mn-tabs [data-tab-path="项目/设计.md"]', {
       state: 'visible',
     })
-    // 标题栏里不再有标签条
-    expect(await page.locator('.mn-titlebar .mn-tabs').count()).toBe(0)
+    // 独立标题栏已经不存在
+    expect(await page.locator('.mn-titlebar').count()).toBe(0)
 
     const box = await page.evaluate(() => {
       const leaf = document.querySelector('[data-leaf-id="main"]')?.getBoundingClientRect()
       const tabs = document
         .querySelector('[data-leaf-id="main"] .mn-tabs')
         ?.getBoundingClientRect()
-      const titlebar = document.querySelector('.mn-titlebar')?.getBoundingClientRect()
+      const strip = document.querySelector('[data-leaf-tabs="main"]')
       return {
         leafTop: leaf?.top ?? -1,
         leafLeft: leaf?.left ?? -1,
         leafWidth: leaf?.width ?? -1,
         tabsTop: tabs?.top ?? -1,
+        tabsLeft: tabs?.left ?? -1,
         tabsWidth: tabs?.width ?? -1,
-        titlebarBottom: titlebar?.bottom ?? -1,
+        stripHeight: tabs?.height ?? -1,
+        dragRegion: strip?.getAttribute('data-tauri-drag-region') ?? null,
       }
     })
-    // 标签条是格子的第一行：在标题栏下面、贴着格子的顶与左，宽度不超出格子
-    expect(box.tabsTop).toBeGreaterThanOrEqual(box.titlebarBottom - 1)
+    // 标签条是格子的第一行：贴着格子的顶与左，宽度不超出格子
     expect(Math.abs(box.tabsTop - box.leafTop)).toBeLessThanOrEqual(1)
+    expect(Math.abs(box.tabsTop - 0)).toBeLessThanOrEqual(1)
+    expect(Math.abs(box.tabsLeft - box.leafLeft)).toBeLessThanOrEqual(1)
     expect(box.tabsWidth).toBeLessThanOrEqual(box.leafWidth + 1)
+    // 36px 的整条标签条就是拖动区（ADR-0038：不再有独立标题栏承担拖动）
+    expect(box.stripHeight).toBe(36)
+    expect(box.dragRegion).toBe('deep')
   })
 
-  it('标题栏分三区：中区是纯拖动区，路径在状态栏（ADR-0029 → 0034 → 0035）', async () => {
+  it('顶部没有独立标题栏：右上叶标签条贴窗口顶边，窗口按钮住在它的右端', async () => {
     /*
-      用户的要求：路径原来在编辑器面板内部（`.mn-editor__path`，只横跨中间那一列、
-      只在编辑视图里存在），现在要进标题栏那一行，并且那一行分左/中/右三区。
-
-      这里钉三件事（都是 jsdom 测不了的）：① 三区都在；
-      ② 路径在**状态栏**（ADR-0034 搬下去的）；
-      ③ 切到阅读/图谱视图它也不消失。
+      ADR-0038：统计/导出从顶行下移，窗口按钮住进**右上叶**（`topRightLeafId`）标签条右端 ——
+      顶部不再存在"独立标题栏"这一层。这里在真实浏览器里钉三件 jsdom 测不了的事：
+      ① 窗口最顶边就是内容（右上叶标签条 top = 0，主体从 0 开始铺）；
+      ② 标签条右端是窗口按钮槽（它在滚动区之外，标签再多也挤不掉）；
+      ③ 路径在**状态栏**，切到阅读/图谱视图也不消失。
     */
     await ensureVaultOpen(page)
     await openNoteInTree(page, '项目/设计.md')
 
-    expect(await page.locator('.mn-titlebar__left').count()).toBe(1)
-    expect(await page.locator('.mn-titlebar__center').count()).toBe(1)
-    expect(await page.locator('.mn-titlebar__right').count()).toBe(1)
+    expect(await page.locator('.mn-titlebar').count()).toBe(0)
     // 编辑器面板里那一行已经不在了（同一信息只留一处）
     expect(await page.locator('.mn-editor__path').count()).toBe(0)
-
-    // 中区是纯拖动区（ADR-0035：标签进了各自的格子），"我在看什么"在状态栏
-    expect(await page.locator('.mn-titlebar__center .mn-tabs').count()).toBe(0)
     expect(await page.locator('.mn-statusbar [data-main-path]').count()).toBe(1)
 
     const geometry = await page.evaluate(() => {
-      const bar = document.querySelector('.mn-titlebar')?.getBoundingClientRect()
-      const shown = document.querySelector('.mn-statusbar [data-main-path]')?.getBoundingClientRect()
+      const mainTabs = document
+        .querySelector('[data-leaf-id="main"] .mn-tabs')
+        ?.getBoundingClientRect()
+      const body = document.querySelector('.mn-body')?.getBoundingClientRect()
+      const scroll = document
+        .querySelector('[data-leaf-id="main"] .mn-tabs__scroll')
+        ?.getBoundingClientRect()
+      const controls = document
+        .querySelector('[data-leaf-id="main"] .mn-window-controls')
+        ?.getBoundingClientRect()
       return {
-        barHeight: bar?.height ?? -1,
-        barBottom: bar?.bottom ?? -1,
-        shownTop: shown?.top ?? -1,
+        tabsTop: mainTabs?.top ?? -1,
+        tabsRight: mainTabs?.right ?? -1,
+        bodyTop: body?.top ?? -1,
+        scrollRight: scroll?.right ?? -1,
+        controlsLeft: controls?.left ?? -1,
+        controlsRight: controls?.right ?? -1,
+        viewportWidth: window.innerWidth,
       }
     })
-    // 顶行 36px（装着品牌/库名与窗口按钮）
-    expect(geometry.barHeight).toBe(36)
-    // 路径在状态栏里（窗口底部那一条），不在标题栏
-    expect(geometry.shownTop).toBeGreaterThan(geometry.barBottom)
+    // ① 内容从窗口最顶边开始：主叶标签条与主体的 top 都是 0（没有标题栏占位）
+    expect(Math.abs(geometry.tabsTop)).toBeLessThanOrEqual(1)
+    expect(Math.abs(geometry.bodyTop)).toBeLessThanOrEqual(1)
+    // ② 窗口按钮槽在滚动区右侧（`scrollRight <= controlsLeft`），且贴窗口右缘
+    if (geometry.controlsLeft >= 0) {
+      expect(geometry.scrollRight).toBeLessThanOrEqual(geometry.controlsLeft + 1)
+      expect(Math.abs(geometry.controlsRight - geometry.viewportWidth)).toBeLessThanOrEqual(1)
+    }
+    expect(geometry.tabsRight).toBeLessThanOrEqual(geometry.viewportWidth + 1)
 
     // 阅读视图与图谱视图里路径仍然在
     await page.locator('button[aria-label="阅读（渲染后）"]').click()
@@ -733,7 +758,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     /*
       用户诉求："隐藏 .md 的扩展名"。判据只有 `domain/paths.ts` 的
       `displayName` / `displayPath` 一份，这里在**真实浏览器**里钉住三个显示点
-      （标题栏 / 标签页 / 文件树）：可见文字不带扩展名，而"这是哪一篇"的身份
+      （状态栏 / 标签页 / 文件树）：可见文字不带扩展名，而"这是哪一篇"的身份
       （`data-main-path` / `data-tab-path` / `data-rel-path`）与悬停 `title`
       仍然是真实路径 —— 少了后半句，自动化就只能靠可见文字认笔记。
     */
@@ -764,7 +789,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       用户诉求"整体默认字体统一 16 号"。真值在**设置层**（`DEFAULT_SETTINGS`，由
       `font-overrides.ts` 以行内变量 + `!important` 写进 `<html>`），不是主题 JSON 也不是 `:root`
       —— 这一条顺便把这个事实钉住。顺带门禁两件容易被漏掉的事：VI 别名层要真的解析出值；
-      写死高度的栏（标题栏 / 标签栏 / 状态栏 / 树行）不能把字裁掉。
+      写死高度的栏（标签栏 / 状态栏 / 树行）不能把字裁掉。
     */
     await ensureVaultOpen(page)
     await openNoteInTree(page, '项目/设计.md')
@@ -806,28 +831,28 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
           ? null
           : (row.getBoundingClientRect().height - name.getBoundingClientRect().height) / 2
       return {
-        titlebar: clipped('.mn-titlebar'),
-        // 主叶的标签条（ADR-0035：标签条是每格一条，量装着当前文档的那一格）
+        // 主叶的标签条（ADR-0035：标签条是每格一条，量装着当前文档的那一格；
+        // ADR-0038 之后它同时是窗口按钮与拖动区的宿主，写死 36px，最容易被字号抬裁）
         tabs: clipped('[data-leaf-id="main"] .mn-tabs'),
         statusbar: clipped('.mn-statusbar'),
         row: clipped('.mn-tree-row'),
         rowGap: gap === null ? 0 : Math.round(gap * 10) / 10,
       }
     })
-    expect(tight.titlebar).toBe(false)
     expect(tight.tabs).toBe(false)
     expect(tight.statusbar).toBe(false)
     expect(tight.row).toBe(false)
     // 树行留白：行高 30 − 文字行盒 24 ⇒ 上下各 3px。字号再往上抬就必须一起抬行高
     expect(tight.rowGap).toBeGreaterThanOrEqual(3)
   })
-  it('应用菜单在文件导航格子的右下角（标题栏那一行只有品牌与窗口按钮）', async () => {
+  it('应用菜单在文件导航格子的右下角（顶部没有独立标题栏）', async () => {
     await ensureVaultOpen(page)
 
     const menu = page.locator('button[aria-label="应用菜单"]')
     expect(await menu.count()).toBe(1)
-    // 它现在属于文件树那一格（判据在下面用 closest 量），而不是标题栏
-    expect(await page.locator('.mn-titlebar button[aria-label="应用菜单"]').count()).toBe(0)
+    // 它属于文件树那一格（判据在下面用 closest 量），顶部没有标题栏可放
+    expect(await page.locator('.mn-titlebar').count()).toBe(0)
+    expect(await page.locator('.mn-tabs button[aria-label="应用菜单"]').count()).toBe(0)
 
     // "右下角"的判据：它在文件树那一格的**底部**、且贴着右侧
     const geometry = await page.evaluate(() => {
@@ -867,7 +892,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect((await page.locator('[data-viewer-text="true"]').textContent()) ?? '').toContain(
       '非 Markdown',
     )
-    // 标题栏中区跟着换成"我在看什么"
+    // 状态栏最左跟着换成"我在看什么"
     expect(await page.locator('[data-main-path]').getAttribute('data-main-path')).toBe(
       '附件/说明.txt',
     )
@@ -1256,7 +1281,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     )
 
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
     // 文件树那一格与主体等高（切割树的叶子吃满自己的半格）
@@ -1318,7 +1343,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await waitUntil(async () => (await leafWidth()) > before + 60, 5_000, '文件树格子被拖宽')
 
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
 
@@ -1388,7 +1413,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     )
 
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
   })
@@ -2624,13 +2649,13 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       '点击标签后切到那篇笔记',
     )
 
-    // 标签住在主叶的标签条里（ADR-0035）：标题栏没有全局标签栏，主体/状态栏契约不变
+    // 标签住在主叶的标签条里（ADR-0035）：没有独立标题栏（ADR-0038），主体/状态栏契约不变
     const after = await readLayout(page)
-    const expectedBody = after.innerHeight - after.titlebar.height - after.statusbar.height
+    const expectedBody = after.innerHeight - after.statusbar.height
     expect(Math.abs(after.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(after.statusbar.bottom - after.innerHeight)).toBeLessThanOrEqual(1)
     expect(Math.abs((after.treeLeaf?.height ?? 0) - after.body.height)).toBeLessThanOrEqual(1)
-    expect(await page.locator('.mn-titlebar .mn-tabs').count()).toBe(0)
+    expect(await page.locator('.mn-titlebar').count()).toBe(0)
     expect(
       await page.locator('[data-leaf-id="main"] .mn-tabs [data-tab-path="项目/设计.md"]').count(),
     ).toBe(1)
@@ -2787,7 +2812,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
     // 布局不变式仍然成立
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
 
@@ -3037,7 +3062,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
 
     // 4) 拖拽/移动不能破坏布局契约（标签仍在格子里、主体高度不变）
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
     expect(Math.abs(layout.statusbar.bottom - layout.innerHeight)).toBeLessThanOrEqual(1)
     expect(Math.abs((layout.treeLeaf?.height ?? 0) - layout.body.height)).toBeLessThanOrEqual(1)
@@ -3128,11 +3153,11 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     )
     expect(await treeRow(page, '工程/子项目/细节.md').count()).toBe(1)
 
-    // 5) 布局契约不受影响（标签住在格子的标签条里，标题栏没有全局标签栏）
+    // 5) 布局契约不受影响（标签住在格子的标签条里，顶部没有独立标题栏）
     const layout = await readLayout(page)
-    const expectedBody = layout.innerHeight - layout.titlebar.height - layout.statusbar.height
+    const expectedBody = layout.innerHeight - layout.statusbar.height
     expect(Math.abs(layout.body.height - expectedBody)).toBeLessThanOrEqual(2)
-    expect(await page.locator('.mn-titlebar .mn-tabs').count()).toBe(0)
+    expect(await page.locator('.mn-titlebar').count()).toBe(0)
     expect(await page.locator('.mn-tabs__tab[data-tab-path]').count()).toBeGreaterThan(0)
 
     // 6) 恢复原来的名字（让后续用例与手工验收看到与初始一致的 Vault）
@@ -3778,6 +3803,108 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(await page.locator('[data-mn-render]').first().getAttribute('data-mn-render')).toBe('sync')
     // 正文照常渲染（走哪条路都不该影响结果）
     expect((await page.locator('.mn-preview__body').textContent()) ?? '').toContain('设计')
+  })
+
+  it('窄叶降级 + 像素下限 + 重置布局（嵌套切割切不出废格的完整闭环）', async () => {
+    // 1) 注入"旧版本切出的窄叶"布局（真实用户踩到的：两级 0.15 嵌套 ≈31px 的标签叶），
+    //    重新加载后它必须呈现为**降级形态**（只留标签条），而不是逐字竖排的废条
+    await page.evaluate(() => {
+      const leaf = (id: string, items: string[], active: string | null) => ({ kind: 'leaf', id, items, active })
+      window.localStorage.setItem(
+        'mimenote.ui.v1',
+        JSON.stringify({
+          linksPanelVisible: true,
+          layout: {
+            kind: 'split', id: 'root', axis: 'row', ratio: 0.3,
+            a: leaf('left-tree', ['tree'], 'tree'),
+            b: {
+              kind: 'split', id: 's1', axis: 'row', ratio: 0.15,
+              a: {
+                kind: 'split', id: 's2', axis: 'row', ratio: 0.15,
+                a: leaf('sliver', ['tags'], 'tags'),
+                b: leaf('main', [], null),
+              },
+              b: leaf('right-links', ['links'], 'links'),
+            },
+          },
+        }),
+      )
+      window.localStorage.setItem('mimenote.tags.open.v1', 'true')
+    })
+    await page.reload()
+    // 单独跑这条时重载回到门闸；整套跑时前面的用例已让 Vault 自动恢复 —— 两种都接住
+    await ensureVaultOpen(page)
+
+    const sliver = page.locator('[data-leaf-id="sliver"]')
+    await sliver.waitFor({ state: 'visible', timeout: 10_000 })
+    const sliverBox = await sliver.boundingBox()
+    expect(sliverBox).not.toBeNull()
+    expect(sliverBox!.width).toBeLessThan(72) // 注入的确实是病态窄叶
+    // 降级生效：带窄格标记，内容被收起（逐字竖排的废条不再出现），标签条仍在（可点可拖）
+    await waitUntil(
+      async () => (await sliver.getAttribute('data-narrow')) !== null,
+      5_000,
+      '窄叶被标记为降级形态',
+    )
+    expect(await page.locator('[data-leaf-id="sliver"] .mn-leaf__content').isHidden()).toBe(true)
+    expect(await page.locator('[data-leaf-id="sliver"] [data-module-tab="tags"]').count()).toBe(1)
+
+    // 2) 命令面板的「重置布局」把布局拉回默认 + 家位：窄叶消失、没有任何降级格
+    await page.keyboard.press('Control+K')
+    await page.waitForSelector('.mn-palette', { state: 'visible' })
+    await page.locator('.mn-palette__input').fill('重置布局')
+    await waitUntil(
+      async () => ((await page.locator('.mn-palette [role="option"]').textContent()) ?? '').includes('重置布局'),
+      5_000,
+      '命令面板里出现「重置布局」',
+    )
+    await page.locator('.mn-palette__input').press('Enter')
+    await waitUntil(async () => (await page.locator('[data-leaf-id="sliver"]').count()) === 0, 5_000, '窄叶消失')
+    expect(await page.locator('.mn-leaf--narrow').count()).toBe(0)
+    await page.locator('.mn-tree [data-rel-path="项目/设计.md"]').waitFor({ state: 'visible', timeout: 10_000 })
+
+    // 3) 像素下限：Alt+3 把文件树搬到主区下方后，把分隔条拖到底，树那一格也不能矮过 120px
+    await page.locator('[data-module-tab="tree"]').focus()
+    await page.keyboard.press('Alt+3')
+    // 装着文件树那一刀（column split）自己的分隔条（右带若有可见模块，也会有水平条）
+    const horizontal = page.locator('[data-axis="column"]:has([data-module-tab="tree"]) > .mn-splitter--horizontal')
+    await horizontal.waitFor({ state: 'visible', timeout: 10_000 })
+    const treeLeafHeight = async () =>
+      await page.evaluate(() => {
+        const leaf = document.querySelector('[data-module-tab="tree"]')?.closest('[data-leaf-id]')
+        return leaf === null || leaf === undefined ? 0 : leaf.getBoundingClientRect().height
+      })
+    const handle = await horizontal.boundingBox()
+    expect(handle).not.toBeNull()
+    if (handle !== null) {
+      const viewport = page.viewportSize()
+      await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2)
+      await page.mouse.down()
+      // 一路拖出窗口底边：没有像素下限时这一拖会把树压到 15%（≈114px）以下
+      await page.mouse.move(handle.x + handle.width / 2, (viewport?.height ?? 800) + 50, { steps: 12 })
+      await page.mouse.up()
+    }
+    const height = await treeLeafHeight()
+    expect(height).toBeGreaterThanOrEqual(118) // 120px 下限（2px 圆角/边框误差）
+
+    // 收尾：Alt+1 搬回左侧（布局落盘会跨用例延续，别把怪布局留给后面的用例）。
+    // 用合成事件而不是 .focus()+press：拖拽刚结束时 React 重渲染会把焦点从标签上夺走
+    await page.evaluate(() => {
+      const tab = document.querySelector<HTMLElement>('[data-module-tab="tree"]')
+      tab?.dispatchEvent(new KeyboardEvent('keydown', { key: '1', altKey: true, bubbles: true, cancelable: true }))
+    })
+    await waitUntil(
+      async () => {
+        const leaf = await page.evaluate(() => {
+          const el = document.querySelector('[data-module-tab="tree"]')?.closest('[data-leaf-id]')
+          const rect = el?.getBoundingClientRect()
+          return rect === null || rect === undefined ? null : { x: rect.x, w: rect.width }
+        })
+        return leaf !== null && leaf.x < 100 && leaf.w > 200
+      },
+      5_000,
+      '文件树搬回左侧',
+    )
   })
 })
 
