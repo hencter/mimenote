@@ -1,7 +1,7 @@
 # 交接说明：下一个会话从这里开始
 
 > 这份文件是**临时**的会话交接，不是产品文档。新会话接手顺利之后可以直接删掉它。
-> 最后更新：连线搬进 canvas（ADR-0036）交付 + 一次**界面样式回归的修复**之后。
+> 最后更新：Issue #8「标题栏退役」（ADR-0038）交付之后。
 
 ## 0. 一句话现状
 
@@ -15,10 +15,15 @@
 
 ```
 pnpm typecheck                 ✓ 无错误
-pnpm test                      ✓ 95 个测试文件 / 1702 条
-pnpm test:e2e:ui               ✓ 64 条
+pnpm test                      ✓ 95 个测试文件 / 1712 条
+pnpm test:e2e:ui               ✓ 65 条
 pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— 前端变了它跑的就是旧前端）
 ```
+
+> 本轮交付：**标题栏退役**（ADR-0038，Issue #8）—— 独立标题栏删除、统计/库名到状态栏、
+> 导出到文件树工具栏、窗口按钮进**右上叶**标签条右端（打开右侧面板会跟着搬）、标签条承担拖动区；
+> 以及**图谱视觉刷新**（ADR-0039）—— 点阵背景、当前笔记光晕、玻璃 HUD、状态栏图谱按钮独立成组。
+> 上面四个数字都是本轮实测。
 
 工作树里**只剩用户自己在 `examples/demo-vault/` 里的草稿文件**（未跟踪，刻意不提交、不改动）。
 
@@ -136,8 +141,9 @@ pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— �
 
 ## 5. 关键文件地图
 
-- `apps/desktop/src/App.tsx` 的 `<header className="mn-titlebar">`：**唯一的标题栏**，
-  三区 `.mn-titlebar__left / __center / __right`；中区是**纯拖动区**。"我在看什么"在**状态栏最左**。
+- ~~`apps/desktop/src/App.tsx` 的 `<header className="mn-titlebar">`~~：**已在 ADR-0038 整组删除**
+  （Issue #8）。顶部没有独立标题栏；窗口按钮住进**主叶标签条右端**（`LeafTabs` 的窗口按钮槽），
+  拖动区是每条标签条（`data-tauri-drag-region="deep"`）。统计/库名在状态栏，导出在文件树工具栏。
 - `apps/desktop/src/features/layout/TreeHost.tsx`：切割树渲染器；`LeafTabs.tsx`：每格标签条
   （**注意它必须 import `@/features/tabs/tabs.css`** —— 这一行就是那次样式回归的修复）。
 - `apps/desktop/src/features/graph/canvas/edge-paint.ts`：**连线的样式与画法**（顶部常量表对着
