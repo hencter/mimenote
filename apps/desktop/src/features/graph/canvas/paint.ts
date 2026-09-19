@@ -146,7 +146,30 @@ export interface PaintStats {
 // ---------------------------------------------------------------------------
 
 /** 卡片圆角（与 `--mn-radius` 的观感对应）。 */
-const CARD_RADIUS = 6
+const CARD_RADIUS = 10
+
+/**
+ * 背景点阵（"新的视觉方案"的第一笔）：世界坐标里每 96 单位一颗点。
+ *
+ * 为什么画在画布上而不是 CSS 背景：点阵要跟着平移/缩放一起走，否则拖动时会有"画布在动、
+ * 背景钉死"的割裂感（CSS 背景不认 `transform` 之外的坐标系）。间距乘 `scale` 后太密
+ * （< {@link GRID_MIN_SCREEN_STEP}）就整层不画：缩到很小时点会糊成一片灰。
+ */
+const GRID_STEP = 96
+const GRID_DOT_RADIUS = 1.1
+const GRID_MIN_SCREEN_STEP = 22
+const GRID_ALPHA = 0.5
+
+/**
+ * 活跃卡片的光晕：在卡片外沿再描一圈强调色（`edgeActive`）。
+ *
+ * 用**描边**而不是 canvas 的 `shadowBlur`：阴影要往 `PaintContext` 里加属性、测试的假上下文
+ * 也得跟着扩签名，而"一圈低透明度的描边"在两种主题下的观感已经足够，且完全走既有绘制原语。
+ */
+const HALO_OFFSET = 4
+const HALO_WIDTH = 2
+const HALO_ALPHA_FOCUS = 0.35
+const HALO_ALPHA_ROOT = 0.16
 
 /** 缩放手柄离卡片右下角的边距（世界坐标）。 */
 const CHEVRON_INSET = 5
@@ -215,11 +238,14 @@ export function paintGraph(context: PaintContext, input: PaintInput): PaintStats
   }
 
   // 顺序是硬契约（见下），并且不受输入顺序影响：
+  // 0. 先背景点阵（它在所有东西之下，只提供"画布在动"的参照）；
   // 1. 先卡外那段连线（它本来就该被沿途的卡片盖住 —— 卡片是不透明底）；
   // 2. 再卡片（按 `nodes` 数组顺序，最后一个在最上面）；
   // 3. 最后卡内那段引线（例外中的例外：它整段在卡片矩形里，画在卡片**之前**会被整段盖掉，
   //    用户看到的就是"线从卡片边缘凭空开始"—— 这是 ADR-0023 用一整个 DOM 图层换来的教训，
   //    现在只是一次调用顺序的事）。
+  paintBackdrop(context, env)
+
   const edgeVisuals = input.edgeVisuals ?? []
   const spanEdges = paintEdgeLayer(
     context,
@@ -353,6 +379,43 @@ function insideViewport(rect: Rect, transform: ViewTransform): boolean {
   )
 }
 
+/**
+ * 背景点阵：世界坐标网格 → 屏幕坐标的一颗颗小圆点（见 {@link GRID_STEP} 的注释）。
+ *
+ * 只在"屏幕间距还看得清"时画（缩得太小时整层跳过）；点的大小固定为屏幕像素
+ * （不乘 `scale`）—— 点阵是参照物，不该跟着放大变成一片圆斑。
+ * 透明度用 `globalAlpha` 而不是 `color-mix`：颜色仍然只有 `palette.cardBorder` 一份，
+ * 换主题时点阵跟着走。
+ */
+function paintBackdrop(context: PaintContext, env: PaintEnv): void {
+  const { transform, scale, palette } = env
+  const screenStep = GRID_STEP * scale
+  if (screenStep < GRID_MIN_SCREEN_STEP) return
+
+  // 世界坐标里的可见范围（含一点余量，免得边缘的点画在视口外）
+  const worldLeft = (0 - transform.offsetX) / scale
+  const worldTop = (0 - transform.offsetY) / scale
+  const worldRight = (transform.width - transform.offsetX) / scale
+  const worldBottom = (transform.height - transform.offsetY) / scale
+  const startX = Math.floor(worldLeft / GRID_STEP) * GRID_STEP
+  const startY = Math.floor(worldTop / GRID_STEP) * GRID_STEP
+
+  context.save()
+  context.setLineDash([])
+  context.globalAlpha = GRID_ALPHA
+  context.fillStyle = palette.cardBorder
+  for (let x = startX; x <= worldRight; x += GRID_STEP) {
+    for (let y = startY; y <= worldBottom; y += GRID_STEP) {
+      const screenX = x * scale + transform.offsetX
+      const screenY = y * scale + transform.offsetY
+      context.beginPath()
+      context.arc(screenX, screenY, GRID_DOT_RADIUS, 0, Math.PI * 2)
+      context.fill()
+    }
+  }
+  context.restore()
+}
+
 /** 字体标识跟着整体缩放：量宽与画字用的是同一个（缩放后的）字体串。 */
 function scaleFont(font: FontSpec, scale: number): FontSpec {
   return { size: font.size * scale, bold: font.bold, italic: font.italic, code: font.code }
@@ -385,6 +448,27 @@ function drawCard(context: PaintContext, node: PaintNode, env: PaintEnv): void {
   // 折行就是按这个数算的，拿卡片宽度当右边界会让省略号落在文字实际占宽之外
   // （或者相反：明明放不下却没有省略号）。两者的差就是"排版用了别的 metrics"这个信号。
   const contentWidth = metrics.width * scale
+
+  // 光晕：当前笔记（root）常驻一圈很淡的、悬停/选中时更亮一圈。画在卡片**之前**，
+  // 于是只有卡片外侧那半圈露出来 —— 观感是"这张卡被点亮了"，而不是"套了个框"。
+  const haloAlpha = focused ? HALO_ALPHA_FOCUS : node.isRoot ? HALO_ALPHA_ROOT : 0
+  if (haloAlpha > 0) {
+    context.globalAlpha = haloAlpha
+    context.setLineDash([])
+    context.strokeStyle = palette.edgeActive
+    context.lineWidth = HALO_WIDTH * scale
+    roundRectPath(
+      context,
+      {
+        x: rect.x - HALO_OFFSET * scale,
+        y: rect.y - HALO_OFFSET * scale,
+        width: rect.width + HALO_OFFSET * 2 * scale,
+        height: rect.height + HALO_OFFSET * 2 * scale,
+      },
+      (CARD_RADIUS + HALO_OFFSET) * scale,
+    )
+    context.stroke()
+  }
 
   context.globalAlpha = 1
   context.setLineDash([])

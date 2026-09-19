@@ -492,6 +492,7 @@ function noteCard(options: {
   y?: number
   rect?: Rect
   hasFocus?: boolean
+  isRoot?: boolean
 }): PaintNode {
   const blocks = options.blocks ?? [paragraph('正文')]
   const laidOut = layoutBlocks(blocks, DEFAULT_METRICS, measure)
@@ -503,7 +504,7 @@ function noteCard(options: {
     title,
     rect: options.rect ?? { x: options.x ?? 100, y: options.y ?? 100, width: CARD_WIDTH, height },
     hop: 0,
-    isRoot: false,
+    isRoot: options.isRoot ?? false,
     hasFocus: options.hasFocus ?? false,
     layout: { relPath, title, width: CARD_WIDTH, height, blocks: laidOut, truncated: false },
   }
@@ -1264,6 +1265,64 @@ describe('paintGraph：边与焦点', () => {
       op.op === 'stroke' ? [context.stateAt(position)] : [],
     )
     expect(strokes.some((state) => state.strokeStyle === palette.edgeActive)).toBe(false)
+  })
+})
+
+describe('新的视觉方案：背景点阵与活跃卡片的光晕', () => {
+  /** 这一帧里用某个状态画的 `fill` 次数（点阵 = 低透明度的 cardBorder）。 */
+  function fillCount(context: RecordingContext, match: (state: PropState) => boolean): number {
+    return context.ops.filter((op, position) => op.op === 'fill' && match(context.stateAt(position)))
+      .length
+  }
+
+  it('背景点阵：正常缩放下画出点，缩得太小时整层跳过（点会糊成一片）', () => {
+    const normal = paint({ nodes: [noteCard({ relPath: 'a.md' })] })
+    const dots = fillCount(
+      normal.context,
+      (state) => state.fillStyle === palette.cardBorder && state.globalAlpha === 0.5,
+    )
+    expect(dots).toBeGreaterThan(0)
+
+    // 对照组：scale 0.1（96 × 0.1 = 9.6 < 22）→ 一颗点都不画
+    const tiny = paint({
+      nodes: [noteCard({ relPath: 'a.md' })],
+      transform: { ...VIEW, scale: 0.1 },
+    })
+    expect(
+      fillCount(
+        tiny.context,
+        (state) => state.fillStyle === palette.cardBorder && state.globalAlpha === 0.5,
+      ),
+    ).toBe(0)
+  })
+
+  it('光晕：当前笔记常驻一圈淡的，悬停/选中更亮；普通卡片一圈都没有', () => {
+    const root = paint({ nodes: [noteCard({ relPath: 'root.md', isRoot: true })] })
+    const rootHalos = root.context.ops.flatMap((op, position) =>
+      op.op === 'stroke' && root.context.stateAt(position).strokeStyle === palette.edgeActive
+        ? [root.context.stateAt(position)]
+        : [],
+    )
+    expect(rootHalos).toHaveLength(1)
+    expect(rootHalos[0]?.globalAlpha).toBe(0.16)
+    expect(rootHalos[0]?.lineWidth).toBe(2)
+
+    const hovered = paint({ nodes: [noteCard({ relPath: 'h.md', hasFocus: true })] })
+    const hoverHalos = hovered.context.ops.flatMap((op, position) =>
+      op.op === 'stroke' && hovered.context.stateAt(position).strokeStyle === palette.edgeActive
+        ? [hovered.context.stateAt(position)]
+        : [],
+    )
+    expect(hoverHalos).toHaveLength(1)
+    expect(hoverHalos[0]?.globalAlpha).toBe(0.35)
+
+    const plain = paint({ nodes: [noteCard({ relPath: 'p.md' })] })
+    expect(
+      plain.context.ops.some(
+        (op, position) =>
+          op.op === 'stroke' && plain.context.stateAt(position).strokeStyle === palette.edgeActive,
+      ),
+    ).toBe(false)
   })
 })
 

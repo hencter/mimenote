@@ -16,7 +16,17 @@
   min-height: 0;
   height: 100%;
   overflow: hidden;
-  background: var(--mn-bg);
+  /*
+   * 画布底：一层从中心散开的极淡强调色（"聚光灯"），叠在主题底色上。
+   * 点阵由画笔画（它要跟着平移/缩放走），这里只负责"中心的空气感"。
+   */
+  background:
+    radial-gradient(
+      62% 58% at 50% 46%,
+      color-mix(in srgb, var(--mn-accent) 6%, transparent),
+      transparent 72%
+    ),
+    var(--mn-bg);
   color: var(--mn-fg);
   cursor: grab;
   /* 拖动时不要选中文字、不要触发滚动/缩放手势（触摸设备） */
@@ -229,6 +239,11 @@
   cursor: grabbing;
 }
 
+/*
+ * HUD：半透明的"玻璃"面板（参考 shadcn 的浮层质感）—— 底色让画布透出来一点，
+ * 边界比从前轻，圆角更大。控件本身改用无边框的胶囊（见 `.mn-graph__chip` / `.mn-graph__mode`），
+ * 面板不再像一块"调试面板"压在图上。
+ */
 .mn-graph__hud {
   position: absolute;
   left: 12px;
@@ -236,12 +251,13 @@
   z-index: 3;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  max-width: 300px;
-  padding: 7px 9px;
-  border: 1px solid var(--mn-border);
-  border-radius: 10px;
-  background: var(--mn-bg-elevated);
+  gap: 7px;
+  max-width: 308px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--mn-border) 70%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--mn-bg-elevated) 88%, transparent);
+  backdrop-filter: blur(10px);
   box-shadow: var(--mn-shadow);
   font-size: 11px;
 }
@@ -267,8 +283,8 @@
   display: flex;
   flex-direction: column;
   gap: 5px;
-  padding-top: 5px;
-  border-top: 1px solid var(--mn-border);
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--mn-border) 65%, transparent);
 }
 
 .mn-graph__row {
@@ -290,9 +306,13 @@
   text-align: right;
 }
 
+/*
+ * 胶囊开关：**不画边框**（用户要求），命中区靠 hover 底色表达 —— 与窗口按钮同一套 shadcn 语言。
+ * 选中态仍然用强调色实底：它回答的是"这个开关现在开着吗"，必须一眼看出来。
+ */
 .mn-graph__chip {
-  padding: 1px 7px;
-  border: 1px solid var(--mn-border);
+  padding: 2px 8px;
+  border: none;
   border-radius: 999px;
   background: transparent;
   color: var(--mn-fg-muted);
@@ -300,15 +320,20 @@
   font-size: 10px;
   line-height: 16px;
   cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
 }
 
 .mn-graph__chip:hover {
-  border-color: var(--mn-accent);
+  background: var(--mn-hover);
   color: var(--mn-fg);
 }
 
 .mn-graph__chip--active {
-  border-color: var(--mn-accent);
+  background: var(--mn-accent);
+  color: var(--mn-accent-fg);
+}
+
+.mn-graph__chip--active:hover {
   background: var(--mn-accent);
   color: var(--mn-accent-fg);
 }
@@ -329,19 +354,25 @@
  * 两个按钮各带自己的名字与高亮，一眼就能回答；开关（尤其是只有图标的那种）要用户
  * 自己在脑子里把"当前状态"翻译成"按下去会发生什么"。
  */
-.mn-graph__modes,
-.mn-graph__depth {
-  display: flex;
+/*
+ * 视图切换 = 分段控件（segmented control，shadcn 的 Tabs 观感）：一个凹槽里放两个选项，
+ * 选中项浮起来。比"两个带边框的胶囊"更像一组互斥选项。
+ */
+.mn-graph__modes {
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--mn-bg);
 }
 
 .mn-graph__mode {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 8px;
-  border: 1px solid var(--mn-border);
+  padding: 3px 10px;
+  border: none;
   border-radius: 999px;
   background: transparent;
   color: var(--mn-fg-muted);
@@ -349,23 +380,27 @@
   font-size: 11px;
   line-height: 16px;
   cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
 }
 
 .mn-graph__mode:hover {
-  border-color: var(--mn-accent);
   color: var(--mn-fg);
 }
 
 .mn-graph__mode--active {
-  border-color: var(--mn-accent);
-  background: var(--mn-accent);
-  color: var(--mn-accent-fg);
+  background: var(--mn-bg-elevated);
+  color: var(--mn-fg);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--mn-bg) 70%, transparent);
 }
 
 .mn-graph__depth {
-  padding: 2px 6px;
-  border: 1px solid var(--mn-border);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 8px;
+  border: none;
   border-radius: 999px;
+  background: var(--mn-bg);
   color: var(--mn-fg-muted);
 }
 
@@ -382,10 +417,10 @@
 }
 
 .mn-graph__depth-step {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   padding: 0;
-  border: 1px solid var(--mn-border);
+  border: none;
   border-radius: 50%;
   background: transparent;
   color: var(--mn-fg-muted);
@@ -393,10 +428,11 @@
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
 }
 
 .mn-graph__depth-step:hover:not(:disabled) {
-  border-color: var(--mn-accent);
+  background: var(--mn-hover);
   color: var(--mn-fg);
 }
 
