@@ -20,11 +20,21 @@
  * 新增命令 / DTO 时：改 Rust、改 TS、顺手把新 DTO 加进 MANIFEST —— 这个脚本会盯着你做完。
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
+
+/** 这个模块是"被直接运行"还是"被测试 import"（`realpathSync` 的理由见 check-version.mjs）。 */
+function isMainModule() {
+  if (!process.argv[1]) return false
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+  } catch {
+    return false
+  }
+}
 
 const HOST = 'apps/desktop/src-tauri/src'
 const CORE = 'crates/mn-core/src'
@@ -361,7 +371,7 @@ export function checkIpc(directory = root) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMainModule()) {
   try {
     if (process.argv.length > 2) throw new Error('用法：node scripts/check-ipc.mjs')
     const stats = checkIpc(root)

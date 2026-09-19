@@ -119,6 +119,11 @@ jobs:
     # PR / main / 每周定时都会跑 —— 定时那轮兜住"代码没动但新 CVE 出现"的情况。
     name: 依赖安全审计（cargo audit + pnpm audit）
     runs-on: windows-latest
+    # `checks: write` 是给 rustsec/audit-check 用的：它要把审计结果写成一条 check run，
+    # 缺了它会在上报阶段报 "Resource not accessible by integration" 而整步失败。
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v4
 

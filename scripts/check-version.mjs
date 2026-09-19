@@ -1,8 +1,24 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
+
+/**
+ * 这个模块是"被直接运行"还是"被测试 import"。
+ *
+ * 必须 `realpathSync`：macOS 上 `tmpdir()` 是 `/var/folders/…`，而 Node 解析出来的
+ * `import.meta.url` 是 `/private/var/…`（`/var` 是软链）—— 直接比字符串会让 CLI 分支
+ * 在 macOS 上静默不执行（退出码 0、没有输出），测试却只看到"没输出"。
+ */
+function isMainModule() {
+  if (!process.argv[1]) return false
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+  } catch {
+    return false
+  }
+}
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*)?$/
 const jsonFiles = ['package.json', 'apps/desktop/package.json', 'apps/desktop/src-tauri/tauri.conf.json']
 
@@ -43,7 +59,7 @@ function isVersion(value) {
   return typeof value === 'string' && !/[\r\n]/.test(value) && versionPattern.test(value)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMainModule()) {
   try {
     const args = process.argv.slice(2)
     if (args.length > 1) throw new Error('用法：node scripts/check-version.mjs [vX.Y.Z]')

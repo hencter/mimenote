@@ -3853,8 +3853,10 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.keyboard.press('Control+K')
     await page.waitForSelector('.mn-palette', { state: 'visible' })
     await page.locator('.mn-palette__input').fill('重置布局')
+    // 用 `hasText` 过滤到那一条再等：空查询时列表是完整注册表（不再切片），
+    // 直接对 `.mn-palette [role="option"]` 调 `textContent()` 会撞上 strict mode
     await waitUntil(
-      async () => ((await page.locator('.mn-palette [role="option"]').textContent()) ?? '').includes('重置布局'),
+      async () => (await page.locator('.mn-palette [role="option"]', { hasText: '重置布局' }).count()) === 1,
       5_000,
       '命令面板里出现「重置布局」',
     )
