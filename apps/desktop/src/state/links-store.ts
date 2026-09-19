@@ -20,6 +20,7 @@ const IDLE_STATUS: IndexStatus = {
   total: 0,
   durationMs: 0,
   links: 0,
+  reusedNotes: 0,
 }
 
 interface LinksState {

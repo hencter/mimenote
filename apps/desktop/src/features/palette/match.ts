@@ -222,8 +222,12 @@ export function buildCommandIndex(list: readonly Command[]): CommandIndexEntry[]
 /**
  * 过滤命令。
  *
- * 复杂度：空查询 O(1)（直接切片，这是面板刚打开那一帧）；非空查询 O(m·L) 单次扫描
+ * 复杂度：空查询 O(n)（全量映射，这是面板刚打开那一帧）；非空查询 O(m·L) 单次扫描
  * + O(k log k) 排序（k = 命中数，只对命中项排序）。
+ *
+ * **空查询不切片**：此时的列表是命令注册表的完整视图（与应用菜单同一份），截断会让
+ * 排在前 50 之外的命令从面板里"消失"（注册表超过 50 条后真实踩到）；切片只服务于
+ * 非空查询的**排序命中**——那是降噪，不是可达性。
  */
 export function filterCommands(
   index: readonly CommandIndexEntry[],
@@ -232,9 +236,7 @@ export function filterCommands(
 ): PaletteOutcome<RankedCommand> {
   if (lowerQuery === '') {
     return {
-      items: index
-        .slice(0, limit)
-        .map((entry) => ({ entry, titleIndices: NO_INDICES, categoryIndices: NO_INDICES })),
+      items: index.map((entry) => ({ entry, titleIndices: NO_INDICES, categoryIndices: NO_INDICES })),
       total: index.length,
     }
   }

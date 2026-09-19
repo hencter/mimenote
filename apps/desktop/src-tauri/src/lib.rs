@@ -36,59 +36,68 @@ pub fn run() {
             startup_vault.path_for_frontend(),
         )))
         .invoke_handler(tauri::generate_handler![
-            commands::vault_open,
-            commands::vault_info,
-            commands::vault_snapshot,
-            commands::vault_close,
-            commands::note_read,
+            // —— Vault 领域 ——
+            commands::vault::vault_open,
+            commands::vault::vault_info,
+            commands::vault::vault_snapshot,
+            commands::vault::vault_close,
+            commands::vault::startup_vault,
+            // —— 笔记领域 ——
+            commands::notes::note_read,
             // 整库导出要拿全库正文去渲染，一次一篇会变成几千次往返（上限 64 篇 / 次，
-            // 单篇失败只进 `skipped`）—— 见 commands.rs 的 notes_read_batch 文档
-            commands::notes_read_batch,
-            commands::note_write,
-            // 标签面板的写入口：与 note_write 同一把写锁 + 同一份 mtime 令牌 + 同一个原子写，
-            // 只多一步"在区块里按最小 diff 改 tags"（见 commands.rs 的 note_set_tags 文档）
-            commands::note_set_tags,
-            // 标签重命名 / 合并：全库改写 frontmatter **与正文行内**标签。
-            // 候选集来自标签索引，逐篇走同一个原子写 + 同一处索引增量同步，
-            // 且逐篇如实汇报"改了 / 跳过了（为什么）"（见 commands.rs 的 tag_rename 文档）
-            commands::tag_rename,
-            // 层级编辑（把 `甲` 挂到 `父` 下 / 提回顶层）：内部复用 tag_rename 那条写路径
-            commands::tag_move,
-            commands::note_create,
-            commands::note_rename,
+            // 单篇失败只进 `skipped`）—— 见 commands/notes.rs 的 notes_read_batch 文档
+            commands::notes::notes_read_batch,
+            commands::notes::note_write,
+            commands::notes::note_create,
+            commands::notes::note_rename,
             // 跨目录移动（拖拽整理 / 「移动到…」）：与重命名共用同一条"换位置 + 改写全库链接"链路
-            commands::note_move,
+            commands::notes::note_move,
             // 目录搬迁：整棵子树一起换路径 + 改写全库指向子树里每一篇的链接。
             // 与单篇搬迁共用同一份候选集/span 改写机制（`mn_index::dir_move`），
             // 出参也复用 `RenameOutcome` —— 前端只多一处"替换整棵子树"的状态收尾
-            commands::dir_rename,
-            commands::dir_move,
-            commands::note_delete,
-            // 回收站：列出与恢复（恢复原语在 `mn-core`，见 ADR-0017）
-            commands::trash_list,
-            commands::note_restore,
-            commands::note_stats,
-            commands::index_status,
-            commands::note_links,
-            commands::graph_data,
+            commands::notes::dir_rename,
+            commands::notes::dir_move,
+            commands::notes::note_delete,
+            commands::notes::note_stats,
+            // —— 标签领域 ——
+            // 标签面板的写入口：与 note_write 同一把写锁 + 同一份 mtime 令牌 + 同一个原子写，
+            // 只多一步"在区块里按最小 diff 改 tags"（见 commands/tags.rs 的 note_set_tags 文档）
+            commands::tags::note_set_tags,
+            // 标签重命名 / 合并：全库改写 frontmatter **与正文行内**标签。
+            // 候选集来自标签索引，逐篇走同一个原子写 + 同一处索引增量同步，
+            // 且逐篇如实汇报"改了 / 跳过了（为什么）"（见 commands/tags.rs 的 tag_rename 文档）
+            commands::tags::tag_rename,
+            // 层级编辑（把 `甲` 挂到 `父` 下 / 提回顶层）：内部复用 tag_rename 那条写路径
+            commands::tags::tag_move,
+            commands::tags::note_tags,
+            commands::tags::tags_list,
+            commands::tags::tag_notes,
+            // 组合过滤（含任意一个 / 不含任何一个，可带后代）：文件树的标签过滤走它，
+            // 一次往返算完 —— 前端逐个标签问会变成 N 次 IPC
+            commands::tags::tag_filter,
+            // —— 回收站领域：列出与恢复（恢复原语在 `mn-core`，见 ADR-0017）——
+            commands::trash::trash_list,
+            commands::trash::note_restore,
+            // —— 链接索引领域 ——
+            commands::links::index_status,
+            commands::links::note_links,
+            // —— 知识图谱领域 ——
+            commands::graph::graph_data,
             // 自我中心图谱（ADR-0021）：以某一篇笔记为圆心、**双向**若干跳的子图。
             // 与 graph_data 共用同一段节点/边组装（`mn_index::graph`），因此同一篇笔记在
             // 两个视图里的度数逐字相同 —— 前端不该看到"全图说 7、中心视图说 3"
-            commands::graph_ego,
-            commands::note_tags,
-            commands::tags_list,
-            commands::tag_notes,
-            // 组合过滤（含任意一个 / 不含任何一个，可带后代）：文件树的标签过滤走它，
-            // 一次往返算完 —— 前端逐个标签问会变成 N 次 IPC
-            commands::tag_filter,
-            commands::search_query,
+            commands::graph::graph_ego,
+            // —— 全文搜索领域 ——
+            commands::search::search_query,
+            // —— 图片资源领域 ——
             assets::asset_authorize,
             // 导出：图片内嵌（只读，走同一套路径防护）与导出落盘（唯一允许写 Vault 之外的写命令，
             // 只允许 `.html`/`.htm`，路径来自系统保存对话框）—— 见 `export.rs` 的模块文档
             assets::asset_read_base64,
-            // 附件写入：把剪贴板/拖入的图片落进 Vault 的附件目录（唯一的"写图片"入口，
-            // 只接受图片扩展名、只写 Vault 之内，见 `attachments.rs` 与 ADR-0013）
+            // —— 附件领域：把剪贴板/拖入的图片落进 Vault 的附件目录（唯一的"写图片"入口，
+            // 只接受图片扩展名、只写 Vault 之内，见 `attachments.rs` 与 ADR-0013）——
             attachments::attachment_save,
+            // —— 导出领域 ——
             export::export_write_html,
             // 整库导出静态站点：宿主出计划（索引驱动的链接解析 + URL 分配）、前端渲染正文、
             // 宿主批量落盘。三条命令**全部**在这里做输出目录校验（必须在 Vault 之外、
@@ -97,9 +106,9 @@ pub fn run() {
             site_export::export_site_plan,
             site_export::export_site_write_pages,
             site_export::export_site_copy_assets,
-            commands::snippets_list,
-            commands::startup_vault,
-            commands::version_info,
+            // —— 系统领域 ——
+            commands::system::snippets_list,
+            commands::system::version_info,
         ])
         .setup(move |app| {
             // 日志必须在 setup 里初始化：此时才能解析用户的日志目录

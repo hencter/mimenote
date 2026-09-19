@@ -19,7 +19,7 @@ beforeEach(() => {
   setIpcAdapter(adapter)
   useLinksStore.getState().clear()
   useNoteStore.getState().close()
-  useLinksStore.setState({ status: { phase: 'idle', indexed: 0, total: 0, durationMs: 0, links: 0 } })
+  useLinksStore.setState({ status: { phase: 'idle', indexed: 0, total: 0, durationMs: 0, links: 0, reusedNotes: 0 } })
 })
 
 describe('links store', () => {
@@ -130,9 +130,9 @@ describe('links store', () => {
   })
 
   it('宿主推送的进度的处理函数可用（事件订阅的落点）', () => {
-    applyIndexStatus({ phase: 'building', indexed: 30, total: 100, durationMs: 0, links: 0 })
+    applyIndexStatus({ phase: 'building', indexed: 30, total: 100, durationMs: 0, links: 0, reusedNotes: 0 })
     expect(useLinksStore.getState().status.phase).toBe('building')
-    applyIndexStatus({ phase: 'ready', indexed: 100, total: 100, durationMs: 42, links: 7 })
+    applyIndexStatus({ phase: 'ready', indexed: 100, total: 100, durationMs: 42, links: 7, reusedNotes: 0 })
     expect(useLinksStore.getState().status.links).toBe(7)
   })
 

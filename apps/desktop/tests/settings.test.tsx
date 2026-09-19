@@ -108,7 +108,7 @@ beforeEach(() => {
     lastRoot: null,
   })
   useLinksStore.setState({
-    status: { phase: 'ready', indexed: 12, total: 12, durationMs: 5, links: 9 },
+    status: { phase: 'ready', indexed: 12, total: 12, durationMs: 5, links: 9, reusedNotes: 0 },
     links: null,
     loading: false,
     error: null,
@@ -613,7 +613,7 @@ describe('设置对话框', () => {
 
     act(() => {
       useLinksStore.setState({
-        status: { phase: 'building', indexed: 30, total: 100, durationMs: 0, links: 0 },
+        status: { phase: 'building', indexed: 30, total: 100, durationMs: 0, links: 0, reusedNotes: 0 },
       })
     })
 

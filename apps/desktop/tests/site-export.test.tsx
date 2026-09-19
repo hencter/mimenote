@@ -143,7 +143,7 @@ function resetStores(): void {
     error: null,
   })
   useLinksStore.setState({
-    status: { phase: 'ready', indexed: 0, total: 0, durationMs: 0, links: 0 },
+    status: { phase: 'ready', indexed: 0, total: 0, durationMs: 0, links: 0, reusedNotes: 0 },
     links: null,
     loading: false,
     error: null,
@@ -469,7 +469,7 @@ describe('前置条件与拒绝', () => {
   it('链接索引还没就绪 → 在选目录之前就拦下（不浪费用户一次选择）', async () => {
     const spy = await setup()
     useLinksStore.setState({
-      status: { phase: 'building', indexed: 10, total: 100, durationMs: 0, links: 0 },
+      status: { phase: 'building', indexed: 10, total: 100, durationMs: 0, links: 0, reusedNotes: 0 },
     })
 
     expect(await exportVaultSite()).toBeNull()
@@ -519,7 +519,7 @@ describe('界面入口', () => {
   it('导出对话框里有第三个选项（整个 Vault → 静态站点），索引没就绪时置灰并说明原因', async () => {
     await setup()
     useLinksStore.setState({
-      status: { phase: 'building', indexed: 3, total: 10, durationMs: 0, links: 0 },
+      status: { phase: 'building', indexed: 3, total: 10, durationMs: 0, links: 0, reusedNotes: 0 },
     })
     render(<ExportDialog />)
     requestExportKind('site')
@@ -535,7 +535,7 @@ describe('界面入口', () => {
 
     // 索引建好之后自动可用（不需要重开对话框）
     useLinksStore.setState({
-      status: { phase: 'ready', indexed: 10, total: 10, durationMs: 5, links: 3 },
+      status: { phase: 'ready', indexed: 10, total: 10, durationMs: 5, links: 3, reusedNotes: 0 },
     })
     await waitFor(() => {
       expect(document.querySelector<HTMLButtonElement>('[data-export-site]')?.disabled).toBe(false)

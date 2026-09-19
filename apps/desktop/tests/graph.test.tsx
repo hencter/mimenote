@@ -164,7 +164,7 @@ function resetStores(): void {
   useNoteStore.getState().close()
   useUiStore.setState({ viewMode: 'graph', paletteMode: null, linksPanelVisible: false })
   useLinksStore.setState({
-    status: { phase: 'idle', indexed: 0, total: 0, durationMs: 0, links: 0 },
+    status: { phase: 'idle', indexed: 0, total: 0, durationMs: 0, links: 0, reusedNotes: 0 },
     links: null,
     loading: false,
     error: null,
@@ -2231,7 +2231,7 @@ describe('知识图谱画布', () => {
     await useVaultStore.getState().openVault(VAULT_ROOT)
     // 模拟"打开 Vault 时索引还在构建"
     useLinksStore.setState({
-      status: { phase: 'building', indexed: 3, total: 8, durationMs: 0, links: 0 },
+      status: { phase: 'building', indexed: 3, total: 8, durationMs: 0, links: 0, reusedNotes: 0 },
     })
 
     render(<GraphCanvas />)
@@ -2242,7 +2242,7 @@ describe('知识图谱画布', () => {
     // 索引就绪 → 自动重新拉一次，提示消失（不需要用户手动刷新）
     act(() => {
       useLinksStore.setState({
-        status: { phase: 'ready', indexed: 8, total: 8, durationMs: 12, links: 4 },
+        status: { phase: 'ready', indexed: 8, total: 8, durationMs: 12, links: 4, reusedNotes: 0 },
       })
     })
     await waitFor(() => {

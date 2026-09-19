@@ -262,7 +262,8 @@ function angleBetween(ux: number, uy: number, vx: number, vy: number): number {
 }
 
 /** 三次贝塞尔在 `t` 处的点。 */
-function cubicAt(from: Point, c1: Point, c2: Point, to: Point, t: number): Point {  const u = 1 - t
+function cubicAt(from: Point, c1: Point, c2: Point, to: Point, t: number): Point {
+  const u = 1 - t
   const a = u * u * u
   const b = 3 * u * u * t
   const c = 3 * u * t * t

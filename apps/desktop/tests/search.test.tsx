@@ -461,7 +461,7 @@ describe('全文搜索面板', () => {
     // 宿主在索引构建期间对 search_query 返回带原因的 IO 错误（"正在构建，请稍候重试"）；
     // 前端的判据取自链接索引已有的进度事件，两者说的是同一件事。
     useLinksStore.setState({
-      status: { phase: 'building', indexed: 10, total: 100, durationMs: 0, links: 0 },
+      status: { phase: 'building', indexed: 10, total: 100, durationMs: 0, links: 0, reusedNotes: 0 },
     })
 
     const { dialog, input } = await openSearchPanel()
@@ -487,7 +487,7 @@ describe('全文搜索面板', () => {
     expect(dialog.querySelector('.mn-palette__empty--error')).toBeNull()
     // 索引就绪后同样的错误才按失败显示
     useLinksStore.setState({
-      status: { phase: 'ready', indexed: 100, total: 100, durationMs: 5, links: 0 },
+      status: { phase: 'ready', indexed: 100, total: 100, durationMs: 5, links: 0, reusedNotes: 0 },
     })
     await waitFor(() => {
       expect(within(dialog).getByText(/搜索失败/)).toBeTruthy()

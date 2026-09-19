@@ -57,7 +57,7 @@ pub const MAX_ATTACHMENT_BATCH_BYTES: u64 = 32 * 1024 * 1024;
 /// 而不会被拿来当文件上传通道的折中。
 pub const MAX_ATTACHMENTS_PER_REQUEST: usize = 32;
 
-/// 同名去重的最大尝试次数（与 `commands.rs` 的 `unique_note_path` 同一口径）。
+/// 同名去重的最大尝试次数（与 `commands/notes.rs` 的 `unique_note_path` 同一口径）。
 const MAX_DEDUPE_ATTEMPTS: u32 = 1000;
 
 /// 一张待写入的附件（`src/ipc/types.ts` 的 `AttachmentInput` 手工镜像）。
@@ -151,10 +151,10 @@ pub async fn attachment_save(
 
     // 条目缓存的增量更新（不重扫目录）：先补父目录再补文件。
     // 缺了父目录条目，前端 `domain/tree` 会把附件当成"父目录缺失"而提升到根节点 ——
-    // 表现是"新建的附件目录看不见、图片挂在最外层"（同一个坑见 commands.rs 的
+    // 表现是"新建的附件目录看不见、图片挂在最外层"（同一个坑见 commands/notes.rs 的
     // `register_moved_dirs`，这里刻意复用同一份实现而不是再写一遍）。
     for item in &saved {
-        crate::commands::register_moved_dirs(&state, &item.rel_path);
+        crate::commands::notes::register_moved_dirs(&state, &item.rel_path);
         let rel_path = item.rel_path.clone();
         let size_bytes = item.size_bytes;
         let mtime_ms = item.mtime_ms;

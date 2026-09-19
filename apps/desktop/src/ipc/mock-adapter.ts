@@ -1983,6 +1983,8 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
               (sum, rel) => sum + buildMockNoteLinks(files, rel).outbound.length,
               0,
             ),
+            // Mock 没有落盘索引可复用：如实报 0（语义见 types.ts 的 IndexStatus）
+            reusedNotes: 0,
           }
           return status as T
         }

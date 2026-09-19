@@ -1,9 +1,10 @@
 /**
  * IPC 契约的 TypeScript 镜像。
  *
- * ⚠️ 这些类型必须与 Rust 侧结构逐字段一致（见 `docs/architecture.md` §3.1）：
+ * ⚠️ 这些类型必须与 Rust 侧结构逐字段一致（见 `docs/architecture.md` §3.1；
+ * 由 `scripts/check-ipc.mjs` 逐字段自动校验，新 DTO 要登记进它的 `DTO_MANIFEST`）：
  * - `mn_core::scanner::EntryMeta`
- * - `mimenote_lib::commands::{VaultInfo, VaultSnapshot, NoteContent, WriteOutcome, SetTagsOutcome, SnippetFile, VersionInfo}`
+ * - `mimenote_lib::commands::{vault, notes, tags, trash, search, system}` 各领域模块的 DTO
  * - `mimenote_lib::assets::{AssetGrant, AssetBytes}`
  * - `mimenote_lib::attachments::{AttachmentInput, AttachmentSaved}`
  * - `mimenote_lib::export::ExportWriteOutcome`
@@ -636,6 +637,12 @@ export interface IndexStatus {
   total: number
   durationMs: number
   links: number
+  /**
+   * 这一轮**没有读文件**、直接复用落盘索引的笔记数（ADR-0014）。
+   *
+   * `reusedNotes === indexed` 就是"Vault 没变，一次文件读都没发生"。
+   */
+  reusedNotes: number
 }
 
 /**
