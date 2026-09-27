@@ -8,7 +8,7 @@
  *   关闭全部 / 在文件树中定位）；未保存（●）与冲突标记只出现在**当前文档**的标签上
  *   （note-store 只持有一份文档，其它标签不可能脏）。
  * - **模块标签**：点击 → 这一格切到它；右键 / `Enter` 是位置菜单（搬到主叶左/右/下、
- *   条内前移/后移、隐藏这一块）；× = 隐藏（与它的快捷键走的是**同一条**开关，
+ *   条内前移/后移、隐藏这一块）；**没有 ×**（侧栏不需要关闭按钮，显隐走菜单与快捷键，
  *   见 `module-visibility.ts`）。
  * - 键盘：`←/→/Home/End` 在条内移动焦点并顺手激活（roving tabindex，选中即切换 ——
  *   与旧标签栏同一模型）；`Alt+1/2/3` 搬到主叶左/右/下、`Alt+←/→` 条内换位置
@@ -392,24 +392,23 @@ export function LeafTabs({ leaf, items, dropIndex, windowControls = false }: Lea
                   {conflicted ? <Icon name="alert" size="xs" /> : '●'}
                 </span>
               )}
-              <button
-                type="button"
-                className="mn-tabs__close"
-                aria-label={
-                  note !== null
-                    ? `关闭 ${note}`
-                    : `隐藏${VIEW_MODULES[item as keyof typeof VIEW_MODULES].label}面板`
-                }
-                title={note !== null ? '关闭（Ctrl+W 关闭当前标签）' : '隐藏这一块（与它的快捷键等价）'}
-                onClick={(event) => {
-                  // 不要让点击穿透到标签本身（那会先切过去再关掉/隐藏，白翻一次页）
-                  event.stopPropagation()
-                  if (note !== null) void closeTab(note)
-                  else if (isViewModule(item)) hideModule(item)
-                }}
-              >
-                <Icon name="x" size="xs" />
-              </button>
+              {/* 笔记标签才有 ×（关掉）；模块标签没有 —— 侧栏的显隐走右键菜单的"隐藏这一块"
+                  与各模块自己的快捷键，标签上再挂一个 × 只是误触区（用户反馈：侧栏不需要关闭按钮） */}
+              {note !== null && (
+                <button
+                  type="button"
+                  className="mn-tabs__close"
+                  aria-label={`关闭 ${note}`}
+                  title="关闭（Ctrl+W 关闭当前标签）"
+                  onClick={(event) => {
+                    // 不要让点击穿透到标签本身（那会先切过去再关掉，白翻一次页）
+                    event.stopPropagation()
+                    void closeTab(note)
+                  }}
+                >
+                  <Icon name="x" size="xs" />
+                </button>
+              )}
             </div>
           )
           // 落点线插在第 dropIndex 位之前（流内占位，标签自然让位 —— 与旧停靠区同一手法）
