@@ -86,7 +86,9 @@ use mn_core::{Error, Result};
 ///
 /// v3：链接 / 标签 / frontmatter 标题也落盘（ADR-0014）—— 判定键不变，但库里多了一整份
 /// "可以复用"的数据，口径变了必须重建，否则会拿旧口径的链接当新口径的用。
-const SCHEMA_VERSION: i64 = 3;
+/// v4：`notes_meta` 新增 `content_hash`（M5 二级令牌，见 `mn_core::content_hash`）——
+/// 写入时顺手记下正文哈希，读笔记时顺手比对（同一毫秒 + 同字节数的外部改动在打开那一刻修好）。
+const SCHEMA_VERSION: i64 = 4;
 
 /// `snippet` 的长度上限（**字符**，含省略号）。
 const SNIPPET_CHARS: usize = 120;
@@ -142,9 +144,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS lines_fts USING fts5(
   tokenize='unicode61 remove_diacritics 2'
 );
 CREATE TABLE IF NOT EXISTS notes_meta(
-  path     TEXT PRIMARY KEY,
-  mtime_ms INTEGER NOT NULL,
-  size     INTEGER NOT NULL
+  path         TEXT PRIMARY KEY,
+  mtime_ms     INTEGER NOT NULL,
+  size         INTEGER NOT NULL,
+  content_hash INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS link_notes(
   path  TEXT PRIMARY KEY,
@@ -496,10 +499,45 @@ impl SearchIndex {
         let written = add_rows(&conn, bulk, &rel, text).map_err(|error| self.db(error))?;
         conn.execute(
             UPSERT_META,
-            params![rel, mtime_stamp(mtime_ms), size_stamp(size_bytes)],
+            params![
+                rel,
+                mtime_stamp(mtime_ms),
+                size_stamp(size_bytes),
+                hash_stamp(mn_core::content_hash(text))
+            ],
         )
         .map_err(|error| self.db(error))?;
         Ok(written)
+    }
+
+    /// 库里记下的内容哈希（M5 二级令牌）。`None` = 库里没有这篇（新笔记、被删过、
+    /// 或走 `add_note`/`upsert_note` 只写了行那种调用方 —— 后两者刻意不留判定键）。
+    pub fn stored_content_hash(&self, rel_path: &str) -> Result<Option<u64>> {
+        let rel = normalize_rel(rel_path);
+        let conn = self.conn();
+        let mut statement = conn
+            .prepare("SELECT content_hash FROM notes_meta WHERE path = ?1")
+            .map_err(|error| self.db(error))?;
+        let mut rows = statement
+            .query_map(params![rel], |row| row.get::<_, i64>(0))
+            .map_err(|error| self.db(error))?;
+        match rows.next() {
+            None => Ok(None),
+            Some(Ok(stored)) => Ok(Some(stored as u64)),
+            Some(Err(error)) => Err(self.db(error)),
+        }
+    }
+
+    /// 手上的文本与库里记下的哈希是否对不上（`true` = 索引里是旧内容，该重建这一篇）。
+    ///
+    /// 库里没有这篇时返回 `false`：那是"新增"，不是"改动"，调用方走正常的增量写入即可，
+    /// 不该再叠一次修复写入。哈希比对本身不读文件 —— 文本是调用方已经拿在手里的
+    /// （读笔记 открывает 时顺手校验，见宿主 `note_read`）。
+    pub fn content_mismatch(&self, rel_path: &str, text: &str) -> Result<bool> {
+        match self.stored_content_hash(rel_path)? {
+            None => Ok(false),
+            Some(stored) => Ok(stored != mn_core::content_hash(text)),
+        }
     }
 
     /// 结束全量重建：重建 FTS 索引、合并段、提交，并把持久化设置调回正常档。
@@ -550,11 +588,12 @@ impl SearchIndex {
                         row.get::<_, String>(0)?,
                         row.get::<_, i64>(1)?,
                         row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
                     ))
                 })
                 .map_err(|error| self.db(error))?;
             for row in rows {
-                let (path, mtime_ms, size) = row.map_err(|error| self.db(error))?;
+                let (path, mtime_ms, size, _) = row.map_err(|error| self.db(error))?;
                 stored.insert(path, (mtime_ms, size));
             }
         }
@@ -1200,9 +1239,10 @@ const DELETE_PATH: &str = "DELETE FROM lines WHERE rel_path = ?1";
 const DELETE_SUBTREE: &str =
     "DELETE FROM lines WHERE rel_path = ?1 OR rel_path LIKE ?2 ESCAPE '\\'";
 const RENAME_PATH: &str = "UPDATE lines SET rel_path = ?1 WHERE rel_path = ?2";
-/// 写入/覆盖一篇笔记的文件元数据（`(mtime, size)` 就是增量复用的判定键）。
-const UPSERT_META: &str = "INSERT INTO notes_meta(path, mtime_ms, size) VALUES (?1, ?2, ?3)
-     ON CONFLICT(path) DO UPDATE SET mtime_ms = excluded.mtime_ms, size = excluded.size";
+/// 写入/覆盖一篇笔记的文件元数据（`(mtime, size, content_hash)` 就是增量复用的判定键，
+/// 其中哈希是 M5 二级令牌：写入时手上有全文，算一次哈希几乎免费）。
+const UPSERT_META: &str = "INSERT INTO notes_meta(path, mtime_ms, size, content_hash) VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT(path) DO UPDATE SET mtime_ms = excluded.mtime_ms, size = excluded.size, content_hash = excluded.content_hash";
 const DELETE_META_PATH: &str = "DELETE FROM notes_meta WHERE path = ?1";
 const DELETE_META_SUBTREE: &str =
     "DELETE FROM notes_meta WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'";
@@ -1240,7 +1280,7 @@ const SELECT_TAG_REFS: &str = "SELECT path, tag, source, line FROM tag_refs ORDE
 /// 都会被看见，不会永远残留在搜索结果里。
 const SELECT_INDEXED_PATHS: &str =
     "SELECT path FROM notes_meta UNION SELECT DISTINCT rel_path FROM lines";
-const SELECT_META: &str = "SELECT path, mtime_ms, size FROM notes_meta";
+const SELECT_META: &str = "SELECT path, mtime_ms, size, content_hash FROM notes_meta";
 const COUNT_MATCH: &str = "SELECT COUNT(*) FROM lines_fts WHERE lines_fts MATCH ?1";
 /// `-bm25()`：SQLite 的 `bm25()` 越小越相关，取负之后"越大越相关"，与契约一致。
 const QUERY_MATCH: &str = "
@@ -1568,8 +1608,17 @@ fn size_stamp(size_bytes: u64) -> i64 {
 }
 
 /// 一篇笔记的判定键 `(mtime_ms, size)`：与 ADR-0004 的 mtime 版本令牌同一口径。
+///
+/// 刻意**不含**内容哈希：复用快路径的目标是"一个文件都不读"，而算哈希必须读文件 ——
+/// 把它放进这里等于每次打开都全量读一遍，30× 加速直接作废。哈希只在"手上已经有文本"
+/// 的地方用（写入时落盘、读笔记时顺手校验），见 [`SearchIndex::content_mismatch`]。
 fn stamp_of(entry: &EntryMeta) -> (i64, i64) {
     (mtime_stamp(entry.mtime_ms), size_stamp(entry.size_bytes))
+}
+
+/// 内容哈希 → 库里存的整数（`u64` 的位模式，原样存回）。
+fn hash_stamp(hash: u64) -> i64 {
+    hash as i64
 }
 
 #[cfg(test)]
@@ -2522,6 +2571,50 @@ mod tests {
                 "复用一轮之后，查询 {query:?}"
             );
         }
+    }
+
+    #[test]
+    fn content_hash_is_stored_and_detects_same_size_edits() {
+        // 二级令牌的核心场景：同字节数、mtime 也被拨回（判定键完全没变），
+        // 但正文已经换了 —— 打开时的快路径仍然会复用（它不读文件），
+        // 而手上有文本的 `content_mismatch` 必须能指出来。
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_note(root, "甲.md", "甲的正文 #标签甲\n\n见 [[乙]]\n");
+        write_note(root, "乙.md", "乙的正文\n");
+        let db = root.join(".mimenote/cache/search.db");
+        let index = SearchIndex::open(&db).unwrap();
+        let entries = entries_of(root, &["甲.md", "乙.md"]);
+        let outcome = run_build(root, &index, &entries);
+        assert!(!outcome.aborted);
+
+        let before = "甲的正文 #标签甲\n\n见 [[乙]]\n";
+        assert_eq!(
+            index.stored_content_hash("甲.md").unwrap(),
+            Some(mn_core::content_hash(before)),
+            "落盘的必须是正文哈希"
+        );
+        assert!(
+            !index.content_mismatch("甲.md", before).unwrap(),
+            "内容没变就不能报 mismatch"
+        );
+
+        // 等字节替换（汉字都是 3 字节）：判定键不变，但哈希必须变。
+        let after = "丁的正文 #标签甲\n\n见 [[乙]]\n";
+        assert_eq!(before.len(), after.len());
+        assert!(
+            index.content_mismatch("甲.md", after).unwrap(),
+            "同字节改动必须被哈希指出来"
+        );
+        assert_eq!(
+            index.stored_content_hash("不存在.md").unwrap(),
+            None,
+            "库里没有的篇返回 None（新增，不是改动）"
+        );
+        assert!(
+            !index.content_mismatch("不存在.md", after).unwrap(),
+            "新增不算 mismatch，调用方走正常增量写入"
+        );
     }
 
     #[test]

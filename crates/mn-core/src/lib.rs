@@ -11,6 +11,7 @@
 //! * 所有接收用户输入路径的 API 必须经 [`VaultRoot`] 解析，禁止直接拼接。
 
 pub mod atomic;
+pub mod content_hash;
 pub mod error;
 pub mod frontmatter;
 pub mod links;
@@ -21,6 +22,7 @@ pub mod tags;
 pub mod text_stats;
 pub mod trash;
 
+pub use content_hash::content_hash;
 pub use error::{Error, ErrorCode, Result};
 pub use frontmatter::{
     body as frontmatter_body, editable_tags, parse as parse_frontmatter, rename_tag_fields,

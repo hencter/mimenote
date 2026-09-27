@@ -122,6 +122,20 @@ pub async fn note_read(
     })
     .await?;
 
+    // M5 二级令牌的顺手校验：文本已经拿在手里，算一次哈希是内存遍历，
+    // 而库里记下的哈希是写入时落盘的 —— 对不上说明"同一毫秒 + 同字节数"的外部改动
+    // 躲过了打开时的元数据复用（见 `mn_core::content_hash`）。这时就地修好这一篇
+    // （内存链接索引 + 全文搜索整篇重写），下一次搜索/反链就是新的。
+    // 只在 mismatch 时才写索引：正常打开只多一次 SELECT。
+    let stale = state
+        .try_search(|search| search.content_mismatch(&rel_path, &text))
+        .and_then(|result| result.ok())
+        .unwrap_or(false);
+    if stale {
+        log::debug!("内容哈希对不上，就地重建索引：{rel_path}");
+        indexer::update_note(&state, &rel_path, &text);
+    }
+
     Ok(NoteContent {
         rel_path,
         text,
