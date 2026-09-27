@@ -1,6 +1,7 @@
 /** 设置页 · 外观分区：主题、界面字号、编辑器字号。 */
 
 import { Icon } from '@/components/Icon'
+import { Select } from '@/components/Select'
 import {
   DEFAULT_SETTINGS,
   EDITOR_FONT_SIZE_RANGE,
@@ -42,22 +43,17 @@ export function AppearanceSection() {
               颜色、圆角、阴影全部来自主题令牌，编辑器与预览同步跟随
             </span>
           </span>
-          <label className="mn-settings__row-control">
-            <span className="mn-visually-hidden">配色主题</span>
-            <select
-              className="mn-settings__select"
-              aria-label="配色主题"
+          <span className="mn-settings__row-control">
+            <Select
+              label="配色主题"
               value={themeId}
-              onChange={(event) => setThemeId(event.target.value)}
-            >
-              {THEMES.map((theme) => (
-                <option key={theme.id} value={theme.id}>
-                  {theme.name}
-                  {theme.appearance === 'light' ? '（浅色）' : '（深色）'}
-                </option>
-              ))}
-            </select>
-          </label>
+              onChange={(next) => setThemeId(next)}
+              options={THEMES.map((theme) => ({
+                value: theme.id,
+                label: `${theme.name}${theme.appearance === 'light' ? '（浅色）' : '（深色）'}`,
+              }))}
+            />
+          </span>
         </div>
       </section>
 

@@ -14,6 +14,7 @@
 | `@lezer/highlight` | 1.x | MIT | 语法高亮标签 | CodeMirror 语言栈的一部分（`tags.*`），非额外引入 |
 | `markdown-it` | 15.x | MIT | Markdown → HTML | 配置项少、`html: false` 直接关闭 raw HTML，渲染器规则可定制（外链/图片占位） |
 | `dompurify` | 3.x | MPL-2.0 OR Apache-2.0 | HTML 二次净化 | XSS 的第二道防线；笔记内容属于不可信输入（别人分享的 Vault） |
+| `@base-ui/react` | 1.x | MIT | 无样式 UI 行为 primitives（Switch/Select 起步） | 只买"键盘/无障碍/开合逻辑"（roving 焦点、typeahead、Esc、焦点归还），**不买样式**：外观仍是手写 CSS + `--mn-*` 令牌，因此主题引擎、构建链、CSP 都不受影响；替代方案是继续手写（ContextMenu 已证明能写对，但每个新控件都要重写一遍焦点管理）。**不引入 Tailwind**：理由见"刻意没有引入"（主题由 JSON + 变量驱动）。按需导入子路径（`@base-ui/react/switch`），只打包用到的组件 |
 
 **刻意没有引入**：
 

@@ -3,6 +3,8 @@
 import { useState } from 'react'
 
 import { Icon } from '@/components/Icon'
+import { Select } from '@/components/Select'
+import { Switch } from '@/components/Switch'
 import { DEFAULT_ATTACHMENT_DIR, normalizeAttachmentDir } from '@/domain/attachments'
 import {
   AUTOSAVE_DELAY_OPTIONS,
@@ -58,22 +60,17 @@ export function EditorSection() {
               <code className="mn-settings__path">Ctrl+S</code> 始终可以立刻保存
             </span>
           </span>
-          <label className="mn-settings__row-control">
-            <span className="mn-visually-hidden">自动保存延迟</span>
-            <select
-              className="mn-settings__select"
-              aria-label="自动保存延迟"
-              value={autosaveDelayMs}
-              onChange={(event) => setAutosaveDelayMs(Number(event.target.value))}
-            >
-              {AUTOSAVE_DELAY_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {option} ms
-                  {option === DEFAULT_SETTINGS.autosaveDelayMs ? '（默认）' : ''}
-                </option>
-              ))}
-            </select>
-          </label>
+          <span className="mn-settings__row-control">
+            <Select
+              label="自动保存延迟"
+              value={String(autosaveDelayMs)}
+              onChange={(next) => setAutosaveDelayMs(Number(next))}
+              options={AUTOSAVE_DELAY_OPTIONS.map((option) => ({
+                value: String(option),
+                label: `${option} ms${option === DEFAULT_SETTINGS.autosaveDelayMs ? '（默认）' : ''}`,
+              }))}
+            />
+          </span>
         </div>
       </section>
 
@@ -90,22 +87,17 @@ export function EditorSection() {
               （<code>tab-size</code> 是继承属性）：编辑器里已有的制表符与预览中的代码块一起跟随
             </span>
           </span>
-          <label className="mn-settings__row-control">
-            <span className="mn-visually-hidden">Tab 宽度</span>
-            <select
-              className="mn-settings__select"
-              aria-label="Tab 宽度"
-              value={tabWidth}
-              onChange={(event) => setTabWidth(Number(event.target.value))}
-            >
-              {TAB_WIDTH_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {option} 字符
-                  {option === DEFAULT_SETTINGS.tabWidth ? '（默认）' : ''}
-                </option>
-              ))}
-            </select>
-          </label>
+          <span className="mn-settings__row-control">
+            <Select
+              label="Tab 宽度"
+              value={String(tabWidth)}
+              onChange={(next) => setTabWidth(Number(next))}
+              options={TAB_WIDTH_OPTIONS.map((option) => ({
+                value: String(option),
+                label: `${option} 字符${option === DEFAULT_SETTINGS.tabWidth ? '（默认）' : ''}`,
+              }))}
+            />
+          </span>
         </div>
         <p className="mn-settings__note">
           说明：这里改变的是制表符的显示宽度。编辑器刻意没有绑定 Tab 键（保留 Tab 在控件之间
@@ -131,14 +123,13 @@ export function EditorSection() {
               「跳到第 N 行」「对着日志找位置」这类事需要它，所以默认是开的
             </span>
           </span>
-          <label className="mn-settings__checkbox">
-            <input
-              type="checkbox"
-              aria-label="显示行号"
+          <span className="mn-settings__row-control">
+            <Switch
+              label="显示行号"
               checked={editorLineNumbers}
-              onChange={(event) => setEditorLineNumbers(event.target.checked)}
+              onCheckedChange={(next) => setEditorLineNumbers(next)}
             />
-          </label>
+          </span>
         </div>
         <p className="mn-settings__note">
           说明：切换是<strong>即时</strong>的 —— 编辑器只把那一段扩展换掉（CodeMirror 的

@@ -15,7 +15,7 @@
 
 ```
 pnpm typecheck                 ✓ 无错误
-pnpm test                      ✓ 98 个测试文件 / 1730 条
+pnpm test                      ✓ 100 个测试文件 / 1737 条
 pnpm test:e2e:ui               ✓ 65 条
 pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— 前端变了它跑的就是旧前端）
 ```

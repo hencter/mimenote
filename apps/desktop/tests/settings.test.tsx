@@ -39,6 +39,15 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * 在 Base UI 下拉里点一项：真实鼠标 = pointerdown + click（见 `tests/ui-controls.test.tsx`
+ * 的同名 helper 注释；只发 click 会被当成"没按下去的点击"合法忽略）。
+ */
+function clickOption(option: HTMLElement): void {
+  fireEvent.pointerDown(option)
+  fireEvent.click(option)
+}
+
 /** 记录 IPC 方法名，其余原样转发给 Mock 适配器（`tests/search.test.tsx` 的同一手法）。 */
 function spyOnIpc(base: MockAdapter): { adapter: IpcAdapter; calls: string[] } {
   const calls: string[] = []
@@ -439,19 +448,21 @@ describe('设置对话框', () => {
     expect(useSettingsStore.getState().readingFontSize).toBe(READING_FONT_SIZE_RANGE.max)
   })
 
-  it('主题下拉直接改 ui-store（应用仍由 App 的 applyTheme effect 统一负责）', () => {
+  it('主题下拉直接改 ui-store（应用仍由 App 的 applyTheme effect 统一负责）', async () => {
     renderShell()
     act(() => {
       useSettingsStore.getState().openSettings()
     })
 
-    const select = screen.getByLabelText<HTMLSelectElement>('配色主题')
-    const other = Array.from(select.options).find((option) => option.value !== select.value)
+    const before = useUiStore.getState().themeId
+    fireEvent.click(screen.getByRole('combobox', { name: '配色主题' }))
+    const options = await screen.findAllByRole('option')
+    const other = options.find((option) => option.textContent !== document.querySelector('.mn-select')?.textContent)
     expect(other).toBeDefined()
+    clickOption(other as HTMLElement)
 
-    fireEvent.change(select, { target: { value: other?.value ?? '' } })
-
-    expect(useUiStore.getState().themeId).toBe(other?.value)
+    const after = useUiStore.getState().themeId
+    expect(after).not.toBe(before)
   })
 
   it('自动保存延迟：改动后真的改变了写盘时机', async () => {
@@ -461,7 +472,8 @@ describe('设置对话框', () => {
     })
     fireEvent.click(screen.getByRole('tab', { name: '编辑器' }))
 
-    fireEvent.change(screen.getByLabelText('自动保存延迟'), { target: { value: '2000' } })
+    fireEvent.click(screen.getByRole('combobox', { name: '自动保存延迟' }))
+    clickOption(await screen.findByRole('option', { name: '2000 ms' }))
     expect(useSettingsStore.getState().autosaveDelayMs).toBe(2000)
     const saved = JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY) ?? '{}') as {
       autosaveDelayMs?: number
@@ -492,14 +504,15 @@ describe('设置对话框', () => {
     expect(useNoteStore.getState().dirty).toBe(false)
   })
 
-  it('Tab 宽度写到 --mn-tab-size（CSS 变量，不碰编辑器实例）', () => {
+  it('Tab 宽度写到 --mn-tab-size（CSS 变量，不碰编辑器实例）', async () => {
     renderShell()
     act(() => {
       useSettingsStore.getState().openSettings()
     })
     fireEvent.click(screen.getByRole('tab', { name: '编辑器' }))
 
-    fireEvent.change(screen.getByLabelText('Tab 宽度'), { target: { value: '8' } })
+    fireEvent.click(screen.getByRole('combobox', { name: 'Tab 宽度' }))
+    clickOption(await screen.findByRole('option', { name: '8 字符' }))
     expect(useSettingsStore.getState().tabWidth).toBe(8)
     expect(document.documentElement.style.getPropertyValue('--mn-tab-size')).toBe('8')
     // tab-size 由注入的样式表读取该变量（继承到编辑器与预览代码块）
@@ -519,10 +532,10 @@ describe('设置对话框', () => {
     })
     fireEvent.click(screen.getByRole('tab', { name: '编辑器' }))
 
-    const checkbox = screen.getByLabelText<HTMLInputElement>('显示行号')
-    expect(checkbox.checked).toBe(true)
+    const toggle = screen.getByRole('switch', { name: '显示行号' })
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
 
-    fireEvent.click(checkbox)
+    fireEvent.click(toggle)
     expect(useSettingsStore.getState().editorLineNumbers).toBe(false)
     expect(
       (JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY) ?? '{}') as {
@@ -585,9 +598,9 @@ describe('设置对话框', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Vault' }))
 
     // CSS 片段：组件只改开关值（应用/卸载由 App 的 effect 统一负责）
-    const checkbox = screen.getByLabelText<HTMLInputElement>('启用 Vault CSS 片段')
-    expect(checkbox.checked).toBe(true)
-    fireEvent.click(checkbox)
+    const toggle = screen.getByRole('switch', { name: '启用 Vault CSS 片段' })
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(toggle)
     expect(useUiStore.getState().snippetsEnabled).toBe(false)
     expect(screen.getByText('已停用')).toBeTruthy()
 
@@ -632,7 +645,10 @@ describe('设置对话框', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Vault' }))
 
     expect(screen.getByText('还没有打开 Vault')).toBeTruthy()
-    expect(screen.getByLabelText<HTMLInputElement>('启用 Vault CSS 片段').disabled).toBe(true)
+    // 开关是 span（role=switch），没有原生 disabled 属性：禁用走 aria-disabled
+    expect(
+      screen.getByRole('switch', { name: '启用 Vault CSS 片段' }).getAttribute('aria-disabled'),
+    ).toBe('true')
     expect(screen.getByLabelText<HTMLButtonElement>('重新扫描 Vault').disabled).toBe(true)
     expect(screen.getByLabelText<HTMLButtonElement>('刷新索引状态').disabled).toBe(true)
   })

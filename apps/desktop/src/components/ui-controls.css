@@ -1,0 +1,179 @@
+/*
+ * 表单控件的外观（`Switch.tsx` / `Select.tsx` 共用）。
+ *
+ * 行为层是 Base UI 的无样式组件（它只负责键盘、无障碍属性与开合逻辑，
+ * 不注入任何样式 —— 因此 CSP 与主题引擎都不受影响）；这里只写"长什么样"，
+ * 且**只读 `--mn-*` 令牌**（新主题一个字都不用改，单测见 `tests/design-tokens.test.ts`
+ * 的"不许写死颜色"纪律）。
+ *
+ * 状态全部走 Base UI 的 `data-*` 属性（`data-checked` / `data-highlighted` /
+ * `data-popup-open` / `data-disabled` …），不用自己维护类名。
+ */
+
+/* ------------------------------------------------------------------ 开关 */
+
+.mn-switch {
+  box-sizing: border-box;
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--mn-border);
+  border-radius: 999px;
+  background: var(--mn-hover);
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.mn-switch[data-checked] {
+  border-color: transparent;
+  background: var(--mn-accent);
+}
+
+.mn-switch__thumb {
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--mn-fg);
+  translate: 0 -50%;
+  transition: left 120ms ease, background-color 120ms ease;
+}
+
+.mn-switch[data-checked] .mn-switch__thumb {
+  left: calc(100% - 16px);
+  background: var(--mn-accent-fg);
+}
+
+.mn-switch:focus-visible {
+  outline: 2px solid var(--mn-accent);
+  outline-offset: 2px;
+}
+
+.mn-switch[data-disabled] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* -------------------------------------------------------------- 下拉选择 */
+
+.mn-select {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 150px;
+  padding: 4px 6px 4px 8px;
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg);
+  color: var(--mn-fg);
+  font-family: inherit;
+  font-size: inherit;
+  user-select: none;
+}
+
+.mn-select:hover:not([data-disabled]) {
+  background: var(--mn-hover);
+}
+
+.mn-select[data-popup-open] {
+  border-color: var(--mn-accent);
+}
+
+.mn-select:focus-visible {
+  outline: 2px solid var(--mn-accent);
+  outline-offset: 1px;
+}
+
+.mn-select[data-disabled] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.mn-select__icon {
+  display: flex;
+  flex: none;
+  color: var(--mn-fg-muted);
+}
+
+/* 弹出层走 Portal（挂在 body 下，不会被对话框的滚动裁掉）；
+   层级必须盖过 `.mn-overlay`（z 50）与其里的对话框。 */
+.mn-select__positioner {
+  z-index: 70;
+  outline: none;
+  user-select: none;
+}
+
+.mn-select__popup {
+  box-sizing: border-box;
+  min-width: var(--anchor-width);
+  padding: 4px;
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg-elevated);
+  background-clip: padding-box;
+  box-shadow: var(--mn-shadow);
+  transform-origin: var(--transform-origin);
+  transition: opacity 100ms ease-out, transform 100ms ease-out;
+}
+
+.mn-select__popup[data-starting-style],
+.mn-select__popup[data-ending-style] {
+  opacity: 0;
+  transform: scale(0.98);
+}
+
+.mn-select__list {
+  box-sizing: border-box;
+  position: relative;
+  overflow-y: auto;
+  max-height: var(--available-height);
+  margin: 0;
+  padding: 0;
+  outline: none;
+}
+
+.mn-select__item {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 8px 6px 6px;
+  border-radius: calc(var(--mn-radius) - 2px);
+  color: var(--mn-fg);
+  outline: none;
+  cursor: default;
+  user-select: none;
+}
+
+/* 选中勾只在选中行挂载：文本列固定第二列，各行文字才对得齐（见 Select.tsx 头注）。 */
+.mn-select__indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--mn-accent-fg);
+}
+
+.mn-select__text {
+  grid-column: 2;
+}
+
+.mn-select__item[data-highlighted] {
+  background: var(--mn-accent);
+  color: var(--mn-accent-fg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mn-switch,
+  .mn-switch__thumb,
+  .mn-select__popup {
+    transition: none;
+  }
+}

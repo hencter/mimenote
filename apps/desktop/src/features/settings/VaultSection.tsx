@@ -10,6 +10,7 @@ import { useState } from 'react'
 
 import { rescanVault } from '@/app/actions'
 import { Icon } from '@/components/Icon'
+import { Switch } from '@/components/Switch'
 import { formatDuration } from '@/domain/format'
 import type { IndexPhase } from '@/ipc/types'
 import { useLinksStore } from '@/state/links-store'
@@ -47,34 +48,31 @@ export function VaultSection() {
           Vault CSS 片段
         </h4>
         <div className="mn-settings__row">
-          <label className="mn-settings__checkbox">
-            <input
-              type="checkbox"
-              aria-label="启用 Vault CSS 片段"
-              checked={snippetsEnabled}
-              disabled={!hasVault}
-              onChange={(event) => {
-                // 只改开关值：`App` 里已有 `useEffect(..., [rootPath, snippetsEnabled])`
-                // 负责 applyVaultSnippets。这里再调一次会跟它抢着卸载/注入 <style>，
-                // 于是"同一件事只有一条执行路径"被破坏（两条路径还会互相覆盖）。
-                setSnippetsEnabled(event.target.checked)
-              }}
-            />
-            <span className="mn-settings__row-label">
-              <span className="mn-settings__row-title">
-                启用 <code className="mn-settings__path">.mimenote/snippets/*.css</code>
-              </span>
-              <span className="mn-settings__row-hint">
-                {hasVault
-                  ? '用户样式片段只从你自己的 Vault 目录读取，不加载任何远程 CSS；停用会整体卸载'
-                  : '还没有打开 Vault'}
-              </span>
+          <span className="mn-settings__row-label">
+            <span className="mn-settings__row-title">
+              启用 <code className="mn-settings__path">.mimenote/snippets/*.css</code>
             </span>
-          </label>
+            <span className="mn-settings__row-hint">
+              {hasVault
+                ? '用户样式片段只从你自己的 Vault 目录读取，不加载任何远程 CSS；停用会整体卸载'
+                : '还没有打开 Vault'}
+            </span>
+          </span>
           <span className="mn-settings__row-control">
             {hasVault && (
               <span className="mn-settings__value">{snippetsEnabled ? '已启用' : '已停用'}</span>
             )}
+            <Switch
+              label="启用 Vault CSS 片段"
+              checked={snippetsEnabled}
+              disabled={!hasVault}
+              onCheckedChange={(next) => {
+                // 只改开关值：`App` 里已有 `useEffect(..., [rootPath, snippetsEnabled])`
+                // 负责 applyVaultSnippets。这里再调一次会跟它抢着卸载/注入 <style>，
+                // 于是"同一件事只有一条执行路径"被破坏（两条路径还会互相覆盖）。
+                setSnippetsEnabled(next)
+              }}
+            />
           </span>
         </div>
       </section>
