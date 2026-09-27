@@ -215,11 +215,14 @@ export function ImageLightbox() {
    * 而不是只有悬停才看得见 —— 那正是最需要这个提示的情况。
    *
    * 两个容器都要标记：预览是 `.mn-figure`（图注 + 提示元素都在里面），编辑器里的图片
-   * 是 Live Preview 的 `.mn-md-image-wrap`（`max-height: 420px` 同样会裁短，而编辑器是默认
-   * 视图 —— 用户在那儿看不到提示就等于没有提示）。
+   * 是 Live Preview 的 `.mn-md-image-wrap`。
    *
-   * 为什么放在这里：判断"是不是被裁短了"必须等浏览器解码完（`naturalHeight` 对
-   * `clientHeight`），而预览组件不该为了一个角标多出一个监听；标记只是**呈现**层的附加信息，
+   * ⚠️ 默认**不会**有图被裁短（正文与编辑器都不再封顶，见 `preview-image.css` 的说明）；
+   * 这条标记现在只服务"用户自己用 CSS 片段给图片写了 `max-height`"的场合 ——
+   * 那时"点击查看原图"常驻，用户才知道图是被裁的。
+   *
+   * 为什么放在这里：判断"是不是被裁短了"必须等浏览器解码完（按显示宽度算出期望高度，
+   * 再对 `clientHeight`），而预览组件不该为了一个角标多出一个监听；标记只是**呈现**层的附加信息，
    * 丢了也只是退回"悬停才提示"，所以不需要 React 参与（预览重渲染会换成新节点，下一次
    * `load` 再打一遍）。`load` 不冒泡，因此同样走捕获阶段。
    */
@@ -227,10 +230,23 @@ export function ImageLightbox() {
     const mark = (image: HTMLImageElement): void => {
       const holder = image.closest('.mn-figure, .mn-md-image-wrap')
       if (holder === null) return
-      const decoded = image.naturalHeight
-      const shown = image.clientHeight
-      // 显示高度明显小于解码高度 = 被 `max-height` 压过（允许 1px 的舍入）
-      if (decoded > 0 && shown > 0 && decoded - shown > 1) {
+      const naturalW = image.naturalWidth
+      const naturalH = image.naturalHeight
+      const shownW = image.clientWidth
+      const shownH = image.clientHeight
+      if (naturalH <= 0 || shownH <= 0) {
+        holder.removeAttribute('data-mn-clipped')
+        return
+      }
+      // 只限宽时会按比例缩小（`max-width: 100%`）：此时 shownH < naturalH 但图是完整的，
+      // 不能算"被裁短"。先算出"按当前显示宽度应有的高度"，只有实际高度明显更矮
+      // （即被 `max-height` 压过）才标记。宽高信息拿不到时（如 jsdom 无布局）退回旧比较。
+      let expectedH = naturalH
+      if (naturalW > 0 && shownW > 0) {
+        expectedH = naturalH * (shownW / naturalW)
+      }
+      // 显示高度明显小于期望高度 = 被 `max-height` 压过（允许 1px 的舍入）
+      if (expectedH - shownH > 1) {
         holder.setAttribute('data-mn-clipped', '1')
       } else {
         holder.removeAttribute('data-mn-clipped')

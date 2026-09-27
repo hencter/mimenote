@@ -38,14 +38,14 @@
   margin: 0 auto;
   max-width: 100%;
   /*
-   * 超大图封顶：解码后的真实尺寸只有浏览器知道（渲染层拿不到，`ImageResolution` 里也没有
-   * 字节数字段），所以封顶放在**呈现层**。想看原尺寸就点开灯箱（灯箱默认"适应窗口"，
-   * 放大后可以滚到每一处细节）。
+   * **默认不封顶**（用户要求："封面图需要完整显示"）：正文里的图就是它本来的样子，
+   * 该多高就多高 —— 尤其笔记顶部那张封面图，裁短它等于把内容藏起来。
    *
-   * 用变量是为了可定制：主题/用户 CSS 片段写一行 `--mn-image-max-height: none` 就能关掉封顶
-   * （`docs` 里的"可高度自定义"承诺，不该因为一个写死的数值打折）。
+   * 变量仍然保留：主题 / 用户 CSS 片段写一行 `--mn-image-max-height: 620px` 就能自己封顶
+   * （`docs` 里的"可高度自定义"承诺不打折）；封顶之后灯箱的"点击查看原图"提示才会出现
+   * （见 `ImageLightbox` 的 `data-mn-clipped` 标记）。
    */
-  max-height: var(--mn-image-max-height, min(75vh, 620px));
+  max-height: var(--mn-image-max-height, none);
   width: auto;
   height: auto;
   border-radius: var(--mn-radius);
@@ -94,9 +94,9 @@
 }
 
 /*
- * 编辑器（所见即所得）里的图片同样会被 `max-height: 420px` 裁短，而编辑器是**默认视图** ——
- * 那里没有图注元素可用，于是在容器上挂一个伪元素提示（悬停/聚焦才出现，见 `.mn-md-image-wrap`
- * 的定位要求：它必须是定位上下文）。
+ * 编辑器（所见即所得）里的图片默认**不再封顶**（与阅读视图一致）；只有用户自己用 CSS
+ * 片段给 `.mn-md-image` 写了 `max-height` 时才会裁短 —— 那时在容器上挂一个伪元素提示
+ * （悬停/聚焦才出现，见 `.mn-md-image-wrap` 的定位要求：它必须是定位上下文）。
  */
 .mn-md-image-wrap {
   position: relative;

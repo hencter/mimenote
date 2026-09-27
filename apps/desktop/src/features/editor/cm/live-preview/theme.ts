@@ -346,8 +346,11 @@ export const livePreviewThemeSpec: { [selector: string]: { [property: string]: s
   },
   '.mn-md-image': {
     display: 'block',
+    // 默认**不限高**（用户要求"封面图需要完整显示"）：编辑器是默认视图，
+    // 在这里把封面裁短比阅读视图更糟 —— 用户以为图就长这样。
+    // 与阅读视图共用 `--mn-image-max-height`：用户写一行就能两边一起封顶。
     maxWidth: '100%',
-    maxHeight: '420px',
+    maxHeight: 'var(--mn-image-max-height, none)',
     borderRadius: 'var(--mn-radius)',
   },
   '.mn-md-image-placeholder': {
