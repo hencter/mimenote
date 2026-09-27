@@ -140,10 +140,10 @@
 | `vault_snapshot` | — | `VaultSnapshot` | 重新扫描并刷新缓存 |
 | `vault_close` | — | `void` | 释放 Vault 上下文 |
 | `note_read` | `relPath` | `NoteContent` | 读取原文（不解释 BOM/换行，交给前端领域层） |
-| `note_write` | `relPath, text, baseMtimeMs?, force` | `WriteOutcome` | 冲突检查 + 原子写 + 返回新 mtime |
+| `note_write` | `relPath, text, baseMtimeMs?, force, stampTimes?` | `WriteOutcome` | 冲突检查 + 原子写 + 返回新 mtime；`stampTimes` 开启 frontmatter 时间挂钩（ADR-0044，校验之后、写盘之前盖章，索引用盖章后的文本更新） |
 | `note_set_tags` | `relPath, add[], remove[], baseMtimeMs` | `SetTagsOutcome` | 在 frontmatter 上**加/删标签**（标签面板的写入口，ADR-0006「后续修订」）：宿主一次做完「令牌校验 → 读盘 → 最小 diff 改写 → 原子写 → 索引增量同步」，前端不自己拼 frontmatter（判同与保真纪律只有一份，在 `mn-core`）。入参是**增与删**而不是"新的完整列表"—— 面板上的列表可能比磁盘旧一拍，传"想要什么"会在那种情况下静默丢掉别的标签；幂等请求（结果与磁盘一致）返回 `changed=false`：**不写盘、不动 mtime、不重建索引**；`baseMtimeMs` **必填**，与磁盘不一致 → `CONFLICT`（与 `note_write` 同一套语义，绝不静默覆盖）。出参多带 `tags`（写入后磁盘上真实的标签，供前端如实解释"这条来自 `tag:` 字段、没被删掉"）与 `text`（写入后的整篇文本，前端据此**一次往返**把编辑器内存对齐磁盘，不必再读一次） |
 | `tag_rename` | `from, to, includeChildren, dryRun` | `TagRenameOutcome` | **全库**把一个标签改名或合并进另一个（ADR-0006「后续修订」）：候选集来自标签索引，逐篇走「`(mtime,size)` 对账 → 读盘 → frontmatter（`tags` 与 `tag` 两个字段）+ 正文行内 `#标签` 一起改 → 原子写 → 索引增量同步」，**逐篇一个短临界区**（不把自动保存挡在整批之外）。`dryRun` 只回"这会改 N 篇"**不落盘**；`includeChildren` 决定 `父` → `母` 时是否把 `父/子` 一并带走（只换前缀那一段，后缀逐字保留）。**跳过如实汇报**：`skipped[{relPath, reason, message}]`（`external-change`/`unreadable`/`write-failed`）与 `unchanged`（磁盘上已经没有旧写法），幂等重试安全；索引未就绪时直接报 `IO`（候选集不完整时"改了 0 篇"是错的） |
-| `note_create` | `parentRel, title` | `NoteContent` | 唯一命名，返回新笔记 |
+| `note_create` | `parentRel, title, stampTimes?` | `NoteContent` | 唯一命名，返回新笔记；`stampTimes` 开启时初始内容自带 `created`/`updated` 块（ADR-0044） |
 | `note_delete` | `relPath, confirm` | `TrashRecord` | `confirm=false` 时返回 `CONFIRMATION_REQUIRED` |
 | `trash_list` | — | `TrashEntry[]` | 列出回收站（最近删的排最前）。每条 = 台账记录 + `present`：台账是**追加写入**的，用户手工清过 `.mimenote/trash` 之后仍会留着指向不存在文件的记录 —— 界面必须能如实区分"可以恢复"与"东西已经没了"，而不是让用户点下去才吃到 `NOT_FOUND`（ADR-0018） |
 | `note_restore` | `id, targetRelPath?` | `RestoreSummary` | 恢复一条：不传目标就回到**当初的位置**，传了就放到那里（「恢复为…」）。**绝不覆盖**：目标已存在 → `ALREADY_EXISTS`，记录与文件都原样留在回收站。恢复后**单篇**就地补条目 + 索引增量同步；**整目录**返回 `needsRescan=true`，由前端走一次静默重扫（一个目录可能带几百个文件，逐条构造 `EntryMeta` 等于把扫描口径抄第二遍） |
@@ -261,6 +261,9 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | [ADR-0030](adr/0030-hide-md-extension.md) | **界面上不写笔记的 `.md`**：判据只有 `domain/paths.ts` 的 `displayName` / `displayPath` 一份；只在"这是哪一篇"的标识显示上生效，**外部产物、宿主错误原文、路径编辑类对话框保留真实文件名**；悬停 `title` 与 `data-note-path` / `data-tab-path` / `data-rel-path` 一律给真实路径（自动化的身份探针不再依赖可见文字） | 已采纳 |
 | [ADR-0040](adr/0040-plugin-manifest-and-host.md) | **插件 manifest 与宿主第一批**（M4 起步）：`features/plugins/manifest.ts` 纯函数校验（点分小写 ID / 严格 semver / 白名单权限）+ `host.ts` 宿主（权限门禁、命令命名空间、错误边界、幂等卸载）+ `PluginPermissionDialog` 安装确认 UI + `example.hello` 示例插件；**不做**动态加载与 Worker 隔离（第三方代码本批不进应用），只开放 `commands` | 已采纳 |
 | [ADR-0041](adr/0041-content-hash-secondary-token.md) | **内容哈希二级令牌**（M5 起步）：`mn-core::content_hash`（FNV-1a 64，零依赖、跨版本稳定）落进 `notes_meta.content_hash`（schema v4）；对账复用判决仍只看 `(mtime, size)`（保住 30×），`note_read` 打开时顺手比对、对不上就地 `update_note` | 已采纳 |
+| [ADR-0042](adr/0042-headless-ui-primitives.md) | **只引无样式行为层**（Base UI）：键盘/无障碍/开合逻辑买进来，外观仍手写对接 `--mn-*`；不引 Tailwind/shadcn 全套（主题是运行时 JSON + 变量）；图标继续自研（后被 ADR-0043 推翻） | 已采纳（图标一条被 0043 推翻） |
+| [ADR-0043](adr/0043-iconify-build-time-icons.md) | **图标换 lucide 构建期打包**：`unplugin-icons` + `@iconify-json/lucide`（devOnly，运行时零网络）；`IconName` 联合与刻度不变，调用方零改动 | 已采纳 |
+| [ADR-0044](adr/0044-frontmatter-timestamps.md) | **frontmatter 时间挂钩**（可选，默认关）：`created`（只写一次）/`updated`（每次保存刷新），UTC RFC 3339，落宿主写路径（校验后、写盘前盖章）；无块旧笔记不擅自建块；回写不同步编辑器内存 | 已采纳 |
 
 
 ## 5. 安全模型
