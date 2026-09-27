@@ -15,7 +15,7 @@
 
 ```
 pnpm typecheck                 ✓ 无错误
-pnpm test                      ✓ 95 个测试文件 / 1712 条
+pnpm test                      ✓ 98 个测试文件 / 1730 条
 pnpm test:e2e:ui               ✓ 65 条
 pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— 前端变了它跑的就是旧前端）
 ```
@@ -100,7 +100,7 @@ pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— �
   **连线的样式与画法是 `features/graph/canvas/edge-paint.ts`，路径语法是 `canvas/edge-path.ts`**。
 - **数字要同步**：用例数写在 `README.md`（质量门禁表 + E2E 覆盖段），功能描述写在 README 的功能表 +
   `docs/architecture.md`（§7 ADR 表、§8 边界清单）+ `docs/milestones.md`。现在改完是
-  **95 文件 / 1702 条 / UI E2E 64 条 / 应用层 E2E 34 条**。
+  **98 文件 / 1730 条 / UI E2E 65 条 / 应用层 E2E 34 条**。
 - **验证顺序**：`pnpm typecheck` + 目标 vitest → `pnpm test` → 动了前端就 `pnpm build` + `pnpm test:e2e:ui`
   → 动了 Rust 或要跑应用层 E2E 才 `tauri build --no-bundle`（约 3–4 分钟）+ `pnpm test:e2e:app`。
 - **子代理在这个环境里会死**（本轮又死了一个：派去写 `tests/graph-edge-paint.test.ts` 的子代理

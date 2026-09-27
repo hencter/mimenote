@@ -259,6 +259,8 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | [ADR-0032](adr/0032-attachment-viewer.md) | **第二类可打开的文件**（附件只读查看器）：判据只有 `domain/viewable.ts` 的 `viewerKindOf` / `isViewable`（图片那一支复用 `domain/assets.ts` 的白名单，不抄第二份）；主区形态由 `ui-store.openedFile` 决定（笔记三视图 or 附件查看器），**只读、不进标签页、不引写路径**；"我正在看什么"随之进顶行（后来落到状态栏，`data-note-path` 改名 `data-main-path`）；三条收口路径（打开笔记 / 点视图按钮 / 换 Vault） |
 | [ADR-0031](adr/0031-design-tokens-and-default-font.md) | **VI 落地第一批**：设计令牌分两层（`--mn-*` 是存储格式、VI 规范名 `--bg-base`/`--text-primary`/`--radius-md`/`--space-*` 是公开书写面，别名层在 `app.css`；可选令牌走"可选 + 兜底"、**不进** `REQUIRED_TOKENS`）；**默认字号三档统一 16** —— 真值在设置层 `DEFAULT_SETTINGS`（`font-overrides` 以 `!important` 覆盖主题与 `:root`），随之把文件树行高 26 → 30；字体族按"可选皮肤"处理（`--font-reading`/`--font-editor` 默认回落 UI 字体，**没有**采纳阅读衬线/编辑等宽）；间距阶梯先定义不套用 | 已采纳 |
 | [ADR-0030](adr/0030-hide-md-extension.md) | **界面上不写笔记的 `.md`**：判据只有 `domain/paths.ts` 的 `displayName` / `displayPath` 一份；只在"这是哪一篇"的标识显示上生效，**外部产物、宿主错误原文、路径编辑类对话框保留真实文件名**；悬停 `title` 与 `data-note-path` / `data-tab-path` / `data-rel-path` 一律给真实路径（自动化的身份探针不再依赖可见文字） | 已采纳 |
+| [ADR-0040](adr/0040-plugin-manifest-and-host.md) | **插件 manifest 与宿主第一批**（M4 起步）：`features/plugins/manifest.ts` 纯函数校验（点分小写 ID / 严格 semver / 白名单权限）+ `host.ts` 宿主（权限门禁、命令命名空间、错误边界、幂等卸载）+ `PluginPermissionDialog` 安装确认 UI + `example.hello` 示例插件；**不做**动态加载与 Worker 隔离（第三方代码本批不进应用），只开放 `commands` | 已采纳 |
+| [ADR-0041](adr/0041-content-hash-secondary-token.md) | **内容哈希二级令牌**（M5 起步）：`mn-core::content_hash`（FNV-1a 64，零依赖、跨版本稳定）落进 `notes_meta.content_hash`（schema v4）；对账复用判决仍只看 `(mtime, size)`（保住 30×），`note_read` 打开时顺手比对、对不上就地 `update_note` | 已采纳 |
 
 
 ## 5. 安全模型
@@ -334,7 +336,8 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 （搜索命中行跳转、图片粘贴/拖入附件、大纲面板、阅读视图代码块复制、窗口标题跟随当前笔记、
 **目录重命名 / 目录移动**：ADR-0015，整棵子树的路径与全库链接一起改、
 **整库导出静态站点**：ADR-0019，每篇一个 HTML + 可点的双链 + 共享样式表 + 索引页，零 JavaScript）。
-仍推迟：M4 插件系统（**标签编辑已交付**：ADR-0006 的三次「后续修订」，面板里加/删、
+仍推迟：M4 插件系统只交付了第一批（ADR-0040：manifest + 权限确认 UI + 命令宿主 + 示例插件；
+动态加载与 Worker 隔离未做）（**标签编辑已交付**：ADR-0006 的三次「后续修订」，面板里加/删、
 全库重命名/合并、**层级编辑**）。
 
 ## 8. 已知限制
