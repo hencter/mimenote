@@ -2,13 +2,19 @@
 import { fileURLToPath } from 'node:url'
 
 import react from '@vitejs/plugin-react'
+import Icons from 'unplugin-icons/vite'
 import { defineConfig } from 'vite'
 
 // Tauri 约定的固定端口：devUrl 与 tauri.conf.json 必须一致。
 const DEV_PORT = 1420
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    // 图标走 Iconify 构建期打包（`~icons/lucide/<名>`）：用到的图标在构建时编进包，
+    // 运行时零网络（离线可用、CSP 安全）；不用运行时 CDN（见 ADR-0043）。
+    Icons({ compiler: 'jsx', jsx: 'react', scale: 1 }),
+  ],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

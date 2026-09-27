@@ -15,11 +15,12 @@
 | `markdown-it` | 15.x | MIT | Markdown → HTML | 配置项少、`html: false` 直接关闭 raw HTML，渲染器规则可定制（外链/图片占位） |
 | `dompurify` | 3.x | MPL-2.0 OR Apache-2.0 | HTML 二次净化 | XSS 的第二道防线；笔记内容属于不可信输入（别人分享的 Vault） |
 | `@base-ui/react` | 1.x | MIT | 无样式 UI 行为 primitives（Switch/Select 起步） | 只买"键盘/无障碍/开合逻辑"（roving 焦点、typeahead、Esc、焦点归还），**不买样式**：外观仍是手写 CSS + `--mn-*` 令牌，因此主题引擎、构建链、CSP 都不受影响；替代方案是继续手写（ContextMenu 已证明能写对，但每个新控件都要重写一遍焦点管理）。**不引入 Tailwind**：理由见"刻意没有引入"（主题由 JSON + 变量驱动）。按需导入子路径（`@base-ui/react/switch`），只打包用到的组件 |
+| `unplugin-icons` + `@iconify-json/lucide` + `@svgr/*` | 24.x / 1.x | MIT | 图标字形：构建期把 lucide 打包进产物（devOnly，见 ADR-0043） | 35 个手绘路径"能用不优雅"；运行时 CDN 与离线冲突，所以只能构建期。`IconName` 联合与刻度不变，调用方零改动；打包增量约 29 个图标 x 1KB |
 
 **刻意没有引入**：
 
 - 虚拟列表库（`react-window` / `@tanstack/react-virtual`）：本项目的行高固定、数据结构简单，自己实现约 40 行并有单测（`domain/virtual-list.ts`），比引入依赖更可控。
-- 图标库：`components/Icon.tsx` 用内联 SVG 路径，无需额外几百 KB。
+- 图标库（运行时）：`components/Icon.tsx` 的字形来自构建期打包的 lucide（见上表），运行时没有图标库、无需额外几百 KB、无网络请求。
 - 样式方案（Tailwind / CSS-in-JS）：主题必须由用户可编辑的 **JSON + CSS 变量**驱动，手写 CSS + 变量最贴合这个需求，也避免了构建期插件。
 - 状态持久化中间件：20 行 `state/persist.ts` 足够。
 - 表单/路由/请求库：M1 没有这些场景。
