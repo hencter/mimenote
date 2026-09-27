@@ -16,6 +16,7 @@ import { useConfirmStore } from '@/state/confirm-store'
 import { refreshGraphData } from '@/state/graph-store'
 import { useLinksStore } from '@/state/links-store'
 import { hasUnsavedChanges, useNoteStore, flushAutosave } from '@/state/note-store'
+import { useSettingsStore } from '@/state/settings-store'
 import {
   captureCaretFor,
   openNextNoteInNewTab,
@@ -192,7 +193,11 @@ export function targetDirectoryForNewNote(): string {
 /** 在指定目录新建笔记并打开。 */
 export async function createNoteIn(dirRel: string, title = '未命名笔记'): Promise<string | null> {
   try {
-    const note = await ipc.noteCreate(dirRel, title)
+    const note = await ipc.noteCreate(
+      dirRel,
+      title,
+      useSettingsStore.getState().frontmatterTimestamps,
+    )
     useVaultStore.getState().registerCreatedNote(note)
     const vault = useVaultStore.getState()
     vault.revealPath(note.relPath)

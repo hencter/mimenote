@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter, type MockAdapter } from '@/ipc/mock-adapter'
 import { configureAutosave, useNoteStore } from '@/state/note-store'
+import { useSettingsStore } from '@/state/settings-store'
 
 let adapter: MockAdapter
 
@@ -143,6 +144,35 @@ describe('保存流水线', () => {
     // 第一次写入的内容是 v1，但状态仍为 dirty（v2 还没落盘）
     expect(textOnDisk('slow.md')).toBe('v1\n')
     expect(useNoteStore.getState().dirty).toBe(true)
+  })
+
+  it('时间挂钩开关原样传给宿主（开/关两条路，默认关）', async () => {
+    const seen: unknown[] = []
+    const base = createMockAdapter({ notes: [{ relPath: 'a.md', text: '# A\n' }] })
+    adapter = base
+    setIpcAdapter({
+      kind: 'test',
+      async invoke<T>(method: string, args?: Record<string, unknown>): Promise<T> {
+        if (method === 'note_write') seen.push(args?.['stampTimes'])
+        return base.invoke<T>(method, args)
+      },
+    })
+
+    // 默认关：不替用户改正文
+    expect(useSettingsStore.getState().frontmatterTimestamps).toBe(false)
+    await useNoteStore.getState().open('a.md')
+    useNoteStore.getState().setText('# 关着存\n')
+    await useNoteStore.getState().saveNow()
+    expect(seen).toEqual([false])
+
+    // 打开：透传 true（盖章是宿主的事，Mock 只管存原文）
+    useSettingsStore.getState().setFrontmatterTimestamps(true)
+    useNoteStore.getState().setText('# 开着存\n')
+    await useNoteStore.getState().saveNow()
+    expect(seen).toEqual([false, true])
+    expect(textOnDisk('a.md')).toBe('# 开着存\n')
+
+    useSettingsStore.getState().setFrontmatterTimestamps(false)
   })
 })
 

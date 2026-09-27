@@ -2011,6 +2011,9 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
           const text = String(a.text ?? '')
           const baseMtimeMs = a.baseMtimeMs === null || a.baseMtimeMs === undefined ? null : Number(a.baseMtimeMs)
           const force = a.force === true
+          // `stampTimes` 只为契约兼容而接收：Mock 文件系统没有 birthtime/frontmatter 语义，
+          // 时间挂钩的逻辑由 Rust 单测覆盖（`commands::notes::tests`），这里存原文
+          void a.stampTimes
           validate(relPath)
           await sleep()
           const current = mtimeOf(relPath)
@@ -2036,6 +2039,8 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
         case 'note_create': {
           const parentRel = String(a.parentRel ?? '')
           const title = String(a.title ?? '').trim()
+          // 见 `note_write` 的注释：`stampTimes` 只为契约兼容而接收
+          void a.stampTimes
           const stem = (title === '' ? '未命名' : title).replace(/[\\/:*?"<>|]/g, '-')
           let candidate = parentRel === '' ? `${stem}.md` : `${parentRel}/${stem}.md`
           let attempt = 0

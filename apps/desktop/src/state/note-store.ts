@@ -15,6 +15,7 @@ import { displayPath, isMarkdown } from '@/domain/paths'
 import { ipc } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
 import type { TextStats } from '@/ipc/types'
+import { useSettingsStore } from '@/state/settings-store'
 import { toast } from './toast-store'
 
 export interface OpenDocument {
@@ -243,7 +244,13 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 
     try {
       const payload = fromEditorText(doc.text, doc.format)
-      const outcome = await ipc.noteWrite(doc.relPath, payload, doc.baseMtimeMs, force)
+      const outcome = await ipc.noteWrite(
+        doc.relPath,
+        payload,
+        doc.baseMtimeMs,
+        force,
+        useSettingsStore.getState().frontmatterTimestamps,
+      )
 
       set((current) => {
         if (current.doc === null || current.doc.relPath !== doc.relPath) {

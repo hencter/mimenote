@@ -96,6 +96,15 @@ export interface SettingsValues {
    * 值本身是相对的，换一个 Vault 仍然指向"那个 Vault 里的同名目录"。
    */
   attachmentDir: string
+  /**
+   * frontmatter 时间挂钩（`created` / `updated`，见 ADR-0044）。
+   *
+   * 为什么默认关：打开后每次保存都会改写正文头两行（`updated` 刷新），
+   * 不知情的用户会在 diff 里看到"没动过的地方变了"；而同步盘丢 mtime 的风险
+   * 只存在于部分用户（坚果云等重建文件的同步方式）—— 默认不替用户做决定。
+   * 只读不写：开关只决定"调宿主命令时带不带 `stampTimes`"。
+   */
+  frontmatterTimestamps: boolean
 }
 
 /*
@@ -116,6 +125,7 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   tabWidth: 4,
   editorLineNumbers: true,
   attachmentDir: DEFAULT_ATTACHMENT_DIR,
+  frontmatterTimestamps: false,
 }
 
 export interface SettingsState extends SettingsValues {
@@ -135,6 +145,8 @@ export interface SettingsState extends SettingsValues {
   setTabWidth: (width: number) => void
   /** 编辑器是否显示行号（即时生效：重配置 Compartment，不重建编辑器）。 */
   setEditorLineNumbers: (on: boolean) => void
+  /** frontmatter 时间挂钩开关（只决定调宿主命令时带不带 `stampTimes`）。 */
+  setFrontmatterTimestamps: (on: boolean) => void
   /** 附件目录（相对 Vault 根；空串 = Vault 根）。非法值会被归一化回默认值。 */
   setAttachmentDir: (dir: string) => void
   /** 三档字号一起恢复到默认值（见 `DEFAULT_SETTINGS` 上面那段）。 */
@@ -211,8 +223,8 @@ function restoreValues(): SettingsValues {
       DEFAULT_SETTINGS.autosaveDelayMs,
     ),
     tabWidth: snapToOption(saved['tabWidth'], TAB_WIDTH_OPTIONS, DEFAULT_SETTINGS.tabWidth),
-    // 布尔偏好按"只有显式写了 false 才算关"读：老版本存下来的那份里没有这个字段，
-    // 缺省必须是**开**（否则升级之后行号会悄悄消失）
+    // 布尔偏好按"只有显式写了对应值才算数"读：缺省走各自的默认值
+    // （行号缺省开 —— 升级后行号不能悄悄消失；时间挂钩缺省关 —— 别替用户改正文）
     editorLineNumbers:
       typeof saved['editorLineNumbers'] === 'boolean'
         ? saved['editorLineNumbers']
@@ -223,6 +235,7 @@ function restoreValues(): SettingsValues {
       typeof saved['attachmentDir'] === 'string'
         ? normalizeAttachmentDir(saved['attachmentDir'])
         : DEFAULT_SETTINGS.attachmentDir,
+    frontmatterTimestamps: saved['frontmatterTimestamps'] === true,
   }
 }
 
@@ -241,6 +254,7 @@ function persistValues(state: SettingsValues): void {
     tabWidth: state.tabWidth,
     editorLineNumbers: state.editorLineNumbers,
     attachmentDir: state.attachmentDir,
+    frontmatterTimestamps: state.frontmatterTimestamps,
   } satisfies SettingsValues)
 }
 
@@ -314,6 +328,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setEditorLineNumbers: (on) => {
     set({ editorLineNumbers: on })
+    persistValues(get())
+  },
+
+  setFrontmatterTimestamps: (on) => {
+    set({ frontmatterTimestamps: on })
     persistValues(get())
   },
 

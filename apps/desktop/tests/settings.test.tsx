@@ -617,6 +617,53 @@ describe('设置对话框', () => {
     })
   })
 
+  it('时间戳保护开关：默认关、拨动写进 store 与 localStorage', () => {
+    renderShell()
+    act(() => {
+      useSettingsStore.getState().openSettings()
+    })
+    fireEvent.click(screen.getByRole('tab', { name: 'Vault' }))
+
+    // 缺省关：老版本存下来的那份里没有这个字段，不能悄悄替用户改正文
+    expect(useSettingsStore.getState().frontmatterTimestamps).toBe(false)
+    const toggle = screen.getByRole('switch', { name: '用 frontmatter 记录创建与修改时间' })
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+
+    fireEvent.click(toggle)
+    expect(useSettingsStore.getState().frontmatterTimestamps).toBe(true)
+    expect(
+      (JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY) ?? '{}') as {
+        frontmatterTimestamps?: boolean
+      }).frontmatterTimestamps,
+    ).toBe(true)
+  })
+
+  it('时间戳保护的读回：只有显式写了 true 才算开', async () => {
+    // 缺字段 ⇒ 关（默认不替用户改正文）
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ tabWidth: 4 }))
+    vi.resetModules()
+    const withoutField = await import('@/state/settings-store')
+    expect(withoutField.useSettingsStore.getState().frontmatterTimestamps).toBe(false)
+
+    // 非法值也回到关
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({ frontmatterTimestamps: 'yes' }),
+    )
+    vi.resetModules()
+    const garbage = await import('@/state/settings-store')
+    expect(garbage.useSettingsStore.getState().frontmatterTimestamps).toBe(false)
+
+    // 显式的 true 才算开
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({ frontmatterTimestamps: true }),
+    )
+    vi.resetModules()
+    const on = await import('@/state/settings-store')
+    expect(on.useSettingsStore.getState().frontmatterTimestamps).toBe(true)
+  })
+
   it('索引构建中显示进度条（而不是把"正在索引"显示成失败）', () => {
     renderShell()
     act(() => {

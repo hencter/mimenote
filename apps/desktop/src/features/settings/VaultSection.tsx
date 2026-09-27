@@ -14,6 +14,7 @@ import { Switch } from '@/components/Switch'
 import { formatDuration } from '@/domain/format'
 import type { IndexPhase } from '@/ipc/types'
 import { useLinksStore } from '@/state/links-store'
+import { useSettingsStore } from '@/state/settings-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 
@@ -28,6 +29,8 @@ const INDEX_PHASE_LABEL: Record<IndexPhase, string> = {
 export function VaultSection() {
   const snippetsEnabled = useUiStore((state) => state.snippetsEnabled)
   const setSnippetsEnabled = useUiStore((state) => state.setSnippetsEnabled)
+  const frontmatterTimestamps = useSettingsStore((state) => state.frontmatterTimestamps)
+  const setFrontmatterTimestamps = useSettingsStore((state) => state.setFrontmatterTimestamps)
   const info = useVaultStore((state) => state.info)
   const status = useLinksStore((state) => state.status)
   const [scanning, setScanning] = useState(false)
@@ -72,6 +75,33 @@ export function VaultSection() {
                 // 于是"同一件事只有一条执行路径"被破坏（两条路径还会互相覆盖）。
                 setSnippetsEnabled(next)
               }}
+            />
+          </span>
+        </div>
+      </section>
+
+      <section className="mn-settings__group" aria-labelledby="mn-settings-timestamps-title">
+        <h4 className="mn-settings__group-title" id="mn-settings-timestamps-title">
+          <Icon name="save" size="sm" />
+          时间戳保护
+        </h4>
+        <div className="mn-settings__row">
+          <span className="mn-settings__row-label">
+            <span className="mn-settings__row-title">用 frontmatter 记录创建与修改时间</span>
+            <span className="mn-settings__row-hint">
+              同步盘/拷贝经常丢文件 mtime，而 frontmatter 跟着正文走 —— 新建时写入
+              <code className="mn-settings__path">created</code> /{' '}
+              <code className="mn-settings__path">updated</code>（UTC），每次保存刷新
+              <code className="mn-settings__path">updated</code>；
+              <code className="mn-settings__path">created</code> 只写一次、永不覆盖；
+              没有 frontmatter 的旧笔记不擅自建块
+            </span>
+          </span>
+          <span className="mn-settings__row-control">
+            <Switch
+              label="用 frontmatter 记录创建与修改时间"
+              checked={frontmatterTimestamps}
+              onCheckedChange={(next) => setFrontmatterTimestamps(next)}
             />
           </span>
         </div>

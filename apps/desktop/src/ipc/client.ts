@@ -102,10 +102,10 @@ export const ipc = {
   vaultClose: () => call<void>('vault_close'),
 
   noteRead: (relPath: string) => call<NoteContent>('note_read', { relPath }),
-  noteWrite: (relPath: string, text: string, baseMtimeMs: number | null, force = false) =>
-    call<WriteOutcome>('note_write', { relPath, text, baseMtimeMs, force }),
-  noteCreate: (parentRel: string, title: string) =>
-    call<NoteContent>('note_create', { parentRel, title }),
+  noteWrite: (relPath: string, text: string, baseMtimeMs: number | null, force = false, stampTimes = false) =>
+    call<WriteOutcome>('note_write', { relPath, text, baseMtimeMs, force, stampTimes }),
+  noteCreate: (parentRel: string, title: string, stampTimes = false) =>
+    call<NoteContent>('note_create', { parentRel, title, stampTimes }),
   noteDelete: (relPath: string, confirm: boolean) =>
     call<TrashRecord>('note_delete', { relPath, confirm }),
   /** 列出回收站（最近的排最前，含"东西还在不在"）。 */
