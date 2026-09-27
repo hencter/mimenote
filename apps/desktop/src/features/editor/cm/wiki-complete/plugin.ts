@@ -34,7 +34,7 @@
  * 没有订阅就没有需要解除的订阅（architecture.md §2 第 6 条）。
  */
 
-import { Prec, type EditorState, type Extension } from '@codemirror/state'
+import { Prec, Transaction, type EditorState, type Extension } from '@codemirror/state'
 import {
   EditorView,
   ViewPlugin,
@@ -109,6 +109,30 @@ function isTrigger(update: ViewUpdate): boolean {
 }
 
 /**
+ * 这次编辑之后，光标是不是落在一个 wikilink 里。
+ *
+ * 补上 `isTrigger` 够不到的三条路：粘贴 `[[甲` 后继续打字（事务以普通字符结尾）、
+ * 输入法一次提交多个字符、在旧链接里点进去改。判定本身只是行级扫描 + 一次树查询，
+ * 与每次按键的 live-preview 重算比起来可忽略。
+ */
+function editedInsideLink(update: ViewUpdate): boolean {
+  if (!update.docChanged) return false
+  // 刚确认完一条候选（`input.complete`）：光标按设计落在 `]]` 之前（链接里），
+  // 这时再弹等于"选完又弹"，必须豁免 —— 它是补全的结果，不是新的编辑意图
+  if (
+    update.transactions.some(
+      (transaction) => transaction.annotation(Transaction.userEvent) === 'input.complete',
+    )
+  ) {
+    return false
+  }
+  if (update.state.selection.ranges.length !== 1) return false
+  const range = update.state.selection.main
+  if (!range.empty) return false
+  return wikilinkContextAt(update.state, range.head) !== null
+}
+
+/**
  * 这次变更是不是"整篇替换"（切换笔记 / 从磁盘重新加载）。
  *
  * 编辑器实例不会因为换文档而重建（`MarkdownEditor.tsx` 只替换文本），
@@ -155,7 +179,15 @@ class WikilinkComplete implements PluginValue {
 
   update(update: ViewUpdate): void {
     if (this.panel === null) {
-      if (isTrigger(update)) this.refresh(update.state, true)
+      // 触发条件 = "刚敲出 `[`" **或**"编辑后光标落在链接里"：
+      // 只认前者会漏掉三条真实路径 —— 粘贴半截链接后继续打字、输入法一次提交多个字符、
+      // 点进旧链接里改（那次编辑的事务不以 `[` 结尾），于是"已存在的笔记"永远推荐不出来。
+      // 纯光标移动（点进去、方向键路过）刻意不开：路过 `[[x]]` 就弹一次比没有更烦，
+      // 真想手动唤出有 Ctrl+Space。整篇替换（切笔记/重载）也不开：光标落在哪是恢复逻辑的事，
+      // 打开一篇笔记就弹推荐属于打扰。
+      if (isTrigger(update) || (editedInsideLink(update) && !replacedWholeDoc(update))) {
+        this.refresh(update.state, true)
+      }
       return
     }
     if (update.docChanged) {

@@ -433,6 +433,40 @@ describe('真实装配：输入 `[[` 弹出候选', () => {
     expect(view.state.doc.toString()).toBe('正文[[zzz')
   })
 
+  it('一次提交多个字符（粘贴半截链接 / 输入法）：照样推荐已存在的笔记', () => {
+    const view = mountEditor('正文', 2)
+    // 整个 `[[设` 是一个事务，结尾不是 `[` —— 老的触发器认不出它
+    typeText(view, '[[设')
+    expect(optionNames(view)).toEqual(['设计文档'])
+  })
+
+  it('点进旧链接里改一个字：推荐弹出来（编辑链接也要有推荐）', () => {
+    // '正文[[设计]]后续'：`设` 在 4，`计` 在 5
+    const view = mountEditor('正文[[设计]]后续', 6)
+    expect(panelOf(view)).toBeNull()
+
+    typeText(view, '文')
+    expect(view.state.doc.toString()).toBe('正文[[设计文]]后续')
+    expect(optionNames(view)).toEqual(['设计文档'])
+  })
+
+  it('纯方向键移入旧链接：不弹（路过就弹比没有更烦，改一个字自然会弹）', () => {
+    const view = mountEditor('正文[[设计]]后续', 0)
+    expect(panelOf(view)).toBeNull()
+
+    view.dispatch({ selection: { anchor: 5 } })
+    expect(panelOf(view)).toBeNull()
+  })
+
+  it('整篇替换（切笔记/重载）时光标落在链接里：不弹', () => {
+    const view = mountEditor('旧正文', 3)
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: '正文[[设计]]后续' },
+      selection: { anchor: 6 },
+    })
+    expect(panelOf(view)).toBeNull()
+  })
+
   it('`↑` `↓` 换选中项（循环），且始终只有一项 `aria-selected`', () => {
     const view = mountEditor('正文', 2)
     typeText(view, '[[')
