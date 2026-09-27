@@ -20,13 +20,15 @@ pub mod scanner;
 pub mod site;
 pub mod tags;
 pub mod text_stats;
+pub mod timestamps;
 pub mod trash;
 
 pub use content_hash::content_hash;
 pub use error::{Error, ErrorCode, Result};
 pub use frontmatter::{
     body as frontmatter_body, editable_tags, parse as parse_frontmatter, rename_tag_fields,
-    set_tags, set_tags_or_create, Frontmatter, FrontmatterField, FrontmatterValue, TagFieldRewrite,
+    set_scalar_field, set_tags, set_tags_or_create, Frontmatter, FrontmatterField,
+    FrontmatterValue, TagFieldRewrite,
 };
 pub use links::{extract_links, LinkKind, LinkRef};
 pub use path_guard::VaultRoot;
@@ -41,6 +43,9 @@ pub use tags::{
     TagRewrite, TagSource,
 };
 pub use text_stats::TextStats;
+pub use timestamps::{
+    system_time_to_rfc3339_utc, unix_secs_to_rfc3339_utc, CREATED_KEY, UPDATED_KEY,
+};
 pub use trash::TrashRecord;
 
 /// 单个 Markdown 文件的默认读取上限（64 MiB）。

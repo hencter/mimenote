@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use serde::Serialize;
 use tauri::State;
@@ -241,6 +241,7 @@ fn read_note_for_export(root: &VaultRoot, rel: &str) -> mn_core::Result<NoteCont
 /// 保存笔记：mtime 令牌校验 → 原子写 → 增量更新缓存。
 ///
 /// `force = true` 表示用户在冲突横幅里明确选择了「覆盖保存」。
+/// `stamp_times = Some(true)` 打开 frontmatter 时间挂钩（见 ADR-0044，设置页可选、默认关）。
 #[tauri::command]
 pub async fn note_write(
     state: State<'_, Arc<AppState>>,
@@ -248,6 +249,7 @@ pub async fn note_write(
     text: String,
     base_mtime_ms: Option<u64>,
     force: bool,
+    stamp_times: Option<bool>,
 ) -> Result<WriteOutcome, IpcError> {
     let root = state.vault_root()?;
     let app = Arc::clone(state.inner());
@@ -276,6 +278,13 @@ pub async fn note_write(
         }
 
         let started = Instant::now();
+        // 时间挂钩在令牌校验**之后**、写盘**之前**：冲突时不写盘，也就不该碰时间；
+        // 挂钩只改 frontmatter 两行，冲突判据（mtime）不受影响
+        let text = if stamp_times == Some(true) {
+            stamp_save_timestamps(&text, &path)
+        } else {
+            text
+        };
         write_atomic(&path, text.as_bytes())?;
         let written = started.elapsed().as_millis() as u64;
 
@@ -313,14 +322,20 @@ pub async fn note_write(
 }
 
 /// 新建笔记：唯一命名，写入初始标题。
+///
+/// `stamp_times = Some(true)` 时初始内容自带 `created`/`updated` frontmatter 块
+/// （文件是新的，不存在"惊吓"问题；见 ADR-0044）。
 #[tauri::command]
 pub async fn note_create(
     state: State<'_, Arc<AppState>>,
     parent_rel: String,
     title: String,
+    stamp_times: Option<bool>,
 ) -> Result<NoteContent, IpcError> {
     let root = state.vault_root()?;
-    let (entry, note) = run_blocking(move || create_note(&root, &parent_rel, &title)).await?;
+    let stamp = stamp_times == Some(true);
+    let (entry, note) =
+        run_blocking(move || create_note(&root, &parent_rel, &title, stamp)).await?;
     state.update_vault(|ctx| ctx.upsert(entry));
     indexer::update_note(&state, &note.rel_path, &note.text);
     log::info!("新建笔记：{}", note.rel_path);
@@ -559,10 +574,46 @@ pub async fn note_stats(
 // 内部实现（与 Tauri 无关，可单测）
 // ---------------------------------------------------------------------------
 
+/// 保存侧的时间戳挂钩（见 ADR-0044）：`updated` 刷新为现在，`created` 缺失时回填。
+///
+/// * 没有 frontmatter 的旧笔记 → 原样返回（绝不擅自建块；新建文件的块由 [`create_note`] 拼）；
+/// * `created` 已存在 → 永不覆盖（出生只有一个真相，用户手改也不动）；
+/// * 回填 `created` 的 fallback 链：文件 birthtime → 文件 mtime → 现在
+///   （平台/文件系统越不支持出生时间，越往后退；同步盘重建的文件一般连 birthtime 都是"复制的那一刻"，
+///   但那仍比"没有"强，且一旦落盘就不再变）。
+fn stamp_save_timestamps(text: &str, path: &std::path::Path) -> String {
+    if mn_core::parse_frontmatter(text).is_none() {
+        return text.to_string();
+    }
+    let now = SystemTime::now();
+    let stamped = mn_core::set_scalar_field(
+        text,
+        mn_core::UPDATED_KEY,
+        &mn_core::system_time_to_rfc3339_utc(now),
+    )
+    .unwrap_or_else(|| text.to_string());
+    let has_created = mn_core::parse_frontmatter(&stamped)
+        .is_some_and(|frontmatter| frontmatter.get(mn_core::CREATED_KEY).is_some());
+    if has_created {
+        return stamped;
+    }
+    let fallback = std::fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.created().ok().or_else(|| meta.modified().ok()))
+        .unwrap_or(now);
+    mn_core::set_scalar_field(
+        &stamped,
+        mn_core::CREATED_KEY,
+        &mn_core::system_time_to_rfc3339_utc(fallback),
+    )
+    .unwrap_or(stamped)
+}
+
 fn create_note(
     root: &VaultRoot,
     parent_rel: &str,
     title: &str,
+    stamp_times: bool,
 ) -> mn_core::Result<(EntryMeta, NoteContent)> {
     let parent = parent_rel.trim().replace('\\', "/");
     let parent = parent.trim_matches('/').to_string();
@@ -583,6 +634,23 @@ fn create_note(
         String::new()
     } else {
         format!("# {trimmed}\n")
+    };
+
+    // 时间挂钩的新建侧：文件是新的，直接拼块（不用 `set_scalar_field` —— 那是给"已有块"改写的）
+    let now_text = mn_core::system_time_to_rfc3339_utc(SystemTime::now());
+    let body = if stamp_times {
+        let stamped = format!(
+            "---\n{}: {now_text}\n{}: {now_text}\n---\n",
+            mn_core::CREATED_KEY,
+            mn_core::UPDATED_KEY,
+        );
+        if body.is_empty() {
+            stamped
+        } else {
+            format!("{stamped}\n{body}")
+        }
+    } else {
+        body
     };
 
     write_atomic(&path, body.as_bytes())?;
@@ -895,23 +963,23 @@ mod tests {
     #[test]
     fn creates_note_with_title_and_unique_names() {
         let (_dir, root) = setup();
-        let (entry, note) = create_note(&root, "", "我的第一篇").unwrap();
+        let (entry, note) = create_note(&root, "", "我的第一篇", false).unwrap();
         assert_eq!(entry.rel_path, "我的第一篇.md");
         assert_eq!(note.text, "# 我的第一篇\n");
         assert_eq!(entry.ext.as_deref(), Some("md"));
         assert!(entry.mtime_ms.is_some());
 
-        let (entry2, _) = create_note(&root, "", "我的第一篇").unwrap();
+        let (entry2, _) = create_note(&root, "", "我的第一篇", false).unwrap();
         // 重名从「 1」开始（与 mock 适配器、Obsidian 的习惯一致）
         assert_eq!(entry2.rel_path, "我的第一篇 1.md", "重名必须自动避让");
-        let (entry3, _) = create_note(&root, "", "我的第一篇").unwrap();
+        let (entry3, _) = create_note(&root, "", "我的第一篇", false).unwrap();
         assert_eq!(entry3.rel_path, "我的第一篇 2.md");
     }
 
     #[test]
     fn creates_note_inside_existing_folder_and_sanitizes_title() {
         let (dir, root) = setup();
-        let (entry, _) = create_note(&root, "notes", "关于/安全: 测试").unwrap();
+        let (entry, _) = create_note(&root, "notes", "关于/安全: 测试", false).unwrap();
         assert!(entry.rel_path.starts_with("notes/"));
         assert!(
             !entry.rel_path.contains(':'),
@@ -924,12 +992,14 @@ mod tests {
     fn rejects_missing_or_non_directory_parent() {
         let (_dir, root) = setup();
         assert_eq!(
-            create_note(&root, "nope", "x").unwrap_err().code(),
+            create_note(&root, "nope", "x", false).unwrap_err().code(),
             mn_core::ErrorCode::NotFound
         );
         std::fs::write(root.path().join("file.md"), "x").unwrap();
         assert_eq!(
-            create_note(&root, "file.md", "x").unwrap_err().code(),
+            create_note(&root, "file.md", "x", false)
+                .unwrap_err()
+                .code(),
             mn_core::ErrorCode::NotADirectory
         );
     }
@@ -937,9 +1007,61 @@ mod tests {
     #[test]
     fn empty_title_gets_fallback_name() {
         let (_dir, root) = setup();
-        let (entry, note) = create_note(&root, "", "   ").unwrap();
+        let (entry, note) = create_note(&root, "", "   ", false).unwrap();
         assert_eq!(entry.rel_path, "未命名.md");
         assert_eq!(note.text, "", "空标题不写占位标题行");
+    }
+
+    // -- frontmatter 时间挂钩（stamp_times，ADR-0044） --------------------------
+
+    #[test]
+    fn stamped_create_includes_created_and_updated_block() {
+        let (_dir, root) = setup();
+        let (_entry, note) = create_note(&root, "", "计时", true).unwrap();
+        let frontmatter = mn_core::parse_frontmatter(&note.text).expect("新建必须带块");
+        let created = frontmatter.get(mn_core::CREATED_KEY).expect("created");
+        let updated = frontmatter.get(mn_core::UPDATED_KEY).expect("updated");
+        // 新建那一刻两者相同，且都是 UTC Z 形状
+        assert_eq!(created, updated);
+        assert!(
+            created.as_str().is_some_and(|value| value.ends_with('Z')),
+            "UTC RFC 3339：{created:?}"
+        );
+        assert!(
+            note.text.ends_with("# 计时\n"),
+            "标题行仍在块之后：{}",
+            note.text
+        );
+    }
+
+    #[test]
+    fn stamp_on_save_refreshes_updated_and_backfills_created() {
+        let (dir, _root) = setup();
+        let path = dir.path().join("旧.md");
+        std::fs::write(&path, "---\ntitle: 旧\n---\n正文\n").unwrap();
+        let stamped = stamp_save_timestamps("---\ntitle: 旧\n---\n正文\n", &path);
+        let frontmatter = mn_core::parse_frontmatter(&stamped).expect("块还在");
+        assert!(
+            frontmatter.get(mn_core::UPDATED_KEY).is_some(),
+            "updated 必须补上"
+        );
+        assert!(
+            frontmatter.get(mn_core::CREATED_KEY).is_some(),
+            "缺失的 created 必须回填"
+        );
+        assert!(stamped.contains("title: 旧"), "原有字段不动");
+        assert!(stamped.ends_with("正文\n"), "正文不动");
+    }
+
+    #[test]
+    fn stamp_on_save_never_touches_created_or_missing_block() {
+        // created 已存在 → 永不覆盖（即使值是用户手写的旧日期）
+        let path = std::path::Path::new("dummy.md");
+        let stamped =
+            stamp_save_timestamps("---\ncreated: 2000-01-01T00:00:00Z\n---\n正文\n", path);
+        assert!(stamped.contains("created: 2000-01-01T00:00:00Z"));
+        // 没有 frontmatter → 原样返回（绝不擅自建块）
+        assert_eq!(stamp_save_timestamps("正文\n", path), "正文\n");
     }
 
     // -- 重命名（note_rename） ----------------------------------------------

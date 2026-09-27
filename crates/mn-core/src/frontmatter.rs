@@ -459,6 +459,52 @@ pub fn set_tags_or_create(text: &str, tags: &[String]) -> String {
     out
 }
 
+/// 按最小 diff 设置一个顶层标量字段（时间戳挂钩用）。
+///
+/// * 没有 frontmatter → `None`（与 [`set_tags`] 同一契约：绝不擅自建块；
+///   调用方（新建文件）手上有整篇，直接拼块，不需要这个函数）；
+/// * 键已存在（首个同名，大小写不敏感）→ 只换值区间：原键拼写、缩进、行尾注释、
+///   CRLF/BOM 一个不动；`Block` 数组形态（`key:` + `- item` 行）**原样返回** ——
+///   往那种结构里塞标量等于写出非法 YAML；
+/// * 键不存在 → 在结束分隔行之前追加一行 `key: value`（换行风格沿用块内既有）；
+/// * 值已经是目标值 → 返回与输入逐字节相同的新字符串（调用方据此可跳过写盘）。
+///
+/// `value` 必须是大段纯文本里**无需引号**的 plain scalar（如 [`crate::timestamps`]
+/// 产出的 `2026-09-27T15:45:20Z`）：本函数原样写入，不做 `format_scalar` 那套转义。
+/// 需要引号/数组的值请走 [`set_tags`] 那条路。
+pub fn set_scalar_field(text: &str, key: &str, value: &str) -> Option<String> {
+    let located = parse_located(text)?;
+    let field = located
+        .fields
+        .iter()
+        .find(|field| field.key.eq_ignore_ascii_case(key));
+    match field {
+        None => {
+            let eol = eol_ending_at(text, located.body_end);
+            let mut out = String::with_capacity(text.len() + key.len() + value.len() + 8);
+            out.push_str(&text[..located.body_end]);
+            out.push_str(key);
+            out.push_str(": ");
+            out.push_str(value);
+            out.push_str(eol);
+            out.push_str(&text[located.body_end..]);
+            Some(out)
+        }
+        Some(field) => match field.style {
+            ValueStyle::Block => Some(text.to_string()),
+            ValueStyle::Empty => Some(splice(
+                text,
+                field.insert_at,
+                field.insert_at,
+                &format!(" {value}"),
+            )),
+            ValueStyle::Scalar | ValueStyle::Inline => {
+                Some(splice(text, field.value_start, field.value_end, value))
+            }
+        },
+    }
+}
+
 /// 结束分隔行之后的字节偏移（= Markdown 正文起点）。
 ///
 /// `pub(crate)`：`crate::tags` 需要它来跳过 frontmatter 并换算绝对行号。
@@ -1471,6 +1517,44 @@ mod tests {
         // 只有 `tag` 时改 `tag`
         let out2 = set_tags("---\ntag: 旧\n---\n", &["新".to_string()]).unwrap();
         assert_eq!(out2, "---\ntag: 新\n---\n");
+    }
+
+    #[test]
+    fn set_scalar_field_replaces_only_the_value_span() {
+        // 只换值：键拼写、注释、CRLF、其余行逐字节不动
+        let text =
+            "---\r\ntitle: 旧标题 # 别删我\r\nupdated: 2020-01-01T00:00:00Z\r\n---\r\n正文\r\n";
+        let out = set_scalar_field(text, "updated", "2026-09-27T15:45:20Z").unwrap();
+        assert_eq!(
+            out,
+            "---\r\ntitle: 旧标题 # 别删我\r\nupdated: 2026-09-27T15:45:20Z\r\n---\r\n正文\r\n"
+        );
+        // 键名大小写不敏感，但原拼写保留
+        let out2 = set_scalar_field("---\nUpdated: 旧\n---\n", "updated", "新").unwrap();
+        assert_eq!(out2, "---\nUpdated: 新\n---\n");
+        // 值相同 → 逐字节相同（调用方据此可跳过写盘）
+        let same = set_scalar_field("---\nupdated: 同\n---\n", "updated", "同").unwrap();
+        assert_eq!(same, "---\nupdated: 同\n---\n");
+    }
+
+    #[test]
+    fn set_scalar_field_appends_and_fills_empty() {
+        // 缺键 → 追加在结束分隔行之前
+        let out = set_scalar_field("---\ntitle: 甲\n---\n正文\n", "updated", "新").unwrap();
+        assert_eq!(out, "---\ntitle: 甲\nupdated: 新\n---\n正文\n");
+        // 空值 → 冒号后插入
+        let out2 = set_scalar_field("---\nupdated:\n---\n", "updated", "新").unwrap();
+        assert_eq!(out2, "---\nupdated: 新\n---\n");
+        // 没有 frontmatter → None（绝不擅自建块）
+        assert_eq!(set_scalar_field("正文\n", "updated", "新"), None);
+        assert_eq!(set_scalar_field("---\n未闭合\n", "updated", "新"), None);
+    }
+
+    #[test]
+    fn set_scalar_field_never_breaks_block_lists() {
+        // `updated:` 后面跟 `- item` 是块数组：塞标量会写出非法 YAML，原样返回
+        let text = "---\nupdated:\n  - 2020\n---\n";
+        assert_eq!(set_scalar_field(text, "updated", "新").unwrap(), text);
     }
 
     #[test]
