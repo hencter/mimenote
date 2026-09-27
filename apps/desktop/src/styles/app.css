@@ -640,6 +640,14 @@ kbd {
   margin: 4px 0;
   font-weight: 600;
   color: var(--mn-callout-accent, var(--mn-fg));
+  /* 标题就是折叠开关（与编辑器里点标记行同一条肌肉记忆）：可点、可键盘聚焦 */
+  cursor: pointer;
+}
+
+/* 手动收起：只留标题（导出件与静态站点没有这段 JS，那里永远是全展开 ——
+   内容一个字不少，只是少了交互） */
+.mn-callout[data-mn-collapsed] > :not(.mn-callout__title) {
+  display: none;
 }
 
 .mn-callout__icon {

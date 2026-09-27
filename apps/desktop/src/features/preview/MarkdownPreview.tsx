@@ -44,6 +44,7 @@ import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 
 import { attachCodeCopyButtons, handleCodeCopyClick } from './code-copy'
+import { enhanceCalloutTitles, toggleCalloutTitle } from './callout-fold'
 import {
   createPreviewRenderChannel,
   previewWorkerMinBytes,
@@ -478,6 +479,11 @@ export function MarkdownPreview() {
   // 代码块的"复制"按钮与语言标签（HTML 每次重建 → 这里重挂；卸载即摘掉）
   useEffect(() => attachCodeCopyButtons(bodyRef.current), [html])
 
+  // callout 标题的按钮语义（同上：正文是 innerHTML 子树，语义挂完即走）
+  useEffect(() => {
+    enhanceCalloutTitles(bodyRef.current)
+  }, [html])
+
   const handleClick = useCallback(
     (event: React.MouseEvent<HTMLElement>) => {
       const target = event.target
@@ -485,6 +491,9 @@ export function MarkdownPreview() {
 
       // 代码块的复制按钮（是个 <button>，与下面的链接分支互不干扰）
       if (handleCodeCopyClick(target)) return
+
+      // callout 标题：点一下折叠，再点一下展开（标题里只有图标与转义文本，没有链接可误触）
+      if (toggleCalloutTitle(target) !== null) return
 
       const anchor = target.closest('a')
       if (anchor === null) return
@@ -529,6 +538,14 @@ export function MarkdownPreview() {
     [links, relPath],
   )
 
+  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    const target = event.target
+    if (!(target instanceof Element)) return
+    // 空格会滚屏：折叠语义优先，页面不动
+    if (toggleCalloutTitle(target) !== null) event.preventDefault()
+  }, [])
+
   if (relPath === null) {
     return (
       <div className="mn-preview mn-preview--empty" data-mn-render="sync">
@@ -548,6 +565,7 @@ export function MarkdownPreview() {
           className="mn-preview__body"
           ref={bodyRef}
           onClick={handleClick}
+          onKeyDown={handleKeyDown}
           dangerouslySetInnerHTML={{ __html: html }}
         />
       </div>
