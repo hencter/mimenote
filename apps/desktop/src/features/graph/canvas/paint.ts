@@ -192,12 +192,14 @@ const QUOTE_BAR_WIDTH = 3
 const UNDERLINE_LIFT = 1.5
 /** callout 容器框的圆角。 */
 const CALLOUT_RADIUS = 4
+/** callout 染色的不透明度（与 CSS 的 `color-mix(accent 12%, transparent)` 同一档）。 */
+const CALLOUT_TINT_ALPHA = 0.12
 
 /**
  * callout 强调色缺省时用来兜底的令牌名。
  *
- * `--mn-quote-border` 而不是某个写死的颜色：app.css 里 callout 的左边框正是
- * `3px solid var(--mn-callout-accent, var(--mn-quote-border))` —— 强调色缺失时阅读视图画的也是这条竖线。
+ * `--mn-quote-border` 而不是某个写死的颜色：app.css 里 callout 的强调色正是
+ * `var(--mn-callout-accent, var(--mn-quote-border))` —— 强调色缺失时阅读视图染的也是这个中性色。
  * 调色板里已经有这个令牌读出来的值（`palette.quoteBorder`），直接复用，不重复读一次 DOM。
  */
 const QUOTE_BORDER_TOKEN = '--mn-quote-border'
@@ -1106,11 +1108,15 @@ function drawTableBlock(
 // ---------------------------------------------------------------------------
 
 /**
- * 提示框：左侧强调色竖条 + 标题行（强调色）+ 子块（同一条块绘制路径）。
+ * 提示框：染色卡片 + 标题行（强调色）+ 子块（同一条块绘制路径）。
  *
  * 几何全部来自 `LaidOutBlock.callout`（`width` / `titleHeight` / `bodyTop`）与 `item.children`：
  * 子块的 `indent` 里已经含了 `calloutBodyInset`，所以这里只把"容器内容区原点"交给 `drawBlock`，
  * 不需要（也不该）知道内缩是怎么算的 —— 一旦画笔自己算一遍内缩，容器高度与子块位置就会用两套数字。
+ *
+ * 层级靠染色表达，不画边框不画竖条（与阅读视图同一哲学，见 app.css 的 callout 注释）：
+ * 强调色 12% 盖在卡片底上 —— canvas 没有 color-mix，用 `globalAlpha` 分两遍画，
+ * 效果与 CSS 的 `color-mix(accent 12%, transparent)` 同一观感。
  *
  * 强调色**不在这里定**：颜色只有 app.css 一份，`accentOf` 按类型去问令牌（见 `palette.calloutAccent`）。
  * 未知类型（用户手写 `[!摘录]`）在 `blocks.ts` 里已经回落成 `note`，这里不会拿到没见过的类型名。
@@ -1132,20 +1138,17 @@ function drawCalloutBlock(
 
   context.globalAlpha = 1
   context.setLineDash([])
-  // 容器底与边框：底色与卡片同色（app.css 里 callout 的背景就是 `--mn-bg-elevated`），
-  // 靠边框 + 竖条把它与正文分开 —— 画一个"更深/更亮"的底会引入一份新的颜色来源
+  // 容器底：先铺卡片底色，再用强调色 12% 染一遍（分两遍画 + globalAlpha，
+  // 即 CSS 那句 color-mix —— canvas 没有这个函数）。
+  // 边框与竖条都不要：卡片自己已经有边界，染色 + 留白足够把它与正文分开。
   context.fillStyle = palette.cardBg
   roundRectPath(context, rect, CALLOUT_RADIUS * scale)
   context.fill()
-  context.strokeStyle = palette.cardBorder
-  context.lineWidth = 1 * scale
-  roundRectPath(context, rect, CALLOUT_RADIUS * scale)
-  context.stroke()
-
-  // 竖条：贴着容器的左边缘内侧（宽度取排版层的 `calloutBarWidth` —— 它落在内边距里，
-  // 所以画多宽都不会挤到文字）
+  context.globalAlpha = CALLOUT_TINT_ALPHA
   context.fillStyle = accent
-  context.fillRect(rect.x, rect.y, metrics.calloutBarWidth * scale, rect.height)
+  roundRectPath(context, rect, CALLOUT_RADIUS * scale)
+  context.fill()
+  context.globalAlpha = 1
 
   const padding = metrics.calloutPadding * scale
   const titleLineHeight = lineHeightFor(block, metrics) * scale

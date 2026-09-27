@@ -144,25 +144,26 @@ export const livePreviewThemeSpec: { [selector: string]: { [property: string]: s
   '.cm-line.mn-md-quote--nested': { paddingLeft: '30px' },
 
   /* ── callout：引用的一种（`> [!note] 标题`） ──
-     这里刻意**不**复用 `.mn-md-quote`：callout 是"有颜色的块"，引用是"淡色的从属文本"，
+     这里刻意**不**复用 `.mn-md-quote`：callout 是"染色的块"，引用是"淡色的从属文本"，
      叠在一行上只能靠选择器优先级去分胜负（两者特异性相同，谁赢取决于样式表顺序）。
      所以判读阶段就把类名换掉（见 build.ts 的 emitQuoteLines），一行要么是引用、要么是 callout。
-     颜色走 `--mn-callout-accent`（由 `mn-callout--<type>` 提供，见 MD.calloutAccent）。 */
+     颜色走 `--mn-callout-accent`（由 `mn-callout--<type>` 提供，见 MD.calloutAccent）。
+     与阅读视图同一哲学（见 app.css 的 callout 注释）：染色 + 留白，不画强调色边框。 */
   '.cm-line.mn-md-callout': {
-    borderLeft: '3px solid var(--mn-callout-accent, var(--mn-quote-border))',
-    background: 'var(--mn-bg-elevated)',
+    background:
+      'color-mix(in srgb, var(--mn-callout-accent, var(--mn-quote-border)) 12%, transparent)',
     // 引用行是淡色的；callout 的正文是正常正文
     color: 'var(--mn-fg)',
-    // 14px 与阅读视图的 `.mn-callout { padding: 6px 14px 2px }` 逐字一致
-    paddingLeft: '14px',
-    paddingRight: '14px',
+    // 16px 与阅读视图的 `.mn-callout { padding: 6px 16px 2px }` 逐字一致
+    paddingLeft: '16px',
+    paddingRight: '16px',
   },
   /* 嵌套：多一个类名（而**不是**靠样式表顺序）压过上面那条 paddingLeft —— 两条规则特异性相同，
      谁赢取决于生成的样式表里的先后，那种"偶尔生效"的样式是最难查的一类 bug */
   '.cm-line.mn-md-callout.mn-md-callout--nested': { paddingLeft: '30px' },
   /*
    * 上下内边距是**加法**，对齐阅读视图那张框：
-   * `.mn-callout { padding: 6px 14px 2px }` + `.mn-callout__title { margin: 4px 0 }`
+   * `.mn-callout { padding: 6px 16px 2px }` + `.mn-callout__title { margin: 4px 0 }`
    * + `.mn-callout > *:last-child { margin-bottom: 8px }` ⇒ 顶 6+4=10、底 2+8=10。
    *
    * 这里曾经是 3px/3px —— 用户看到的"编辑区里没有边距、和阅读视图对不上"就是它：
@@ -170,15 +171,15 @@ export const livePreviewThemeSpec: { [selector: string]: { [property: string]: s
    * 所以"框的内边距"只能由首行/末行的 `padding` 承担。
    */
   '.cm-line.mn-md-callout--first': {
-    borderTopRightRadius: '6px',
-    borderTopLeftRadius: '6px',
+    borderTopRightRadius: 'calc(var(--mn-radius) + 4px)',
+    borderTopLeftRadius: 'calc(var(--mn-radius) + 4px)',
     paddingTop: '10px',
     // 标题那一行的下边距（阅读视图里由 `.mn-callout__title` 的 margin-bottom 给）
     paddingBottom: '4px',
   },
   '.cm-line.mn-md-callout--last': {
-    borderBottomRightRadius: '6px',
-    borderBottomLeftRadius: '6px',
+    borderBottomRightRadius: 'calc(var(--mn-radius) + 4px)',
+    borderBottomLeftRadius: 'calc(var(--mn-radius) + 4px)',
     paddingBottom: '10px',
   },
   '.mn-md-callout-title': {

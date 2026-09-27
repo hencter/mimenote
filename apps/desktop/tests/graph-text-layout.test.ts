@@ -65,7 +65,6 @@ function paragraph(text: string): DrawBlock {
  */
 const CALLOUT_METRICS: Partial<LayoutMetrics> = {
   calloutPadding: 8,
-  calloutBarWidth: 3,
   calloutBodyInset: 8,
   calloutIndentPerLevel: 8,
   calloutMaxDepth: 2,

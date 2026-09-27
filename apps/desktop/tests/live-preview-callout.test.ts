@@ -251,7 +251,7 @@ describe('框的边距与阅读视图对齐（"两个视图统一"的判据，�
 
   it('首行/末行的内边距 = 阅读视图那张框的内边距（是加法关系，不是两边各抄一串数字）', () => {
     /*
-      阅读视图的框是**块**：`.mn-callout { padding: 6px 14px 2px }` + 标题的 `margin: 4px 0`
+      阅读视图的框是**块**：`.mn-callout { padding: 6px 16px 2px }` + 标题的 `margin: 4px 0`
       + `.mn-callout > *:last-child { margin-bottom: 8px }`。
       编辑器里一行是一个 `.cm-line`，**垂直 margin 会折叠出去**（见 theme.ts 表格那段），
       所以"框的内边距 + 标题的上下留白"只能全部由首行/末行的 `padding` 承担。

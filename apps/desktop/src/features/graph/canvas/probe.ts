@@ -10,7 +10,7 @@
  *
  * 于是 `getComputedStyle(html).getPropertyValue('--mn-callout-note')` 返回**空串**
  * （没有任何规则声明过这个名字），而 `--mn-callout-accent` 只在挂着
- * `mn-callout--<type>` 类的元素上才有值。想让画布上的提示框竖条与阅读视图同色，
+ * `mn-callout--<type>` 类的元素上才有值。想让画布上的提示框染色与阅读视图同色，
  * 就得**按类型去问那个类**——这就是 {@link createTokenReader} 干的事。
  *
  * 为什么不把 13 种颜色抄进主题 JSON：那份色表本来就只有一处（app.css），

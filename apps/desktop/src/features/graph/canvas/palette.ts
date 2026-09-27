@@ -156,8 +156,8 @@ const CALLOUT_ACCENT_VAR = '--mn-callout-accent'
  * callout 强调色全部读不到时的兜底：**引用竖线色**。
  *
  * 这个选择不是随手取的，而是与 app.css 的兜底链逐字一致：
- * `border-left: 3px solid var(--mn-callout-accent, var(--mn-quote-border))` ——
- * 阅读视图在"强调色缺失"时画的也是这一条灰蓝色的竖线。两边同时降级到同一个颜色，
+ * `var(--mn-callout-accent, var(--mn-quote-border))` ——
+ * 阅读视图在"强调色缺失"时染的也是这个中性色。两边同时降级到同一个颜色，
  * 才不会出现"阅读视图是灰的、画布是蓝的"这种只有一处坏掉才会有的分歧。
  */
 const FALLBACK_CALLOUT_ACCENT = FALLBACK.quoteBorder

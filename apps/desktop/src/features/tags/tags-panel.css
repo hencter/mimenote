@@ -325,7 +325,10 @@
   border: none;
   border-radius: var(--mn-radius);
   cursor: pointer;
-  overflow-wrap: anywhere;
+  /* 窄格里打点而不是逐字竖排：再窄的格子也该是一行被截断的标题 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mn-tags__note:hover {

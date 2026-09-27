@@ -1074,7 +1074,7 @@ describe('paintGraph：正文块', () => {
     expect(context.ops.some((op) => op.op === 'setLineDash' && op.segments.length > 0)).toBe(true)
   })
 
-  it('callout：竖条与标题行用强调色（给了 token 就用类型色，没给就退到 palette.quoteBorder）', () => {
+  it('callout：染色卡片 + 标题行用强调色（给了 token 就用类型色，没给就退到 palette.quoteBorder）', () => {
     const blocks: DrawBlock[] = [
       {
         kind: 'callout',
@@ -1094,7 +1094,12 @@ describe('paintGraph：正文块', () => {
       token: (name) => (name === '--mn-callout-warning' ? '#ff9100' : null),
     })
 
+    // 染色分两遍：卡片底先铺满，再用强调色 12% 盖一遍（与阅读视图的 color-mix 同一观感）
+    expect(fillStyles(withToken.context)).toContain(palette.cardBg)
     expect(fillStyles(withToken.context)).toContain('#ff9100')
+    // 没有边框与竖条：竖条是唯一的 fillRect（文字与卡片底都走 roundRect+fill），
+    // 卡片自身的边框 stroke 与本断言无关
+    expect(withToken.context.ops.map((op) => String(op.op))).not.toContain('fillRect')
     expect(stateAtText(withToken.context, '! 当心').fillStyle).toBe('#ff9100')
     // 正文子块走的是同一条块绘制路径（不需要为 callout 再写一份排版）
     expect(textsOf(withToken.context)).toContain('内文')

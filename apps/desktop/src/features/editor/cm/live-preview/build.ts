@@ -407,7 +407,7 @@ function emitBlockquote(build: Build, entry: Collected): void {
   })
   for (const number of lines) {
     if (number === first) continue
-    // 内层 callout 后写、覆盖外层：一行上只能有一条左边框，显示**最内层**的那个框
+    // 内层 callout 后写、覆盖外层：一行上只能有一种染色，显示**最内层**的那个颜色
     // （`> [!note] 外\n> > [!tip] 内` 的第二行是内层 callout 的标记行）
     build.callouts.set(number, { callout, position: number === last ? 'last' : 'middle' })
   }

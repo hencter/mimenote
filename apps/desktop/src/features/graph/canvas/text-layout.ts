@@ -32,9 +32,8 @@
  *
  * ## 提示框怎么画（`LaidOutBlock.callout` + `children`）
  *
- * 1. 在 `(x, y, callout.width, height)` 描一个圆角盒；左边缘内侧画一条
- *    `metrics.calloutBarWidth` 宽的类型色竖条，颜色取 `block.accent` 那个令牌
- *    （竖条落在内边距里，与文字不重叠，所以不需要额外的留白）；
+ * 1. 在 `(x, y, callout.width, height)` 描一个圆角染色盒（类型色 12% 染在卡片底上，
+ *    与阅读视图 `.mn-callout` 的 color-mix 同一观感 —— 层级靠染色 + 留白，不画竖条）；
  * 2. `lines`（标题行，已经含字形与折叠角标）画在 `x + metrics.calloutPadding`、
  *    `y + metrics.calloutPadding`，行高 `lineHeightFor(block, metrics)`；
  * 3. `children` 依次画在 `x + metrics.calloutPadding + child.indent`、
@@ -89,7 +88,7 @@ export interface LaidOutTable {
   rowHeights: number[]
 }
 
-/** 提示框容器的几何结果（画笔描边框、画左侧类型色竖条、摆正文用）。 */
+/** 提示框容器的几何结果（画笔染底色、摆标题与正文用）。 */
 export interface LaidOutCallout {
   /** 容器盒子的宽度（= 本块的可用宽度；画笔按 `(块原点 x, y, width, height)` 描这个盒子）。 */
   width: number
@@ -170,13 +169,11 @@ export interface LayoutMetrics {
   /**
    * 提示框容器的内边距（四边统一）。
    *
-   * 与 CSS 的 `padding: 6px 14px 2px` 不逐字对应：画布上容器的左右留白由"内边距 + 正文内缩"
+   * 与 CSS 的 `padding: 6px 16px 2px` 不逐字对应：画布上容器的左右留白由"内边距 + 正文内缩"
    * 两笔构成（见 `calloutBodyInset`），四边统一之后上下留白正好与 `blockGap` 同量级 ——
    * 也就是"容器上下留出与段落间距相称的留白"。
    */
   calloutPadding: number
-  /** 提示框左侧类型色竖条的宽度（对应 CSS 的 `border-left: 3px`）。 */
-  calloutBarWidth: number
   /** 提示框正文相对容器内容区**再**内缩的量（左右各一份）。 */
   calloutBodyInset: number
   /** 每级嵌套提示框的缩进量。 */
@@ -212,7 +209,6 @@ export const DEFAULT_METRICS: LayoutMetrics = {
   maxColumnWidth: 200,
   tableCellPadding: 6,
   calloutPadding: 8,
-  calloutBarWidth: 3,
   calloutBodyInset: 8,
   calloutIndentPerLevel: 8,
   calloutMaxDepth: 2,

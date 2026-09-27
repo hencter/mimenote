@@ -312,10 +312,16 @@ kbd {
 
 .mn-tree-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
-  padding: 6px 8px;
+  gap: 8px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--mn-border);
+}
+
+/* 搜索框独占一行：过滤是"先找"再"动手"，视觉上也该在最上面 */
+.mn-tree-toolbar .mn-search-field {
+  flex: 1 1 100%;
 }
 
 .mn-search-field {
@@ -324,7 +330,7 @@ kbd {
   gap: 6px;
   flex: 1 1 auto;
   min-width: 0;
-  padding: 3px 6px;
+  padding: 5px 8px;
   border: 1px solid var(--mn-border);
   border-radius: var(--mn-radius);
   background: var(--mn-bg);
@@ -348,7 +354,36 @@ kbd {
 
 .mn-tree-toolbar__actions {
   display: flex;
-  gap: 1px;
+  align-items: center;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+/* 同一组动词放一起（文档操作 / 展开折叠 / 库操作），组间一条细分隔：
+   九个图标排成一串是认不出来的，分组之后"找按钮"变成"先找组" */
+.mn-tree-toolbar__group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.mn-tree-toolbar__divider {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 5px;
+  background: var(--mn-border);
+}
+
+/* 工具栏里的命中区放大到 28px（全局的 22px 是给 26px 高的状态栏的，
+   这里行高没有那个限制；状态栏不受影响） */
+.mn-tree-toolbar__actions .mn-icon-button {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--mn-radius);
 }
 
 .mn-tree {
@@ -578,22 +613,24 @@ kbd {
 }
 
 /* ---------------------------------------------------------------------------
-   Callout（`> [!note] 标题`，ADR-0022）
+   Callout（`> [!note] 标题`，ADR-0022；染色哲学见 ADR-0042）
    ---------------------------------------------------------------------------
    类型 → 颜色只有**这一份**：每种类型在这里定义 `--mn-callout-accent`，画布那边用
    `getComputedStyle` 读同一个变量（见 `features/graph/canvas/palette.ts`）——
    两份色表迟早会出现"阅读视图是蓝色、画布上是绿色"这种没人能解释的差异。
-   颜色刻意只用在**左边框与标题**上，背景仍走主题的 `--mn-bg-elevated`：
-   Obsidian 那种"整体染色"需要 color-mix/半透明叠色，在 110 版 Chromium（构建目标）上
-   不一定可用，而主题安全比多一层底色重要。
+
+   层级靠**染色 + 留白**表达，不靠描边（Refactoring UI 的那条规则：
+   "高亮某一条边不是优雅的视觉哲学" —— 边框只会把内容框住，染色才分得出主次）：
+   强调色 12% 染在透明上，底下是什么背景就染什么背景（深色/纸墨/编辑器通吃）。
+   不支持 `color-mix` 的旧浏览器整条声明失效，会回落到上一行的纯色（仍可读）。
    --------------------------------------------------------------------------- */
 
 .mn-callout {
   margin: 1em 0;
-  padding: 6px 14px 2px;
-  border-left: 3px solid var(--mn-callout-accent, var(--mn-quote-border));
-  border-radius: var(--mn-radius);
+  padding: 6px 16px 2px;
+  border-radius: calc(var(--mn-radius) + 4px);
   background: var(--mn-bg-elevated);
+  background: color-mix(in srgb, var(--mn-callout-accent, var(--mn-quote-border)) 12%, transparent);
 }
 
 .mn-callout__title {
@@ -837,7 +874,20 @@ kbd {
   min-width: 0;
 }
 
+/* 组里的文字挤不下时打点，而不是把整条栏撑开顶掉右边的按钮
+   （窄窗口下路径 + 统计 + 保存信息三组最容易挤成一团） */
+.mn-statusbar__group > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mn-statusbar__group svg {
+  flex: none;
+}
+
 .mn-statusbar__group--buttons {
+  flex: none;
   gap: 1px;
 }
 

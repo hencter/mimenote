@@ -154,13 +154,14 @@ ${scope} blockquote {
 /* Callout：与阅读视图同一份排版（类型 → 强调色），但**不能**依赖应用里的样式表 ——
    导出件与静态站点都可能在没有本应用的浏览器里打开，所以这一份必须自带。
    颜色写死在类型规则里（而不是像应用里那样读主题的 callout 变量）：导出件的令牌快照
-   只带必需令牌，类型色不是主题的一部分。 */
+   只带必需令牌，类型色不是主题的一部分。
+   染色代替描边（与应用内同一哲学）：color-mix 不可用的旧浏览器回落到纯色底。 */
 ${scope} .mn-callout {
   margin: 1em 0;
-  padding: 6px 14px 2px;
-  border-left: 3px solid var(--mn-callout-accent, var(--mn-quote-border));
-  border-radius: var(--mn-radius);
+  padding: 6px 16px 2px;
+  border-radius: calc(var(--mn-radius) + 4px);
   background: var(--mn-bg-elevated);
+  background: color-mix(in srgb, var(--mn-callout-accent, var(--mn-quote-border)) 12%, transparent);
 }
 
 ${scope} .mn-callout__title {

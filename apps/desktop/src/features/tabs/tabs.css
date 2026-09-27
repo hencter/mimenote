@@ -41,11 +41,10 @@
   gap: 6px;
   min-width: 104px;
   max-width: 220px;
-  margin: 4px 0 0;
+  margin: 4px 0;
   padding: 0 2px 0 10px;
   border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: var(--mn-radius) var(--mn-radius) 0 0;
+  border-radius: var(--mn-radius);
   background: transparent;
   color: var(--mn-fg-muted);
   cursor: pointer;
@@ -57,13 +56,14 @@
   color: var(--mn-fg);
 }
 
-/* 激活标签：底色与编辑器一致 + 顶部强调色 + 更亮的文字，三个信号一起用，
-   避免只靠颜色深浅分辨（主题不同、显示器不同都可能让单一信号失效） */
+/* 激活标签：悬浮胶囊（底色染色 + 更亮的文字），不要描边、不要顶部色条 ——
+   高亮某一条边不是表达"选中"的优雅方式（见 ADR-0042 引的哲学）；
+   color-mix 不可用的旧环境回落到纯色 `--mn-active`。 */
 .mn-tabs__tab--active {
-  background: var(--mn-editor-bg);
-  border-color: var(--mn-border);
+  background: var(--mn-active);
+  background: color-mix(in srgb, var(--mn-accent) 14%, transparent);
+  border-color: transparent;
   color: var(--mn-fg);
-  box-shadow: inset 0 2px 0 var(--mn-accent);
 }
 
 .mn-tabs__tab:focus-visible {

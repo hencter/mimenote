@@ -72,6 +72,7 @@ export const mnEditorTheme = EditorView.theme({
   '.cm-searchMatch': { backgroundColor: 'var(--mn-active)', outline: '1px solid var(--mn-accent)' },
   '.cm-searchMatch.cm-searchMatch-selected': { backgroundColor: 'var(--mn-accent)' },
   '.cm-panels': {
+    position: 'relative',
     backgroundColor: 'var(--mn-bg-elevated)',
     color: 'var(--mn-fg)',
     borderBottom: '1px solid var(--mn-border)',
@@ -79,6 +80,33 @@ export const mnEditorTheme = EditorView.theme({
     fontSize: 'var(--mn-font-size-ui)',
   },
   '.cm-panels.cm-panels-bottom': { borderTop: '1px solid var(--mn-border)', borderBottom: 'none' },
+  /*
+   * 搜索面板做成**悬浮卡**（VSCode 式右上浮层），而不是把编辑区往下顶一条：
+   * 打开搜索时正文不动（不重排、不丢滚动位置），关掉也不回跳 —— 面板只是暂时盖住右上角。
+   * `:only-child` 守卫：现在面板只有搜索在用；以后若有别的面板常驻顶部，
+   * 这条"容器不画线"才需要重新评估（`:has` 需要 Chrome 105+，构建目标 chrome110 满足）。
+   */
+  '.cm-panels:has(> .cm-panel.cm-search:only-child)': {
+    backgroundColor: 'transparent',
+    borderBottom: 'none',
+  },
+  '.cm-panel.cm-search': {
+    position: 'absolute',
+    top: '8px',
+    right: '12px',
+    zIndex: '30',
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '6px 8px',
+    alignItems: 'center',
+    maxWidth: 'min(430px, calc(100% - 24px))',
+    padding: '10px 12px',
+    backgroundColor: 'var(--mn-bg-elevated)',
+    border: '1px solid var(--mn-border)',
+    borderRadius: 'calc(var(--mn-radius) + 2px)',
+    boxShadow: 'var(--mn-shadow)',
+  },
+  '.cm-search input[type="checkbox"]': { accentColor: 'var(--mn-accent)' },
   '.cm-textfield': {
     backgroundColor: 'var(--mn-bg)',
     color: 'var(--mn-fg)',

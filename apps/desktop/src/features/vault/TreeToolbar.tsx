@@ -100,53 +100,63 @@ export function TreeToolbar() {
       </div>
 
       <div className="mn-tree-toolbar__actions">
-        <button
-          type="button"
-          className="mn-icon-button"
-          title="新建笔记（Ctrl+N）"
-          aria-label="新建笔记"
-          onClick={() => void createNoteHere()}
-        >
-          <Icon name="plus" />
-        </button>
-        <button
-          type="button"
-          className="mn-icon-button"
-          title="重命名选中笔记（F2，会同时更新指向它的链接）"
-          aria-label="重命名选中笔记"
-          onClick={() => renameSelected()}
-        >
-          <Icon name="pencil" />
-        </button>
-        <button
-          type="button"
-          className="mn-icon-button"
-          // 拖拽的键盘等价物（F6 同一条命令）：纯拖拽对键盘用户不可用，
-          // 而工具栏按钮是最容易被发现的那个入口
-          title="移动到文件夹…（F6，也可以直接拖拽文件树里的笔记）"
-          aria-label="移动到文件夹"
-          onClick={() => moveSelected()}
-        >
-          <Icon name="move" />
-        </button>
-        <button
-          type="button"
-          className="mn-icon-button"
-          title="展开全部目录（Ctrl+Alt+E）"
-          aria-label="展开全部目录"
-          onClick={expandAll}
-        >
-          <Icon name="panelLeft" />
-        </button>
-        <button
-          type="button"
-          className="mn-icon-button"
-          title="折叠全部目录（Ctrl+Alt+W）"
-          aria-label="折叠全部目录"
-          onClick={collapseAll}
-        >
-          <Icon name="columns" />
-        </button>
+        {/* 文档操作：新建 / 改名 / 搬家（同一件事的三种动词，放一组） */}
+        <span className="mn-tree-toolbar__group" role="group" aria-label="文档操作">
+          <button
+            type="button"
+            className="mn-icon-button"
+            title="新建笔记（Ctrl+N）"
+            aria-label="新建笔记"
+            onClick={() => void createNoteHere()}
+          >
+            <Icon name="plus" />
+          </button>
+          <button
+            type="button"
+            className="mn-icon-button"
+            title="重命名选中笔记（F2，会同时更新指向它的链接）"
+            aria-label="重命名选中笔记"
+            onClick={() => renameSelected()}
+          >
+            <Icon name="pencil" />
+          </button>
+          <button
+            type="button"
+            className="mn-icon-button"
+            // 拖拽的键盘等价物（F6 同一条命令）：纯拖拽对键盘用户不可用，
+            // 而工具栏按钮是最容易被发现的那个入口
+            title="移动到文件夹…（F6，也可以直接拖拽文件树里的笔记）"
+            aria-label="移动到文件夹"
+            onClick={() => moveSelected()}
+          >
+            <Icon name="move" />
+          </button>
+        </span>
+        <span className="mn-tree-toolbar__divider" aria-hidden="true" />
+        {/* 视图整理：展开 / 折叠只改变看到多少，不动任何文件 */}
+        <span className="mn-tree-toolbar__group" role="group" aria-label="展开折叠">
+          <button
+            type="button"
+            className="mn-icon-button"
+            title="展开全部目录（Ctrl+Alt+E）"
+            aria-label="展开全部目录"
+            onClick={expandAll}
+          >
+            <Icon name="panelLeft" />
+          </button>
+          <button
+            type="button"
+            className="mn-icon-button"
+            title="折叠全部目录（Ctrl+Alt+W）"
+            aria-label="折叠全部目录"
+            onClick={collapseAll}
+          >
+            <Icon name="columns" />
+          </button>
+        </span>
+        <span className="mn-tree-toolbar__divider" aria-hidden="true" />
+        {/* 库操作：重扫 / 排序 / 换库（作用对象是整个 Vault，不是某篇笔记） */}
+        <span className="mn-tree-toolbar__group" role="group" aria-label="库操作">
         <button
           type="button"
           className="mn-icon-button"
@@ -220,15 +230,17 @@ export function TreeToolbar() {
             </div>
           )}
         </div>
-        <button
-          type="button"
-          className="mn-icon-button"
-          title={`切换 Vault（当前：${info?.rootPath ?? '未打开'}）`}
-          aria-label="切换 Vault"
-          onClick={() => void openVaultInteractive()}
-        >
-          <Icon name="folderOpen" />
-        </button>
+          <button
+            type="button"
+            className="mn-icon-button"
+            title={`切换 Vault（当前：${info?.rootPath ?? '未打开'}）`}
+            aria-label="切换 Vault"
+            onClick={() => void openVaultInteractive()}
+          >
+            <Icon name="folderOpen" />
+          </button>
+        </span>
+        <span className="mn-tree-toolbar__divider" aria-hidden="true" />
         {/* 导出从标题栏下移到这里（ADR-0038）：与新建/重命名/移动同属"对文档的操作" */}
         <ExportButton />
       </div>
