@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { renameEntry } from '@/app/actions'
 import { RENAME_REQUEST_EVENT } from '@/app/dom-events'
+import { Checkbox } from '@/components/Checkbox'
 import { extensionOf, isMarkdown, parentOf, stem } from '@/domain/paths'
 import { useRenameStore } from '@/state/rename-store'
 import { useUiStore } from '@/state/ui-store'
@@ -171,11 +172,10 @@ export function RenameDialog() {
         </div>
 
         <label className="mn-rename__option">
-          <input
-            type="checkbox"
+          <Checkbox
             checked={updateLinks}
             disabled={busy}
-            onChange={(event) => setUpdateLinks(event.target.checked)}
+            onCheckedChange={(next) => setUpdateLinks(next)}
           />
           {isDir ? '同时改写全库指向这棵子树里笔记的链接' : '同时改写全库指向它的链接'}
         </label>

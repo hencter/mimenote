@@ -50,3 +50,14 @@ Base UI 的 `Select.Item` 靠 `pointerdown` 置位才提交 `click`
    设置页本就极少，风险可接受；
 3. 下一批候选：对话框焦点陷阱（Base Dialog）、Tooltip、右键菜单的子菜单/复选item；
    原生 range（字号滑杆）与各对话框里的 checkbox 保持原样，逐个替换、逐个有测试。
+
+## 后续修订：第二批（Slider / Checkbox / Tooltip）与 jsdom 测试边界
+
+- 新增 `Slider`（设置页三档字号，替代原生 range）、`Checkbox`（对话框四处布尔项）、
+  `Tooltip`（悬停/聚焦提示，替代原生 `title`；`aria-describedby` 手动连，
+  Base v1.8 不自动连）；
+- `Checkbox` 的 `label` 可选：包在有可见文字的 `<label>` 里时省略（否则读屏拼成两遍）；
+- 三条 jsdom 测不了、必须分层的纪律（与"测量 API 进 E2E"同一理由）：
+  1. Select 选项提交要 `pointerdown + click`（Base 防误点）；
+  2. Slider/Checkbox 本体是原生隐藏 input：`disabled` 断原生属性，不模拟按键；
+  3. Tooltip/Select 浮层内容挂载要真实布局 → jsdom 只钉接线与开关态，内容文本进 UI E2E。

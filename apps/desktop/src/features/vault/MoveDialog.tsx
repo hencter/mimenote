@@ -21,6 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { moveEntry } from '@/app/actions'
 import { MOVE_REQUEST_EVENT } from '@/app/dom-events'
+import { Checkbox } from '@/components/Checkbox'
 import { isSameOrInside } from '@/domain/drag'
 import { collectDirectoryPaths } from '@/domain/tree'
 import { basename, parentOf } from '@/domain/paths'
@@ -192,11 +193,10 @@ export function MoveDialog() {
         </p>
 
         <label className="mn-move__option">
-          <input
-            type="checkbox"
+          <Checkbox
             checked={updateLinks}
             disabled={busy}
-            onChange={(event) => setUpdateLinks(event.target.checked)}
+            onCheckedChange={(next) => setUpdateLinks(next)}
           />
           {isDir ? '同时改写全库指向这棵子树里笔记的链接' : '同时改写全库指向它的链接'}
         </label>

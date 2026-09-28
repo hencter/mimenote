@@ -7,13 +7,33 @@
  * 下面 `:root` 里的少量回退值仅供主题加载失败时兜底（正常情况下 bootstrap 会先写变量）。
  */
 
+/* Maple Mono（OFL-1.1，见 `public/fonts/OFL.txt`，会原样进产物）：构建期捆绑的 woff2
+   （CN Regular/Bold —— 拉丁与中日韩在同一文件里，中西文 2:1 网格）。
+   文件住在 `public/fonts/`（Vite 原样复制，不走管线处理 — 大文件不需要）。
+   `font-display: swap`：字体还在解码时先用回退字体顶着，不白屏。 */
+@font-face {
+  font-family: 'Maple Mono';
+  src: url('/fonts/MapleMonoCN-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Maple Mono';
+  src: url('/fonts/MapleMonoCN-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --mn-bg: #14161a;
   --mn-fg: #d7dce5;
   --mn-border: #272b33;
   --mn-accent: #7aa2f7;
   --mn-font-ui: 'Segoe UI', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
-  --mn-font-mono: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  --mn-font-mono: 'Maple Mono', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
   /* 默认字号：**三档统一 16**（阅读视图没被设置页写过时回落到编辑器那一档，见 .mn-preview__body）。
      用户报过"整体默认字体统一 16 号"，这里就是那件事的落点；设置页仍然三档可调。 */
   --mn-font-size-ui: 16px;

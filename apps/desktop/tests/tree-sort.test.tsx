@@ -163,7 +163,9 @@ describe('工具栏排序菜单', () => {
     expect(screen.getByRole('menuitemradio', { name: '名称' }).getAttribute('aria-checked')).toBe(
       'true',
     )
-    expect(screen.getByLabelText<HTMLInputElement>('目录在前').checked).toBe(true)
+    expect(screen.getByRole('checkbox', { name: '目录在前' }).getAttribute('aria-checked')).toBe(
+      'true',
+    )
 
     // 选中后不自动关菜单（排序常要连调几项）
     fireEvent.click(screen.getByRole('menuitemradio', { name: '修改时间' }))
@@ -191,7 +193,7 @@ describe('工具栏排序菜单', () => {
     await renderToolbar()
     fireEvent.click(screen.getByRole('button', { name: '文件树排序' }))
 
-    fireEvent.click(screen.getByLabelText('目录在前'))
+    fireEvent.click(screen.getByRole('checkbox', { name: '目录在前' }))
     expect(useUiStore.getState().treeSort.foldersFirst).toBe(false)
   })
 })

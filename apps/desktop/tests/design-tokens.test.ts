@@ -168,3 +168,38 @@ describe('默认字号：三档统一 16（VI 2.3 / 用户诉求）', () => {
     expect(reading).toBe('16')
   })
 })
+
+describe('首要字体 Maple Mono（用户指定，OFL-1.1 捆绑）', () => {
+  it('三套主题的等宽栈都以 Maple Mono 打头', async () => {
+    const { THEMES } = await import('@/theme/apply')
+    expect(THEMES.length).toBeGreaterThan(0)
+    for (const theme of THEMES) {
+      expect(
+        theme.tokens['--mn-font-mono'],
+        `${theme.id} 的等宽栈首位应该是 Maple Mono`,
+      ).toMatch(/^'Maple Mono',/u)
+    }
+  })
+
+  it('app.css 里有 @font-face（swap，不白屏），字体文件随产物发布', () => {
+    expect(appCss).toContain("font-family: 'Maple Mono'")
+    expect(appCss).toContain('font-display: swap')
+    for (const file of ['MapleMonoCN-Regular.woff2', 'MapleMonoCN-Bold.woff2', 'OFL.txt']) {
+      const candidates = [
+        resolve(process.cwd(), `public/fonts/${file}`),
+        resolve(process.cwd(), `apps/desktop/public/fonts/${file}`),
+      ]
+      expect(
+        candidates.some((candidate) => {
+          try {
+            readFileSync(candidate)
+            return true
+          } catch {
+            return false
+          }
+        }),
+        `public/fonts/${file} 必须存在（构建原样复制进 dist）`,
+      ).toBe(true)
+    }
+  })
+})

@@ -270,3 +270,121 @@
     transition: none;
   }
 }
+
+/* ------------------------------------------------------------------ 滑杆 */
+
+.mn-slider {
+  display: block;
+  width: 190px;
+}
+
+.mn-slider__control {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding-block: 6px;
+  touch-action: none;
+  user-select: none;
+}
+
+.mn-slider__track {
+  position: relative;
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--mn-border);
+  user-select: none;
+}
+
+.mn-slider__indicator {
+  border-radius: inherit;
+  background: var(--mn-accent);
+  user-select: none;
+}
+
+.mn-slider__thumb {
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: var(--mn-accent);
+  cursor: pointer;
+  user-select: none;
+}
+
+.mn-slider__thumb:focus-visible {
+  outline: 2px solid var(--mn-accent);
+  outline-offset: 2px;
+}
+
+.mn-slider[data-disabled] {
+  opacity: 0.5;
+}
+
+.mn-slider[data-disabled] .mn-slider__thumb {
+  cursor: default;
+}
+
+/* ------------------------------------------------------------------ 复选框 */
+
+.mn-checkbox {
+  box-sizing: border-box;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--mn-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--mn-accent-fg);
+  cursor: pointer;
+}
+
+.mn-checkbox[data-checked] {
+  border-color: transparent;
+  background: var(--mn-accent);
+}
+
+.mn-checkbox__indicator {
+  display: inline-flex;
+}
+
+.mn-checkbox__indicator[data-unchecked] {
+  display: none;
+}
+
+.mn-checkbox:focus-visible {
+  outline: 2px solid var(--mn-accent);
+  outline-offset: 2px;
+}
+
+.mn-checkbox[data-disabled] {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* ------------------------------------------------------------------ 悬停提示 */
+
+.mn-tooltip__positioner {
+  z-index: 80;
+  outline: none;
+}
+
+.mn-tooltip {
+  box-sizing: border-box;
+  max-width: 280px;
+  padding: 4px 8px;
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg-elevated);
+  box-shadow: var(--mn-shadow);
+  color: var(--mn-fg);
+  font-size: 12px;
+  line-height: 1.5;
+  user-select: none;
+}

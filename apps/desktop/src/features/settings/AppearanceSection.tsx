@@ -2,6 +2,7 @@
 
 import { Icon } from '@/components/Icon'
 import { Select } from '@/components/Select'
+import { Slider } from '@/components/Slider'
 import {
   DEFAULT_SETTINGS,
   EDITOR_FONT_SIZE_RANGE,
@@ -72,15 +73,13 @@ export function AppearanceSection() {
             </span>
           </span>
           <span className="mn-settings__row-control">
-            <input
-              className="mn-settings__range"
-              type="range"
-              aria-label="界面字号"
+            <Slider
+              label="界面字号"
+              value={uiFontSize}
+              onChange={(next) => setUiFontSize(next)}
               min={UI_FONT_SIZE_RANGE.min}
               max={UI_FONT_SIZE_RANGE.max}
               step={UI_FONT_SIZE_RANGE.step}
-              value={uiFontSize}
-              onChange={(event) => setUiFontSize(Number(event.target.value))}
             />
             <span className="mn-settings__value">{uiFontSize}px</span>
           </span>
@@ -95,15 +94,13 @@ export function AppearanceSection() {
             </span>
           </span>
           <span className="mn-settings__row-control">
-            <input
-              className="mn-settings__range"
-              type="range"
-              aria-label="编辑器字号"
+            <Slider
+              label="编辑器字号"
+              value={editorFontSize}
+              onChange={(next) => setEditorFontSize(next)}
               min={EDITOR_FONT_SIZE_RANGE.min}
               max={EDITOR_FONT_SIZE_RANGE.max}
               step={EDITOR_FONT_SIZE_RANGE.step}
-              value={editorFontSize}
-              onChange={(event) => setEditorFontSize(Number(event.target.value))}
             />
             <span className="mn-settings__value">{editorFontSize}px</span>
           </span>
@@ -118,15 +115,13 @@ export function AppearanceSection() {
             </span>
           </span>
           <span className="mn-settings__row-control">
-            <input
-              className="mn-settings__range"
-              type="range"
-              aria-label="阅读视图字号"
+            <Slider
+              label="阅读视图字号"
+              value={readingFontSize}
+              onChange={(next) => setReadingFontSize(next)}
               min={READING_FONT_SIZE_RANGE.min}
               max={READING_FONT_SIZE_RANGE.max}
               step={READING_FONT_SIZE_RANGE.step}
-              value={readingFontSize}
-              onChange={(event) => setReadingFontSize(Number(event.target.value))}
             />
             <span className="mn-settings__value">{readingFontSize}px</span>
           </span>

@@ -1244,6 +1244,19 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.locator('.mn-search-field__input').fill('')
   })
 
+  it('工具栏图标悬停出现提示（Base Tooltip，真浏览器里才看得到内容）', async () => {
+    // jsdom 里浮层内容挂不上（定位管线要真实布局），只钉到"开关态"；
+    // 内容文本必须在真浏览器里看一次 —— 就是这一条。
+    await ensureVaultOpen(page)
+    const button = page.locator('.mn-tree-toolbar__actions button[aria-label="新建笔记"]')
+    await button.hover()
+    const tip = page.locator('.mn-tooltip')
+    await tip.waitFor({ state: 'visible', timeout: 5_000 })
+    expect(await tip.textContent()).toBe('新建笔记（Ctrl+N）')
+    // 描述关系连好：读屏知道提示在哪
+    expect(await button.getAttribute('aria-describedby')).not.toBeNull()
+  })
+
   it('切换主题即时生效（CSS 变量驱动，不重建编辑器）', async () => {
     // 先确保有一篇打开的笔记，才能验证"主题切换不会重建编辑器"
     await page.locator('.mn-tree [data-rel-path="随手记.md"]').click()

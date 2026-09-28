@@ -29,6 +29,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { moveTag, renameTag } from '@/app/actions'
+import { Checkbox } from '@/components/Checkbox'
 import type { TagRenameOutcome } from '@/ipc/types'
 import {
   changedAnything,
@@ -261,13 +262,11 @@ export function TagRenameDialog({
               </>
             ) : null}
 
-            <label className="mn-rename__option">
-              <input
-                type="checkbox"
-                data-tag-rename-children
+            <label className="mn-rename__option" data-tag-rename-children>
+              <Checkbox
                 checked={includeChildren}
                 disabled={busy || phase === 'preview'}
-                onChange={(event) => setIncludeChildren(event.target.checked)}
+                onCheckedChange={(next) => setIncludeChildren(next)}
               />
               <span>
                 {isMove ? (
