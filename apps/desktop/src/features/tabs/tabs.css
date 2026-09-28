@@ -141,7 +141,8 @@
  */
 .mn-tabs--leaf .mn-tabs__tab--module {
   min-width: 0;
-  padding: 0 4px 0 10px;
+  /* 图标独占：左右对称，图标才落在正中（非对称 padding 会把它挤偏 3px） */
+  padding: 0 10px;
 }
 
 .mn-tabs__module-icon {
