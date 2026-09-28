@@ -65,7 +65,7 @@ describe('最近 Vault 下拉', () => {
     expect(container.innerHTML).toBe('')
   })
 
-  it('触发器显示当前 Vault 名；列表两行、当前行禁用且打勾', async () => {
+  it('触发器显示当前 Vault 名；列表只显示名、路径悬停看；当前行禁用且打勾', async () => {
     setRecentVaults(VAULTS, 'C:\\VaultA')
     render(<RecentVaults />)
 
@@ -74,9 +74,10 @@ describe('最近 Vault 下拉', () => {
     fireEvent.click(screen.getByRole('combobox', { name: /切换 Vault/ }))
     const options = await screen.findAllByRole('option')
     expect(options).toHaveLength(2)
-    // 两行：名 + 路径
+    // 只显示名（路径只进 title，悬停才看 —— 同名 Vault 靠悬停区分）
     expect(options[0]?.textContent).toContain('VaultA')
-    expect(options[0]?.textContent).toContain('C:\\VaultA')
+    expect(options[0]?.textContent).not.toContain('C:\\')
+    expect(options[0]?.getAttribute('title')).toBe('C:\\VaultA')
     // 当前行禁用（重开同一个只会白白重扫一次）且挂着选中勾
     expect(options[0]?.getAttribute('aria-disabled')).toBe('true')
     expect(options[0]?.querySelector('.mn-select__indicator svg')).not.toBeNull()

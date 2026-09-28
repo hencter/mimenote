@@ -126,9 +126,9 @@
 .mn-select__popup {
   box-sizing: border-box;
   min-width: var(--anchor-width);
-  padding: 4px;
+  padding: 6px;
   border: 1px solid var(--mn-border);
-  border-radius: var(--mn-radius);
+  border-radius: calc(var(--mn-radius) + 6px);
   background: var(--mn-bg-elevated);
   background-clip: padding-box;
   box-shadow: var(--mn-shadow);
@@ -167,11 +167,16 @@
 }
 
 /* 选中勾只在选中行挂载：文本列固定第二列，各行文字才对得齐（见 Select.tsx 头注）。 */
+/* 对勾平时用强调色（在淡底上看得见），悬停行里跟随文字色 */
 .mn-select__indicator {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--mn-accent-fg);
+  color: var(--mn-accent);
+}
+
+.mn-select__item[data-highlighted] .mn-select__indicator {
+  color: inherit;
 }
 
 .mn-select__text {
@@ -181,6 +186,13 @@
 .mn-select__item[data-highlighted] {
   background: var(--mn-accent);
   color: var(--mn-accent-fg);
+}
+
+/* 已选项（打开即高亮当前值的那一行）：淡染色胶囊 + 对勾 —— 悬停/键盘走位是实色，
+   "当前是谁"是淡色，两者不抢（见参照：选中行浅灰胶囊 + 右对勾） */
+.mn-select__item[data-selected]:not([data-highlighted]):not([data-disabled]) {
+  background: var(--mn-active);
+  background: color-mix(in srgb, var(--mn-accent) 12%, transparent);
 }
 
 .mn-select__item[data-disabled] {
@@ -204,34 +216,19 @@
 }
 
 .mn-select__item--vault {
-  grid-template-columns: 16px 1fr auto;
+  grid-template-columns: 1fr auto auto;
 }
 
-/* 名字与路径是两个独立的截断单元：各管各的 ellipsis，互不顶替 */
-.mn-select__item-main {
+.mn-select__item--vault .mn-select__text {
+  grid-column: 1;
+}
+
+.mn-select__item--vault .mn-select__indicator {
   grid-column: 2;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
 }
 
-.mn-select__item-main .mn-select__text,
-.mn-select__path {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mn-select__path {
-  color: var(--mn-fg-subtle);
-  font-size: 11px;
-  font-family: var(--mn-font-mono);
-}
-
-.mn-select__item[data-highlighted] .mn-select__path {
-  color: inherit;
-  opacity: 0.75;
+.mn-select__item--vault .mn-select__remove {
+  grid-column: 3;
 }
 
 /* 行尾移除 ×：平时收起存在感，悬停/聚焦到这一行才出现（低频操作不常驻视觉） */

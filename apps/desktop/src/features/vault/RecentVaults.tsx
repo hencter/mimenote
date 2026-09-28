@@ -82,14 +82,12 @@ export function RecentVaults() {
                       value={item.rootPath}
                       disabled={isCurrent}
                       className="mn-select__item mn-select__item--vault"
+                      title={item.rootPath}
                     >
                       <BaseSelect.ItemIndicator className="mn-select__indicator">
                         <Icon name="check" size="xs" />
                       </BaseSelect.ItemIndicator>
-                      <span className="mn-select__item-main" title={item.rootPath}>
-                        <SelectValueText className="mn-select__text" value={item.name} />
-                        <span className="mn-select__path">{item.rootPath}</span>
-                      </span>
+                      <SelectValueText className="mn-select__text" value={item.name} />
                       <button
                         type="button"
                         className="mn-select__remove"
