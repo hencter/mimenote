@@ -24,8 +24,9 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } f
 
 import { createNoteFromLink, openNote } from '@/app/actions'
 import { Icon } from '@/components/Icon'
+import { PropertiesTable } from '@/components/PropertiesTable'
 import { createAssetResolver, isImageAssetTarget } from '@/domain/assets'
-import { frontmatterBody } from '@/domain/frontmatter'
+import { frontmatterBody, frontmatterRegion } from '@/domain/frontmatter'
 import { isInternalNoteHref, normalizeLinkTarget } from '@/domain/links'
 import {
   imageHtml,
@@ -37,6 +38,7 @@ import {
 } from '@/domain/markdown'
 import { ipc, isTauriRuntime } from '@/ipc/client'
 import { convertAssetUrl } from '@/ipc/tauri-adapter'
+import type { FrontmatterField } from '@/ipc/types'
 import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
 import { toast } from '@/state/toast-store'
@@ -160,12 +162,41 @@ export function MarkdownPreview() {
     // 而 effect 依赖 html —— 这正是"一次渲染 + 一次就地替换"的来源。
   }, [rootPath, relPath, resolveAsset])
 
-  // 预览只渲染正文：frontmatter 是"元数据"，它已经由标签面板的属性表展示，
-  // 渲染出来只会变成一条横线加几行 `key: value`（见 domain/frontmatter.ts 的判定口径）
+  // 预览只渲染正文：frontmatter 是"元数据"，渲染出来只会变成一条横线加几行
+  // `key: value`（见 domain/frontmatter.ts 的判定口径）；它由上面的属性块展示
   const body = useMemo(
     () => (relPath === null ? '' : frontmatterBody(deferredText)),
     [relPath, deferredText],
   )
+
+  /**
+   * 正文顶部的属性块（Obsidian 式，见 ADR-0045）。
+   *
+   * 数据走现成的 `note_tags`（不新增 IPC 命令）；但**先**用纯函数判块存在 ——
+   * 没有 frontmatter 的笔记占大多数，为它们多打一次 IPC 是纯浪费。
+   * 竞态丢弃与链接那一路同理：切笔记后旧请求回来直接丢掉（`disposed` + 路径比对）。
+   */
+  const [properties, setProperties] = useState<readonly FrontmatterField[] | null>(null)
+  useEffect(() => {
+    setProperties(null)
+    if (relPath === null) return
+    if (frontmatterRegion(deferredText) === null) return
+    const wanted = relPath
+    let disposed = false
+    void (async () => {
+      try {
+        const noteTags = await ipc.noteTags(wanted)
+        if (disposed || useNoteStore.getState().doc?.relPath !== wanted) return
+        setProperties(noteTags.frontmatter)
+      } catch {
+        // 属性是附加信息：拿不到就当没有（正文照常显示，不弹错）
+        if (!disposed) setProperties(null)
+      }
+    })()
+    return () => {
+      disposed = true
+    }
+  }, [relPath, deferredText])
 
   /**
    * 这一篇文档的身份：路径 + 版本号。
@@ -560,6 +591,10 @@ export function MarkdownPreview() {
       data-mn-render={renderPath}
     >
       <div className="mn-preview__scroller">
+        {/* 属性块（正文顶部，Obsidian 式）：没有 frontmatter 时什么都不渲染 */}
+        {properties !== null && properties.length > 0 && (
+          <PropertiesTable fields={properties} density="note" />
+        )}
         {/* html 已由 DOMPurify 净化（两道防线见 domain/markdown.ts） */}
         <article
           className="mn-preview__body"

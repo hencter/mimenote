@@ -264,6 +264,7 @@ CM6 updateListener（每次输入，仅更新 store + dirty 标记，无 IO）
 | [ADR-0042](adr/0042-headless-ui-primitives.md) | **只引无样式行为层**（Base UI）：键盘/无障碍/开合逻辑买进来，外观仍手写对接 `--mn-*`；不引 Tailwind/shadcn 全套（主题是运行时 JSON + 变量）；图标继续自研（后被 ADR-0043 推翻） | 已采纳（图标一条被 0043 推翻） |
 | [ADR-0043](adr/0043-iconify-build-time-icons.md) | **图标换 lucide 构建期打包**：`unplugin-icons` + `@iconify-json/lucide`（devOnly，运行时零网络）；`IconName` 联合与刻度不变，调用方零改动 | 已采纳 |
 | [ADR-0044](adr/0044-frontmatter-timestamps.md) | **frontmatter 时间挂钩**（可选，默认关）：`created`（只写一次）/`updated`（每次保存刷新），UTC RFC 3339，落宿主写路径（校验后、写盘前盖章）；无块旧笔记不擅自建块；回写不同步编辑器内存 | 已采纳 |
+| [ADR-0045](adr/0045-properties-display.md) | **属性展示一期**（只读）：`PropertiesTable` 两处共用（标签面板 + 阅读视图顶部）；阅读视图先本地判块再调现成 `note_tags`，不新增 IPC；编辑是下一批 | 已采纳 |
 
 
 ## 5. 安全模型

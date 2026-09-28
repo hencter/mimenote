@@ -16,16 +16,20 @@
 import type { JSX } from 'react'
 
 import LucideAlert from '~icons/lucide/triangle-alert'
+import LucideCalendar from '~icons/lucide/calendar'
 import LucideCheck from '~icons/lucide/check'
 import LucideChevron from '~icons/lucide/chevron-right'
+import LucideClock from '~icons/lucide/clock'
 import LucideColumns from '~icons/lucide/columns-2'
 import LucideDot from '~icons/lucide/dot'
 import LucideEye from '~icons/lucide/eye'
 import LucideFile from '~icons/lucide/file'
 import LucideFolder from '~icons/lucide/folder'
 import LucideFolderOpen from '~icons/lucide/folder-open'
+import LucideHash from '~icons/lucide/hash'
 import LucideInfo from '~icons/lucide/info'
 import LucideLink from '~icons/lucide/link'
+import LucideList from '~icons/lucide/list'
 import LucideMenu from '~icons/lucide/menu'
 import LucideMove from '~icons/lucide/folder-input'
 import LucideOutline from '~icons/lucide/list-tree'
@@ -53,6 +57,7 @@ const GLYPHS = {
   folder: LucideFolder,
   folderOpen: LucideFolderOpen,
   file: LucideFile,
+  hash: LucideHash,
   chevron: LucideChevron,
   search: LucideSearch,
   plus: LucidePlus,
@@ -64,11 +69,14 @@ const GLYPHS = {
   palette: LucidePalette,
   info: LucideInfo,
   alert: LucideAlert,
+  calendar: LucideCalendar,
   x: LucideX,
   panelLeft: LucidePanelLeft,
   check: LucideCheck,
+  clock: LucideClock,
   save: LucideSave,
   links: LucideLink,
+  list: LucideList,
   sparkle: LucideSparkle,
   dot: LucideDot,
   sidebarRight: LucideSidebarRight,

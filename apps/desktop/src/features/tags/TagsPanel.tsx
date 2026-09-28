@@ -23,7 +23,7 @@ import { useEffect, useState } from 'react'
 
 import { editCurrentNoteTags, explainInlineTag, openNote } from '@/app/actions'
 import { Icon } from '@/components/Icon'
-import { frontmatterValueText, isFrontmatterEmpty } from '@/domain/frontmatter'
+import { PropertiesTable } from '@/components/PropertiesTable'
 import type { TagRef, TagSummary } from '@/ipc/types'
 import { useNoteStore } from '@/state/note-store'
 import { useTagsStore } from '@/state/tags-store'
@@ -265,16 +265,8 @@ export function TagsPanel() {
             {frontmatter.length > 0 && (
               <section className="mn-tags__section">
                 <h3 className="mn-tags__section-title">属性（Frontmatter）</h3>
-                <dl className="mn-tags__props">
-                  {frontmatter.map((field) => (
-                    <div className="mn-tags__prop" key={`${field.key}-${field.line}`}>
-                      <dt>{field.key}</dt>
-                      <dd className={isFrontmatterEmpty(field.value) ? 'mn-tags__prop--empty' : undefined}>
-                        {frontmatterValueText(field.value)}
-                      </dd>
-                    </div>
-                  ))}
-                </dl>
+                {/* 与阅读视图正文顶部的属性块同一份观感（`PropertiesTable`） */}
+                <PropertiesTable fields={frontmatter} density="panel" />
               </section>
             )}
 

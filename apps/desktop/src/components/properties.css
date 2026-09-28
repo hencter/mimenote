@@ -1,0 +1,96 @@
+/*
+ * frontmatter 属性表（`PropertiesTable.tsx`）：Obsidian 式键值行。
+ *
+ * 只读 `--mn-*` 令牌；类型色只出现在图标与标签 pills 上，正文值保持正文色 ——
+ * 属性是"看一眼"的东西，不是"盯着读"的东西（与 callout 同一哲学：染色点到为止）。
+ */
+
+.mn-props {
+  margin: 0;
+  padding: 0;
+}
+
+.mn-props__row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 3px 0;
+}
+
+.mn-props__row + .mn-props__row {
+  border-top: 1px solid var(--mn-border-muted, var(--mn-border));
+}
+
+.mn-props__key {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 38%;
+  color: var(--mn-fg-muted);
+  font-family: var(--mn-font-mono);
+  font-size: 12px;
+}
+
+.mn-props__key-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mn-props__key .mn-icon {
+  flex: none;
+  color: var(--mn-fg-subtle);
+}
+
+.mn-props__value {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--mn-fg);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.mn-props__empty {
+  color: var(--mn-fg-subtle);
+}
+
+.mn-props__bool {
+  color: var(--mn-success);
+  font-weight: 600;
+}
+
+/* 标签 pills：只读展示（去标签面板才是改标签的入口），所以用淡染色而不是可点的胶囊 */
+.mn-props__pills {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.mn-props__pill {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--mn-active);
+  background: color-mix(in srgb, var(--mn-accent) 14%, transparent);
+  color: var(--mn-accent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 正文顶部的属性块：与正文同宽（`max-width: 820px` 与 `.mn-preview__body` 对齐）。
+   没有盒子、没有描边 —— 元数据与正文之间只用一道分隔线区分种类
+   （与 `h1` 的下边框同一性质：分隔"不同种类的内容"，不是装饰）。 */
+.mn-props--note {
+  max-width: 820px;
+  margin: 0 auto 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--mn-border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mn-props__pill {
+    transition: none;
+  }
+}
