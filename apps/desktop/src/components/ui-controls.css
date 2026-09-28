@@ -167,7 +167,7 @@
 }
 
 /* 选中勾只在选中行挂载：文本列固定第二列，各行文字才对得齐（见 Select.tsx 头注）。 */
-/* 对勾平时用强调色（在淡底上看得见），悬停行里跟随文字色 */
+/* 对勾平时用强调色（在淡底上看得见），悬停行里跟随强调色（文字是正文色） */
 .mn-select__indicator {
   display: flex;
   align-items: center;
@@ -176,16 +176,19 @@
 }
 
 .mn-select__item[data-highlighted] .mn-select__indicator {
-  color: inherit;
+  color: var(--mn-accent);
 }
 
 .mn-select__text {
   grid-column: 2;
 }
 
+/* 悬停/键盘走位：淡染色胶囊（不是实色块）—— 实色块在纸墨这类暖主题上是一坨棕，
+   与"染色代替描边"同一哲学；悬停 22% 比选中 12% 深一档，两者不抢 */
 .mn-select__item[data-highlighted] {
-  background: var(--mn-accent);
-  color: var(--mn-accent-fg);
+  background: var(--mn-active);
+  background: color-mix(in srgb, var(--mn-accent) 22%, transparent);
+  color: var(--mn-fg);
 }
 
 /* 已选项（打开即高亮当前值的那一行）：淡染色胶囊 + 对勾 —— 悬停/键盘走位是实色，
