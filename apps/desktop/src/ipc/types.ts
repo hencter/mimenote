@@ -243,6 +243,10 @@ export type FrontmatterValue =
   | { kind: 'bool'; value: boolean }
   | { kind: 'number'; value: string }
   | { kind: 'null' }
+  /** 一级映射（OKF 的 `generated` 这类）：子字段保序，值只收一层。 */
+  | { kind: 'map'; value: FrontmatterField[] }
+  /** 映射组成的列表（OKF 的 `verified` / `sources` 这类）。 */
+  | { kind: 'mapList'; value: FrontmatterField[][] }
 
 /** frontmatter 的一个字段（`mn_core::frontmatter::FrontmatterField`，保序）。 */
 export interface FrontmatterField {

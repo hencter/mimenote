@@ -8,7 +8,7 @@
 
 import type { FrontmatterValue } from '@/ipc/types'
 
-/** 值的展示文本（列表用 `、` 连接；`null` 显示为空串）。 */
+/** 值的展示文本（列表用 `、` 连接，映射用 `k: v` 连接；`null` 显示为空串）。 */
 export function frontmatterValueText(value: FrontmatterValue): string {
   switch (value.kind) {
     case 'scalar':
@@ -19,6 +19,12 @@ export function frontmatterValueText(value: FrontmatterValue): string {
       return value.value ? 'true' : 'false'
     case 'list':
       return value.value.join('、')
+    case 'map':
+      return value.value.map((field) => `${field.key}: ${frontmatterValueText(field.value)}`).join('、')
+    case 'mapList':
+      return value.value
+        .map((item) => item.map((field) => `${field.key}: ${frontmatterValueText(field.value)}`).join('、'))
+        .join('；')
     case 'null':
       return ''
     default:
@@ -29,7 +35,10 @@ export function frontmatterValueText(value: FrontmatterValue): string {
 /** 值是否是"空的"（属性表里可以灰显）。 */
 export function isFrontmatterEmpty(value: FrontmatterValue): boolean {
   if (value.kind === 'null') return true
-  return value.kind === 'list' && value.value.length === 0
+  if (value.kind === 'list' || value.kind === 'map' || value.kind === 'mapList') {
+    return value.value.length === 0
+  }
+  return false
 }
 
 /**

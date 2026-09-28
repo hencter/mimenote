@@ -1,0 +1,19 @@
+[package]
+name = "mn-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Mimenote 命令行：Vault 检查与站点构建（与桌面应用共用同一套 mn-core/mn-index）"
+
+[[bin]]
+name = "mimenote-cli"
+path = "src/main.rs"
+
+[dependencies]
+mn-core = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

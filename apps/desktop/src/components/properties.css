@@ -62,6 +62,48 @@
   font-weight: 600;
 }
 
+/* 一级映射的子行（`k: v`）：键等宽收窄、值正文 —— OKF 的 generated 这类 */
+.mn-props__map {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.mn-props__map-row {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mn-props__map-key {
+  flex: 0 0 auto;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--mn-fg-muted);
+  font-family: var(--mn-font-mono);
+  font-size: 12px;
+}
+
+.mn-props__map-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 映射列表：组与组之间留一笔分隔（verified/sources 一组就是一条确认/来源） */
+.mn-props__maplist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mn-props__maplist-item + .mn-props__maplist-item {
+  border-top: 1px solid var(--mn-border-muted, var(--mn-border));
+  padding-top: 5px;
+}
+
 /* 标签 pills：只读展示（去标签面板才是改标签的入口），所以用淡染色而不是可点的胶囊 */
 .mn-props__pills {
   display: inline-flex;

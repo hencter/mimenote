@@ -1244,6 +1244,89 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.locator('.mn-search-field__input').fill('')
   })
 
+  it('光标行有底色（activeLine 解析得出、且不是透明的）', async () => {
+    // 用户报"光标所在行没有任何样式"：类名挂没挂、变量解没解、盖没盖住，
+    // 三件事拆开读计算样式，一次问清（jsdom 不算样式表，只能在真浏览器里钉）。
+    await ensureVaultOpen(page)
+    await openNoteInTree(page, '项目/设计.md')
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+
+    await page.locator('.cm-content').click({ position: { x: 60, y: 40 } })
+
+    const probe = await page.evaluate(() => {
+      const line = document.querySelector('.cm-content .cm-activeLine')
+      if (line === null || !(line instanceof HTMLElement)) {
+        return { found: false as const }
+      }
+      const style = getComputedStyle(line)
+      const root = getComputedStyle(document.documentElement)
+      return {
+        found: true as const,
+        classes: line.className,
+        background: style.backgroundColor,
+        tokenOnRoot: root.getPropertyValue('--mn-active-line').trim(),
+        tokenOnLine: style.getPropertyValue('--mn-active-line').trim(),
+      }
+    })
+    expect(probe.found).toBe(true)
+    if (probe.found) {
+      // 变量必须解得出（空串 = 主题没写进来，背景会回落成 transparent）
+      expect(probe.tokenOnRoot).not.toBe('')
+      expect(probe.tokenOnLine).not.toBe('')
+      // 背景不能是透明，也不能和编辑器底色一样（一样就是"看不见"）
+      expect(probe.background).not.toBe('rgba(0, 0, 0, 0)')
+      const editorBg = await page.evaluate(
+        () => getComputedStyle(document.documentElement).getPropertyValue('--mn-editor-bg').trim(),
+      )
+      expect(probe.background).not.toBe(editorBg)
+    }
+  })
+
+  it('纸墨主题下光标行与底色的对比度必须看得见（用户报的原 scene）', async () => {
+    await ensureVaultOpen(page)
+    // 切到纸墨（设置页下拉是 Base Select：点开选"纸墨"）
+    await page.keyboard.press('Control+,')
+    await page.waitForSelector('.mn-settings', { state: 'visible', timeout: 10_000 })
+    await page.getByRole('combobox', { name: '配色主题' }).click()
+    // Base Select 还藏了一个原生 select（表单语义），名字会撞车：限定弹层里的 div option
+    await page.locator('.mn-select__popup [role="option"]', { hasText: '纸墨' }).click()
+    await page.keyboard.press('Escape')
+
+    await openNoteInTree(page, '项目/设计.md')
+    await page.waitForSelector('.cm-content', { state: 'visible' })
+    await page.locator('.cm-content').click({ position: { x: 60, y: 40 } })
+
+    const contrast = await page.evaluate(() => {
+      const luminance = (rgb: string): number => {
+        const matched = /rgba?\(([^)]+)\)/.exec(rgb)
+        const parts = (matched?.[1] ?? '0,0,0').split(',').map(Number)
+        const [r, g, b] = [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0].map((v) => {
+          const s = v / 255
+          return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+        })
+        return 0.2126 * (r ?? 0) + 0.7152 * (g ?? 0) + 0.0722 * (b ?? 0)
+      }
+      const line = document.querySelector('.cm-content .cm-activeLine')
+      if (!(line instanceof HTMLElement)) return { found: false as const, ratio: 0 }
+      const bg = getComputedStyle(line).backgroundColor
+      const editorBg = getComputedStyle(document.documentElement).getPropertyValue('--mn-editor-bg')
+      // 把编辑器底色也算成 rgb（变量可能是 hex）
+      const canvas = document.createElement('canvas')
+      const context = canvas.getContext('2d')
+      context!.fillStyle = '#000'
+      context!.fillStyle = editorBg.trim()
+      const editorRgb = context!.fillStyle
+      const l1 = luminance(bg)
+      const l2 = luminance(editorRgb.startsWith('#') ? editorRgb : `rgb(${editorRgb})`)
+      const ratio = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)
+      return { found: true as const, ratio, bg, editorBg: editorBg.trim() }
+    })
+    expect(contrast.found).toBe(true)
+    // 光标行必须一眼看得见：对比度 1.2（此前的三套主题全在 1.08~1.10，
+    // 人眼不可辨 —— 用户报的就是它；用 WCAG 公式算，不是肉眼估）
+    expect(contrast.ratio).toBeGreaterThan(1.2)
+  })
+
   it('工具栏图标悬停出现提示（Base Tooltip，真浏览器里才看得到内容）', async () => {
     // jsdom 里浮层内容挂不上（定位管线要真实布局），只钉到"开关态"；
     // 内容文本必须在真浏览器里看一次 —— 就是这一条。

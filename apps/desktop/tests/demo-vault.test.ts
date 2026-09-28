@@ -127,12 +127,25 @@ function markdownImageHrefs(text: string): string[] {
 
 /** 与应用同一套"裸文件名兜底"的消歧：先精确路径，再按文件名主干/全名找。 */
 function resolvesToNote(target: string, entryNames: readonly string[]): boolean {
-  const wanted = target.replaceAll('\\', '/').split('/').pop() ?? target
-  const lower = wanted.toLowerCase()
-  return entryNames.some((rel) => {
-    const name = (rel.split('/').pop() ?? '').toLowerCase()
-    return name === lower || stem(name) === stem(lower)
-  })
+  // markdown-it 会把非 ASCII 路径百分号编码（`![[粘贴图片 2026.png]]` 存成
+  // `![[粘贴图片%202026.png]]`）：先解码再比对，与应用内的解析口径一致。
+  // 解码失败就用原文（绝不因为"解不开"误报）。
+  let decoded = target
+  try {
+    decoded = decodeURIComponent(target)
+  } catch {
+    // 保持原文
+  }
+  for (const candidate of [target, decoded]) {
+    const wanted = candidate.replaceAll('\\', '/').split('/').pop() ?? candidate
+    const lower = wanted.toLowerCase()
+    const hit = entryNames.some((rel) => {
+      const name = (rel.split('/').pop() ?? '').toLowerCase()
+      return name === lower || stem(name) === stem(lower)
+    })
+    if (hit) return true
+  }
+  return false
 }
 
 describe('示例 Vault：结构与引用完整性', () => {

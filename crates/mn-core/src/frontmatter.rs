@@ -33,6 +33,9 @@
 //! | `key: "a: b # c"`、`key: 'it''s'` | [`FrontmatterValue::Scalar`] |
 //! | `key: [a, "b, c"]` | [`FrontmatterValue::List`]（行内数组，支持引号内逗号） |
 //! | `key:` + 若干 `- item` 行 | [`FrontmatterValue::List`]（缩进块数组，缩进不敏感） |
+//! | `key: {a: b, ...}` | [`FrontmatterValue::Map`]（行内流式映射，一层；拼不起来退回标量） |
+//! | `key:` + 缩进的 `sub: 标量` 行 | [`FrontmatterValue::Map`]（块内映射，一层，再深的缩进忽略） |
+//! | `key:` + `- k: v` 开头（续行更深缩进） | [`FrontmatterValue::MapList`]（映射列表；**首项定形态**，混排的纯文本项丢掉） |
 //! | `key: true` / `false` | [`FrontmatterValue::Bool`] |
 //! | `key:` / `key: ~` / `key: null` | [`FrontmatterValue::Null`] |
 //! | `key: 1.5e3`、`key: -12`、`key: 2025-01-01` | 前两者 [`FrontmatterValue::Number`]（**保留原始文本**），日期是标量 |
@@ -78,7 +81,7 @@ use crate::tags::normalize_tag;
 /// 开头/结束分隔行。
 const DELIMITER: &str = "---";
 
-/// 一个 frontmatter 字段的值（极简 YAML 子集）。
+/// 一个 frontmatter 字段的值（极简 YAML 子集 + OKF 需要的一级映射）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", content = "value", rename_all = "lowercase")]
 pub enum FrontmatterValue {
@@ -92,6 +95,15 @@ pub enum FrontmatterValue {
     Null,
     /// 数字：**保留原始文本**（`1.50` 仍是 `"1.50"`），不做类型推断。
     Number(String),
+    /// 一级映射（OKF 的 `generated` 这类）：`key:` 后紧跟缩进的 `sub: 标量` 行，
+    /// 或行内流式 `{k: v, ...}`。值只收标量/布尔/数字/null（一级），
+    /// 再深的缩进忽略；字段保序。
+    Map(Vec<FrontmatterField>),
+    /// 映射组成的列表（OKF 的 `verified` / `sources` 这类）：`- k: v` 开头、
+    /// 同级缩进续行的块内映射，或 `- {k: v}` 行内映射项。
+    /// 首项决定整字段形态（见 [`parse_located`]）：混排时纯字符串项被丢掉，
+    /// 记录在案 —— 混排本身是病态输入。
+    MapList(Vec<Vec<FrontmatterField>>),
 }
 
 impl FrontmatterValue {
@@ -277,6 +289,8 @@ fn field_replacement(
             };
             Some((field.insert_at, field.insert_at, format!(" {value}")))
         }
+        // 映射不是标签字段的正常形态：`set_tags` 不碰它们（原样返回，见模块文档）
+        ValueStyle::Map | ValueStyle::MapList => None,
     }
 }
 
@@ -304,6 +318,8 @@ fn field_items(field: &LocatedField) -> Vec<String> {
             .map(str::to_string)
             .collect(),
         FrontmatterValue::Bool(_) | FrontmatterValue::Null => Vec::new(),
+        // 映射不是标签：`tags: {a: b}` 这种写法不贡献标签（与 Bool/Null 同等待遇）
+        FrontmatterValue::Map(_) | FrontmatterValue::MapList(_) => Vec::new(),
     }
 }
 
@@ -491,7 +507,7 @@ pub fn set_scalar_field(text: &str, key: &str, value: &str) -> Option<String> {
             Some(out)
         }
         Some(field) => match field.style {
-            ValueStyle::Block => Some(text.to_string()),
+            ValueStyle::Block | ValueStyle::Map | ValueStyle::MapList => Some(text.to_string()),
             ValueStyle::Empty => Some(splice(
                 text,
                 field.insert_at,
@@ -613,7 +629,7 @@ fn first_eol(text: &str) -> &'static str {
 /// 值的写法 —— 决定 [`set_tags`] 往哪儿写、写成什么样。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValueStyle {
-    /// `key:` 后面什么都没有（可能的下一个 `- item` 行会把它变成 `Block`）。
+    /// `key:` 后面什么都没有（可能的下一个 `- item` / `sub:` 行会把它变成下面三种之一）。
     Empty,
     /// `key: 标量`
     Scalar,
@@ -621,6 +637,10 @@ enum ValueStyle {
     Inline,
     /// `key:` + 若干 `- item` 行
     Block,
+    /// `key:` + 缩进的 `sub: 标量` 行，或行内 `{k: v}`
+    Map,
+    /// `key:` + `- k: v` 开头的映射项（或 `- {k: v}` 行内项）
+    MapList,
 }
 
 /// 解析后的字段 + 字节区间。
@@ -668,8 +688,11 @@ fn parse_located(text: &str) -> Option<Located> {
     let raw = text[located.body_start..located.body_end].to_string();
 
     let mut fields: Vec<LocatedField> = Vec::new();
-    // 正在收集块数组的字段下标；不是"等待 - item 的状态"时是 None
+    // 正在收集块内容的字段下标；不是"等待内容"的状态时是 None
     let mut collecting: Option<usize> = None;
+    // `MapList` 模式下当前映射项的 `-` 缩进：续行必须比它更深（同级或更浅 = 这一项结束了）。
+    // 只在 MapList 模式里读；新会话（新的 Empty 字段）必然先经过形态判定才用它，不用清零。
+    let mut map_item_indent: usize = 0;
     let mut line_no: u32 = 1;
     let mut offset = located.body_start;
 
@@ -689,6 +712,41 @@ fn parse_located(text: &str) -> Option<Located> {
         if is_item_line(trimmed) {
             if let Some(index) = collecting {
                 let indent_len = content.len() - trimmed.len();
+                let mut rest = start + indent_len + 1;
+                while text.as_bytes().get(rest) == Some(&b' ')
+                    || text.as_bytes().get(rest) == Some(&b'\t')
+                {
+                    rest += 1;
+                }
+                let mode = fields[index].style;
+                // MapList 新项：`- k: v`（首项把字段从 Empty 切过来；行内流式 `{..}`
+                // 是一层之外的东西，永远不进；纯文本项在 MapList 里放不下，忽略但不断收集）
+                if mode == ValueStyle::Empty || mode == ValueStyle::MapList {
+                    // 同级或更浅的 `- ` 在 MapList 里是新项；更深的是当前项区域内的嵌套列表，忽略
+                    let is_new_item = mode == ValueStyle::Empty || indent_len <= map_item_indent;
+                    if is_new_item {
+                        if let Some(sub) =
+                            parse_sub_line(text, rest, start + content.len(), line_no)
+                        {
+                            if mode == ValueStyle::Empty {
+                                fields[index].style = ValueStyle::MapList;
+                                fields[index].value = FrontmatterValue::MapList(vec![vec![sub]]);
+                            } else if let FrontmatterValue::MapList(items) =
+                                &mut fields[index].value
+                            {
+                                items.push(vec![sub]);
+                            }
+                            map_item_indent = indent_len;
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
+                } else if mode == ValueStyle::Map {
+                    // Map 后面跟 `- `：YAML 上不合法，结束收集并忽略（保守）
+                    collecting = None;
+                    continue;
+                }
                 let item_text = trimmed[1..].trim();
                 if !item_text.is_empty() && !is_nested_value(item_text) {
                     let item = unquote(item_text).unwrap_or_else(|| item_text.to_string());
@@ -711,9 +769,58 @@ fn parse_located(text: &str) -> Option<Located> {
             continue;
         }
 
-        // 缩进行（不是 `- item`）：嵌套映射/折叠标量不支持，忽略
+        // 缩进行（不是 `- item`）：块内 `sub:` 行是映射内容，其他忽略。
+        // 首项决定形态：刚建的 Empty 遇到 `sub:` 切成 Map；Map/MapList 追加；
+        // 其他形态（Block 等）沿用旧口径（结束并忽略）。
         if content.len() != trimmed.len() {
-            collecting = None;
+            let mut consumed = false;
+            if let Some(index) = collecting {
+                let indent_len = content.len() - trimmed.len();
+                match fields[index].style {
+                    ValueStyle::Empty => {
+                        if let Some(sub) =
+                            parse_sub_line(text, start, start + content.len(), line_no)
+                        {
+                            let field = &mut fields[index];
+                            field.style = ValueStyle::Map;
+                            field.value = FrontmatterValue::Map(vec![sub]);
+                            consumed = true;
+                        }
+                    }
+                    ValueStyle::Map => {
+                        if let Some(sub) =
+                            parse_sub_line(text, start, start + content.len(), line_no)
+                        {
+                            if let FrontmatterValue::Map(subs) = &mut fields[index].value {
+                                subs.push(sub);
+                            }
+                        }
+                        // 解析失败也留下（更深的嵌套行属于这片区域，结束会把后面的兄弟也丢掉）
+                        consumed = true;
+                    }
+                    ValueStyle::MapList => {
+                        // 续行必须比 `- ` 更深：同级是新项（item 分支处理），更浅是新字段
+                        let sub = if indent_len > map_item_indent {
+                            parse_sub_line(text, start, start + content.len(), line_no)
+                        } else {
+                            None
+                        };
+                        if let Some(sub) = sub {
+                            if let FrontmatterValue::MapList(items) = &mut fields[index].value
+                            {
+                                if let Some(last) = items.last_mut() {
+                                    last.push(sub);
+                                }
+                            }
+                            consumed = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !consumed {
+                collecting = None;
+            }
             continue;
         }
 
@@ -722,7 +829,7 @@ fn parse_located(text: &str) -> Option<Located> {
             continue;
         };
 
-        let parts = parse_value(text, start + colon, start + content.len());
+        let parts = parse_value(text, start + colon, start + content.len(), line_no);
         collecting = if parts.style == ValueStyle::Empty {
             Some(fields.len())
         } else {
@@ -793,7 +900,7 @@ struct ValueParts {
 }
 
 /// 解析 `key:` 之后这一行剩下的部分（`colon` 是冒号的字节位置）。
-fn parse_value(text: &str, colon: usize, line_end: usize) -> ValueParts {
+fn parse_value(text: &str, colon: usize, line_end: usize, line_no: u32) -> ValueParts {
     let after = colon + 1;
     let line = &text[after..line_end];
     let value_start = after + (line.len() - line.trim_start_matches([' ', '\t']).len());
@@ -820,6 +927,20 @@ fn parse_value(text: &str, colon: usize, line_end: usize) -> ValueParts {
         }
     }
 
+    // 行内流式映射 `{k: v, ...}`（OKF 的 `generated: {by: x, at: y}` 这类一行写法）：
+    // 拼不起来就当普通标量（旧口径），绝不在这里报错
+    if text.as_bytes()[value_start] == b'{' {
+        // 流式映射的子字段与本行同行（行号只用于展示 key）
+        if let Some((subs, close_end)) = parse_flow_map(text, value_start, line_end, line_no) {
+            return ValueParts {
+                value: FrontmatterValue::Map(subs),
+                style: ValueStyle::Map,
+                value_start,
+                value_end: close_end,
+            };
+        }
+    }
+
     let token_end = value_token_end(text, value_start, line_end);
     if token_end <= value_start {
         // 整个值都是注释（`key: # 注释`），按 YAML 语义视为空值
@@ -832,6 +953,213 @@ fn parse_value(text: &str, colon: usize, line_end: usize) -> ValueParts {
         value_start,
         value_end: token_end,
     }
+}
+
+/// 解析行内流式映射 `{k: v, ...}`（一起返回右花括号之后的位置）。
+///
+/// 一层 discipline：值里出现 `[` / `{`（嵌套数组/映射）、配对失败、空键、
+/// 键含引号/`#`/花括号/方括号 → 整个返回 `None`（调用方退回标量旧口径）。
+/// 尾逗号容忍（`{a: b,}` 按一项处理）；`{}` 是空映射（不是失败）。
+/// 注释按 ` #` 口径切（与 [`value_token_end`] 一致，复用同一条"引号内不算"逻辑）。
+fn parse_flow_map(
+    text: &str,
+    start: usize,
+    end: usize,
+    line_no: u32,
+) -> Option<(Vec<FrontmatterField>, usize)> {
+    let bytes = text.as_bytes();
+    if bytes.get(start) != Some(&b'{') {
+        return None;
+    }
+    // 先找顶层配对的 `}`：引号配对，`[` / `{` 直接判死
+    let mut quote: Option<u8> = None;
+    let mut close = None;
+    let mut index = start + 1;
+    while index < end {
+        let byte = bytes[index];
+        if let Some(open) = quote {
+            index += 1;
+            if byte == open {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'"' | b'\'' => {
+                quote = Some(byte);
+                index += 1;
+            }
+            b'{' | b'[' => return None,
+            b'}' => {
+                close = Some(index);
+                break;
+            }
+            _ => index += 1,
+        }
+    }
+    let close = close?;
+    // 顶层逗号切分（同样引号配对；`{`/`[` 前面已经判死，这里不会再遇到）
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut pair_start = start + 1;
+    let mut quote: Option<u8> = None;
+    let mut index = start + 1;
+    while index < close {
+        let byte = bytes[index];
+        if let Some(open) = quote {
+            index += 1;
+            if byte == open {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'"' | b'\'' => {
+                quote = Some(byte);
+                index += 1;
+            }
+            b',' => {
+                pairs.push((pair_start, index));
+                index += 1;
+                pair_start = index;
+            }
+            _ => index += 1,
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    pairs.push((pair_start, close));
+
+    let mut subs: Vec<FrontmatterField> = Vec::new();
+    for (pair_start, pair_end) in pairs {
+        let pair = text[pair_start..pair_end].trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let pair_offset = pair_start + (text[pair_start..pair_end].len() - pair.len());
+        let (key, colon) = split_key(pair)?;
+        if key.contains(['{', '}', '[', ']']) {
+            return None;
+        }
+        let token = pair[colon + 1..].trim();
+        if token.is_empty() {
+            return None;
+        }
+        let value = classify_scalar(strip_flow_comment(token));
+        subs.push(
+            LocatedField {
+                key: key.to_string(),
+                value,
+                line: line_no,
+                style: ValueStyle::Scalar,
+                value_start: pair_offset,
+                value_end: pair_offset + pair.len(),
+                insert_at: pair_offset,
+                item_start: 0,
+                item_end: 0,
+                item_end_full: 0,
+                indent: String::new(),
+                item_lines: Vec::new(),
+            }
+            .to_field(),
+        );
+    }
+    Some((subs, close + 1))
+}
+
+/// 去掉值尾部的 ` # 注释`（引号内的 `#` 不算；`a#b` 这种无空白的不算）。
+fn strip_flow_comment(token: &str) -> &str {
+    let bytes = token.as_bytes();
+    let mut quote: Option<u8> = None;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(open) = quote {
+            index += 1;
+            if byte == open {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'"' | b'\'' => {
+                quote = Some(byte);
+                index += 1;
+            }
+            b'#' if index > 0 && bytes[index - 1].is_ascii_whitespace() => {
+                return token[..index].trim_end();
+            }
+            _ => index += 1,
+        }
+    }
+    token
+}
+
+/// 解析块内映射的一行（`sub: value`，`start..end` 是去换行后的整行区间）。
+///
+/// 调用方保证缩进（块内）；这里只认 `k: v` 形状：键含花括号/方括号、
+/// 值是流式映射或更深的嵌套结构 → `None`（一层 discipline）。
+/// 空值（`sub:`）按 Null 收（与 [`parse_value`] 的空值口径一致）。
+fn parse_sub_line(text: &str, start: usize, end: usize, line_no: u32) -> Option<FrontmatterField> {
+    let content = &text[start..end];
+    let leading = content.len() - content.trim_start_matches([' ', '\t']).len();
+    let trimmed = &content[leading..];
+    let (key, colon) = split_key(trimmed)?;
+    if key.contains(['{', '}', '[', ']']) {
+        return None;
+    }
+    let colon_abs = start + leading + colon;
+    let after = text[colon_abs + 1..end].trim();
+    if after.is_empty() {
+        return Some(
+            LocatedField {
+                key: key.to_string(),
+                value: FrontmatterValue::Null,
+                line: line_no,
+                style: ValueStyle::Scalar,
+                value_start: colon_abs + 1,
+                value_end: colon_abs + 1,
+                insert_at: colon_abs + 1,
+                item_start: 0,
+                item_end: 0,
+                item_end_full: 0,
+                indent: String::new(),
+                item_lines: Vec::new(),
+            }
+            .to_field(),
+        );
+    }
+    // 值是流式映射就是第二层 → 拒绝（调用方忽略这一行）
+    if after.starts_with('{') {
+        return None;
+    }
+    let token = strip_flow_comment(after);
+    if token.is_empty() {
+        return None;
+    }
+    let token_start = colon_abs
+        + 1
+        + (text[colon_abs + 1..end].len()
+            - text[colon_abs + 1..end]
+                .trim_start_matches([' ', '\t'])
+                .len());
+    Some(
+        LocatedField {
+            key: key.to_string(),
+            value: classify_scalar(token),
+            line: line_no,
+            style: ValueStyle::Scalar,
+            value_start: token_start,
+            value_end: token_start + token.len(),
+            insert_at: colon_abs + 1,
+            item_start: 0,
+            item_end: 0,
+            item_end_full: 0,
+            indent: String::new(),
+            item_lines: Vec::new(),
+        }
+        .to_field(),
+    )
 }
 
 /// 值 token 的结束偏移：去掉行尾空白与**引号外**的 `#` 注释。
@@ -1062,6 +1390,8 @@ fn collect_tags(fields: &[LocatedField]) -> Vec<(String, u32)> {
                 }
             }
             FrontmatterValue::Bool(_) | FrontmatterValue::Null => {}
+            // 映射不是标签：`tags: {a: b}` 这种写法不贡献标签（与 Bool/Null 同等待遇）
+            FrontmatterValue::Map(_) | FrontmatterValue::MapList(_) => {}
         }
     }
 
@@ -1265,11 +1595,19 @@ mod tests {
     }
 
     #[test]
-    fn nested_map_is_not_parsed() {
+    fn nested_map_parses_one_level_and_contributes_no_tags() {
         let text = "---\ncover:\n  tags: [不该被认出]\n  image: x.png\ntags: [真标签]\n---\n";
         let fm = parse(text).unwrap();
+        // 映射里的 `tags` 不是标签（与 Bool/Null 同等待遇）
         assert_eq!(fm.tags, vec!["真标签".to_string()]);
-        assert_eq!(fm.get("cover"), Some(&FrontmatterValue::Null));
+        // 一级映射收进 Map（键保序），深一层的结构不会冒泡成顶层字段
+        let cover = fm.get("cover").expect("cover 是一级映射");
+        let FrontmatterValue::Map(subs) = cover else {
+            panic!("cover 应该是 Map：{cover:?}");
+        };
+        assert_eq!(subs.len(), 2);
+        assert_eq!(subs[0].key, "tags");
+        assert_eq!(subs[1].key, "image");
         assert!(fm.get("image").is_none());
     }
 
@@ -1517,6 +1855,90 @@ mod tests {
         // 只有 `tag` 时改 `tag`
         let out2 = set_tags("---\ntag: 旧\n---\n", &["新".to_string()]).unwrap();
         assert_eq!(out2, "---\ntag: 新\n---\n");
+        // 映射形态的 tags 不是标签字段的正常形态：`set_tags` 不碰（原样返回）
+        let mapped = "---\ntags:\n  a: b\n---\n";
+        assert_eq!(set_tags(mapped, &["新".to_string()]).unwrap(), mapped);
+    }
+
+    #[test]
+    fn parses_okf_shapes() {
+        // OKF v0.2 的典型 frontmatter：扁平推荐字段 + 嵌套的 generated/verified/sources
+        let text = [
+            "---",
+            "type: Reference",
+            "title: 定价说明",
+            "description: 简单说一句。",
+            "resource: https://example.com/pricing",
+            "tags: [定价, 公开]",
+            "status: stable",
+            "generated: {by: etl, at: 2026-09-27T15:45:20Z}",
+            "verified:",
+            "  - by: 人审",
+            "    at: 2026-09-28",
+            "sources:",
+            "  - resource: https://example.com/a",
+            "    title: A 文档",
+            "---",
+            "正文",
+            "",
+        ]
+        .join("\n");
+        let fm = parse(&text).unwrap();
+        assert_eq!(
+            fm.get("type"),
+            Some(&FrontmatterValue::Scalar("Reference".into()))
+        );
+        assert_eq!(
+            fm.get("status"),
+            Some(&FrontmatterValue::Scalar("stable".into()))
+        );
+        assert_eq!(fm.tags, vec!["定价".to_string(), "公开".to_string()]);
+        // 行内流式映射
+        let generated = fm.get("generated").expect("generated");
+        let FrontmatterValue::Map(subs) = generated else {
+            panic!("generated 应该是 Map：{generated:?}");
+        };
+        assert_eq!(subs.len(), 2);
+        assert_eq!(subs[0].key, "by");
+        // 块内映射列表（续行缩进归属当前项）
+        let verified = fm.get("verified").expect("verified");
+        let FrontmatterValue::MapList(items) = verified else {
+            panic!("verified 应该是 MapList：{verified:?}");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].len(), 2);
+        assert_eq!(items[0][0].key, "by");
+        let sources = fm.get("sources").expect("sources");
+        let FrontmatterValue::MapList(items) = sources else {
+            panic!("sources 应该是 MapList：{sources:?}");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0][0].key, "resource");
+        // 映射里的东西不贡献标签
+        assert!(!fm.tags.iter().any(|tag| tag == "人审"));
+    }
+
+    #[test]
+    fn map_shapes_degrade_gracefully() {
+        // 配对失败的行内映射退回标量（旧口径，不报错）
+        let fm = parse("---\na: {unclosed\n---\n").unwrap();
+        assert_eq!(
+            fm.get("a"),
+            Some(&FrontmatterValue::Scalar("{unclosed".into()))
+        );
+        // 首项是纯文本，后面的 `- k: v` 不翻盘（仍按旧口径忽略嵌套项）
+        let fm = parse("---\ntags:\n  - 甲\n  - 乙: 丙\n---\n").unwrap();
+        assert_eq!(
+            fm.get("tags"),
+            Some(&FrontmatterValue::List(vec!["甲".into()]))
+        );
+        assert_eq!(fm.tags, vec!["甲".to_string()]);
+        // 反过来首项就是 `- k: v`：整字段是 MapList
+        let fm = parse("---\nverified:\n  - by: 甲\n  - by: 乙\n---\n").unwrap();
+        let FrontmatterValue::MapList(items) = fm.get("verified").expect("verified") else {
+            panic!("应该是 MapList");
+        };
+        assert_eq!(items.len(), 2);
     }
 
     #[test]

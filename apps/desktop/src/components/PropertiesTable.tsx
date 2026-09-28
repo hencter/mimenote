@@ -20,7 +20,14 @@ import './properties.css'
 function iconForKey(key: string): IconName | null {
   const lower = key.toLowerCase()
   if (lower === 'date') return 'calendar'
-  if (lower === 'datetime' || lower === 'time' || lower === 'created' || lower === 'updated') {
+  if (
+    lower === 'datetime' ||
+    lower === 'time' ||
+    lower === 'created' ||
+    lower === 'updated' ||
+    lower === 'created_at' ||
+    lower === 'updated_at'
+  ) {
     return 'clock'
   }
   if (lower === 'tags' || lower === 'tag') return 'tag'
@@ -37,6 +44,8 @@ export function propertyIconFor(key: string, value: FrontmatterValue): IconName 
     case 'number':
       return 'hash'
     case 'list':
+    case 'map':
+    case 'mapList':
       return 'list'
     default:
       return 'type'
@@ -57,6 +66,36 @@ function TagsValue({ items }: { items: readonly string[] }) {
   )
 }
 
+/** 一级映射的子行（`k: v` 各占一行，键等宽、值正文 —— OKF 的 generated 这类）。 */
+function MapValue({ fields }: { fields: readonly FrontmatterField[] }) {
+  if (fields.length === 0) return <span className="mn-props__empty">空</span>
+  return (
+    <span className="mn-props__map">
+      {fields.map((field) => (
+        <span key={`${field.key}-${field.line}`} className="mn-props__map-row">
+          <span className="mn-props__map-key">{field.key}</span>
+          <span className="mn-props__map-value">{frontmatterValueText(field.value)}</span>
+        </span>
+      ))}
+    </span>
+  )
+}
+
+/** 映射列表（OKF 的 verified/sources 这类：一组一组的子字段）。 */
+function MapListValue({ items }: { items: readonly (readonly FrontmatterField[])[] }) {
+  if (items.length === 0) return <span className="mn-props__empty">空</span>
+  return (
+    <span className="mn-props__maplist">
+      {items.map((fields, index) => (
+        // 同组子字段没有稳定 id：序号即身份（组内顺序是解析顺序，不会重排）
+        <span key={index} className="mn-props__maplist-item">
+          <MapValue fields={fields} />
+        </span>
+      ))}
+    </span>
+  )
+}
+
 function FieldValue({ field }: { field: FrontmatterField }) {
   const { key, value } = field
   if (isFrontmatterEmpty(value)) return <span className="mn-props__empty">空</span>
@@ -66,6 +105,12 @@ function FieldValue({ field }: { field: FrontmatterField }) {
   }
   if (value.kind === 'bool') {
     return <span className="mn-props__bool">{value.value ? '✓' : '—'}</span>
+  }
+  if (value.kind === 'map') {
+    return <MapValue fields={value.value} />
+  }
+  if (value.kind === 'mapList') {
+    return <MapListValue items={value.value} />
   }
   return <span className="mn-props__text">{frontmatterValueText(value)}</span>
 }

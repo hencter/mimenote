@@ -28,6 +28,7 @@ describe('propertyIconFor（类型 → 图标只有这一份）', () => {
     expect(propertyIconFor('date', { kind: 'scalar', value: '2026-09-27' })).toBe('calendar')
     expect(propertyIconFor('datetime', { kind: 'scalar', value: 'x' })).toBe('clock')
     expect(propertyIconFor('created', { kind: 'scalar', value: 'x' })).toBe('clock')
+    expect(propertyIconFor('created_at', { kind: 'scalar', value: 'x' })).toBe('clock')
     expect(propertyIconFor('tags', { kind: 'list', value: ['a'] })).toBe('tag')
     expect(propertyIconFor('TAGS', { kind: 'list', value: ['a'] })).toBe('tag')
   })
@@ -73,6 +74,51 @@ describe('PropertiesTable（纯展示）', () => {
   it('空数组什么都不渲染（调用方不用再判一次）', () => {
     const { container } = render(<PropertiesTable fields={[]} />)
     expect(container.innerHTML).toBe('')
+  })
+
+  it('一级映射渲染成 k/v 子行（OKF generated 这类）', () => {
+    render(
+      <PropertiesTable
+        fields={[
+          {
+            key: 'generated',
+            value: {
+              kind: 'map',
+              value: [
+                { key: 'by', value: { kind: 'scalar', value: 'etl' }, line: 5 },
+                { key: 'at', value: { kind: 'scalar', value: '2026-09-27' }, line: 6 },
+              ],
+            },
+            line: 4,
+          },
+        ]}
+      />,
+    )
+    expect(screen.getByText('generated')).not.toBeNull()
+    expect(screen.getByText('etl')).not.toBeNull()
+    expect(screen.getByText('2026-09-27')).not.toBeNull()
+  })
+
+  it('映射列表按组渲染（OKF verified/sources 这类）', () => {
+    render(
+      <PropertiesTable
+        fields={[
+          {
+            key: 'verified',
+            value: {
+              kind: 'mapList',
+              value: [
+                [{ key: 'by', value: { kind: 'scalar', value: '人审' }, line: 5 }],
+                [{ key: 'by', value: { kind: 'scalar', value: 'nightly' }, line: 6 }],
+              ],
+            },
+            line: 4,
+          },
+        ]}
+      />,
+    )
+    expect(screen.getByText('人审')).not.toBeNull()
+    expect(screen.getByText('nightly')).not.toBeNull()
   })
 })
 

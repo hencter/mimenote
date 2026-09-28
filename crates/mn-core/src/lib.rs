@@ -15,6 +15,7 @@ pub mod content_hash;
 pub mod error;
 pub mod frontmatter;
 pub mod links;
+pub mod okf;
 pub mod path_guard;
 pub mod scanner;
 pub mod site;

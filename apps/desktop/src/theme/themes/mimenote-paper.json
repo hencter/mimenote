@@ -19,7 +19,7 @@
     "--mn-editor-fg": "#433a30",
     "--mn-editor-gutter-bg": "#f4eee1",
     "--mn-editor-gutter-fg": "#b3a68f",
-    "--mn-active-line": "#f0e9da",
+    "--mn-active-line": "#e8d9b8",
     "--mn-code-bg": "#f0e9db",
     "--mn-quote-border": "#d8cbb4",
     "--mn-scrollbar": "#cfc2ab",
