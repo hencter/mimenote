@@ -347,7 +347,7 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
 
   {
     id: 'view.cycleMode',
-    title: '切换视图（编辑 / 阅读 / 图谱）',
+    title: '切换视图（编辑 / 阅读）',
     category: '视图',
     keybinding: 'Mod+E',
     run: () => {

@@ -234,7 +234,7 @@ interface UiState extends UiPreferences {
   closePalette: () => void
 
   setViewMode: (mode: ViewMode) => void
-  /** 在 编辑 → 阅读 → 图谱 之间循环（状态栏与快捷键用它）。 */
+  /** 在 编辑 ↔ 阅读 之间切换（状态栏与快捷键用它）。 */
   cycleViewMode: () => void
   toggleSidebar: () => void
   setSidebarWidth: (width: number) => void
@@ -362,9 +362,11 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
 
   cycleViewMode: () => {
-    const order: ViewMode[] = ['edit', 'read', 'graph']
+    // 只在编辑与阅读之间切换：图谱是另一个视图（状态栏里单独一组），
+    // 用 Ctrl+G 直达 —— 按 Ctrl+E 绝不应该把人甩进图谱。
+    // 从图谱按过来时落到编辑（默认视图），而不是"记住上次"（少一份状态）。
     const current = get().viewMode
-    const next = order[(order.indexOf(current) + 1) % order.length] ?? 'edit'
+    const next = current === 'edit' ? 'read' : 'edit'
     set({ viewMode: next, openedFile: null })
     persist(get())
   },
