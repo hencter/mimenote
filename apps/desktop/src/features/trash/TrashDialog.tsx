@@ -142,7 +142,7 @@ export function TrashDialog() {
                 : `${alive} 条可恢复${orphans > 0 ? ` · ${orphans} 条文件已不在回收站` : ''}`
               : '读取中…'}
           </span>
-          <button type="button" className="mn-btn" onClick={close} aria-label="关闭回收站">
+          <button type="button" className="mn-button" onClick={close} aria-label="关闭回收站">
             关闭
           </button>
         </header>
@@ -157,7 +157,7 @@ export function TrashDialog() {
             读不到回收站台账：{explainError(error)}{' '}
             <button
               type="button"
-              className="mn-btn"
+              className="mn-button"
               onClick={() => void useTrashStore.getState().refresh()}
             >
               重试
@@ -200,7 +200,7 @@ export function TrashDialog() {
               <div className="mn-trash__actions">
                 <button
                   type="button"
-                  className="mn-btn mn-btn--primary"
+                  className="mn-button mn-button--primary"
                   disabled={!entry.present || restoringId !== null}
                   title={entry.present ? '放回原来的位置' : '回收站里已经没有这个文件了'}
                   onClick={() => void restore(entry)}
@@ -209,7 +209,7 @@ export function TrashDialog() {
                 </button>
                 <button
                   type="button"
-                  className="mn-btn"
+                  className="mn-button"
                   disabled={!entry.present || restoringId !== null}
                   onClick={() => {
                     setRenamingId(entry.id)
@@ -241,10 +241,10 @@ export function TrashDialog() {
                     onChange={(event) => setTarget(event.target.value)}
                     spellCheck={false}
                   />
-                  <button type="submit" className="mn-btn mn-btn--primary" disabled={restoringId !== null}>
+                  <button type="submit" className="mn-button mn-button--primary" disabled={restoringId !== null}>
                     恢复
                   </button>
-                  <button type="button" className="mn-btn" onClick={() => setRenamingId(null)}>
+                  <button type="button" className="mn-button" onClick={() => setRenamingId(null)}>
                     取消
                   </button>
                 </form>

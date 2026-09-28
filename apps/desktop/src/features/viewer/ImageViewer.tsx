@@ -104,7 +104,7 @@ export function ImageViewer({ relPath }: { relPath: string }) {
         {state.kind === 'ready' && (
           <button
             type="button"
-            className="mn-btn mn-btn--ghost"
+            className="mn-button mn-button--ghost"
             data-viewer-action="toggle-fit"
             aria-pressed={fit}
             title={fit ? '按实际像素显示' : '缩放到适应窗口'}

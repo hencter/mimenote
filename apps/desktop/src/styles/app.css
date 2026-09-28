@@ -989,6 +989,25 @@ kbd {
   font-weight: 600;
 }
 
+/* 幽灵按钮：无边框的文字按钮（查看器工具栏一类"别抢视觉"的场景）。
+   `aria-pressed="true"` 时染色 —— 开关状态必须看得见，不能只靠文案区分。 */
+.mn-button--ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--mn-fg-muted);
+}
+
+.mn-button--ghost:hover:not(:disabled) {
+  background: var(--mn-hover);
+  color: var(--mn-fg);
+}
+
+.mn-button--ghost[aria-pressed='true'] {
+  background: var(--mn-active);
+  background: color-mix(in srgb, var(--mn-accent) 14%, transparent);
+  color: var(--mn-fg);
+}
+
 .mn-icon-button {
   display: inline-flex;
   align-items: center;

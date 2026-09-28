@@ -81,7 +81,7 @@ export function TextViewer({ relPath }: { relPath: string }) {
         {state.kind === 'ready' && (
           <button
             type="button"
-            className="mn-btn mn-btn--ghost"
+            className="mn-button mn-button--ghost"
             data-viewer-action="toggle-wrap"
             aria-pressed={wrap}
             title={wrap ? '不折行（横向滚动）' : '按窗口宽度折行'}

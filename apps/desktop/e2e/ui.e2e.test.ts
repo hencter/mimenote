@@ -2469,9 +2469,11 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.waitForSelector('.mn-settings', { state: 'visible', timeout: 10_000 })
     await page.locator('[role="tab"]', { hasText: '编辑器' }).click()
 
-    const toggle = page.locator('input[aria-label="显示行号"]')
-    expect(await toggle.isChecked()).toBe(true)
-    await toggle.uncheck()
+    // 开关已换成 Base UI Switch（`role="switch"` 的 span，不是原生 checkbox）：
+    // 开 = `aria-checked="true"`，点一下切换（没有 check()/uncheck() 语义）
+    const toggle = page.locator('[role="switch"][aria-label="显示行号"]')
+    expect(await toggle.getAttribute('aria-checked')).toBe('true')
+    await toggle.click()
 
     await waitUntil(
       async () => (await page.locator('.cm-gutters').count()) === 0,
@@ -2481,7 +2483,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     // 正文与光标没有被"重建编辑器"这种事打扰
     expect(await page.locator('.cm-content').textContent()).toContain('参考')
 
-    await toggle.check()
+    await toggle.click()
     await waitUntil(
       async () => (await page.locator('.cm-gutters').count()) === 1,
       10_000,
