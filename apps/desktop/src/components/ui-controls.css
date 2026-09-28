@@ -102,6 +102,19 @@
   color: var(--mn-fg-muted);
 }
 
+.mn-select__value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.mn-select__value[data-placeholder] {
+  color: var(--mn-fg-subtle);
+}
+
 /* 弹出层走 Portal（挂在 body 下，不会被对话框的滚动裁掉）；
    层级必须盖过 `.mn-overlay`（z 50）与其里的对话框。 */
 .mn-select__positioner {
@@ -168,6 +181,89 @@
 .mn-select__item[data-highlighted] {
   background: var(--mn-accent);
   color: var(--mn-accent-fg);
+}
+
+.mn-select__item[data-disabled] {
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* ------------------------------------------------- Vault 切换（两行选项） */
+
+.mn-recent-vaults {
+  flex: 1 1 auto;
+  display: flex;
+  min-width: 0;
+}
+
+/* 底行触发器吃满剩余宽度（旁边是固定的设置按钮），不再是 150px 最小宽 */
+.mn-select--vault {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+}
+
+.mn-select__item--vault {
+  grid-template-columns: 16px 1fr auto;
+}
+
+/* 名字与路径是两个独立的截断单元：各管各的 ellipsis，互不顶替 */
+.mn-select__item-main {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.mn-select__item-main .mn-select__text,
+.mn-select__path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mn-select__path {
+  color: var(--mn-fg-subtle);
+  font-size: 11px;
+  font-family: var(--mn-font-mono);
+}
+
+.mn-select__item[data-highlighted] .mn-select__path {
+  color: inherit;
+  opacity: 0.75;
+}
+
+/* 行尾移除 ×：平时收起存在感，悬停/聚焦到这一行才出现（低频操作不常驻视觉） */
+.mn-select__remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--mn-radius);
+  background: transparent;
+  color: var(--mn-fg-subtle);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.mn-select__item:hover .mn-select__remove,
+.mn-select__item:focus-within .mn-select__remove,
+.mn-select__remove:focus-visible {
+  opacity: 1;
+}
+
+.mn-select__remove:hover {
+  color: var(--mn-danger);
+  background: var(--mn-hover);
+}
+
+.mn-select__item[data-highlighted] .mn-select__remove {
+  opacity: 1;
+  color: inherit;
 }
 
 @media (prefers-reduced-motion: reduce) {
