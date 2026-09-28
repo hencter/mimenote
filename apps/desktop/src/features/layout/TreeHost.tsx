@@ -42,8 +42,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent } from 'react'
 
-import { AppMenu } from '@/components/AppMenu'
 import { Splitter } from '@/components/Splitter'
+import { Icon } from '@/components/Icon'
 import { MarkdownEditor } from '@/features/editor/MarkdownEditor'
 import { GraphCanvas } from '@/features/graph/GraphCanvas'
 import { LinksPanel } from '@/features/links/LinksPanel'
@@ -58,6 +58,7 @@ import { TreeToolbar } from '@/features/vault/TreeToolbar'
 import { FileViewer } from '@/features/viewer/FileViewer'
 import { useNoteStore } from '@/state/note-store'
 import { installTabsSync, setCaretMemory } from '@/state/tabs-store'
+import { useSettingsStore } from '@/state/settings-store'
 import { useUiStore } from '@/state/ui-store'
 
 import { contentDropAt, tabIndexAt, type DropEdge } from './drop-target'
@@ -496,13 +497,21 @@ function ModuleContent({ id }: { id: ViewModuleId }) {
           <TreeToolbar />
           <FileTree />
           {/*
-            底部一行：左边「最近打开的 Vault」（ADR-0027 定的左下角），右下角是**应用菜单**。
-            从旧停靠区原样搬来 —— 菜单是"这个库/这个应用能做什么"的入口，
-            与文件导航是同一个上下文。
+            底部一行：左边「最近打开的 Vault」（ADR-0027 定的左下角），右下角是**设置按钮**。
+            从前这里是一个汉堡菜单（全部命令的弹出列表），但命令面板（`Ctrl+K`）已经是
+            更好的发现入口 —— 菜单只是它的弱化复刻，还多占一次点击。改成直达设置的按钮。
           */}
           <div className="mn-tree-bottom">
             <RecentVaults />
-            <AppMenu />
+            <button
+              type="button"
+              className="mn-icon-button"
+              aria-label="设置"
+              title="设置（Ctrl+,）"
+              onClick={() => useSettingsStore.getState().openSettings()}
+            >
+              <Icon name="settings" size="md" />
+            </button>
           </div>
         </>
       )

@@ -1008,6 +1008,13 @@ kbd {
   color: var(--mn-fg);
 }
 
+/* 图标本体：块级元素 —— 内联 SVG 会被行高托出基线空隙，
+   在 flex 按钮里看起来就是"偏上/偏小"（用户报的图标不居中就是它） */
+.mn-icon {
+  display: block;
+  flex: none;
+}
+
 .mn-icon-button {
   display: inline-flex;
   align-items: center;

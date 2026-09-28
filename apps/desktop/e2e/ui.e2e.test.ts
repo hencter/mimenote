@@ -845,22 +845,24 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     // 树行留白：行高 30 − 文字行盒 24 ⇒ 上下各 3px。字号再往上抬就必须一起抬行高
     expect(tight.rowGap).toBeGreaterThanOrEqual(3)
   })
-  it('应用菜单在文件导航格子的右下角（顶部没有独立标题栏）', async () => {
+  it('设置按钮在文件导航格子的右下角（顶部没有独立标题栏）', async () => {
     await ensureVaultOpen(page)
 
-    const menu = page.locator('button[aria-label="应用菜单"]')
-    expect(await menu.count()).toBe(1)
+    // 汉堡菜单已退役（命令发现走 Ctrl+K 面板）：这里只有一个直达设置的按钮，不弹出
+    expect(await page.locator('button[aria-label="应用菜单"]').count()).toBe(0)
+    const settings = page.locator('button[aria-label="设置"]')
+    expect(await settings.count()).toBe(1)
     // 它属于文件树那一格（判据在下面用 closest 量），顶部没有标题栏可放
     expect(await page.locator('.mn-titlebar').count()).toBe(0)
-    expect(await page.locator('.mn-tabs button[aria-label="应用菜单"]').count()).toBe(0)
+    expect(await page.locator('.mn-tabs button[aria-label="设置"]').count()).toBe(0)
 
     // "右下角"的判据：它在文件树那一格的**底部**、且贴着右侧
     const geometry = await page.evaluate(() => {
-      const button = document.querySelector('button[aria-label="应用菜单"]')
+      const button = document.querySelector('button[aria-label="设置"]')
       const treeTab = document.querySelector('[data-module-tab="tree"]')
       const leaf = treeTab?.closest('[data-leaf-id]')
       if (button === null || leaf === null || leaf === undefined) return null
-      // 菜单按钮必须真的**在**文件树那一格里（不是别的格子的右下角）
+      // 设置按钮必须真的**在**文件树那一格里（不是别的格子的右下角）
       if (!leaf.contains(button)) return { inside: false } as const
       const a = button.getBoundingClientRect()
       const b = leaf.getBoundingClientRect()
@@ -876,9 +878,9 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(geometry && 'gapBottom' in geometry ? geometry.gapBottom : 999).toBeLessThanOrEqual(16)
     expect(geometry && 'gapRight' in geometry ? geometry.gapRight : 999).toBeLessThanOrEqual(16)
 
-    // 点它仍然能打开菜单（搬了位置不该改变行为）
-    await menu.click()
-    await page.waitForSelector('[role="menu"]', { state: 'visible' })
+    // 点它直接打开设置页（不经过任何弹出层）
+    await settings.click()
+    await page.waitForSelector('.mn-settings', { state: 'visible' })
     await page.keyboard.press('Escape')
   })
   it('文件树里点一个 `.txt`：纯文本查看器把原文显示出来（只读，ADR-0032）', async () => {

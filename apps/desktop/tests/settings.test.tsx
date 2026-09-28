@@ -1,24 +1,24 @@
 // @vitest-environment jsdom
 /**
- * 设置页与应用菜单。
+ * 设置页。
  *
- * 覆盖三件事：
- * 1. **菜单是命令注册表的可发现视图**：按分类列出全部命令、显示快捷键、点击即执行
- *    （执行结果落在可观测的副作用上：视图模式、主题、设置对话框）；
- * 2. **设置项的生效链路**：字号 → CSS 变量（不重建编辑器）、自动保存延迟 → 写盘时机、
+ * 覆盖两件事：
+ * 1. **设置项的生效链路**：字号 → CSS 变量（不重建编辑器）、自动保存延迟 → 写盘时机、
  *    Tab 宽度、主题、片段开关、索引状态与两个按钮；
- * 3. **持久化**：改动落到 localStorage，重新载入模块后读回上次的值与分区。
+ * 2. **持久化**：改动落到 localStorage，重新载入模块后读回上次的值与分区。
+ *
+ * 文件树底行的设置按钮（直达设置页）在 `tree-host.test.tsx` 里测 —— 按钮住在 TreeHost 里。
+ * 命令注册表的可发现视图是命令面板（`Ctrl+K`，见 `palette.test.tsx`）。
  *
  * 断言尽量落在可观测的副作用上（store 状态、DOM、localStorage、CSS 变量、IPC 调用），
  * 而不是实现细节：换实现（例如把 `<select>` 换成单选组）不该让这些用例变红。
  */
 
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registerBuiltinCommands } from '@/app/builtin-commands'
 import { commands } from '@/app/commands'
-import { AppMenu } from '@/components/AppMenu'
 import { SettingsDialog } from '@/features/settings/SettingsDialog'
 import { setIpcAdapter, type IpcAdapter } from '@/ipc/client'
 import { createMockAdapter, type MockAdapter } from '@/ipc/mock-adapter'
@@ -62,27 +62,13 @@ function spyOnIpc(base: MockAdapter): { adapter: IpcAdapter; calls: string[] } {
 }
 
 /**
- * 渲染外壳的两个新增部分（标题栏菜单 + 设置对话框）。
+ * 只渲染设置对话框。
  *
- * 刻意**不**渲染整个 `<App />`：这两个组件由 `App.tsx` 挂载（本次改动不碰那个文件），
- * 这里直接渲染它们才能独立验证；顺序与将来的真实挂载一致。
+ * 刻意**不**渲染整个 `<App />`：它由 `App.tsx` 挂载，这里直接渲染才能独立验证。
+ * 文件树底行的设置按钮在 `tree-host.test.tsx` 里测（按钮住在 TreeHost 里）。
  */
 function renderShell(): void {
-  render(
-    <>
-      <AppMenu />
-      <SettingsDialog />
-    </>,
-  )
-}
-
-function menuButton(): HTMLButtonElement {
-  return screen.getByRole<HTMLButtonElement>('button', { name: '应用菜单' })
-}
-
-function openMenu(): HTMLElement {
-  fireEvent.click(menuButton())
-  return screen.getByRole('menu', { name: '应用菜单' })
+  render(<SettingsDialog />)
 }
 
 async function openVault(): Promise<void> {
@@ -136,138 +122,16 @@ afterEach(() => {
 })
 
 // ---------------------------------------------------------------------------
-// 应用菜单
-// ---------------------------------------------------------------------------
-
-describe('应用菜单', () => {
-  it('点击菜单按钮弹出：设置入口 + 按分类分组的全部命令（标题 + 快捷键）', () => {
-    renderShell()
-    expect(screen.queryByRole('menu')).toBeNull()
-
-    const menu = openMenu()
-
-    // 数据源就是命令注册表：注册表里的 `settings.open` 由顶部那条固定入口代表
-    // （菜单会跳过它，避免同一条命令出现两次），所以条数 = 全部命令。
-    const expected = commands.list()
-    expect(within(menu).getAllByRole('menuitem')).toHaveLength(expected.length)
-
-    // 设置入口排在第一位（不该埋在按字典序排的分类里）
-    const items = within(menu).getAllByRole('menuitem')
-    expect(items[0]?.textContent).toContain('设置…')
-
-    // 分类名与命令都在，快捷键按平台格式化（jsdom 不是 macOS → Mod 显示为 Ctrl）
-    expect(within(menu).getAllByText('外观').length).toBeGreaterThan(0)
-    expect(within(menu).getAllByText('视图').length).toBeGreaterThan(0)
-    expect(within(menu).getByText('切换主题')).toBeTruthy()
-    expect(within(menu).getByText('Ctrl+Alt+T')).toBeTruthy()
-    expect(within(menu).getByText('显示 / 隐藏侧栏')).toBeTruthy()
-    expect(within(menu).getByText('Ctrl+B')).toBeTruthy()
-  })
-
-  it('点击命令即执行（视图状态改变），并关掉菜单', () => {
-    renderShell()
-    const menu = openMenu()
-    expect(useUiStore.getState().sidebarVisible).toBe(true)
-
-    fireEvent.click(within(menu).getByText('显示 / 隐藏侧栏'))
-
-    expect(useUiStore.getState().sidebarVisible).toBe(false)
-    expect(screen.queryByRole('menu')).toBeNull()
-  })
-
-  it('点击「切换主题」走同一个注册表：themeId 真的变了', () => {
-    renderShell()
-    const menu = openMenu()
-    const before = useUiStore.getState().themeId
-
-    fireEvent.click(within(menu).getByText('切换主题'))
-
-    expect(useUiStore.getState().themeId).not.toBe(before)
-    expect(screen.queryByRole('menu')).toBeNull()
-  })
-
-  it('↑↓ 移动高亮、Enter 执行；Esc 关闭并把焦点还给菜单按钮', async () => {
-    renderShell()
-    const menu = openMenu()
-    // 打开即聚焦弹出层（键盘不需要先 Tab 进来）
-    expect(document.activeElement).toBe(menu)
-    expect(menu.getAttribute('aria-activedescendant')).toBe('mn-appmenu-item-0')
-
-    fireEvent.keyDown(menu, { key: 'ArrowDown' })
-    await waitFor(() => {
-      expect(menu.getAttribute('aria-activedescendant')).toBe('mn-appmenu-item-1')
-    })
-    // 高亮跟着走：第 1 行是注册表里的第一条命令
-    expect(document.getElementById('mn-appmenu-item-1')?.dataset['menuId']).toBe(
-      commands.list()[0]?.id,
-    )
-
-    fireEvent.keyDown(menu, { key: 'ArrowUp' })
-    await waitFor(() => {
-      expect(menu.getAttribute('aria-activedescendant')).toBe('mn-appmenu-item-0')
-    })
-
-    // 回到第 0 行（设置…）后回车：真的打开了设置
-    fireEvent.keyDown(menu, { key: 'Enter' })
-    expect(screen.getByRole('dialog', { name: '设置' })).toBeTruthy()
-    expect(screen.queryByRole('menu')).toBeNull()
-
-    // 关掉设置，回到菜单测 Esc 的焦点归还
-    fireEvent.keyDown(document.body, { key: 'Escape' })
-    await waitFor(() => {
-      expect(screen.queryByRole('dialog')).toBeNull()
-    })
-    fireEvent.click(menuButton())
-    const reopened = screen.getByRole('menu', { name: '应用菜单' })
-    fireEvent.keyDown(reopened, { key: 'Escape' })
-    expect(screen.queryByRole('menu')).toBeNull()
-    expect(document.activeElement).toBe(menuButton())
-  })
-
-  it('点击菜单外部关闭', () => {
-    renderShell()
-    openMenu()
-
-    fireEvent.mouseDown(document.body)
-
-    expect(screen.queryByRole('menu')).toBeNull()
-  })
-
-  it('菜单里的「设置…」能打开设置对话框', () => {
-    renderShell()
-    const menu = openMenu()
-
-    fireEvent.click(within(menu).getByText('设置…'))
-
-    expect(useSettingsStore.getState().open).toBe(true)
-    expect(screen.getByRole('dialog', { name: '设置' })).toBeTruthy()
-  })
-
-  it('未打开 Vault 时依赖 Vault 的命令置灰并给出原因，点了也不关菜单', () => {
-    renderShell()
-    const menu = openMenu()
-
-    const item = menu.querySelector('[data-menu-id="vault.rescan"]')
-    expect(item).not.toBeNull()
-    expect(item?.getAttribute('aria-disabled')).toBe('true')
-    expect(item?.textContent).toContain('需要先打开 Vault')
-
-    fireEvent.click(item as Element)
-    // 置灰项点不动，也不该把菜单关掉（否则用户会以为是自己点错了）
-    expect(screen.queryByRole('menu')).not.toBeNull()
-  })
-})
-
-// ---------------------------------------------------------------------------
 // 设置对话框
 // ---------------------------------------------------------------------------
 
 describe('设置对话框', () => {
   it('openSettings 打开、焦点进入；Esc 关闭并把焦点归还给打开它的元素', async () => {
     renderShell()
-    // 从菜单进去：菜单按钮就是"打开它的元素"，Esc 后焦点该回到它
-    const menu = openMenu()
-    fireEvent.click(within(menu).getByText('设置…'))
+    // 直接打开：此时焦点在 body，Esc 后焦点该回到 body
+    act(() => {
+      useSettingsStore.getState().openSettings()
+    })
 
     const dialog = screen.getByRole('dialog', { name: '设置' })
     await waitFor(() => {
@@ -279,7 +143,7 @@ describe('设置对话框', () => {
       expect(screen.queryByRole('dialog')).toBeNull()
     })
     expect(useSettingsStore.getState().open).toBe(false)
-    expect(document.activeElement).toBe(menuButton())
+    expect(document.activeElement).toBe(document.body)
   })
 
   it('点遮罩关闭（点对话框内部不关）', async () => {

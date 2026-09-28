@@ -28,6 +28,7 @@ import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter, MOCK_VAULT_PATH, type MockAdapter } from '@/ipc/mock-adapter'
 import { useConfirmStore } from '@/state/confirm-store'
 import { useNoteStore } from '@/state/note-store'
+import { useSettingsStore } from '@/state/settings-store'
 import { useTabsStore } from '@/state/tabs-store'
 import { useTagsStore } from '@/state/tags-store'
 import { useUiStore } from '@/state/ui-store'
@@ -429,6 +430,20 @@ describe('键盘与菜单', () => {
     await waitFor(() => {
       expect(useVaultStore.getState().selected).toBe('README.md')
     })
+  })
+
+  it('文件树底行是直达设置的按钮（没有汉堡菜单、不弹出）：点一下打开设置页', async () => {
+    render(<Harness />)
+    await openVault()
+    useSettingsStore.setState({ open: false })
+
+    // 汉堡菜单已退役：命令发现走 Ctrl+K 面板，这里只有一个设置按钮
+    expect(screen.queryByRole('button', { name: '应用菜单' })).toBeNull()
+    const settings = screen.getByRole('button', { name: '设置' })
+    expect(useSettingsStore.getState().open).toBe(false)
+
+    fireEvent.click(settings)
+    expect(useSettingsStore.getState().open).toBe(true)
   })
 })
 

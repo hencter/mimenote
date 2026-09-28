@@ -293,14 +293,14 @@ describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设
     await waitUntil(async () => (await app.page.locator('.mn-settings').count()) === 0, 5_000, '设置页关闭')
   })
 
-  it('应用菜单：左侧文件导航叶子右下角的菜单列出命令并可直接执行', async () => {
-    await app.page.locator('button[aria-label="应用菜单"]').click()
-    await app.page.waitForSelector('[role="menu"]', { state: 'visible', timeout: 5_000 })
-    const items = await app.page.locator('[role="menuitem"]').allTextContents()
-    expect(items.length).toBeGreaterThan(5)
-    // 点"知识图谱"那条命令 → 切到图谱视图
-    await app.page.locator('[role="menuitem"]', { hasText: '视图：知识图谱' }).click()
-    await app.page.waitForSelector('.mn-graph', { state: 'visible', timeout: 5_000 })
+  it('设置按钮：左侧文件导航叶子右下角直达设置页（汉堡菜单已退役，不弹出）', async () => {
+    await app.page.locator('button[aria-label="设置"]').click()
+    await app.page.waitForSelector('.mn-settings', { state: 'visible', timeout: 5_000 })
+    // 命令发现走命令面板：菜单退役后面板仍能列出并执行命令
+    await app.page.keyboard.press('Escape')
+    await app.page.keyboard.press('Control+k')
+    await app.page.waitForSelector('.mn-palette', { state: 'visible', timeout: 5_000 })
+    await app.page.keyboard.press('Escape')
   })
 })
 
