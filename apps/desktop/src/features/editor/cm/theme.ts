@@ -57,12 +57,16 @@ export const mnEditorTheme = EditorView.theme({
     2. 图案换成**半透明**（`color-mix(… 55%, transparent)`）—— 抬上来之后若还用不透明的色块，
        选中的字会被整个糊住；半透明才能既盖过块底、又让字读得出来（VS Code / Obsidian 就是这么做的）。
 
-    颜色仍然只有一份来源：主题的 `--mn-selection`（`color-mix` 只是给它加透明度，
-    没有引入第二个颜色令牌）。
-  */
+     颜色仍然只有一份来源：主题的 `--mn-selection`（`color-mix` 只是给它加透明度，
+     没有引入第二个颜色令牌）。
+
+     不透明度是 80% 而不是更淡：55% 在纸墨底（`#f9f4ea`）上几乎看不见
+     （用户报的"选中了却看不出来"去而复返）—— 三套主题的 token 都是"浅底深字或
+     深底浅字"的高对比组合，80% 既盖得过块底，又糊不住字。
+   */
   '.cm-selectionLayer': { zIndex: 3 },
   '.cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground': {
-    backgroundColor: 'color-mix(in srgb, var(--mn-selection) 55%, transparent)',
+    backgroundColor: 'color-mix(in srgb, var(--mn-selection) 80%, transparent)',
   },
   /* 内容里的**原生**选区（drawSelection 未启用、或选区落在被浏览器直接渲染的部分）用同一份颜色 */
   '.cm-content ::selection': {
