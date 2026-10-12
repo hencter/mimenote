@@ -20,7 +20,6 @@ import {
   siteAssetHref,
   siteRelativeHref,
 } from '@/domain/site-paths'
-
 describe('页面命名：镜像目录树 + .md → .html', () => {
   it('笔记映射到同目录同名的 .html（保留 CJK 与空格）', () => {
     expect(pagePathForNote('设计.md')).toBe('设计.html')
@@ -56,6 +55,75 @@ describe('页面命名：镜像目录树 + .md → .html', () => {
     expect(pageDir('设计.html')).toBe('')
     expect(pageDir('项目/设计.html')).toBe('项目')
     expect(pageDir('项目/子/设计.html')).toBe('项目/子')
+  })
+})
+
+/**
+ * frontmatter 覆盖（`slug` / `url`，ADR-0047 §4）在**路径分配**这一层的表现。
+ *
+ * 覆盖值本身的合法性（`..`、盘符、保留名）由 `domain/site-frontmatter.ts` 判定，这里只钉住
+ * 它与撞名分配的关系：**显式占位优先**，被挤走的那一篇像同名撞车一样拿到 `-2` ——
+ * 否则两个页面会写同一个文件，用户丢的是哪一篇完全随机。
+ */
+describe('覆盖占位：显式路径优先于默认命名', () => {
+  it('覆盖的页面拿到覆盖路径，且不是"撞名"（它是作者要求的地址）', () => {
+    const { pageOf, renamed } = assignPagePaths(
+      ['笔记/甲.md', '笔记/乙.md'],
+      new Map([['笔记/甲.md', '笔记/abc.html']]),
+    )
+
+    expect(pageOf.get('笔记/甲.md')).toBe('笔记/abc.html')
+    expect(pageOf.get('笔记/乙.md')).toBe('笔记/乙.html')
+    expect(renamed).toEqual([{ relPath: '笔记/甲.md', pagePath: '笔记/abc.html' }])
+  })
+
+  it('覆盖占住的是**别人的默认文件名**时，被挤走的那一篇退成 `-2`', () => {
+    const { pageOf, renamed } = assignPagePaths(
+      ['笔记/甲.md', '笔记/乙.md'],
+      new Map([['笔记/甲.md', '笔记/乙.html']]),
+    )
+
+    expect(pageOf.get('笔记/甲.md')).toBe('笔记/乙.html')
+    expect(pageOf.get('笔记/乙.md')).toBe('笔记/乙-2.html')
+    expect(renamed).toEqual([
+      { relPath: '笔记/甲.md', pagePath: '笔记/乙.html' },
+      { relPath: '笔记/乙.md', pagePath: '笔记/乙-2.html' },
+    ])
+  })
+
+  it('覆盖的先后由笔记路径决定，与 Map 的插入顺序无关（两次导出结果必须一致）', () => {
+    const forward = assignPagePaths(
+      ['a.md', 'b.md'],
+      new Map([
+        ['a.md', 'x.html'],
+        ['b.md', 'x.html'],
+      ]),
+    )
+    const backward = assignPagePaths(
+      ['b.md', 'a.md'],
+      new Map([
+        ['b.md', 'x.html'],
+        ['a.md', 'x.html'],
+      ]),
+    )
+
+    expect(backward.pageOf.get('a.md')).toBe(forward.pageOf.get('a.md'))
+    expect(backward.pageOf.get('b.md')).toBe(forward.pageOf.get('b.md'))
+    expect(backward.renamed).toEqual(forward.renamed)
+  })
+
+  it('覆盖指向的键不是笔记（附件）时那份占位被忽略，不会顶掉任何页面', () => {
+    const { pageOf } = assignPagePaths(
+      ['甲.md'],
+      new Map([
+        ['附件/图.png', '甲.html'],
+        ['甲.md', '甲.html'],
+      ]),
+    )
+
+    // 覆盖表只由笔记的 frontmatter 生成，理论上不会有附件的键；这一条钉住"多塞的键无害"——
+    // 否则一条来路不明的记录就能把真正的页面挤成 `甲-2.html`。
+    expect(pageOf.get('甲.md')).toBe('甲.html')
   })
 })
 

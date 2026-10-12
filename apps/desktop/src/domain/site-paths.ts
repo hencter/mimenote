@@ -81,18 +81,43 @@ export function pageDir(pagePath: string): string {
  * 分配页面路径：同名笔记（`设计.md` 与 `设计.markdown`）会撞到同一个 `.html`，
  * 按**入参顺序**第一份保留原名，其余追加 `-2`、`-3`。
  *
+ * `overridden` 是 frontmatter 的 `slug` / `url` 覆盖算出来的页面路径（见 `site-frontmatter.ts`）：
+ * 它**先占位、优先于任何默认路径**，所以 `slug: "设计"` 的那一篇占住 `设计.html`，
+ * 而本来叫 `设计.md` 的那一篇退成 `设计-2.html` —— 显式要求赢过默认命名，这是"覆盖"两个字的本义。
+ * 覆盖值本身的合法性（`..`、盘符、保留名）在 `site-frontmatter.ts` 里就已经判过了，
+ * 这里只负责占位与撞名，不再复审一遍（复审两份就等于两份判据，迟早不一致）。
+ *
  * 返回改名清单（`relPath → pagePath` 的差异），让界面能如实说出"这两篇撞名字了、第二篇换了地址"。
  */
-export function assignPagePaths(notes: readonly string[]): {
+export function assignPagePaths(
+  notes: readonly string[],
+  overridden: ReadonlyMap<string, string> = new Map(),
+): {
   pageOf: Map<string, string>
   renamed: Array<{ relPath: string; pagePath: string }>
 } {
   const pageOf = new Map<string, string>()
   const renamed: Array<{ relPath: string; pagePath: string }> = []
   const taken = new Set<string>()
+  // 先让覆盖占位。两道限定都是有意的：
+  // * 只认 `notes` 里真有的笔记（调用方多塞了一条附件路径也不会白占一个文件名，把真正的页面挤走）；
+  // * 按笔记路径排序遍历（`overridden` 的插入顺序不该决定谁占住那个路径，
+  //   否则"同一份 Vault 导出两次逐字节相同"就取决于调用方先遍历到谁）。
+  const assignable = new Set(notes)
+  for (const relPath of [...overridden.keys()].filter((key) => assignable.has(key)).sort()) {
+    const path = overridden.get(relPath)
+    if (path === undefined || taken.has(path)) continue
+    taken.add(path)
+    pageOf.set(relPath, path)
+  }
   for (const relPath of notes) {
     const base = pagePathForNote(relPath)
     if (base === null) continue
+    const explicit = pageOf.get(relPath)
+    if (explicit !== undefined) {
+      if (explicit !== base) renamed.push({ relPath, pagePath: explicit })
+      continue
+    }
     const dot = base.lastIndexOf('.')
     const stem = base.slice(0, dot)
     let candidate = base

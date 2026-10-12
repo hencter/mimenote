@@ -151,8 +151,8 @@ function resetStores(): void {
   useToastStore.getState().clear()
 }
 
-async function setup(options: { failWrite?: boolean } = {}): Promise<SiteSpy> {
-  const base = createMockAdapter({ notes: NOTES })
+async function setup(options: { failWrite?: boolean; notes?: typeof NOTES } = {}): Promise<SiteSpy> {
+  const base = createMockAdapter({ notes: options.notes ?? NOTES })
   const spy = spyOnSite(base, options)
   setIpcAdapter(spy.adapter)
   resetStores()
@@ -328,7 +328,9 @@ describe('整库导出：写出来的目录里到底有什么', () => {
     const spy = await setup()
     await exportVaultSite()
 
-    expect(spy.readSizes).toEqual([3])
+    // 两遍：预扫（读 frontmatter 定草稿与覆盖）+ 渲染。两遍都分批，
+    // 且每次请求都不超过宿主与前端约定的批大小。
+    expect(spy.readSizes).toEqual([3, 3])
     expect(spy.readSizes.every((size) => size <= SITE_EXPORT_BATCH)).toBe(true)
   })
 
@@ -405,6 +407,163 @@ describe('整库导出：写出来的目录里到底有什么', () => {
     const index = writtenFiles(spy).get('index.html') ?? ''
     expect(index).toContain('笔记/已经删掉的.md.html')
     expect(index).toContain('没有再写')
+  })
+})
+
+/**
+ * frontmatter 的两条覆盖（ADR-0047 §4）在**整条导出链路**上的表现。
+ *
+ * 与 `site-frontmatter.test.ts` 的分工：那边钉纯函数的判据（含每一个越界用例），
+ * 这边钉"判据真的被导出流程用上了"—— 草稿不产出文件也不复制图片、`slug` 真的改名、
+ * 恶意 `url` 真的没越出输出根、以及**结果里如实说了这件事**。
+ */
+describe('frontmatter 覆盖：草稿与 slug / url', () => {
+  const 改名 = [
+    { relPath: '笔记/甲.md', text: '---\nslug: "abc"\n---\n\n甲。\n' },
+    { relPath: '笔记/乙.md', text: '---\ndraft: false\n---\n\n乙。\n' },
+  ]
+
+  it('`draft: true` 不进导出计划：不产出文件、它引用的图片也不复制，但如实列出这两篇', async () => {
+    const spy = await setup({
+      notes: [
+        ...NOTES,
+        {
+          relPath: '笔记/草稿.md',
+          text: '---\ndraft: true\n---\n\n这篇是草稿，还带一张图：\n\n![图](../附件/草稿图.png)\n',
+        },
+        { relPath: '附件/草稿图.png', text: 'DRAFTIMAGE' },
+      ],
+    })
+
+    const result = await exportVaultSite()
+    const files = writtenFiles(spy)
+
+    // 1) 计划层过滤：一个页面文件都没有（磁盘上也不会有它引用的图片）
+    expect(files.has('笔记/草稿.html')).toBe(false)
+    expect(spy.copied).toEqual(['附件/图.png'])
+    expect([...files.keys()].some((relPath) => relPath.includes('草稿'))).toBe(false)
+    // 2) 计划里的篇数（3）与真正写出去的篇数（也是 3）一致 —— 草稿没有混进任何一边
+    expect(result?.pages).toBe(3)
+    expect(result?.overrides.drafts).toEqual(['笔记/草稿.md'])
+    // 3) 如实汇报，且**不**把它算成"没能导出"（那是不一样的事实：草稿是我们按作者要求跳过的）
+    expect(result?.skipped).toEqual([])
+    const index = files.get('index.html') ?? ''
+    expect(index).toContain('草稿')
+    expect(index).toContain('笔记/草稿.md')
+    expect(index).toContain('源笔记一个字节都没动')
+    const warned = useToastStore.getState().toasts.find((toast) => toast.kind === 'warn')
+    expect(warned?.detail).toContain('草稿')
+  })
+
+  it('`draft: false` / 没有 draft 的照常导出（只认严格 true）', async () => {
+    const spy = await setup({ notes: 改名 })
+    const result = await exportVaultSite()
+
+    expect(result?.pages).toBe(2)
+    expect(result?.overrides.drafts).toEqual([])
+    expect(writtenFiles(spy).has('笔记/乙.html')).toBe(true)
+  })
+
+  it('全是草稿 → 说清"一页都不会写出去"，一个文件都不写', async () => {
+    const spy = await setup({
+      notes: [
+        { relPath: '笔记/甲.md', text: '---\ndraft: true\n---\n\n甲。\n' },
+        { relPath: '笔记/乙.md', text: '---\ndraft: true\n---\n\n乙。\n' },
+      ],
+    })
+
+    expect(await exportVaultSite()).toBeNull()
+    expect(spy.batches).toHaveLength(0)
+    const info = useToastStore.getState().toasts.find((toast) => toast.kind === 'info')
+    expect(info?.message).toBe('这个 Vault 里没有可导出的笔记')
+    expect(info?.detail).toContain('全部是草稿')
+  })
+
+  it('`slug` 让页面换个文件名写出去，索引页与反向链接都指向新地址', async () => {
+    const spy = await setup({ notes: 改名 })
+    const result = await exportVaultSite()
+    const files = writtenFiles(spy)
+
+    expect(files.has('笔记/abc.html')).toBe(true)
+    expect(files.has('笔记/甲.html')).toBe(false)
+    expect(result?.overrides.applied).toEqual([
+      { relPath: '笔记/甲.md', pagePath: '笔记/abc.html', source: 'slug' },
+    ])
+    const index = files.get('index.html') ?? ''
+    expect(index).toContain('href="%E7%AC%94%E8%AE%B0/abc.html"')
+    expect(index).toContain('换了地址')
+    // 被改名的页面自己有反链吗？没有 —— 这里查的是**别人指向它**的链接用的是最终路径
+    expect(files.get('笔记/乙.html')).toBeDefined()
+  })
+
+  it('指向被改名页面的链接也跟着改名（否则改一个地址会让整页链接变 404）', async () => {
+    const spy = await setup({
+      notes: [
+        { relPath: '笔记/甲.md', text: '---\nslug: "abc"\n---\n\n甲。\n' },
+        { relPath: '笔记/乙.md', text: '回到 [[甲]]。\n' },
+      ],
+    })
+    await exportVaultSite()
+
+    const fromYi = writtenFiles(spy).get('笔记/乙.html') ?? ''
+    expect(fromYi).toContain('href="abc.html"')
+  })
+
+  it('`url` 以 `/` 开头时从输出根算起（索引页也照新地址链接）', async () => {
+    const spy = await setup({
+      notes: [
+        { relPath: '笔记/甲.md', text: '---\nurl: "/docs/a/"\n---\n\n甲。\n' },
+        { relPath: '笔记/乙.md', text: '乙。\n' },
+      ],
+    })
+    const result = await exportVaultSite()
+    const files = writtenFiles(spy)
+
+    expect(files.has('docs/a/index.html')).toBe(true)
+    expect(files.has('笔记/甲.html')).toBe(false)
+    // 深度变了，样式表引用与"回索引"的相对层级也跟着变（相对路径算术只有一份）
+    expect(files.get('docs/a/index.html')).toContain('href="../../assets/site.css"')
+    expect(files.get('index.html')).toContain('href="docs/a/index.html"')
+    expect(result?.overrides.applied).toEqual([
+      { relPath: '笔记/甲.md', pagePath: 'docs/a/index.html', source: 'url' },
+    ])
+  })
+
+  it('恶意 `url` 不越界：退回默认地址、页面照常导出、并且**如实记一条**', async () => {
+    const spy = await setup({
+      notes: [
+        { relPath: '笔记/甲.md', text: '---\nurl: "../../逃出去.html"\n---\n\n甲。\n' },
+        { relPath: '笔记/乙.md', text: '乙。\n' },
+      ],
+    })
+    const result = await exportVaultSite()
+    const files = writtenFiles(spy)
+
+    // 一个文件都没写到输出根之外（这里能检查的只有"写出去的那些路径"本身）
+    expect([...files.keys()].every((relPath) => !relPath.includes('..'))).toBe(true)
+    expect(files.has('笔记/甲.html')).toBe(true)
+    expect(files.has('逃出去.html')).toBe(false)
+    expect(result?.overrides.rejected).toEqual([
+      { relPath: '笔记/甲.md', field: 'url', value: '../../逃出去.html', reason: 'escape' },
+    ])
+    const index = files.get('index.html') ?? ''
+    expect(index).toContain('../../逃出去.html')
+    expect(index).toContain('被拒绝')
+  })
+
+  it('带覆盖时两次导出仍逐字节相同（覆盖表是入参的纯函数，不含任何随机量）', async () => {
+    const first = await setup({ notes: 改名 })
+    await exportVaultSite()
+    const firstFiles = writtenFiles(first)
+
+    const second = await setup({ notes: 改名 })
+    await exportVaultSite()
+    const secondFiles = writtenFiles(second)
+
+    for (const [relPath, text] of firstFiles) {
+      if (relPath === 'mimenote-export.json') continue
+      expect(secondFiles.get(relPath), `${relPath} 应当逐字节相同`).toBe(text)
+    }
   })
 })
 

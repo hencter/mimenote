@@ -22,6 +22,7 @@
 
 import { buildExportCss, escapeExportHtml } from './export-html'
 import { SITE_ASSET_DIR, SITE_CSS_FILE, SITE_INDEX_FILE, siteRelativeHref } from '@/domain/site-paths'
+import { describeReject, type SitePathRejectReason, type SitePathSource } from '@/domain/site-frontmatter'
 import type { SitePage, SiteSkip } from '@/ipc/types'
 
 /** 站点外壳的类名（页面里的导航/索引/反链都挂在它下面，便于主题覆盖）。 */
@@ -239,9 +240,18 @@ ${more}
 let pageOfPage: Map<string, string> = new Map()
 let titleOfPage: Map<string, string> = new Map()
 
-/** 准备一次导出的渲染上下文（页面路径与标题查表）；每次导出开始时调用一次。 */
-export function prepareSiteRender(pages: readonly SitePage[]): void {
-  pageOfPage = new Map(pages.map((page) => [page.relPath, page.pagePath]))
+/**
+ * 准备一次导出的渲染上下文（页面路径与标题查表）；每次导出开始时调用一次。
+ *
+ * `overrides` 是 frontmatter `slug` / `url` 生效后的**最终路径**（`site-frontmatter.ts` 算好的那一份）：
+ * 反向链接必须指向最终路径，否则"被改名的那一篇"的反链会指回一个不存在的地址 ——
+ * 这类死链在站点里没有任何补救手段（没有重定向）。
+ */
+export function prepareSiteRender(
+  pages: readonly SitePage[],
+  overrides: ReadonlyMap<string, string> = new Map(),
+): void {
+  pageOfPage = new Map(pages.map((page) => [page.relPath, overrides.get(page.relPath) ?? page.pagePath]))
   titleOfPage = new Map(pages.map((page) => [page.relPath, page.title]))
 }
 
@@ -294,6 +304,20 @@ export interface SiteIndexInput {
   stale: readonly string[]
   /** 同名笔记撞了页面路径、被改名的那几篇。 */
   renamed: readonly { relPath: string; pagePath: string }[]
+  /**
+   * frontmatter 覆盖的如实汇报（ADR-0047 §4）。可选，缺省 = 这次没有覆盖
+   * —— 索引页的"需要知道的问题"一节与草稿一节都据此决定要不要出现。
+   */
+  overrides?: {
+    /** 生效的覆盖（`slug` / `url` 把这一页放到了别处）。 */
+    applied: readonly { relPath: string; pagePath: string; source: SitePathSource }[]
+    /** `draft: true` 被跳过的笔记（**磁盘上什么都没动**）。 */
+    drafts: readonly string[]
+    /** 覆盖值被拒绝、退回默认路径的（含原因码）。 */
+    rejected: readonly { relPath: string; field: SitePathSource; value: string; reason: SitePathRejectReason }[]
+    /** 两个覆盖撞在同一个路径、退回默认路径的。 */
+    conflicts: readonly { relPath: string; field: SitePathSource; value: string; path: string }[]
+  }
   tokens: Readonly<Record<string, string>>
   appearance: 'dark' | 'light'
 }
@@ -372,6 +396,65 @@ ${input.dangling.length > MAX_LISTED ? `<p>还有 ${input.dangling.length - MAX_
         .join('')}</ul>
 </section>`
 
+  // 草稿一节：**只汇报，不动磁盘**（ADR-0047 §4 的"计划层过滤"）。放在最前面是因为
+  // "站点里少了 N 篇"是读者/作者第一眼要能看出来的事，排在残留下的文件后面会被淹没。
+  const draftsSection =
+    (input.overrides?.drafts.length ?? 0) === 0
+      ? ''
+      : `<section class="mn-site-index__notes">
+<p>有 ${input.overrides?.drafts.length ?? 0} 篇是草稿（frontmatter 里写了 <code>draft: true</code>），这次没有导出：</p>
+<ul>${(input.overrides?.drafts ?? [])
+        .slice(0, MAX_LISTED)
+        .map((rel) => `<li><code>${escapeExportHtml(rel)}</code></li>`)
+        .join('')}</ul>
+${(input.overrides?.drafts.length ?? 0) > MAX_LISTED ? `<p>还有 ${(input.overrides?.drafts.length ?? 0) - MAX_LISTED} 篇没有列出。</p>` : ''}
+<p>源笔记一个字节都没动 —— 草稿只是不进这份导出。</p>
+</section>`
+
+  // 覆盖被拒绝：**这一页还在，只是地址退回默认**。说清原始值，作者才能去改。
+  const rejectedOverrides = input.overrides?.rejected ?? []
+  const rejectedSection =
+    rejectedOverrides.length === 0
+      ? ''
+      : `<section class="mn-site-index__notes">
+<p>有 ${rejectedOverrides.length} 处 <code>slug</code> / <code>url</code> 覆盖被拒绝，那一页用的是默认地址：</p>
+<ul>${rejectedOverrides
+        .map(
+          (item) =>
+            `<li><code>${escapeExportHtml(item.relPath)}</code> 的 <code>${escapeExportHtml(item.field)}: ${escapeExportHtml(item.value)}</code> —— ${escapeExportHtml(describeReject(item.reason))}</li>`,
+        )
+        .join('')}</ul>
+<p>输出路径永远不会逃出你选的那个目录；被拒绝的覆盖不会删掉这一页。</p>
+</section>`
+
+  const conflicts = input.overrides?.conflicts ?? []
+  const conflictSection =
+    conflicts.length === 0
+      ? ''
+      : `<section class="mn-site-index__notes">
+<p>有 ${conflicts.length} 处覆盖撞在同一个路径上（按笔记路径排序，先到的占住），后到的退回默认地址：</p>
+<ul>${conflicts
+        .map(
+          (item) =>
+            `<li><code>${escapeExportHtml(item.relPath)}</code> 的 <code>${escapeExportHtml(item.field)}: ${escapeExportHtml(item.value)}</code> 与另一页都想写到 <code>${escapeExportHtml(item.path)}</code></li>`,
+        )
+        .join('')}</ul>
+</section>`
+
+  const applied = input.overrides?.applied ?? []
+  const appliedSection =
+    applied.length === 0
+      ? ''
+      : `<section class="mn-site-index__notes">
+<p>有 ${applied.length} 篇按 frontmatter 的覆盖换了地址（<code>slug</code> 留在原目录，<code>url</code> 以 <code>/</code> 开头时从站点根算起）：</p>
+<ul>${applied
+        .map(
+          (item) =>
+            `<li><code>${escapeExportHtml(item.relPath)}</code> → <code>${escapeExportHtml(item.pagePath)}</code>（${escapeExportHtml(item.source)}）</li>`,
+        )
+        .join('')}</ul>
+</section>`
+
   const staleSection =
     input.stale.length === 0
       ? ''
@@ -400,8 +483,12 @@ ${input.dangling.length > MAX_LISTED ? `<p>还有 ${input.dangling.length - MAX_
 <p class="mn-site-index__stats">共 ${input.pages.length} 篇笔记 · ${totalLinks} 条链接 · ${input.dangling.length} 条指向还不存在的笔记</p>
 ${linksByDir}
 ${danglingSection}
+${draftsSection}
 ${skippedSection}
 ${renamedSection}
+${appliedSection}
+${rejectedSection}
+${conflictSection}
 ${staleSection}
 <footer class="mn-export__footer">
 <span>由 ${GENERATOR} 导出为静态站点的索引页</span>
