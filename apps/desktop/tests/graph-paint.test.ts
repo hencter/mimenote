@@ -824,12 +824,18 @@ describe('paintGraph：整体契约', () => {
 
     expect(stats.cards).toBe(2)
     /*
-      连线（stroke）全部发生在第一张卡片的底色（fill）之前 —— 卡片要盖住穿过它的线段。
-      卡片自己也会描边（边框、分隔线），所以这里只看**最前面**那两次：画笔先画卡外那段连线。
+      连线（描边或渐细带的填充）全部发生在第一张卡片的底色（fill）之前 —— 卡片要盖住穿过它的线段。
+      卡片自己也会描边（边框、分隔线），所以这里只认**连线色**那几次绘制：
+      ADR-0052 之后实线不再 `stroke`（改成一个渐细带的多边形 `fill`），所以判据是
+      "描边**或**填充，且当时的颜色是连线的颜色"，不能只数 `stroke`。
     */
-    const strokes = context.ops.flatMap((op, position) => (op.op === 'stroke' ? [position] : []))
-    expect(strokes.length).toBeGreaterThanOrEqual(2)
-    expect(firstFillIndexOf(context, palette.cardBg)).toBeGreaterThan(strokes[1]!)
+    const edgeDraws = context.ops.flatMap((op, position) => {
+      if (op.op !== 'stroke' && op.op !== 'fill') return []
+      const state = context.stateAt(position)
+      return state.strokeStyle === palette.edge || state.fillStyle === palette.edge ? [position] : []
+    })
+    expect(edgeDraws.length).toBeGreaterThanOrEqual(2)
+    expect(firstFillIndexOf(context, palette.cardBg)).toBeGreaterThan(edgeDraws[1]!)
     // 标题顺序 = 数组顺序（后画的在上）
     expect(textsOf(context).filter((text) => text === '甲' || text === '乙')).toEqual(['甲', '乙'])
     expectBalancedSaveRestore(context)
@@ -1178,7 +1184,7 @@ describe('paintGraph：正文块', () => {
 // ---------------------------------------------------------------------------
 
 describe('paintGraph：边与焦点', () => {
-  it('连线的样式与几何**不进**这一层：颜色/粗细/箭头由 edge-paint 决定（判据不重复）', () => {
+  it('连线的样式与几何**不进**这一层：颜色/粗细/渐细笔触由 edge-paint 决定（判据不重复）', () => {
     // 这条用例存在的理由：画笔（本文件）与连线画笔（`edge-paint.ts`）是两个层次，
     // 它们对"线的观感"必须**只有一份**判据。这里钉的是那条分界线 —— `paintGraph` 只负责
     // 把 `edgeVisuals` 转交给 `paintEdgeLayer`，自己不掺任何颜色/线宽决策。
@@ -1200,13 +1206,25 @@ describe('paintGraph：边与焦点', () => {
       dashed: false,
       phantom: false,
       title: '甲 → 乙',
+      // ADR-0052：这条边只画一条笔触（平行束是 `edge.count > 1` 时的事）
+      bundle: 1,
     })
-    // 线宽的判据是"几何层给的 width × 缩放"，这一层不做二次加工：scale = 1 ⇒ 逐字等于 1.25
-    const states = context.ops.flatMap((op, position) =>
-      op.op === 'stroke' ? [context.stateAt(position)] : [],
+    /*
+      样式与几何的判据都在连线画笔那一层，这里只验证它**照单执行**：
+      - 颜色：强调压过色相（`edgeLineStyle` 的判据顺序）⇒ 填的是 `edgeActive`；
+      - 不透明度：几何层给的 0.55 直接用；
+      - 线宽：几何层给的 1.25 是"满宽"，渐细带的起点半宽就是它的一半 = 0.625，
+        于是填充路径第一个点落在起点两侧各 0.625 处（世界坐标 (240,150) 的 ±y）。
+      注意不能拿"第一次 fill"当这条边：卡片的底色/边框也会 fill，这里按**颜色**认。
+    */
+    const edgeFill = context.ops.findIndex(
+      (op, position) => op.op === 'fill' && context.stateAt(position).fillStyle === palette.edgeActive,
     )
-    expect(states.map((state) => state.lineWidth)).toContain(1.25)
-    expect(states.map((state) => state.globalAlpha)).toContain(0.55)
+    expect(edgeFill).toBeGreaterThan(-1)
+    expect(context.stateAt(edgeFill).globalAlpha).toBe(0.55)
+    let start = edgeFill
+    while (start > 0 && context.ops[start]!.op !== 'beginPath') start -= 1
+    expect(context.ops[start + 1]).toEqual({ op: 'moveTo', x: 240, y: 150.625 })
   })
 
   it('焦点卡片（hasFocus / selected）用 cardBorderFocus 且线宽 2，其余用 cardBorder / 1', () => {

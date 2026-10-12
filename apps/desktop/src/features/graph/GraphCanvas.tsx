@@ -520,6 +520,13 @@ export function GraphCanvas() {
     bulges: '',
     /** 悬空边标出的目标名（`;` 连接；"这里缺一篇笔记"必须一眼看得见）。 */
     phantoms: '',
+    /**
+     * 画成**平行束**的边有几条（ADR-0052：同一对笔记之间有多条链接时画 2–3 条平行线）。
+     * 与 `lines` 一起用来断言"束真的画出来了、而且只画了上限那么多"。
+     */
+    bundled: 0,
+    /** 卡外那段一共画了几条**笔触**（= Σ 每条边的 `bundle`；没有束时与 `span` 相等）。 */
+    lines: 0,
   })
   const pointerRef = useRef<PointerState | null>(null)
 
@@ -1191,6 +1198,8 @@ export function GraphCanvas() {
         .map((edge) => edge.label)
         .filter((label): label is string => label !== null)
         .join(';'),
+      bundled: span.filter((edge) => edge.bundle > 1).length,
+      lines: span.reduce((total, edge) => total + edge.bundle, 0),
     }
     setEdgeStats((current) => {
       for (const key of Object.keys(next) as Array<keyof typeof next>) {
@@ -2026,6 +2035,8 @@ export function GraphCanvas() {
       data-graph-edge-leads={edgeStats.leads}
       data-graph-edge-bulges={edgeStats.bulges}
       data-graph-edge-phantoms={edgeStats.phantoms}
+      data-graph-edge-bundled={edgeStats.bundled}
+      data-graph-edge-lines={edgeStats.lines}
       /* 悬停到的那条线（key = `from\0to\0kind`；空串 = 没有悬停） */
       data-graph-edge-hover={hoveredEdge?.key ?? ''}
       onPointerDown={handlePointerDown}

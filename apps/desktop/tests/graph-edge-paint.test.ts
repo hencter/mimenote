@@ -13,7 +13,8 @@
  * | 路径串的语法（M/L/C/A、隐式重复、写错要抛错） | 本文件的 `edge-path` 一组 |
  * | 两段首尾相接（分界点逐坐标相同） | 本文件的"分界处严丝合缝"（读 `PaintedEdge.commands`） |
  * | 引线的图案与相位、卡外那段不带图案 | 本文件的 `paintEdgeLayer` 两组 |
- * | 箭头只画在卡外那段的终点 | 同上（三个 `lineTo` + `fill` 的几何） |
+ * | **渐细笔触取代箭头**（起点满宽、终点收窄，ADR-0052） | 本文件（读填充多边形的点）＋ `tests/graph-edge-taper.test.ts`（纯几何） |
+ * | **同一对笔记的多条链接画成平行束**（ADR-0052） | 本文件（读几条填充 + 主笔触偏移恒为 0）|
  * | 悬空边的虚影圆与目标名 | 同上（`arc` + `fillText` 的坐标与字号） |
  * | 提亮 / 淡化 / 色相 / 跳数权重 | 本文件的样式判据一组（纯函数，逐档断言） |
  * | "画出来几条提亮的线"这类**接线**判据 | `tests/graph.test.tsx`（宿主上的 `data-graph-edge-*`） |
@@ -31,7 +32,6 @@ import { describe, expect, it } from 'vitest'
 
 import {
   edgeAt,
-  edgeArrowStyle,
   edgeLineStyle,
   paintEdgeLayer,
   type PaintedEdge,
@@ -251,6 +251,27 @@ class RecordingContext implements PaintContext {
     return this.ops.slice(start, stroke)
   }
 
+  /** 每一次 `fill()` 的位置。 */
+  fillPositions(): number[] {
+    return this.ops.flatMap((op, position) => (op.op === 'fill' ? [position] : []))
+  }
+
+  /** 某一段填充路径的绘制调用（第 `index` 次 `fill()` 那次 `beginPath` 之后的 moveTo/lineTo/…）。 */
+  pathOfFill(index: number): Op[] {
+    const fill = this.fillPositions()[index]
+    if (fill === undefined) throw new Error(`没有第 ${index} 次 fill`)
+    let start = fill
+    while (start > 0 && this.ops[start]!.op !== 'beginPath') start -= 1
+    return this.ops.slice(start, fill)
+  }
+
+  /** 第 `index` 次 `fill()` 时的状态。 */
+  fillState(index: number): Readonly<Record<string, string | number>> {
+    const position = this.fillPositions()[index]
+    if (position === undefined) throw new Error(`没有第 ${index} 次 fill`)
+    return this.stateAt(position)
+  }
+
   private record(name: string, value: string | number): void {
     this.ops.push({ op: 'prop', name, value })
     const list = this.props.get(name)
@@ -311,6 +332,8 @@ function visual(options: {
   target?: string
   title?: string
   style?: Partial<EdgeStyle>
+  /** 同一对笔记之间的链接条数（ADR-0052 的平行束按它算）。 */
+  count?: number
 }): GraphEdgeVisual {
   const phantom = options.phantom === true
   const base: GraphEdgeVisual = {
@@ -320,7 +343,7 @@ function visual(options: {
       toRelPath: phantom ? null : 'b.md',
       toRawTarget: options.target ?? (phantom ? '还不存在的笔记' : 'b'),
       kind: 'wiki',
-      count: 1,
+      count: options.count ?? 1,
     },
     style: { dashed: false, dim: false, highlight: false, ...options.style },
     d: `M ${options.from.x} ${options.from.y} L ${options.to.x} ${options.to.y}`,
@@ -532,17 +555,12 @@ describe('edge-paint：线的样式判据', () => {
     expect(edgeLineStyle(visual(base), palette).dash).toEqual([])
   })
 
-  it('箭头四档的填充色与自己的不透明度（元素的不透明度由画笔再乘一次）', () => {
-    const base = { from: { x: 0, y: 0 }, to: { x: 10, y: 0 } }
-    const arrow = (style: Partial<EdgeStyle>): { fill: string; alpha: number } =>
-      edgeArrowStyle(visual({ ...base, style }), palette)
-
-    expect(arrow({ highlight: true })).toEqual({ fill: palette.edgeActive, alpha: 1 })
-    expect(arrow({ dim: true })).toEqual({ fill: palette.edge, alpha: 0.2 })
-    // 只覆盖 default 那一档的色相：出链/入链跟着线一起上色
-    expect(arrow({ hue: 'out' })).toEqual({ fill: palette.edgeOut, alpha: 0.9 })
-    expect(arrow({ hue: 'in' })).toEqual({ fill: palette.edgeIn, alpha: 0.9 })
-    expect(arrow({ hue: 'context' })).toEqual({ fill: palette.edge, alpha: 0.6 })
+  it('箭头那四档样式已退役（ADR-0052：方向改由渐细笔触表达）', () => {
+    // 这一条是**台账**：从前 `edgeArrowStyle()` 有自己的四档不透明度，现在画笔里已经没有
+    // 任何"箭头"这个概念 —— 填充色就是线的颜色、不透明度就是线的不透明度。
+    const { context } = paint([visual({ from: { x: 0, y: 0 }, to: { x: 10, y: 0 } })], 'span')
+    expect(context.fillState(0).fillStyle).toBe(palette.edge)
+    expect(context.fillState(0).globalAlpha).toBe(0.5)
   })
 })
 
@@ -576,27 +594,77 @@ describe('paintEdgeLayer：卡外那段（span）', () => {
     ])
   })
 
-  it('箭头是一个填充三角形：箭尖在终点、两个底角关于轴线对称', () => {
-    // 线宽 1.6（缺省）⇒ 箭头长 6×1.6 = 9.6、半宽 3×1.6 = 4.8（原 marker 的 markerUnits=strokeWidth）
-    const { context } = paint([visual(base)], 'span')
+  it('渐细笔触取代箭头：起点满宽、终点收窄，且终点逐坐标落在几何层的端点上', () => {
+    // 缺省线宽 1.6 ⇒ 半宽 0.8；收尖比例 0.12 ⇒ 终点半宽 0.096（手算的字面量）
+    const { context, painted } = paint([visual(base)], 'span')
 
-    const arrowFill = context.ops.findIndex((op) => op.op === 'fill')
-    expect(arrowFill).toBeGreaterThan(0)
-    const path = context.ops
-      .slice(0, arrowFill)
-      .filter((op): op is Extract<Op, { op: 'moveTo' | 'lineTo' }> => op.op === 'moveTo' || op.op === 'lineTo')
-      .slice(-3)
-    // 箭尖 = 路径终点 (100, 0)
-    expect(path[0]).toEqual({ op: 'moveTo', x: 100, y: 0 })
-    // 底边中点在 (100 − 9.6, 0) = (90.4, 0)，两个底角关于轴线对称（在 y 上 ±4.8，顺序不参与断言）
-    expect(path[1]!.x).toBeCloseTo(90.4, 9)
-    expect(path[2]!.x).toBeCloseTo(90.4, 9)
-    const corners = [path[1]!.y, path[2]!.y].sort((a, b) => a - b)
-    expect(corners[0]).toBeCloseTo(-4.8, 9)
-    expect(corners[1]).toBeCloseTo(4.8, 9)
-    // 箭头颜色跟着状态走（缺省档用中性的边色，元素不透明度 × 箭头不透明度）
-    expect(context.stateAt(arrowFill).fillStyle).toBe(palette.edge)
-    expect(context.stateAt(arrowFill).globalAlpha).toBeCloseTo(0.5 * 0.6, 9)
+    // 一次 fill（渐细带），不再有三角形
+    expect(context.fillPositions()).toHaveLength(1)
+    const path = context.pathOfFill(0).filter(
+      (op): op is Extract<Op, { op: 'moveTo' | 'lineTo' }> => op.op === 'moveTo' || op.op === 'lineTo',
+    )
+    // 两个采样点（直线只给两端）× 两岸 = 4 个点；三角形那种"3 个点"的填充不存在了
+    expect(path).toHaveLength(4)
+    // 起点那一侧：世界 (0,0) 两侧各半个线宽（法向 = 行进方向的右手侧，直线时就是 ±y）
+    expect(path[0]).toEqual({ op: 'moveTo', x: 0, y: 0.8 })
+    expect(path[3]).toEqual({ op: 'lineTo', x: 0, y: -0.8 })
+    // 收尖那一侧：终点仍在 x = 100（**逐坐标**落在边界上，分界纪律不能因为换了形状就破），
+    // 半宽收到 0.8 × 0.12 = 0.096
+    expect(path[1]!.x).toBeCloseTo(100, 9)
+    expect(path[1]!.y).toBeCloseTo(0.096, 9)
+    expect(path[2]!.x).toBeCloseTo(100, 9)
+    expect(path[2]!.y).toBeCloseTo(-0.096, 9)
+    // 填充色就是线的颜色（没有"箭头比线深/浅"这一档了）
+    expect(context.fillState(0).fillStyle).toBe(palette.edge)
+    expect(context.fillState(0).globalAlpha).toBe(0.5)
+    expect(painted[0]?.bundle).toBe(1)
+  })
+
+  it('一条边（count = 1）不画束：只有一条笔触，主笔触不在法向上偏移', () => {
+    const { context, painted } = paint([visual({ ...base, count: 1 })], 'span')
+    expect(context.fillPositions()).toHaveLength(1)
+    expect(painted[0]?.bundle).toBe(1)
+  })
+
+  it('同一对笔记的多条链接画成平行束：主笔触在原点，其余按间距向右手侧排开', () => {
+    // count = 3 ⇒ 3 条；间距 3.2 ⇒ 起点那一侧的三条分别落在 y = 0.8 / 4.0 / 7.2
+    const { context, painted } = paint([visual({ ...base, count: 3 })], 'span')
+    expect(painted[0]?.bundle).toBe(3)
+    expect(context.fillPositions()).toHaveLength(3)
+
+    const starts = context.fillPositions().map((_, index) => {
+      const first = context.pathOfFill(index)[1]
+      if (first === undefined || first.op !== 'moveTo') throw new Error('填充路径的第一笔不是 moveTo')
+      return { x: first.x, y: first.y }
+    })
+    // 主笔触**逐坐标**还是几何层给的那条线（卡内引线与它的交界因此仍然严丝合缝）
+    expect(starts[0]).toEqual({ x: 0, y: 0.8 })
+    expect(starts[1]!.y).toBeCloseTo(4, 9)
+    expect(starts[2]!.y).toBeCloseTo(7.2, 9)
+    // 三条在法向上等距（3.2），x 不因偏移而变（法向垂直于直线）
+    expect(starts[1]!.x).toBeCloseTo(0, 9)
+    expect(starts[2]!.x).toBeCloseTo(0, 9)
+  })
+
+  it('束有上限：count 再大也只画 3 条（再多就糊成一团，剩余量交给 tooltip）', () => {
+    const { context, painted } = paint([visual({ ...base, count: 99 })], 'span')
+    expect(painted[0]?.bundle).toBe(3)
+    expect(context.fillPositions()).toHaveLength(3)
+  })
+
+  it('虚线边：整条按图案描虚线，末端补一个收尖的实心笔尖（语义与方向各说各的）', () => {
+    const { context, painted } = paint([visual({ ...base, style: { dashed: true } })], 'span')
+    // 虚线仍然描一次（相位/图案与从前一致）
+    expect(context.strokePositions()).toHaveLength(1)
+    // 笔尖：一次填充，起点是满宽（虚线末端接得上），终点收到 0.096
+    const path = context.pathOfFill(0).filter(
+      (op): op is Extract<Op, { op: 'moveTo' | 'lineTo' }> => op.op === 'moveTo' || op.op === 'lineTo',
+    )
+    expect(path).toHaveLength(4)
+    expect(path[0]!.y).toBeCloseTo(0.8, 9)
+    expect(path[1]!.x).toBeCloseTo(100, 9)
+    expect(path[1]!.y).toBeCloseTo(0.096, 9)
+    expect(painted[0]?.dashed).toBe(true)
   })
 
   it('悬空边：虚影小圆（虚线圆环）+ 直接标出目标名，字号也乘缩放', () => {

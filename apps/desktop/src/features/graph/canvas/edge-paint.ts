@@ -37,12 +37,21 @@ import { leadDash } from '../link-edge'
 import { type PaintContext, screenPoint, type ViewOffset } from './context'
 import {
   distanceToPath,
-  endDirection,
   parsePathData,
+  samplePoints,
   tracePath,
   type PathCommand,
 } from './edge-path'
 import type { GraphPalette } from './palette'
+import {
+  bundleOffsets,
+  offsetPolyline,
+  tailOf,
+  taperFactor,
+  taperPolygon,
+  tipFactor,
+  TIP_LENGTH,
+} from './taper'
 
 /** 画哪一层（见文件末尾"两层的分工"）。 */
 export type EdgeLayer = 'span' | 'lead'
@@ -88,6 +97,14 @@ export interface PaintedEdge {
   readonly phantom: boolean
   /** 悬空边直接标在虚影旁的目标名（`null` = 没画）。 */
   readonly label: string | null
+  /**
+   * 这条边**一共画了几条笔触**（ADR-0052 的平行束：`count > 1` 时 2–3 条）。
+   *
+   * 为什么单列：`commands` 只回主笔触（悬停命中读它），于是"画了几条"这件事从
+   * `commands` 上看不出来 —— 而自动化要能断言"同一对笔记的多条链接真的画成了平行束"。
+   * 卡内那段引线永远是 1（一个 visual 只有一条引线）。
+   */
+  readonly bundle: number
   /** tooltip 文案（与 SVG 那一版的 `<title>` 逐字相同）。 */
   readonly title: string
 }
@@ -123,17 +140,12 @@ const EDGE_DIM = { width: 1, alpha: 0.16 }
 const EDGE_DASH: readonly [number, number] = [5, 4]
 
 /**
- * 箭头（原 `<marker>` 的定义：`viewBox="0 0 10 10"` + `markerWidth/Height=6` + `refX=9`）。
+ * 采样折线的密度（每条曲线段给多少个点）。
  *
- * `markerUnits` 缺省是 `strokeWidth`，所以箭头的大小是**线宽的倍数**：
- * 长 = `10 × 6/10 = 6` 倍线宽、半宽 = `5 × 6/10 = 3` 倍线宽，箭尖落在路径终点上
- * （`refX=9` 的那一点对齐到终点）。搬进 canvas 时这几个倍数照抄，
- * 于是"线粗箭头也粗"的观感不变（跳数权重生效之后，近处的箭头会比以前大一点）。
+ * 渐细带必须知道"沿弧长谁更靠近终点"，所以先按 `samplePoints` 把路径稀释成折线。
+ * 16 与 `edge-path.ts` 的缺省一致：带子本来就是折线近似，再密也不会更圆。
  */
-const ARROW = { lengthFactor: 6, halfWidthFactor: 3 }
-
-/** `.mn-graph-arrow--default path` / `--dim` / 两个色相变体的 `opacity`。 */
-const ARROW_ALPHA = { default: 0.6, dim: 0.2, hue: 0.9, highlight: 1 }
+const SPAN_SAMPLES = 16
 
 /** `.mn-graph-edge--lead` / `--lead--active` / `.mn-graph-edge-lead-dot`。 */
 const LEAD = {
@@ -196,20 +208,6 @@ export function edgeLineStyle(visual: GraphEdgeVisual, palette: GraphPalette): E
   }
 }
 
-/** 箭头的填充色与它自己那一档不透明度（元素的不透明度由调用方再乘一次）。 */
-export function edgeArrowStyle(
-  visual: GraphEdgeVisual,
-  palette: GraphPalette,
-): { fill: string; alpha: number } {
-  const { style } = visual
-  if (style.highlight) return { fill: palette.edgeActive, alpha: ARROW_ALPHA.highlight }
-  if (style.dim) return { fill: palette.edge, alpha: ARROW_ALPHA.dim }
-  // 只覆盖 default 那一档的色相（强调/淡化两档是中性的，见 graph.css 的注释）
-  if (style.hue === 'out') return { fill: palette.edgeOut, alpha: ARROW_ALPHA.hue }
-  if (style.hue === 'in') return { fill: palette.edgeIn, alpha: ARROW_ALPHA.hue }
-  return { fill: palette.edge, alpha: ARROW_ALPHA.default }
-}
-
 // ---------------------------------------------------------------------------
 // 绘制
 // ---------------------------------------------------------------------------
@@ -242,7 +240,21 @@ export function paintEdgeLayer(
 }
 
 /**
- * 卡外那一段：张力曲线 + 箭头（+ 悬空边的虚影与目标名）。
+ * 卡外那一段：**渐细笔触** + 平行束（+ 悬空边的虚影与目标名）。
+ *
+ * ## 为什么不再画箭头（ADR-0052）
+ * 方向改由线自己的形状表达：起点满宽、末段收尖（见 `taper.ts`）。原来那个填充三角形
+ * 有两个毛病 —— 大小是线宽的倍数（跳数权重让线宽 1–3 倍变化，于是"方向"读出两种重量），
+ * 且它有一半压在卡片下面（卡片画在连线之上），看起来像被裁掉。
+ *
+ * ## 虚线边怎么办
+ * 虚线的语义是"被动/缺席"（入链、悬空目标），不能丢；但一个**实心的渐细笔尖**补在末端，
+ * 于是"到达"由形状说清、虚线仍然说被动。整条虚线边因此是"虚线（语义）+ 短笔尖（方向）"。
+ *
+ * ## 平行束
+ * `GraphEdge.count > 1` 时按 `bundleOffsets()` 画 2–3 条平行线；**主笔触偏移恒为 0**
+ * （逐坐标落在几何层给的锚点上，卡内引线与它的交界因此仍然严丝合缝），其余向右手侧排开。
+ * 记录里只回**主笔触**的 `commands`（悬停命中读它），另外用 `bundle` 报"这条边画了几条"。
  *
  * 端点是几何层给的 `exit` / `entry`（`visual.start` / `visual.end`）—— 这里**不做任何取整**：
  * 与卡内那段引线的分界点逐坐标相同是 ADR-0023 的硬纪律，少一个 `Math.round` 就少一道半像素的缝。
@@ -256,35 +268,34 @@ function paintSpan(
 ): PaintedEdge {
   const commands = parsePathData(visual.d)
   const style = edgeLineStyle(visual, palette)
+  // 虚线与否的判据只有一处：样式层给出的图案（`edgeLineStyle` 已把 `visual.style.dashed`
+  // 翻成图案了 —— 画笔再读一次 `visual.style` 就等于两个真相）
+  const dashed = style.dash.length > 0
+  // 采样折线：带子的宽窄是按"谁离终点更近"算的，所以必须先有沿弧长均匀的点。
+  // `perCurve` 取 16 与 `edge-path.ts` 的缺省一致 —— 再密也不会更圆（画出来本来就是折线近似）。
+  const path = samplePoints(commands, SPAN_SAMPLES)
+  const halfWidth = style.width / 2
+  const offsets = bundleOffsets(visual.edge.count)
 
   context.save()
   context.globalAlpha = style.alpha
   context.strokeStyle = style.stroke
+  context.fillStyle = style.stroke
   // 线宽与虚线图案都乘 scale：世界单位 → CSS 像素（SVG 那一版是 viewBox 替我们做的这件事）
   context.lineWidth = style.width * scale
-  context.setLineDash(style.dash.map((segment) => segment * scale))
+  context.setLineDash(dashed ? style.dash.map((segment) => segment * scale) : [])
   context.lineDashOffset = 0
-  context.beginPath()
-  tracePath(context, commands, map)
-  context.stroke()
+  for (const offset of offsets) {
+    const member = offsetPolyline(path, offset)
+    if (dashed) {
+      // 虚线仍然按图案描（相位从这条线的起点算，与从前的 `strokeDasharray` 同一套语义）
+      strokePolyline(context, member, map)
+      paintRibbon(context, tailOf(member, TIP_LENGTH), halfWidth, tipFactor, map)
+    } else {
+      paintRibbon(context, member, halfWidth, taperFactor, map)
+    }
+  }
   context.setLineDash([])
-
-  // 箭头：位置在终点、朝向是终点的切向（与 `orient="auto"` 同一件事）
-  const arrow = edgeArrowStyle(visual, palette)
-  const direction = endDirection(commands)
-  const tip = map(visual.end)
-  const length = ARROW.lengthFactor * style.width * scale
-  const half = ARROW.halfWidthFactor * style.width * scale
-  const baseX = tip.x - direction.x * length
-  const baseY = tip.y - direction.y * length
-  context.globalAlpha = style.alpha * arrow.alpha
-  context.fillStyle = arrow.fill
-  context.beginPath()
-  context.moveTo(tip.x, tip.y)
-  context.lineTo(baseX - direction.y * half, baseY + direction.x * half)
-  context.lineTo(baseX + direction.y * half, baseY - direction.x * half)
-  context.closePath()
-  context.fill()
 
   // 悬空边：虚影小圆 + 目标名（"这里缺一篇笔记"必须一眼看见，不能只靠 tooltip）
   const label = visual.phantom ? visual.edge.toRawTarget : ''
@@ -325,7 +336,58 @@ function paintSpan(
     phantom: visual.phantom,
     label: label === '' ? null : label,
     title: visual.title,
+    bundle: offsets.length,
   }
+}
+
+/** 一笔细实线（`stroke()`）—— 虚线的每一段、以及折线近似都用它。 */
+function strokePolyline(
+  context: PaintContext,
+  points: readonly Point[],
+  map: (point: Point) => Point,
+): void {
+  const first = points[0]
+  if (first === undefined) return
+  context.beginPath()
+  const start = map(first)
+  context.moveTo(start.x, start.y)
+  for (let index = 1; index < points.length; index += 1) {
+    const point = points[index]
+    if (point === undefined) continue
+    const screen = map(point)
+    context.lineTo(screen.x, screen.y)
+  }
+  context.stroke()
+}
+
+/**
+ * 一条渐细带：`fill()` 一个多边形。
+ *
+ * 为什么不是"描一条线宽递减的线"：`stroke` 的线宽在一整条路径上是**常量**，
+ * 想渐细就得把路径切成几十段、每段单独 `stroke`（几十次绘制调用，漂浮时每帧都要付）；
+ * 而多边形填充只用一次 `fill`，代价与一条线同量级。
+ */
+function paintRibbon(
+  context: PaintContext,
+  points: readonly Point[],
+  halfWidth: number,
+  profile: (t: number) => number,
+  map: (point: Point) => Point,
+): void {
+  const polygon = taperPolygon(points, halfWidth, profile)
+  const first = polygon[0]
+  if (first === undefined) return
+  context.beginPath()
+  const start = map(first)
+  context.moveTo(start.x, start.y)
+  for (let index = 1; index < polygon.length; index += 1) {
+    const point = polygon[index]
+    if (point === undefined) continue
+    const screen = map(point)
+    context.lineTo(screen.x, screen.y)
+  }
+  context.closePath()
+  context.fill()
 }
 
 /**
@@ -387,6 +449,8 @@ function paintLead(
     phantom: false,
     label: null,
     title: visual.title,
+    // 一个 visual 只有一条引线（"同一对笔记的多条链接"是**卡外**那段的平行束）
+    bundle: 1,
   }
 }
 

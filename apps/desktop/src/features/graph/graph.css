@@ -57,7 +57,9 @@
 
 /*
  * 连线的样式**不再在这里**：连线搬进 canvas 之后（ADR-0036），它由画笔直接画 ——
- * 颜色 / 粗细 / 虚线 / 箭头几何的唯一判据是 `features/graph/canvas/edge-paint.ts` 顶部那几张常量表。
+ * 颜色 / 粗细 / 虚线 / **渐细笔触与平行束的几何**的唯一判据是
+ * `features/graph/canvas/edge-paint.ts` 顶部那几张常量表与 `canvas/taper.ts`
+ * （ADR-0052 起方向由笔触自己收窄表达，不再画那个填充三角形）。
  *
  * 原来那批 `.mn-graph-edge* / .mn-graph-arrow* / .mn-graph-phantom* / .mn-graph__edges` 规则随之退役：
  * 它们选择的是 SVG 元素，而画布上已经没有那些元素了 —— 留着就是一份「看着像判据、实际没人读」的代码。

@@ -273,6 +273,13 @@ class RecordingPaintContext implements PaintContext {
   /** 当前这一段路径（`beginPath` 清空，`stroke` 时连同状态存进 `strokeRecords`）。 */
   private currentPath: PathOp[] = []
 
+  /** 每一段**填充**路径（ADR-0052 之后卡外那段的实线是一个渐细带的多边形 `fill`）。 */
+  private readonly fillRecords: Array<{
+    readonly path: readonly PathOp[]
+    readonly state: { fillStyle: string; lineWidth: number; globalAlpha: number }
+    readonly frame: number
+  }> = []
+
   /** 每一段**描边**路径（含几何与状态）。卡片边框/下划线也在其中，连线是**最前面**那几条。 */
   strokes(): ReadonlyArray<{
     readonly path: readonly PathOp[]
@@ -332,6 +339,7 @@ class RecordingPaintContext implements PaintContext {
     this.texts.length = 0
     this.placed.length = 0
     this.strokeRecords.length = 0
+    this.fillRecords.length = 0
     this.arcRecords.length = 0
     this.currentPath = []
     this.frame = 0
@@ -366,7 +374,30 @@ class RecordingPaintContext implements PaintContext {
     this.arcRecords.push({ x, y, radius, frame: this.frame })
     this.currentPath.push({ op: 'arc', x, y, radius })
   }
-  fill(): void {}
+  fill(): void {
+    this.fillRecords.push({
+      path: [...this.currentPath],
+      state: {
+        fillStyle: String(this.fillStyle),
+        // 填充不用线宽，但画笔在画带子之前会把它设成"满宽"——记录型上下文照抄，
+        // 于是"跳数权重那一档线宽"仍然可以从填充记录上读到（测试拿它做归一化断言）
+        lineWidth: this.lineWidth,
+        globalAlpha: this.globalAlpha,
+      },
+      frame: this.frame,
+    })
+  }
+
+  /** **最后一帧**画过的填充（口径同 `strokesOfLastFrame`）。 */
+  fillsOfLastFrame(): ReadonlyArray<{
+    readonly path: readonly PathOp[]
+    readonly state: { fillStyle: string; lineWidth: number; globalAlpha: number }
+    readonly frame: number
+  }> {
+    const last = this.fillRecords.at(-1)?.frame ?? 0
+    return this.fillRecords.filter((record) => record.frame === last)
+  }
+
   stroke(): void {
     /*
       快照的是**假上下文自己的属性值**（画笔每画一样东西都会先把要用的属性设一遍）。
@@ -524,7 +555,16 @@ function overlapCount(): number {
  * （`data-graph-edges`），其余是与它并列的细分。
  */
 function edgeStat(
-  name: 'edges' | 'dashed' | 'highlight' | 'highlight-dashed' | 'dim' | 'arcs' | 'leads',
+  name:
+    | 'edges'
+    | 'dashed'
+    | 'highlight'
+    | 'highlight-dashed'
+    | 'dim'
+    | 'arcs'
+    | 'leads'
+    | 'bundled'
+    | 'lines',
 ): number {
   // 总条数那个属性是 `data-graph-edges`（中间没有 `edge-` 这一节），其余是 `data-graph-edge-<细分>`
   const attribute = name === 'edges' ? 'data-graph-edges' : `data-graph-edge-${name}`
@@ -555,6 +595,47 @@ function arcOfLastFrameWithRadius(radius: number): { x: number; y: number; radiu
   return (
     paint.arcsOfLastFrame().find((arc) => Math.abs(arc.radius - radius) < 0.001) ?? null
   )
+}
+
+/**
+ * 卡外那段的**渐细带**（ADR-0052）。
+ *
+ * 为什么不再数描边：实线边现在是一个填充多边形（带子），只有虚线边才描边（图案）+ 补一个
+ * 笔尖。背景点阵、悬空虚影、引线起点那些圆都是 `arc` + `fill`，**没有 `moveTo`** ——
+ * 用"填充路径里有没有 `moveTo`"就能把带子与它们分开。
+ *
+ * ⚠️ 卡片自己的填充也是（带 `moveTo` 的）多边形，所以调用方要按绘制顺序**切一段**：
+ * 卡外那段是最先画的，前 `data-graph-edges`（或 `data-graph-edge-lines`）条就是它。
+ */
+function spanRibbonsOfLastFrame(): ReadonlyArray<{
+  readonly path: readonly PathOp[]
+  readonly state: { fillStyle: string; lineWidth: number; globalAlpha: number }
+}> {
+  return paint.fillsOfLastFrame().filter((record) => record.path.some((op) => op.op === 'moveTo'))
+}
+
+/**
+ * 从渐细带的多边形还原出**中心线**（世界/屏幕坐标与带子同口径）。
+ *
+ * 带子的点序是"左岸正向 + 右岸反向"（见 `taper.ts` 的 `taperPolygon`），
+ * 所以第 i 个点与倒数第 i 个点关于中心线对称 —— 两者取中点就是中心线上的一点。
+ * 有了它，"在线附近派发一次 pointermove"这类测试仍然能精确落在中心线上
+ * （命中判据 `edgeAt` 用的就是中心线的 `commands`）。
+ */
+function centerlineOfRibbon(path: readonly PathOp[]): PathOp[] {
+  const points = path.filter((op) => op.op === 'moveTo' || op.op === 'lineTo')
+  const half = points.length / 2
+  if (!Number.isInteger(half) || half < 2) return []
+  const centerline: PathOp[] = []
+  for (let index = 0; index < half; index += 1) {
+    const left = points[index]
+    const right = points[points.length - 1 - index]
+    if (left === undefined || right === undefined) return []
+    const x = (left.x + right.x) / 2
+    const y = (left.y + right.y) / 2
+    centerline.push(index === 0 ? { op: 'moveTo', x, y } : { op: 'lineTo', x, y })
+  }
+  return centerline
 }
 
 /**
@@ -2030,10 +2111,10 @@ describe('知识图谱画布', () => {
     })
 
     const spanCount = edgeStat('edges')
-    // 卡外那段是**最先**画的（在卡片之前），所以前 `spanCount` 条描边就是它们
-    const span = paint.strokesOfLastFrame().slice(0, spanCount)[0]
+    // 卡外那段是**最先**画的（在卡片之前），所以最先那几条带子就是它们（ADR-0052）
+    const span = spanRibbonsOfLastFrame().slice(0, spanCount)[0]
     expect(span).toBeDefined()
-    const onLine = pointOnStrokePath(span!.path, 4)
+    const onLine = pointOnStrokePath(centerlineOfRibbon(span!.path), 4)
     expect(onLine).not.toBeNull()
 
     const at = clientFromCanvas(onLine!)
@@ -2083,10 +2164,10 @@ describe('知识图谱画布', () => {
 
     /** 逐条悬停卡外那段，返回每条边的提示文案。 */
     const tipsOfSpanEdges = async (): Promise<string[]> => {
-      const strokes = paint.strokesOfLastFrame().slice(0, edgeStat('edges'))
+      const ribbons = spanRibbonsOfLastFrame().slice(0, edgeStat('edges'))
       const tips: string[] = []
-      for (const stroke of strokes) {
-        const on = pointOnStrokePath(stroke.path, 6)
+      for (const ribbon of ribbons) {
+        const on = pointOnStrokePath(centerlineOfRibbon(ribbon.path), 6)
         if (on === null) continue
         const at = clientFromCanvas(on)
         pointer(graphHost(), 'pointermove', { x: at.x, y: at.y })
@@ -2560,28 +2641,28 @@ describe('知识图谱画布', () => {
     expect(graphHost().getAttribute('data-graph-edge-hues')).toBe('2,0,2')
 
     /*
-      2) 权重：卡外那段是**最先**画的（在卡片与引线之前），所以"最后一帧"的前 `edges` 条描边
-         就是那四条边 —— 线宽按跳数权重 × 调制给出来：
+      2) 权重：卡外那段是**最先**画的（在卡片与引线之前），所以"最后一帧"最先那 4 条**带子**
+         就是那四条边（ADR-0052 之后实线不再描边，改成填充的多边形）—— 线宽按跳数权重 × 调制：
            · 与圆心相关的一跳边（强调）：max(2, 2.2) = 2.2，不透明度 min(1, 0.95+0.22) = 1；
            · 环与环之间的一跳边（淡化）：max(1, 2×0.7) = 1.4，0.95×0.3 = 0.285；
            · 跨环那条按**两端较大的跳数**（2 跳）算（淡化）：max(1, 1.5×0.7) = 1.05，0.72×0.3 ≈ 0.216。
          关键判据是"**越远的线越细越淡**"—— 这正是"越远越细越淡"能被看见的地方。
 
-         记下来的线宽还要**除以缩放**才是世界单位：画的时候线宽按 `width × scale` 给
-         （与 SVG 那一版 viewBox 替我们做的事完全一样），所以断言前先归一化。
+         记下来的线宽还要**除以缩放**才是世界单位：画笔把"满宽"按 `width × scale` 设进上下文
+         （带子的半宽就是它的一半），所以断言前先归一化。
     */
     const zoom = Number(graphHost().getAttribute('data-graph-scale'))
     expect(zoom).toBeGreaterThan(0)
-    const spanStrokes = paint.strokesOfLastFrame().slice(0, edgeStat('edges'))
-    expect(spanStrokes).toHaveLength(4)
-    const widths = spanStrokes
-      .map((stroke) => stroke.state.lineWidth / zoom)
+    const spanRibbons = spanRibbonsOfLastFrame().slice(0, edgeStat('edges'))
+    expect(spanRibbons).toHaveLength(4)
+    const widths = spanRibbons
+      .map((ribbon) => ribbon.state.lineWidth / zoom)
       .sort((a, b) => a - b)
     expect(widths[0]).toBeCloseTo(1.05, 9)
     expect(widths[1]).toBeCloseTo(1.4, 9)
     expect(widths[2]).toBeCloseTo(2.2, 9)
     expect(widths[3]).toBeCloseTo(2.2, 9)
-    const far = spanStrokes.find((stroke) => Math.abs(stroke.state.lineWidth / zoom - 1.05) < 1e-9)
+    const far = spanRibbons.find((ribbon) => Math.abs(ribbon.state.lineWidth / zoom - 1.05) < 1e-9)
     expect(far?.state.globalAlpha).toBeCloseTo(0.216, 6)
 
     // 3) 同环 ⇒ 走弧（`data-graph-edge-arcs` 数的是"这一帧有几条画成了弧"）
@@ -2602,15 +2683,76 @@ describe('知识图谱画布', () => {
     })
   })
 
+  it('同一对笔记之间的多条链接画成平行束（ADR-0052）：两条带子等距、主笔触仍在中心线上', async () => {
+    /*
+      数据侧：`graph_data` / `graph_ego` 按 `(from, to)` 合并并累加 `count`（Mock 与宿主同一口径），
+      因此"甲里写了两次 [[乙]]"是一条边、`count = 2`。
+
+      画笔侧（ADR-0052）：`count > 1` 时画 2–3 条平行的渐细带，主笔触偏移 0、其余向右手侧排开
+      （间距 `BUNDLE_GAP = 3.2` 世界像素）。这里读的是**画布上真画出来的**两条带的中心线：
+      用"两条中心线之间的法向距离 = 3.2 × 缩放"来断言"它们真的平行且分开了"，
+      而不是去数"有几个 fill"（那只能证明调用了两次）。
+    */
+    const notes = [
+      { relPath: '甲.md', text: '# 甲\n\n一次 [[乙]]，又一次 [[乙]]。\n' },
+      { relPath: '乙.md', text: '# 乙\n\n正文。\n' },
+    ]
+    setIpcAdapter(createMockAdapter({ rootPath: VAULT_ROOT, notes }))
+    await act(async () => {
+      await useVaultStore.getState().openVault(VAULT_ROOT)
+    })
+    await mountFocus('甲.md')
+
+    await waitFor(() => {
+      expect(edgeStat('edges')).toBe(1)
+    })
+    expect(edgeStat('bundled')).toBe(1)
+    // 一条边画了两条笔触（`lines` = Σ bundle）
+    expect(edgeStat('lines')).toBe(2)
+
+    // 卡外那段最先画，所以前 `lines` 条带子就是它（卡片自己的填充也是多边形，会被一起录下来）
+    const ribbons = spanRibbonsOfLastFrame().slice(0, edgeStat('lines'))
+    expect(ribbons).toHaveLength(2)
+    const lines = ribbons.map((ribbon) => centerlineOfRibbon(ribbon.path))
+    const endsOf = (line: readonly PathOp[]): [{ x: number; y: number }, { x: number; y: number }] => {
+      const points = line.filter((op) => op.op === 'moveTo' || op.op === 'lineTo')
+      const first = points[0]
+      const last = points[points.length - 1]
+      if (first === undefined || last === undefined) throw new Error('带子端点不全')
+      return [
+        { x: first.x, y: first.y },
+        { x: last.x, y: last.y },
+      ]
+    }
+    const [firstStart, firstEnd] = endsOf(lines[0]!)
+    const [secondStart, secondEnd] = endsOf(lines[1]!)
+    /*
+      两条带子是"沿各自**局部法向**偏移一个常数"得到的（`offsetPolyline`），所以：
+      - 曲线两端的法向不同 ⇒ 起点之间的位移与终点之间的位移**方向可以不同**
+        （不是简单的平移，这正是"始终保持 3.2 的距离"而不是"整体挪一下"）；
+      - 但两端的距离都逐字等于 `BUNDLE_GAP × 缩放`。
+      缩放取当下这一帧的 `data-graph-scale`（测量与断言都在同一帧的几何上做）。
+    */
+    const zoom = Number(graphHost().getAttribute('data-graph-scale'))
+    expect(zoom).toBeGreaterThan(0)
+    const gapStart = Math.hypot(secondStart.x - firstStart.x, secondStart.y - firstStart.y)
+    const gapEnd = Math.hypot(secondEnd.x - firstEnd.x, secondEnd.y - firstEnd.y)
+    expect(gapStart).toBeCloseTo(3.2 * zoom, 6)
+    expect(gapEnd).toBeCloseTo(3.2 * zoom, 6)
+  })
+
   it('张力旋钮真的作用在连线上：调大之后路径的控制点变了，而且落盘', async () => {
     /*
-      "张力"如果不能从画出来的路径上看出来，它就只是个滑块。这里断言**画布上那条线的路径**
+      "张力"如果不能从画出来的路径上看出来，它就只是个滑块。这里断言**画布上那条线的中心线**
       变了（同一条边），并断言它写进偏好 —— 后者是"下次打开还是这个手感"的前提。
-      搬迁前读的是 SVG path 的 `d`；现在读记录型画布上那一段描边的路径（同一件事：线画到哪了）。
+      搬迁前读的是 SVG path 的 `d`；现在先取那一帧最先那条带子（渐细带），再从多边形
+      还原出中心线（`centerlineOfRibbon`）—— 读到的仍然是"这条线画到哪了"。
     */
     await mountFocus('项目/设计.md')
-    const spanPathOf = (): string =>
-      JSON.stringify(paint.strokesOfLastFrame().slice(0, edgeStat('edges'))[0]?.path ?? [])
+    const spanPathOf = (): string => {
+      const ribbon = spanRibbonsOfLastFrame().slice(0, edgeStat('edges'))[0]
+      return JSON.stringify(ribbon === undefined ? [] : centerlineOfRibbon(ribbon.path))
+    }
 
     await waitFor(() => {
       expect(edgeStat('edges')).toBeGreaterThan(0)
