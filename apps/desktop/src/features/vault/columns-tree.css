@@ -1,7 +1,11 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
 /*
  * 分栏（Miller columns）文件树的外观。
  *
- * 为什么单独成文件：`styles/app.css` 里的 `.mn-tree*` 是**单栏**的常态样式
+ * 为什么单独成文件：`features/vault/tree.css` 里的 `.mn-tree*` 是**单栏**的常态样式
  * （一个纵向滚动的虚拟列表 + 行）。分栏只借用了三种行状态（`.mn-tree-row*`：
  * 选中 / 打开 / 拖拽落点）与虚拟窗口的两个壳（`.mn-tree__spacer` / `.mn-tree__window`），
  * 其余（列、列头、每列自己的滚动区）全是新的。放在这里以后，
@@ -186,4 +190,5 @@
   overflow: hidden;
   text-overflow: ellipsis;
   pointer-events: none;
+}
 }

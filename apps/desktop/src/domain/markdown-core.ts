@@ -632,7 +632,7 @@ md.core.ruler.push('mn_task_list', (state) => {
   }
 })
 
-/** 任务项的类名（与 `styles/app.css` / 导出样式里的选择器是同一份契约）。 */
+/** 任务项的类名（与 `features/preview/preview.css` / 导出样式里的选择器是同一份契约）。 */
 const TASK_ITEM_CLASS = 'mn-task-item'
 /** 已完成的修饰类名（"文字变暗"挂在这个类名上，不是挂在复选框上）。 */
 const TASK_ITEM_DONE_CLASS = 'mn-task-item--done'

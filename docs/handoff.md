@@ -1,9 +1,43 @@
 # 交接说明：下一个会话从这里开始
 
 > 这份文件是**临时**的会话交接，不是产品文档。新会话接手顺利之后可以直接删掉它。
-> 最后更新：ADR-0055 ~ 0059（键位与配置 / 模板语法 / 收件箱 / 分栏文件树 / 搜索质量）交付之后。
+> 最后更新：ADR-0060（前端架构与样式分层）落地之后。
 
-## 0. 最近一轮：键位与配置 · 模板语法 · 收件箱 · 分栏文件树 · 搜索质量
+## 0. 最近一轮：前端架构改造（ADR-0060）+ 上一轮的键位/模板/收件箱/分栏树/搜索
+
+用户原话：**"继续优化界面吧，CSS 也该模块化了，组件模块话整个项目的架构差的要命，找架构师帮忙处理继续优化！"**
+
+做法：**先请架构师做证据化审计**，产出
+[architecture-review.md](architecture-review.md)（体检报告 + 11 条 backlog + "不该动的 10 处"）与
+[ADR-0060](adr/0060-frontend-architecture.md)（依赖规则 / 纯模型归属 / 组件拆分规则 / **CSS 策略**），
+外加**可执行门禁** `scripts/check-architecture.mjs` + `scripts/architecture-allowlist.json`
+（债务"只许变小"，**登记过期也红**）+ `scripts/check-css-layers.mjs`（入口层序与产物层序）。
+然后按 backlog 派 4 条互不重叠的战线并行执行。
+
+### 结果（数字都是 `pnpm check:architecture` 的输出）
+
+| 项 | 改造前 | 现在 |
+| --- | --- | --- |
+| 值依赖越界（冻结） | 10 | **1**（只剩 `keymap-store → app/commands`） |
+| 模块级环 | 1 个环 / 2 条边 | **0** |
+| domain 碰浏览器全局 | 2 个文件 | **0** |
+| `!important` | 9 | **4**（都是 `font-overrides` 判定过的保留项） |
+| 待迁移分层的样式表 | 29 | **0** |
+| 待拆大文件 | 24 | **16** |
+| `styles/app.css` 单文件 | 1693 行 | 拆成 **16 个**文件，原文件删除 |
+| 四块上帝模块 | `mock-adapter 3176` / `GraphCanvas 2635` / `graph-store 1514` / `actions 1018` | 全部 → 再导出薄壳 + 每文件 ≤600 行 |
+
+- **B8 消环**：`state → app` 的边用**注入点**消（`setOpenNoteRequest` + `app/open-bridge.ts`），
+  与既有的 `setCaretMemory` 同一手法 —— 详见 ADR-0060「后续修订」§2。
+- **CSS 分层**：`@layer mn.tokens, mn.base, mn.components, mn.features`；层名**由路径唯一决定**；
+  用户 CSS 片段是未分层声明 ⇒ 天然压过四层（**不再需要 `!important`**）。
+  **否决了 CSS Modules**（会让 e2e 里 610 处 + 单测里 744 处 `mn-*` 选择器与用户片段同时失效）。
+- **新样式写在哪（一句话）**：一个域用 → `features/<域>/<域>.css`；≥2 个域用 → `components/<控件>.css`；
+  只声明变量/`@font-face` → `styles/tokens.css`；纯元素基座 → `styles/base.css`；**同一个块不许写进第二个文件**。
+- 修掉的一个真隐患：`@layer` 的**声明语句被压缩器删掉**（构建期已定序），所以样式清单
+  **刻意排在 `@/App` 之前**，由构造顺序兜底 —— 见 ADR-0060「后续修订」§3（含复现命令）。
+
+### 上一轮（ADR-0055 ~ 0059）
 
 四条战线并行（各自先写设计再写代码），ADR 0055 ~ 0059：
 
@@ -215,7 +249,14 @@ pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— �
   （解析/序列化/注释检测；字段与默认值只在 `state/settings-store.ts` —— **它是配置文件的唯一写者**）、
   **模板记号 `domain/template/scan.ts`**（编辑器补全与模板展开共用）、
   **收件箱条目判定 `domain/inbox.ts`**、**分栏列模型 `domain/columns.ts`**、
-  文件树排序 `domain/tree.ts`、布局模型 `features/layout/tree-layout.ts`、落点几何 `features/layout/drop-target.ts`、
+  **布局模型 `domain/layout/{tree-layout,layout-sync,dock-layout}.ts`**（ADR-0060 B2 下沉）、
+  **图谱纯模型 `domain/graph/**`**（几何/装箱/索引/连线视觉/力场参数域 —— 画布相关一律留在 `features/graph/**`）、
+  **CSS 层名与块归属**：层名由路径唯一决定（`styles/tokens.css`→tokens；其它 `styles/*.css`→base；
+  `components/**`→components；`features/**`→features），判据在 `scripts/check-architecture.mjs`，
+  由 `scripts/check-css-layers.mjs` 再钉"入口构造顺序 = 层序"；
+  **配色的唯一真源是 CSS + 主题 JSON**（callout 的 13 种强调色只有 `features/preview/preview.css` 一份，
+  画布/装饰/导出件一律"问令牌"，不许抄第二遍色表）；
+  文件树排序 `domain/tree.ts`、落点几何 `features/layout/drop-target.ts`、
   键盘等价物 `features/layout/tree-keys.ts`、连线形状 `features/graph/edge-routing.ts`、
   连线的样式与画法 `features/graph/canvas/edge-paint.ts`、路径语法 `canvas/edge-path.ts`。
   **宿主与前端各有一份 frontmatter 解析**（Rust 为索引/链接改写、TS 为属性编辑）：口径必须一致，

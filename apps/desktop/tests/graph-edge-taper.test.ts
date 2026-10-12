@@ -20,7 +20,7 @@ import {
   tipFactor,
   TAPER_TIP_RATIO,
 } from '@/features/graph/canvas/taper'
-import type { Point } from '@/features/graph/layout'
+import type { Point } from '@/domain/graph/layout'
 
 /** 折线的坐标快照（比较时用值，不用对象身份）。 */
 const xy = (points: readonly Point[]): Array<[number, number]> =>

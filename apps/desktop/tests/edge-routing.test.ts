@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { outerExit, routeEdgePath, routingKind, type RouteEndpoint } from '@/features/graph/edge-routing'
-import type { Point, Rect } from '@/features/graph/layout'
+import type { Point, Rect } from '@/domain/graph/layout'
 
 /** 造一个以 `center` 为中心、给定尺寸的矩形（卡片）。 */
 function card(center: Point, width = 100, height = 60): Rect {

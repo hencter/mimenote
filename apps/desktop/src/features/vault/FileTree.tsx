@@ -62,7 +62,7 @@ import {
 import { commands } from '@/app/commands'
 import { REVEAL_ROW_EVENT } from '@/app/dom-events'
 import { ContextMenu, type ContextMenuItem } from '@/components/ContextMenu'
-import { copyText } from '@/domain/clipboard'
+import { copyText } from '@/app/clipboard'
 import {
   arrowLeftTarget,
   columnRowCount,
@@ -94,7 +94,7 @@ import type { TreeViewHandle } from './tree-view'
 import { useTagFilterView } from './use-tag-filter-view'
 
 import './drag-drop.css'
-// 标签过滤的样式也在这里托管一条（空态按钮的排版）：`styles/app.css` 不在本次改动的范围内，
+// 标签过滤的样式也在这里托管一条（空态按钮的排版）：共享样式表不在本次改动的范围内，
 // 而它属于"标签过滤"这个能力带来的界面，因此与控件样式放在一起；重复 import 会被打包器去重
 import './tag-filter.css'
 

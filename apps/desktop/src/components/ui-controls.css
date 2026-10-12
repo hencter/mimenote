@@ -1,3 +1,7 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.components {
 /*
  * 表单控件的外观（`Switch.tsx` / `Select.tsx` 共用）。
  *
@@ -447,4 +451,122 @@
   font-size: 12px;
   line-height: 1.5;
   user-select: none;
+}
+
+/* ---------------------------------------------------------------------------
+ * B1：从 `styles/app.css` 迁入 406-416（`.mn-tree-toolbar__actions .mn-icon-button` 的 28px 命中区
+ * 尺寸）与 1011-1108（原"按钮与控件"段：`.mn-button`/`.mn-icon`/`.mn-icon-button`/`.mn-empty__text`）。
+ * 归位理由是 ADR-0060 §4 的一句话判据：这些块被 ≥2 个域使用 → 它们是通用控件。
+ * 注意 `mn-icon-button` 仍是跨文件共享块（`features/layout/tree-host.css` 也写它）。
+ * ------------------------------------------------------------------------- */
+.mn-tree-toolbar__actions .mn-icon-button {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 0 7px;
+  gap: 5px;
+  font-size: 12px;
+  white-space: nowrap;
+  height: 28px;
+  border-radius: var(--mn-radius);
+}
+
+/* ------------------------------------------------------- 按钮与控件 */
+
+.mn-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg-elevated);
+  color: var(--mn-fg);
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.mn-button:hover:not(:disabled) {
+  background: var(--mn-hover);
+}
+
+.mn-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mn-button--primary {
+  border-color: var(--mn-accent);
+  background: var(--mn-accent);
+  color: var(--mn-accent-fg);
+  font-weight: 600;
+}
+
+.mn-button--primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--mn-accent) 86%, var(--mn-bg));
+}
+
+.mn-button--danger {
+  border-color: var(--mn-danger);
+  background: var(--mn-danger);
+  color: var(--mn-accent-fg);
+  font-weight: 600;
+}
+
+/* 幽灵按钮：无边框的文字按钮（查看器工具栏一类"别抢视觉"的场景）。
+   `aria-pressed="true"` 时染色 —— 开关状态必须看得见，不能只靠文案区分。 */
+.mn-button--ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--mn-fg-muted);
+}
+
+.mn-button--ghost:hover:not(:disabled) {
+  background: var(--mn-hover);
+  color: var(--mn-fg);
+}
+
+.mn-button--ghost[aria-pressed='true'] {
+  background: var(--mn-active);
+  background: color-mix(in srgb, var(--mn-accent) 14%, transparent);
+  color: var(--mn-fg);
+}
+
+/* 图标本体：块级元素 —— 内联 SVG 会被行高托出基线空隙，
+   在 flex 按钮里看起来就是"偏上/偏小"（用户报的图标不居中就是它） */
+.mn-icon {
+  display: block;
+  flex: none;
+}
+
+.mn-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--mn-fg-muted);
+  cursor: pointer;
+}
+
+.mn-icon-button:hover {
+  background: var(--mn-hover);
+  color: var(--mn-fg);
+}
+
+.mn-icon-button--active {
+  background: var(--mn-active);
+  color: var(--mn-accent);
+}
+
+.mn-empty__text {
+  color: var(--mn-fg-muted);
+  margin: 0;
+}
+
+
 }

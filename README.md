@@ -300,23 +300,30 @@ mimenote/
 │  │  ├─ capabilities/default.json  最小能力声明
 │  │  └─ tauri.conf.json            CSP / 窗口 / 打包配置（关了 WebView 缩放热键）
 │  ├─ src/
-│  │  ├─ app/                       bootstrap、命令注册表、快捷键、高层动作
-│  │  ├─ domain/                    纯函数：树、虚拟列表、拖拽落点、EOL、Markdown、统计、图片解析、静态站点路径
-│  │  ├─ ipc/                       IPC 契约类型 + 可替换适配器（tauri / mock）
-│  │  ├─ state/                     zustand store（vault / note / ui / links / tags / tabs / graph / toast / confirm）
+│  │  ├─ app/                       bootstrap、命令注册表、快捷键、高层动作（`actions/**`）、
+│  │  │                             运行时能力（`env` / `clipboard`）、打开笔记的注入桥（ADR-0060）
+│  │  ├─ domain/                    纯函数（**碰 DOM / 读 store 的一律不许住这里**，ADR-0060）：
+│  │  │                              树、虚拟列表、拖拽落点、EOL、Markdown、统计、图片解析、静态站点路径、
+│  │  │                              layout（切割树模型 + 迁移对账 + 旧停靠格式）、graph（几何 / 装箱 / 索引 / 力场）
+│  │  ├─ ipc/                       IPC 契约类型 + 可替换适配器（tauri / mock；`mock/**` 按领域分文件）
+│  │  ├─ state/                     zustand store（vault / note / ui / links / tags / tabs / graph 五切片 / toast / confirm）
 │  │  ├─ features/                  vault（门闸、工具栏、虚拟化文件树、重命名对话框、拖拽整理 + 移动到对话框）
 │  │  │                             editor（CM6 装配 + 所见即所得装饰）、preview（阅读视图）
 │  │  │                             tabs（多标签页）、links（反向链接面板）、tags（标签与属性面板）
 │  │  │                             palette（命令面板 / 快速切换 / 全文搜索）
-│  │  │                             graph（知识图谱：自我中心子图 + canvas 卡片 + 全库视图，ADR-0021；
-│  │  │                                   连线走线 edge-routing，ADR-0028）、settings（设置页）
-│  │  │                             export（导出 HTML / 打印 PDF / 整库静态站点）、lightbox（图片灯箱）、status（状态栏）
+│  │  │                             graph（知识图谱：画布容器 + 视图 + 输入/力场/连线 hooks，
+│  │  │                                   纯模型在 domain/graph，ADR-0021 / 0028 / 0060）、settings（设置页）
+│  │  │                             export（导出 HTML / 打印 PDF / 整库静态站点）、lightbox（图片灯箱）、
+│  │  │                             status（状态栏）、inbox（收件箱）、template（模板）、shell（应用外壳：确认框 / 提示条）
 │  │  ├─ theme/                     主题令牌、JSON 主题（深色 / 浅色 / 纸墨）、CSS 片段装载
-│  │  ├─ features/dock/             旧停靠布局的**读取面**（类型/缺省/校验；迁移与回滚用，ADR-0026→0035）
-│  │  ├─ features/layout/           容器切割树（tree-layout 纯函数模型 + layout-sync 迁移对账 + TreeHost 渲染器
-│  │  │                             + LeafTabs 格子标签条 + drop-target 落点几何 + tree-keys 键盘 + split-size 家尺寸，ADR-0035）
-│  │  ├─ components/                Icon、Splitter、ContextMenu（通用右键菜单）、Toasts、确认框、错误边界
-│  │  └─ styles/app.css             布局与组件样式（颜色全部走 CSS 变量）
+│  │  ├─ features/layout/           容器切割树**界面**（TreeHost 渲染器 + LeafTabs 格子标签条
+│  │  │                             + drop-target 落点几何 + tree-keys 键盘 + split-size 家尺寸，ADR-0035；
+│  │  │                             纯模型已下沉 `domain/layout/`，ADR-0060）
+│  │  ├─ components/                Icon、Splitter、ContextMenu（通用右键菜单：被 ≥2 个域使用的才住这里）
+│  │  └─ styles/                    样式分四层（`@layer mn.tokens/base/components/features`，ADR-0060）：
+│  │                                `tokens.css`（变量与 @font-face）+ `base.css`（元素基座）；
+│  │                                其余样式**按归属**住在 `features/<域>/<域>.css` 或 `components/<控件>.css`，
+│  │                                **同一个块不许写进第二个文件**；样式清单在 `main.tsx` 显式列出
 │  ├─ tests/                        vitest：领域层单测 + store 集成测试
 │  └─ scripts/make-icon.mjs         纯 Node 生成应用图标源图（无图像依赖）
 ├─ examples/demo-vault/             用于手工验收的示例 Vault（含 CSS 片段示例）
@@ -411,8 +418,8 @@ macOS 上 `Ctrl` 自动换成 `Cmd`（`Mod`）。命令表在 `src/app/builtin-c
 | `cargo test -p mn-core` | 213 个单元测试 + 18 个集成测试通过（`tests/frontmatter_tags.rs` 与 `tests/vault_ops.rs`；另有 1 个性能基准默认忽略） |
 | `cargo test -p mn-index` | 169 个单元测试 + 10 个集成测试（`tests/persisted_index.rs`：索引跨会话复用的不变式）通过（另有 5 个基准默认忽略）（链接解析/歧义消解/增量更新/构建取消、重命名与**跨目录移动**的链接精确改写、**移动时改写自身相对链接**、**目录改名/目录移动的整棵子树改写**、标签索引与**组合过滤**、**整库导出的计划（链接 href 相对本页、悬空为 null、与反链同口径、两次调用逐字节相同）**、FTS5 搜索与恶意查询、**内容哈希二级令牌（落盘与同字节检出）**、图谱组装与截断、**落盘索引的复用与写穿透**、**路径后缀表**） |
 | `cargo test -p mimenote` | 183 个宿主单元测试通过（IPC 错误映射、路径解析、建笔记、重命名、**移动**、**目录改名/移动与整棵子树的条目缓存替换**、**标签增删（含冲突令牌/幂等/BOM 与 CRLF 保真/写失败降级）**、**标签重命名/合并（预演不落盘、层级、合并去重、外部改动跳过、只读文件写失败继续、重试幂等）**、**标签层级编辑**、**回收站永久删除/清空（台账逐条重校验、拒绝的那条原样留着）**、**组合过滤**、**整库导出（落盘契约、输出目录在 Vault 内被拒、非空且无标记被拒、不许写到输出目录之外、原子写无残留、createdDirs、图片白名单与跳过清单、JSON 键名契约）**、标签、搜索、图片授权、**图片附件写入**、图谱、片段、写锁、启动参数、文件变更监听）（另有 3 个忽略） |
-| `pnpm test` | 113 个测试文件 / 1933 个测试通过（领域层纯函数 + store 集成 + 组件行为） |
-| `pnpm test:e2e:ui` | 74 个用例通过（系统 Edge，真实 Chromium，约 55 秒；静态服务器带上与 `tauri.conf.json` **同一份 CSP**） |
+| `pnpm test` | **127 个测试文件 / 2222 个测试通过**（领域层纯函数 + store 集成 + 组件行为） |
+| `pnpm test:e2e:ui` | **74 个用例通过**（系统 Edge，真实 Chromium，约 40 秒；`ui.e2e` 69 + `properties-layout` 4 + `split-panes` 1；静态服务器带上与 `tauri.conf.json` **同一份 CSP**） |
 | `pnpm test:e2e:ui:smoke` | 5 个用例通过（同一底座的稳定子集，约 5 秒；PR 门禁） |
 | `pnpm test:e2e:app` | 34 个用例通过（真实 release 二进制 + 真实磁盘；其中「外部改动自动同步」2 条、「标签面板增删标签」1 条、「标签重命名/合并」1 条、「标签层级编辑」3 条、**「大文档预览的 Worker」2 条**、「回收站恢复」2 条、「窗口拖动区与窗口按钮」1 条） |
 | `pnpm test:e2e:app:smoke` | 5 个用例通过（真实 release 二进制，约 5 秒；本地发布前手动门禁 —— GitHub 托管 runner 起不了带窗口的 WebView2） |

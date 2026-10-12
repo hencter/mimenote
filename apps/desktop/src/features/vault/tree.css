@@ -1,0 +1,185 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
+
+/*
+ * 文件树的**单栏常态**样式：工具栏、搜索框、树本体与行（`.mn-tree`/`.mn-tree-row`/`.mn-tree-toolbar`/
+ * `.mn-search-field`）。变体各有自己的文件：`features/vault/columns-tree.css`（多列）、
+ * `drag-drop.css`（拖拽态）、`tag-filter.css`（标签过滤）、`tree-sort.css`（排序）。
+ *
+ * B1：从 `styles/app.css` 迁入 331-405、417-512（原"文件树栏"段）。
+ */
+
+/* ----------------------------------------------------------- 文件树栏 */
+
+.mn-tree-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--mn-border);
+}
+
+/* 搜索框独占一行：过滤是"先找"再"动手"，视觉上也该在最上面 */
+.mn-tree-toolbar .mn-search-field {
+  flex: 1 1 100%;
+}
+
+.mn-search-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg);
+  color: var(--mn-fg-subtle);
+}
+
+.mn-search-field__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--mn-fg);
+  font-family: inherit;
+  font-size: inherit;
+  outline: none;
+}
+
+.mn-search-field__input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.mn-tree-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+/* 同一组动词放一起（文档操作 / 展开折叠 / 库操作），组间一条细分隔：
+   九个图标排成一串是认不出来的，分组之后"找按钮"变成"先找组" */
+.mn-tree-toolbar__group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  min-width: 0;
+  row-gap: 6px;
+}
+
+.mn-tree-toolbar__divider {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 5px;
+  background: var(--mn-border);
+}
+
+/* 工具栏里的命中区放大到 28px（全局的 22px 是给 26px 高的状态栏的，
+   这里行高没有那个限制；状态栏不受影响） */
+.mn-tree {
+  flex: 1 1 auto;
+  /* contain: strict 让元素不参与父级尺寸计算（树有 10 万行时这很重要），
+     代价是自身没有固有高度 —— 因此必须显式允许收缩。 */
+  min-height: 0;
+  position: relative;
+  overflow: auto;
+  padding: 4px 0 12px;
+  contain: strict;
+}
+
+.mn-tree--empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--mn-fg-muted);
+}
+
+.mn-tree__spacer {
+  position: relative;
+  width: 100%;
+}
+
+.mn-tree__window {
+  position: absolute;
+  inset: 0 0 auto 0;
+  will-change: transform;
+}
+
+.mn-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 8px;
+  cursor: default;
+  user-select: none;
+  white-space: nowrap;
+  border-radius: 0;
+}
+
+.mn-tree-row:hover {
+  background: var(--mn-hover);
+}
+
+.mn-tree-row--selected {
+  background: var(--mn-active);
+}
+
+.mn-tree-row--open .mn-tree-row__name {
+  color: var(--mn-accent);
+  font-weight: 600;
+}
+
+.mn-tree-row__chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  flex: 0 0 14px;
+  color: var(--mn-fg-subtle);
+  transition: transform 120ms ease;
+}
+
+.mn-tree-row__chevron--open {
+  transform: rotate(90deg);
+}
+
+.mn-tree-row__chevron--placeholder {
+  visibility: hidden;
+}
+
+.mn-tree-row__icon {
+  flex: 0 0 auto;
+  color: var(--mn-fg-muted);
+}
+
+.mn-tree-row__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.mn-tree-row__badge {
+  margin-left: auto;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--mn-hover);
+  color: var(--mn-fg-subtle);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+}

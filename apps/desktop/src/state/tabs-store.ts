@@ -10,10 +10,18 @@
  * （{@link TabsState.active} 是它的镜像，只由 {@link syncFromNote} 写，用来算
  * "相邻标签/下一个标签"并持久化 —— 见下面的"单一写入者"约定）。
  *
- * ## 为什么切换标签必须走 `app/actions.openNote`
- * `openNote` 里写着两条顺序约束：**切走前把未保存内容落盘**、切完把文件树的选中项同步过去。
- * 直接改 store 会绕过它们 —— 于是"切标签丢内容"与"树上的选中项和编辑器不一致"
- * 会立刻出现，而且难以复现。切标签本质上就是"打开另一篇笔记"，没有第二种打开方式。
+ * ## 为什么切换标签必须走"打开笔记"这条链路（而且是**注入**的）
+ * `openNote`（`app/actions/notes.ts`）里写着两条顺序约束：**切走前把未保存内容落盘**、
+ * 切完把文件树的选中项同步过去。直接改 store 会绕过它们 —— 于是"切标签丢内容"与
+ * "树上的选中项和编辑器不一致"会立刻出现，而且难以复现。切标签本质上就是"打开另一篇笔记"，
+ * 没有第二种打开方式。
+ *
+ * 但 `state/**` **不许值依赖 `app/**`**（ADR-0060 的依赖规则，B8 之前这里是全仓唯一的
+ * 模块级环 `tabs-store ↔ app/actions`）。因此这里不 import 实现，而是留一个**注入点**
+ * （{@link setOpenNoteRequest}，与 {@link setCaretMemory} 同一手法）：
+ * 实现由组合根 `app/open-bridge.ts` 装进来，`app/actions.ts` 被加载时即生效。
+ * 未安装时 {@link requestOpenNote} 返回 `false` —— 那是**显式**的"没有打开"，
+ * 而不是静默假装成功（假的成功会让 `caretMemory.restore` 打在错误的文档上）。
  *
  * ## 为什么按 Vault 根持久化
  * 标签里存的是**相对 Vault 根的路径**。同一个 `notes/a.md` 在两个 Vault 里是两篇不同的文件，
@@ -45,13 +53,12 @@
 
 import { create } from 'zustand'
 
-import { openNote } from '@/app/actions'
 import type { Disposer } from '@/app/commands'
 import type { EntryMeta } from '@/ipc/types'
 import { useConfirmStore } from './confirm-store'
 import { noteRepositoryGeneration, useNoteStore } from './note-store'
 import { loadJson, saveJson } from './persist'
-import { reconcileLayout } from '@/features/layout/layout-sync'
+import { reconcileLayout } from '@/domain/layout/layout-sync'
 import { useUiStore } from './ui-store'
 import { useVaultStore } from './vault-store'
 
@@ -93,6 +100,31 @@ let caretMemory: CaretMemory | null = null
 /** 注册/注销光标记忆器（`null` = 注销）。 */
 export function setCaretMemory(memory: CaretMemory | null): void {
   caretMemory = memory
+}
+
+/**
+ * "打开一篇笔记"的**请求出口**（ADR-0060 B8 消环的注入点）。
+ *
+ * 为什么是注入的：这条请求的实现在 `app/actions/notes.ts` 的 `openNote`（它要落盘未保存内容、
+ * 同步文件树选中项），而 `state/**` 不许值依赖 `app/**`。与 {@link setCaretMemory} 完全同构：
+ * 实现由组合根装进来，这里只留一个函数指针。
+ *
+ * 返回值语义：`true` = 那篇笔记真的成了当前文档（调用方据此决定是否恢复光标记忆）；
+ * **未安装实现时返回 `false`** —— 显式的"没打开"，不许假装成功。
+ */
+export type OpenNoteRequest = (relPath: string) => Promise<boolean>
+
+let openNoteRequest: OpenNoteRequest | null = null
+
+/** 安装/卸载"打开笔记"的实现（`null` = 卸载；由 `app/open-bridge.ts` 调用）。 */
+export function setOpenNoteRequest(next: OpenNoteRequest | null): void {
+  openNoteRequest = next
+}
+
+/** 请求打开一篇笔记（注入点缺席时返回 `false`，见 {@link setOpenNoteRequest} 的说明）。 */
+async function requestOpenNote(relPath: string): Promise<boolean> {
+  if (openNoteRequest === null) return false
+  return openNoteRequest(relPath)
 }
 
 /**
@@ -342,7 +374,7 @@ function handleVaultChange(rootPath: string | null, entries: readonly EntryMeta[
       if (noteRepositoryGeneration() !== generation) return
       const current = useNoteStore.getState()
       if (current.doc !== null || current.status === 'loading') return
-      void openNote(active)
+      void requestOpenNote(active)
     }, 0)
   } finally {
     switchingVault = false
@@ -439,7 +471,8 @@ export const useTabsStore = create<TabsState>((_set, get) => ({
     const note = useNoteStore.getState()
     if (note.doc?.relPath === relPath) return true // 已经是当前标签：不用重新读盘
     if (note.doc !== null) caretMemory?.capture(note.doc.relPath)
-    const ok = await openNote(relPath)
+    // **不直接调 `openNote`**：走注入点，理由见文件头"为什么切换标签必须走注入的打开链路"
+    const ok = await requestOpenNote(relPath)
     // 此时编辑器的文档替换可能还没跑（React 的 effect 在这之后），
     // 所以由 caretMemory 自己决定"什么时候恢复"（它用 rAF 等一帧）
     if (ok) caretMemory?.restore(relPath)

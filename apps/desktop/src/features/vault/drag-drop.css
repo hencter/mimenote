@@ -1,7 +1,11 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
 /*
  * 拖拽整理的悬停反馈。
  *
- * 为什么单独成文件：`app.css` 里的 `.mn-tree-row--*` 是**行的常态样式**（选中/打开），
+ * 为什么单独成文件：`features/vault/tree.css` 里的 `.mn-tree-row--*` 是**行的常态样式**（选中/打开），
  * 而这里是"拖拽进行时"的瞬时状态。分开以后，改拖拽反馈不会碰到树的常规外观，
  * 也不会影响既有 E2E 里对行样式的断言。
  *
@@ -34,4 +38,5 @@
 
 .mn-tree[data-drop-root='invalid'] {
   box-shadow: inset 0 0 0 1px var(--mn-warning);
+}
 }

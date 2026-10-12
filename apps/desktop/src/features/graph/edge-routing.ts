@@ -51,7 +51,7 @@
  * 那段虚线引线也随之改画到外缘（`GraphCanvas` 这么做，并把引线一起重算）。
  */
 
-import { centerOf, type Point, type Rect } from './layout'
+import { centerOf, type Point, type Rect } from '@/domain/graph/layout'
 
 /** 弧相对"最外侧那张卡片"再往外让多少（世界像素）：让线不贴着卡片边缘走。 */
 const ARC_CLEARANCE = 26

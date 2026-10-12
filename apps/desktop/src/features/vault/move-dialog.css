@@ -1,8 +1,12 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
 /*
  * 「移动到…」对话框：复用 `.mn-dialog` 的基础样式，这里只补输入行、预览行与选项行。
  *
  * 为什么单独成文件：与 `rename-dialog.css` 同一个理由 —— 样式只服务一个组件，
- * 改动不会外溢到全局 `styles/app.css`（颜色、圆角、字号仍全部走主题变量）。
+ * 改动不会外溢到全局共享的样式表（颜色、圆角、字号仍全部走主题变量）。
  */
 
 .mn-dialog--move .mn-dialog__header {
@@ -63,4 +67,5 @@
 /* 「根目录」是"带回根"的快捷动作，与右侧的取消/移动分开摆 */
 .mn-move__root {
   margin-right: auto;
+}
 }

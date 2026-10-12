@@ -1,0 +1,72 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
+
+/*
+ * 提示条（`.mn-toasts`/`.mn-toast`）：右上角短暂停留的通知。
+ *
+ * 为什么在 `mn.features` 而不是 `mn.components`（B9）：块只被 `features/shell/Toasts.tsx` 一个
+ * 组件用，而那个组件订阅 `state/toast-store` —— 它是**应用外壳**，不是通用控件。层名由路径唯一决定，
+ * 所以文件跟着组件从 `components/` 搬到 `features/shell/` 时，层也从 components 换成 features
+ * （ADR-0060 §4：被 ≥2 个域用才算通用控件）。
+ *
+ * B1：从 `styles/app.css` 迁入 1109-1163（原"提示条"段）。
+ */
+
+/* ------------------------------------------------------------- 提示条 */
+
+.mn-toasts {
+  position: fixed;
+  right: 14px;
+  bottom: 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 420px;
+  z-index: 40;
+}
+
+.mn-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--mn-border);
+  border-left-width: 3px;
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg-elevated);
+  box-shadow: var(--mn-shadow);
+}
+
+.mn-toast--info {
+  border-left-color: var(--mn-accent);
+}
+.mn-toast--success {
+  border-left-color: var(--mn-success);
+}
+.mn-toast--warn {
+  border-left-color: var(--mn-warning);
+}
+.mn-toast--error {
+  border-left-color: var(--mn-danger);
+}
+
+.mn-toast__body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mn-toast__message {
+  font-weight: 600;
+}
+
+.mn-toast__detail {
+  margin-top: 2px;
+  color: var(--mn-fg-muted);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+}

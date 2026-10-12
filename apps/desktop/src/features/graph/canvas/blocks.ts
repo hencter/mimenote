@@ -158,7 +158,7 @@ export interface CalloutBlock {
   glyph: string
   /**
    * 强调色令牌（`CALLOUT_TYPES[type].token`，如 `--mn-callout-note`）。
-   * 与 app.css 的 `.mn-callout--note` 同源：颜色表只有那一份，画布不抄第二遍。
+   * 与 features/preview/preview.css 的 `.mn-callout--note` 同源：颜色表只有那一份，画布不抄第二遍。
    */
   accent: string
   /** 要显示的标题（核心规则已经用 `calloutTitle` 算过：标题为空时退化成类型标签/原始类型名）。 */

@@ -307,7 +307,7 @@ function markerGutter(block: DrawBlock, metrics: LayoutMetrics): number {
 /**
  * 提示框的标题行：`字形 + 标题`（写了折叠符再来一个角标）。
  *
- * 三件事的观感对着 app.css 的 `.mn-callout__title` / `__icon` / `__label` / `__fold`：
+ * 三件事的观感对着 features/preview/preview.css 的 `.mn-callout__title` / `__icon` / `__label` / `__fold`：
  * 它们都是强调色、都是半粗的，所以这里**一条 bold run** 就够，不额外标注等宽或行内代码
  * （`code: true` 在画笔那边意味着"等宽 + 背景色"，拿它表示字形会在图标后面画出一个底色方块）。
  *

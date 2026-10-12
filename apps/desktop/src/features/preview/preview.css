@@ -1,0 +1,357 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
+
+/*
+ * 阅读视图正文：`.mn-preview*` 排版、13 种 `.mn-callout`、任务项、图片占位、`.mn-wikilink`
+ * 与行内标签 `.mn-inline-tag`。
+ * 这三块（正文排版 / wikilink / 行内标签）在原 `styles/app.css` 里本来就被状态栏、滚动条隔开
+ * （B1 已删除该文件）—— 它们是
+ * **同一份渲染管线判据**的分片，现在归到一个文件里（与 `domain/links.ts` 的单一判据对齐）。
+ * 注意还有别的文件写同一批块：`features/preview/preview-code.css`、`features/lightbox/preview-image.css`、
+ * `features/editor/cm/live-preview/table.css`（跨文件共享块登记在案，收敛是后续任务）。
+ *
+ * B1：从 `styles/app.css` 迁入 561-870（原"预览"段）、1463-1483（wikilink）、1686-1693（行内标签）。
+ */
+
+/* ---------------------------------------------------------------- 预览 */
+
+.mn-preview {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  position: relative;
+  border-left: 1px solid var(--mn-border);
+  background: var(--mn-bg);
+}
+
+.mn-preview--empty {
+  align-items: center;
+  justify-content: center;
+  color: var(--mn-fg-muted);
+}
+
+.mn-preview__scroller {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 28px 64px;
+}
+
+.mn-preview--stale .mn-preview__body {
+  opacity: 0.72;
+}
+
+.mn-preview__stale-hint {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--mn-border);
+  border-radius: 999px;
+  background: var(--mn-bg-elevated);
+  color: var(--mn-fg-subtle);
+  font-size: 11px;
+}
+
+.mn-preview__body {
+  max-width: 820px;
+  margin: 0 auto;
+  color: var(--mn-fg);
+  /* 阅读视图有**自己**的字号（设置页里可单独调）：写作时要一屏看到更多上下文，
+     阅读时要的是舒适，两者不该互相绑架。变量没被写过时回落到编辑器字号 ——
+     所以"从没动过设置"的用户观感与从前完全一致。 */
+  font-size: var(--mn-font-size-reading, var(--mn-font-size-editor));
+  line-height: 1.78;
+  word-wrap: break-word;
+}
+
+.mn-preview__body > *:first-child {
+  margin-top: 0;
+}
+
+.mn-preview__body h1,
+.mn-preview__body h2,
+.mn-preview__body h3,
+.mn-preview__body h4,
+.mn-preview__body h5,
+.mn-preview__body h6 {
+  color: var(--mn-heading);
+  line-height: 1.3;
+  margin: 1.6em 0 0.6em;
+}
+
+.mn-preview__body h1 {
+  font-size: 1.7em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--mn-border);
+}
+
+.mn-preview__body h2 {
+  font-size: 1.4em;
+}
+.mn-preview__body h3 {
+  font-size: 1.2em;
+}
+.mn-preview__body h4 { font-size: 1.1em; }
+.mn-preview__body h5 { font-size: 1.04em; }
+.mn-preview__body h6 { font-size: 1em; color: var(--mn-fg-muted); }
+
+.mn-preview__body a {
+  color: var(--mn-link);
+}
+
+.mn-preview__body blockquote {
+  margin: 1em 0;
+  padding: 0.2em 1em;
+  border-left: 3px solid var(--mn-quote-border);
+  color: var(--mn-fg-muted);
+}
+
+/* ---------------------------------------------------------------------------
+   Callout（`> [!note] 标题`，ADR-0022；染色哲学见 ADR-0042）
+   ---------------------------------------------------------------------------
+   类型 → 颜色只有**这一份**：每种类型在这里定义 `--mn-callout-accent`，画布那边用
+   `getComputedStyle` 读同一个变量（见 `features/graph/canvas/palette.ts`）——
+   两份色表迟早会出现"阅读视图是蓝色、画布上是绿色"这种没人能解释的差异。
+
+   层级靠**染色 + 留白**表达，不靠描边（Refactoring UI 的那条规则：
+   "高亮某一条边不是优雅的视觉哲学" —— 边框只会把内容框住，染色才分得出主次）：
+   强调色 12% 染在透明上，底下是什么背景就染什么背景（深色/纸墨/编辑器通吃）。
+   不支持 `color-mix` 的旧浏览器整条声明失效，会回落到上一行的纯色（仍可读）。
+   --------------------------------------------------------------------------- */
+
+.mn-callout {
+  margin: 1em 0;
+  padding: 6px 16px 2px;
+  border-radius: calc(var(--mn-radius) + 4px);
+  background: var(--mn-bg-elevated);
+  background: color-mix(in srgb, var(--mn-callout-accent, var(--mn-quote-border)) 12%, transparent);
+}
+
+.mn-callout__title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 4px 0;
+  font-weight: 600;
+  color: var(--mn-callout-accent, var(--mn-fg));
+  /* 标题就是折叠开关（与编辑器里点标记行同一条肌肉记忆）：可点、可键盘聚焦 */
+  cursor: pointer;
+}
+
+/* 手动收起：只留标题（导出件与静态站点没有这段 JS，那里永远是全展开 ——
+   内容一个字不少，只是少了交互） */
+.mn-callout[data-mn-collapsed] > :not(.mn-callout__title) {
+  display: none;
+}
+
+.mn-callout__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15em;
+  font-family: var(--mn-font-mono);
+}
+
+.mn-callout__label {
+  flex: 1;
+}
+
+/* 折叠标记只是个说明（静态渲染不真的收起，见 ADR-0022），所以做成低调的角标 */
+.mn-callout__fold {
+  color: var(--mn-fg-subtle);
+  font-family: var(--mn-font-mono);
+  font-size: 0.85em;
+}
+
+/* 里面最后一个块不要拖出一条多余的空白 */
+.mn-callout > *:last-child {
+  margin-bottom: 8px;
+}
+
+.mn-callout--note {
+  --mn-callout-accent: var(--mn-callout-note, #448aff);
+}
+.mn-callout--abstract {
+  --mn-callout-accent: var(--mn-callout-abstract, #00b8d4);
+}
+.mn-callout--info {
+  --mn-callout-accent: var(--mn-callout-info, #00b8d4);
+}
+.mn-callout--todo {
+  --mn-callout-accent: var(--mn-callout-todo, #448aff);
+}
+.mn-callout--tip {
+  --mn-callout-accent: var(--mn-callout-tip, #00bfa5);
+}
+.mn-callout--success {
+  --mn-callout-accent: var(--mn-callout-success, #00c853);
+}
+.mn-callout--question {
+  --mn-callout-accent: var(--mn-callout-question, #64dd17);
+}
+.mn-callout--warning {
+  --mn-callout-accent: var(--mn-callout-warning, #ff9100);
+}
+.mn-callout--failure {
+  --mn-callout-accent: var(--mn-callout-failure, #ff5252);
+}
+.mn-callout--danger {
+  --mn-callout-accent: var(--mn-callout-danger, #ff1744);
+}
+.mn-callout--bug {
+  --mn-callout-accent: var(--mn-callout-bug, #f50057);
+}
+.mn-callout--example {
+  --mn-callout-accent: var(--mn-callout-example, #7c4dff);
+}
+.mn-callout--quote {
+  --mn-callout-accent: var(--mn-callout-quote, var(--mn-quote-border));
+}
+
+.mn-preview__body code {
+  padding: 0.16em 0.36em;
+  border-radius: 4px;
+  background: var(--mn-code-bg);
+  font-family: var(--mn-font-mono);
+  font-size: 0.9em;
+}
+
+.mn-preview__body pre {
+  padding: 12px 14px;
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  background: var(--mn-code-bg);
+  overflow: auto;
+}
+
+.mn-preview__body pre code {
+  padding: 0;
+  background: none;
+}
+
+.mn-preview__body table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+}
+
+.mn-preview__body th,
+.mn-preview__body td {
+  padding: 6px 10px;
+  border: 1px solid var(--mn-border);
+  text-align: left;
+}
+
+.mn-preview__body th {
+  background: var(--mn-bg-elevated);
+}
+
+.mn-preview__body hr {
+  border: none;
+  border-top: 1px solid var(--mn-border);
+  margin: 1.8em 0;
+}
+
+.mn-preview__body ul,
+.mn-preview__body ol {
+  padding-left: 1.6em;
+}
+
+.mn-preview__body li {
+  margin: 0.24em 0;
+}
+
+/* ---------------------------------------------------------------------------
+   任务列表（`- [ ] 待办` / `- [x] 已完成`）
+   ---------------------------------------------------------------------------
+   复选框是**真的 `<input type="checkbox" disabled>`**，为什么不用 `<span>` 画一个：
+   见 `domain/markdown-core.ts` 的 `taskCheckboxHtml`（没有样式表时原生控件照样画得出来，
+   而且读屏软件原生认识它）。这里只是它的外观。
+
+   ⚠️ **这份规则有两处，必须逐条对齐**：这一处服务阅读视图，
+   `features/export/export-html.ts` 的 `contentRules` 服务导出件 / 应用内打印 / 静态站点
+   （三者共用那一份）。任何一边改了，另一边要跟着改，否则"导出的和看到的不一样"。
+   --------------------------------------------------------------------------- */
+
+.mn-preview__body li.mn-task-item {
+  /* 项目符号让位给复选框：不这么做会变成"圆点 + 勾选框"两个符号并排 */
+  list-style: none;
+}
+
+.mn-preview__body .mn-task-item__box {
+  /* 负外边距把复选框推进"项目符号那一栏"，文字于是与同级的普通条目**对齐**。
+     尺子就是上面那条 `ul/ol { padding-left: 1.6em }`：1.6em = 复选框宽 1em + 右边距 0.6em，
+     改成别的数值之前先看一眼那一条。 */
+  margin: 0 0.6em 0 -1.6em;
+  width: 1em;
+  height: 1em;
+  /* 与设置页 / 图谱面板的复选框同一个强调色令牌；主题没给值时退回链接色 */
+  accent-color: var(--mn-accent, var(--mn-link));
+  vertical-align: middle;
+  /* 只读：在这里勾选不会改文档（改文档的唯一通道是编辑器），所以连鼠标指针都不该是"可点"的样子 */
+  cursor: default;
+}
+
+/* 已完成：文字变暗 + **删除线**。
+   这里曾经有过"不用删除线"的决定（怕与 `~~删除线~~` 语法撞观感），但用户明确要求
+   已完成任务要划线 —— 两者并存时，任务项还有复选框这个额外信号，分得开。
+   删除线写在 `li` 上只会划到文字：复选框是原生 `<input>`（替换元素，没有文字可被划），
+   所以不需要为它单开一条豁免规则。 */
+.mn-preview__body li.mn-task-item--done {
+  color: var(--mn-fg-muted);
+  text-decoration: line-through;
+}
+
+.mn-image-placeholder {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px dashed var(--mn-border);
+  border-radius: var(--mn-radius);
+  background: var(--mn-bg-elevated);
+  color: var(--mn-fg-muted);
+  font-size: 0.92em;
+}
+
+.mn-image-placeholder__icon {
+  color: var(--mn-fg-subtle);
+}
+
+/* 预览里的 wikilink */
+.mn-preview__body .mn-wikilink {
+  color: var(--mn-link);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--mn-link);
+  cursor: pointer;
+}
+
+.mn-preview__body .mn-wikilink:hover {
+  background: var(--mn-hover);
+}
+
+.mn-preview__body .mn-wikilink--unresolved {
+  color: var(--mn-warning);
+  border-bottom-style: dotted;
+}
+
+.mn-preview__body .mn-wikilink--ambiguous {
+  border-bottom-style: double;
+}
+
+.mn-inline-tag {
+  color: var(--mn-accent);
+  background: color-mix(in srgb, var(--mn-accent) 13%, transparent);
+  border-radius: 999px;
+  padding: 0.08em 0.38em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+}

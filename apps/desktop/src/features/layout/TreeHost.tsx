@@ -86,7 +86,7 @@ import {
   type SplitNode,
   type TreeLayout,
   type ViewModuleId,
-} from './tree-layout'
+} from '@/domain/layout/tree-layout'
 
 import './tree-host.css'
 

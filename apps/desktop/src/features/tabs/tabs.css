@@ -1,3 +1,7 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
 /**
  * 标签条样式。
  *
@@ -128,7 +132,7 @@
 /*
  * 顶行的空白段（`mn-tabs__filler`）已随全局标签栏一起退役：拖动区不再靠"专门留一段白"，
  * 而是整条标签条 `data-tauri-drag-region="deep"`（Tauri 自动跳过可点击元素，见 LeafTabs 文件头）。
- * 窗口按钮槽（右上叶右端）的样式在 `styles/app.css` 的 `.mn-window-controls`。
+ * 窗口按钮槽（右上叶右端）的样式在 `features/window/window-controls.css` 的 `.mn-window-controls`。
  */
 
 /*
@@ -147,4 +151,5 @@
 
 .mn-tabs__module-icon {
   flex: 0 0 auto;
+}
 }

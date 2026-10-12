@@ -20,7 +20,7 @@ import {
   layoutEgo,
   visibleCards,
   type EgoSize,
-} from '@/features/graph/layout-ego'
+} from '@/domain/graph/layout-ego'
 
 function node(relPath: string, overrides: Partial<GraphNode> = {}): GraphNode {
   return {

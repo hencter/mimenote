@@ -161,7 +161,7 @@ export interface SettingsValues {
  * 默认字号：**三档统一 16**（VI 规范第 2.3 节 / 用户诉求"整体默认字体统一 16 号"）。
  *
  * 这三个数才是**真值**：`features/settings/font-overrides.ts` 把它们写成 `<html>` 上的行内变量
- * 外加一条 `!important` 的作者样式，压过主题 JSON 与 `styles/app.css` 的 `:root`。
+ * 外加一条 `!important` 的作者样式，压过主题 JSON 与 `styles/tokens.css` 的 `:root`。
  *
  * 老用户读的是**自己存下来的值**，所以升级后不会被动变字号；
  * 设置页「外观」里的「恢复默认字号」就是按这三个数恢复。

@@ -10,7 +10,7 @@
  *    机器）。应用内的 `asset:` URL 只在当前 WebView 会话里有效（ADR-0007 的逐文件授权是会话级的），
  *    绝对路径换台机器就断 —— 只有把字节写进文件本身，单个 HTML 才"拿到任何地方都能看"。
  * 3. **样式必须内联且不含任何外部引用**：`<style>` 里的值全部是**当前主题的静态快照**
- *    （把 `applyTheme` 写进 `<html>` 的那些 CSS 变量取出来写死），不引 `app.css`、不引字体
+ *    （把 `applyTheme` 写进 `<html>` 的那些 CSS 变量取出来写死），不引 `features/preview/preview.css`、不引字体
  *    文件、不引任何 URL。导出件在无网、无本应用的浏览器里都要长得对。
  *
  * 图片字节由宿主提供（`asset_read_base64`），因此导出是**两遍渲染**：第一遍只为收集"这篇正文里
@@ -81,7 +81,7 @@ function declarations(tokens: Readonly<Record<string, string>>): string {
 }
 
 /**
- * 正文排版规则（**与 `styles/app.css` 的 `.mn-preview__body` 同口径**）。
+ * 正文排版规则（**与 `features/preview/preview.css` 的 `.mn-preview__body` 同口径**）。
  *
  * `scope` 让同一份规则既服务导出件（`.mn-export-body`），也服务应用内的打印容器
  * （`#mn-print-root`）—— 两处用同一份排版，才不会出现"导出件和打印出来长得不一样"。
@@ -96,7 +96,7 @@ ${scope} {
   font-family: var(--mn-font-ui);
   /* 与阅读视图同口径：导出件是给人**读**的，所以用"阅读视图字号"（设置页可单独调）。
      --mn-font-size-reading 不是主题令牌、可能没被写过，因此回落到编辑器字号 ——
-     与 styles/app.css 的 .mn-preview__body 用的是同一条回落链。 */
+     与 features/preview/preview.css 的 .mn-preview__body 用的是同一条回落链。 */
   font-size: var(--mn-font-size-reading, var(--mn-font-size-editor));
   line-height: 1.78;
   word-wrap: break-word;
@@ -287,7 +287,7 @@ ${scope} li {
   margin: 0.24em 0;
 }
 
-/* 任务列表（- [ ] 待办 / - [x] 已完成）：**与 styles/app.css 里同名的那几条逐条相同** ——
+/* 任务列表（- [ ] 待办 / - [x] 已完成）：**与 features/preview/preview.css 里同名的那几条逐条相同** ——
    阅读视图、应用内打印、导出件、静态站点用的是同一条渲染管线，样式也只有一份口径。
    复选框本身是渲染层产出的原生 input[type=checkbox][disabled]（理由见
    domain/markdown-core.ts 的 taskCheckboxHtml）：导出件里没有可点的东西，

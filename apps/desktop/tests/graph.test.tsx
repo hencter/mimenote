@@ -56,7 +56,7 @@ import {
   type GraphCardBox,
   type Point,
   type Rect,
-} from '@/features/graph/layout'
+} from '@/domain/graph/layout'
 import { makeEntry, setIpcAdapter, type IpcAdapter } from '@/ipc/client'
 import { createMockAdapter } from '@/ipc/mock-adapter'
 import type { GraphData, GraphEdge, GraphNode } from '@/ipc/types'
@@ -71,7 +71,7 @@ import {
   flushPositionPersist,
   useGraphStore,
 } from '@/state/graph-store'
-import { forcePreset } from '@/features/graph/force-presets'
+import { forcePreset } from '@/domain/graph/force-presets'
 import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
 import { useUiStore } from '@/state/ui-store'

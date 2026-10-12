@@ -32,7 +32,7 @@
  * 只是那时它没能真的做到。
  */
 
-import type { EdgeStyle, GraphEdgeVisual, Point } from '../layout'
+import type { EdgeStyle, GraphEdgeVisual, Point } from '@/domain/graph/layout'
 import { leadDash } from '../link-edge'
 import { type PaintContext, screenPoint, type ViewOffset } from './context'
 import {

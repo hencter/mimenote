@@ -2787,7 +2787,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await openNoteInTree(page, '项目/设计.md')
   })
 
-  it('命令面板：编辑器聚焦时 Ctrl+K 也能打开，过滤后回车执行命令', async () => {
+  it('命令面板：编辑器聚焦时 Ctrl+Shift+P 也能打开，过滤后回车执行命令', async () => {
     await openNoteInTree(page, '项目/设计.md')
     // 关键：焦点在编辑器里。CodeMirror 自己把 Ctrl+K 绑成了 deleteToLineEnd，
     // 面板必须在捕捉阶段抢在它前面，否则"打开面板"会变成"删掉半行"。

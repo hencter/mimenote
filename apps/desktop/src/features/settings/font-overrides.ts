@@ -4,7 +4,7 @@
  * **为什么字号走 CSS 变量而不是重渲染组件树**：
  * `--mn-font-size-editor` 被编辑器（`features/editor/cm/theme.ts` 里
  * `EditorView.theme` 的 `&{fontSize}`）引用，`--mn-font-size-reading` 被预览正文
- * （`styles/app.css` 的 `.mn-preview__body`）引用，`--mn-font-size-ui` 被 `body` 引用。
+ * （`features/preview/preview.css` 的 `.mn-preview__body`）引用，`--mn-font-size-ui` 被 `body` 引用。
  * 写变量 = 浏览器只做一次样式重算，
  * CodeMirror 的实例、React 组件树、撤销历史、光标位置**全都不用动**；
  * 反过来"把字号当 props 往下传"会重建编辑器、丢掉正在编辑的状态 —— 这是纯亏。

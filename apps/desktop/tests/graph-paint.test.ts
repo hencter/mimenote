@@ -44,7 +44,7 @@ import {
   totalHeight,
   type LaidOutBlock,
 } from '@/features/graph/canvas/text-layout'
-import type { EdgeStyle, GraphEdgeVisual, Point, Rect } from '@/features/graph/layout'
+import type { EdgeStyle, GraphEdgeVisual, Point, Rect } from '@/domain/graph/layout'
 
 // ---------------------------------------------------------------------------
 // 记录型假上下文

@@ -14,7 +14,7 @@ import {
   DOCK_SIDES,
   isDockLayout,
   type DockLayout,
-} from '@/features/dock/dock-layout'
+} from '@/domain/layout/dock-layout'
 
 describe('isDockLayout', () => {
   it('合法形状通过', () => {

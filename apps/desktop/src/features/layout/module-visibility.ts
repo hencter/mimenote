@@ -14,7 +14,7 @@
 
 import { useTagsStore } from '@/state/tags-store'
 import { useUiStore } from '@/state/ui-store'
-import type { ViewModuleId } from './tree-layout'
+import type { ViewModuleId } from '@/domain/layout/tree-layout'
 
 /** 四个模块此刻的可见性（React 订阅版：四个开关都订，变化即重渲染）。 */
 export function useModuleVisibility(): Record<ViewModuleId, boolean> {

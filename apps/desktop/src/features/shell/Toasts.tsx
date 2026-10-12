@@ -1,7 +1,12 @@
-/** 提示条（toast）：异步失败必须被用户看见。 */
+/**
+ * 提示条（toast）：异步失败必须被用户看见。
+ *
+ * 为什么住在 `features/shell/`（B9，ADR-0060 §2 的 P5）：它订阅 `state/toast-store`，
+ * 和确认框一样是**应用外壳**（文案由各调用点经 store 给），不是可独立复用的通用控件。
+ */
 
 import { useToastStore } from '@/state/toast-store'
-import { Icon, type IconName } from './Icon'
+import { Icon, type IconName } from '@/components/Icon'
 
 const ICONS: Record<string, IconName> = {
   info: 'info',

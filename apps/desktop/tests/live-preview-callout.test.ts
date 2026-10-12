@@ -13,8 +13,8 @@
  * 4. **装配层**：真的建 `EditorView`，点图标 → 文档里多出 `-`，正文随之收起。
  */
 
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 
 import { ensureSyntaxTree } from '@codemirror/language'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
@@ -217,22 +217,37 @@ describe('读出标记的位置与内容', () => {
 
 describe('框的边距与阅读视图对齐（"两个视图统一"的判据，用户报过"编辑区里没有边距"）', () => {
   /**
-   * 直接从磁盘读 app.css（与 `tests/app-shell.test.tsx` 同一个理由与同一套候选路径：
+   * 直接从磁盘读**全部**样式表（与 `tests/app-shell.test.tsx` 同一个理由与同一套候选路径：
    * vitest 的工作目录既可能是 `apps/desktop`，也可能是仓库根）。
+   *
+   * 读全部 `src/**` 下的 `.css` 拼接而不是某一个文件（B1，ADR-0060 §4）：本用例问的是
+   * "阅读视图那张框几何存在吗"，而不是"它恰好住在 `styles/app.css` 里吗"；app.css 已按归属拆开，
+   * 规则落在哪个文件由门禁保证 —— 这里只把"源"的范围放大，**断言一个字没改**。
    */
-  function readAppCss(): string {
-    const candidates = [
-      resolve(process.cwd(), 'src/styles/app.css'),
-      resolve(process.cwd(), 'apps/desktop/src/styles/app.css'),
-    ]
+  function readStyles(): string {
+    const candidates = [resolve(process.cwd(), 'src'), resolve(process.cwd(), 'apps/desktop/src')]
     for (const candidate of candidates) {
       try {
-        return readFileSync(candidate, 'utf8')
+        if (!statSync(candidate).isDirectory()) continue
+        return cssFiles(candidate)
+          .sort()
+          .map((file) => readFileSync(file, 'utf8'))
+          .join('\n')
       } catch {
         // 换下一个候选路径
       }
     }
-    throw new Error(`找不到 app.css（尝试过：${candidates.join('、')}）`)
+    throw new Error(`找不到前端源码目录（尝试过：${candidates.join('、')}）`)
+  }
+
+  /** 递归列出目录下的 `.css`（排序由调用方做，结果因此稳定）。 */
+  function cssFiles(dir: string, out: string[] = []): string[] {
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name)
+      if (statSync(path).isDirectory()) cssFiles(path, out)
+      else if (path.endsWith('.css')) out.push(path)
+    }
+    return out
   }
 
   /** 取某条规则的声明块。 */
@@ -257,7 +272,7 @@ describe('框的边距与阅读视图对齐（"两个视图统一"的判据，�
       所以"框的内边距 + 标题的上下留白"只能全部由首行/末行的 `padding` 承担。
       这条用例把两边的**来源**钉在一起：谁改了一边而没有改另一边，红。
     */
-    const css = readAppCss()
+    const css = readStyles()
     const box = ruleBody(css, '.mn-callout')
     const title = ruleBody(css, '.mn-callout__title')
     const lastChild = ruleBody(css, '.mn-callout > *:last-child')

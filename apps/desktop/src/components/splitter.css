@@ -1,0 +1,36 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.components {
+
+/*
+ * 分隔条（`.mn-splitter`）：容器切割树里拖动改变比例的那条线。
+ * 归属 components 的理由：它是通用控件（不绑定任何业务域），被布局域的多处切割使用。
+ *
+ * B1：从 `styles/app.css` 迁入 308-330（原"分隔条"段）。
+ */
+
+/* --------------------------------------------------------------- 分隔条 */
+
+.mn-splitter {
+  flex: 0 0 auto;
+  background: var(--mn-border);
+  transition: background 120ms ease;
+}
+
+.mn-splitter--vertical {
+  width: 4px;
+  cursor: col-resize;
+}
+
+.mn-splitter--horizontal {
+  height: 4px;
+  cursor: row-resize;
+}
+
+.mn-splitter:hover,
+.mn-splitter--dragging {
+  background: var(--mn-accent);
+}
+
+}

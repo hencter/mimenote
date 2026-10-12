@@ -65,7 +65,7 @@ import {
   type LayoutItemId,
   type LeafNode,
   type ViewModuleId,
-} from './tree-layout'
+} from '@/domain/layout/tree-layout'
 
 // 标签条样式表仍住在 `features/tabs/`（它是旧全局标签栏那批样式的幸存者，坐标没跟着搬）。
 // **这一行是它进包的唯一原因**：ADR-0035 删掉 `TabBar.tsx` 时把唯一的导入方一起删了，

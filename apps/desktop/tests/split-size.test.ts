@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { migrateLayout } from '@/features/layout/layout-sync'
+import { migrateLayout } from '@/domain/layout/layout-sync'
 import {
   adjustNewSplitRatio,
   MODULE_HOME_PX,
@@ -19,7 +19,7 @@ import {
   moveItem,
   noteItem,
   type TreeLayout,
-} from '@/features/layout/tree-layout'
+} from '@/domain/layout/tree-layout'
 
 describe('preferredSplitRatio：像素 → 比例', () => {
   it('左/右落边按宽度，上/下落边按高度；落在后半时取 1 − 份额', () => {

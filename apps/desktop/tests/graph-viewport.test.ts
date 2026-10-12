@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { MAX_ZOOM, MIN_ZOOM, worldViewport, type GraphView } from '@/features/graph/layout'
+import { MAX_ZOOM, MIN_ZOOM, worldViewport, type GraphView } from '@/domain/graph/layout'
 import {
   canvasSize,
   hitTolerance,
@@ -20,7 +20,7 @@ import {
   transformOf,
   visibleWorld,
   worldRect,
-} from '@/features/graph/viewport'
+} from '@/domain/graph/viewport'
 
 const VIEWPORT = { width: 1000, height: 600 }
 

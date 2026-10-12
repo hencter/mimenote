@@ -1,12 +1,17 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
 /*
  * 所见即所得（Live Preview）里表格的样式。
  *
- * 为什么单独一个文件而不是写进 `styles/app.css`：`app.css` 是所有特性的公共文件，表格只是
+ * 为什么单独一个文件而不是写进全局共用的样式表（B1 之后按归属分在 `styles/` 与 `components/` 下）：
+ * 那种表所有特性都碰（改动会外溢），而表格只是
  * "编辑器里的一块渲染"，规则与 `domain/markdown.ts` 渲染出来的结构（`table / thead / tbody /
  * th / td / code / a.mn-wikilink`）成对维护 —— 与 `features/lightbox/preview-image.css`
  * 同一个理由。
  *
- * 版式口径**对齐阅读视图**（`app.css` 的 `.mn-preview__body table / th / td`）：同样的
+ * 版式口径**对齐阅读视图**（`features/preview/preview.css` 的 `.mn-preview__body table / th / td`）：同样的
  * `border-collapse`、同样的 1px 边框、同样的单元格内边距、表头同样的底色。
  * 两处刻意各写一份（而不是让编辑器借用 `.mn-preview__body` 的规则）：那是阅读视图的容器类，
  * 编辑器里不该依赖"某个面板恰好挂着它"。改一处必须改两处，这条写在这里以免被忘记。
@@ -102,4 +107,5 @@
   color: var(--mn-link);
   text-decoration: underline;
   cursor: pointer;
+}
 }

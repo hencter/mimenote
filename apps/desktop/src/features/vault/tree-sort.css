@@ -1,3 +1,7 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
 /*
  * 文件树排序菜单样式（工具栏的小浮层）。
  *
@@ -73,4 +77,5 @@
 .mn-tree-sort__toggle input {
   /* 与设置页复选框同一令牌（accent-color 是原生控件唯一能跟主题走的通道） */
   accent-color: var(--mn-accent, var(--mn-link));
+}
 }

@@ -19,7 +19,7 @@ import {
   type LayoutItemId,
   type TreeLayout,
   type ViewModuleId,
-} from './tree-layout'
+} from '@/domain/layout/tree-layout'
 import type { DropEdge } from './drop-target'
 
 /** 每个模块的"家"尺寸（px）：row 切割看宽度、column 切割看高度。 */

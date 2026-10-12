@@ -1,5 +1,6 @@
 /**
  * **容器切割树**：主界面的布局模型（ADR-0035）。
+ * 纯模型（不 import React、不碰 DOM、不读 store），按 ADR-0060 §2 住在 `domain/layout/`。
  *
  * ## 它解决什么
  * 用户对布局的要求最终收敛成一句话：**每个模块都是"标签 + 内容"，标签可以随便拖到别的容器里**。
@@ -18,8 +19,8 @@
  * 于是"把文件树拖到右边"和"把某篇笔记拖到下面"是**同一个操作**，只是被拖的标签不同。
  *
  * ## 与 ADR-0026 的关系
- * 那是这个模型的**退化特例**：固定三刀 + 每区一条互不分栏的列表。迁移由
- * {@link fromDockLayout} 给出（左区多块模块 → 竖直切两刀，视觉上仍≈平分高度）。
+ * 那是这个模型的**退化特例**：固定三刀 + 每区一条互不分栏的列表。旧格式的几何迁移由
+ * `layout-sync.ts` 的 `fromDockLayout` 给出（左区多块模块 → 竖直切两刀，视觉上仍≈平分高度）。
  *
  * ## 六条不变式（本模块存在的全部理由）
  * 1. **每个标签全树恰好出现一次** —— 拖过去就是**移过去**（同一篇笔记不会同时出现在两个叶子里：
@@ -42,7 +43,7 @@
 /** 切割方向。`row` = 一刀竖着切（左右并排）；`column` = 一刀横着切（上下相叠）。 */
 export type SplitAxis = 'row' | 'column'
 
-/** 视图模块（今天由 `features/dock/dock-layout.ts` 管的那四种）。 */
+/** 视图模块（四个停靠面板；旧落盘格式的读取面见 `domain/layout/dock-layout.ts`）。 */
 export type ViewModuleId = 'tree' | 'links' | 'tags' | 'outline'
 
 /** 标签（= 可被拖动的东西）。视图模块是裸词，笔记带 `note:` 前缀避免撞名。 */
@@ -340,7 +341,13 @@ export function layoutsEqual(a: TreeLayout, b: TreeLayout): boolean {
   return false
 }
 
-function clampRatio(ratio: number): number {
+/**
+ * 比例钳制（不变式 3 的唯一实现）。
+ *
+ * 为什么要 `export`：旧停靠格式的几何迁移 `fromDockLayout` 住在 `layout-sync.ts`，
+ * 那边必须复用这一份 —— 比例规则只留一处判据，绝不抄第二份。
+ */
+export function clampRatio(ratio: number): number {
   if (!Number.isFinite(ratio)) return 0.5
   return Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio))
 }
@@ -471,7 +478,7 @@ function replaceLeaf(
 }
 
 // ---------------------------------------------------------------------------
-// 默认布局与迁移
+// 默认布局
 // ---------------------------------------------------------------------------
 
 /** 默认布局的节点 id（固定值，便于测试与落盘对位）。 */
@@ -485,121 +492,6 @@ export const DEFAULT_MAIN_LEAF_ID = 'main'
  */
 export function defaultLayout(): TreeLayout {
   return { kind: 'leaf', id: DEFAULT_MAIN_LEAF_ID, items: [], active: null }
-}
-
-/** 迁移时的尺寸线索：把旧的**像素**偏好换算成树的比例（只在大搬家时用一次）。 */
-export interface MigrateSizes {
-  /** 旧左区宽度（px，缺省 288 = 旧默认）。 */
-  sidebarWidth?: number
-  /** 旧右区宽度（px，缺省 300）。 */
-  linksPanelWidth?: number
-  /** 旧底区高度（px，缺省 220）。 */
-  bottomDockHeight?: number
-  /** 窗口尺寸（比例的**分母**；缺省 1280×800 = 最常见桌面窗口）。 */
-  viewport?: { width: number; height: number }
-}
-
-/**
- * 从 ADR-0026 的停靠布局迁移（老用户的配置不丢）。
- *
- * 形态照抄旧模型的几何：**左/右区里多块模块是上下叠（平分该侧高度）、底区里是左右排
- * （平分该区宽度）**，而整条左带在主区左侧、右带在右侧、底带在下方。于是：
- *
- * ```text
- * row[ column[左带…], column[ row[ main, 右带… ], 底带… ] ]
- * ```
- *
- * 比例不是一律 0.5：那会让文件树独占半个窗口（旧默认是 288px）。迁移把旧的**像素宽度**
- * 按窗口尺寸换算成比例（见 `MigrateSizes`），观感与升级前一致；换算的分母只在迁移这一刻
- * 用一次，之后拖分隔条改的就是比例本身。
- *
- * 一处**知道的差异**：旧模型里同一区的模块是"各自占满该区宽度、上下平分"，
- * 而这里每个模块是一个独立叶子，中间多了可拖的分隔条 —— 观感接近，但可以分别调比例
- * （这正是用户要的"容器切割"）。
- */
-export function fromDockLayout(
-  dock: { left: readonly ViewModuleId[]; right: readonly ViewModuleId[]; bottom: readonly ViewModuleId[] },
-  notes: readonly string[] = [],
-  sizes: MigrateSizes = {},
-): TreeLayout {
-  const main: LeafNode = {
-    kind: 'leaf',
-    id: DEFAULT_MAIN_LEAF_ID,
-    items: notes.map(noteItem),
-    active: notes.length > 0 ? noteItem(notes[0]!) : null,
-  }
-
-  // 迁移几何的分母（见 `MigrateSizes`）：钳到合理区间，防止 0 / NaN / 极小窗口把比例算爆
-  const viewportW = Math.max(320, sizes.viewport?.width ?? 1280)
-  const viewportH = Math.max(240, sizes.viewport?.height ?? 800)
-  const leftPx = dock.left.length > 0 ? (sizes.sidebarWidth ?? 288) : 0
-  const rightPx = dock.right.length > 0 ? (sizes.linksPanelWidth ?? 300) : 0
-  const bottomPx = dock.bottom.length > 0 ? (sizes.bottomDockHeight ?? 220) : 0
-
-  /** 把一串模块做成一条带：**上下叠**（`column`）或**左右排**（`row`），比例各半 ⇒ 等价于旧的"平分"。 */
-  const strip = (
-    side: 'left' | 'right' | 'bottom',
-    modules: readonly ViewModuleId[],
-    axis: SplitAxis,
-  ): TreeLayout | null => {
-    let tree: TreeLayout | null = null
-    for (const module of modules) {
-      const leaf: LeafNode = { kind: 'leaf', id: `${side}-${module}`, items: [module], active: module }
-      tree =
-        tree === null
-          ? leaf
-          : {
-              kind: 'split',
-              id: `${side}-${module}~split`,
-              axis,
-              ratio: 0.5,
-              a: tree,
-              b: leaf,
-            }
-    }
-    return tree
-  }
-
-  const left = strip('left', dock.left, 'column')
-  const right = strip('right', dock.right, 'column')
-  const bottom = strip('bottom', dock.bottom, 'row')
-
-  let center: TreeLayout = main
-  if (right !== null) {
-    // 这一刀分的是"左带之外"的宽度：main 占 (剩余 − 右带)
-    const restW = viewportW - leftPx
-    center = {
-      kind: 'split',
-      id: 'right~split',
-      axis: 'row',
-      ratio: clampRatio(restW <= 0 ? 0.5 : (restW - rightPx) / restW),
-      a: center,
-      b: right,
-    }
-  }
-  if (bottom !== null) {
-    // 这一刀分的是整列高度：上半（main + 右带）占 (高度 − 底带)
-    center = {
-      kind: 'split',
-      id: 'bottom~split',
-      axis: 'column',
-      ratio: clampRatio((viewportH - bottomPx) / viewportH),
-      a: center,
-      b: bottom,
-    }
-  }
-  const tree: TreeLayout = left === null
-    ? center
-    : {
-        kind: 'split',
-        id: 'left~split',
-        axis: 'row',
-        ratio: clampRatio(leftPx / viewportW),
-        a: left,
-        b: center,
-      }
-
-  return normalizeLayout(tree)
 }
 
 /**

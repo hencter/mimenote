@@ -15,13 +15,13 @@ import {
   DEFAULT_DOCK_LAYOUT,
   isDockLayout,
   type DockLayout,
-} from '@/features/dock/dock-layout'
+} from '@/domain/layout/dock-layout'
 import {
   defaultLayout,
   layoutsEqual,
   type TreeLayout,
-} from '@/features/layout/tree-layout'
-import { migrateLayout } from '@/features/layout/layout-sync'
+} from '@/domain/layout/tree-layout'
+import { migrateLayout } from '@/domain/layout/layout-sync'
 import { loadJson, saveJson } from './persist'
 
 /**
@@ -97,7 +97,7 @@ export interface UiPreferences {
    * **容器切割树**（ADR-0035）：谁在哪一格、每格显示谁、每刀的比例。
    *
    * 渲染与交互的唯一依据（`features/layout/TreeHost.tsx`）；从 `dockLayout` 迁移而来、
-   * 随打开的笔记对账（`layout-sync.ts`）。
+   * 随打开的笔记对账（`domain/layout/layout-sync.ts`）。
    */
   layout: TreeLayout
   /** 底部停靠区的高度（px）。**迁移期留档**：树模型里尺寸是 split 的比例，这个字段不再被读。 */
@@ -177,7 +177,7 @@ const initial: UiPreferences = {
     : DEFAULTS.outlineLevelsByVault,
   // 逐字段校验的形状守卫在 domain/tree.ts（判据唯一真源）：坏数据整份退回默认
   treeSort: isTreeSort(restored.treeSort) ? restored.treeSort : DEFAULTS.treeSort,
-  // 停靠模型有一条不变式（每个模块恰好出现一次），坏数据整份退回默认 —— 见 dock-layout.ts 的文件头
+  // 停靠模型有一条不变式（每个模块恰好出现一次），坏数据整份退回默认 —— 见 domain/layout/dock-layout.ts 的文件头
   dockLayout: isDockLayout(restored.dockLayout) ? restored.dockLayout : DEFAULT_DOCK_LAYOUT,
   /*
    * 树的新旧迁移：已经有树就用树；只有旧的 dockLayout 就迁移；都没有就用**今天默认的停靠布局**

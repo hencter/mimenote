@@ -1,0 +1,120 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
+
+/*
+ * 状态栏（`.mn-statusbar`/`.mn-status-dot`）：窗口最底部的常驻状态与视图切换。
+ *
+ * B1：从 `styles/app.css` 迁入 903-1010（原"状态栏"段）。
+ */
+
+/* ------------------------------------------------------------- 状态栏 */
+
+.mn-statusbar {
+  /* 固定高度，不参与剩余空间分配 */
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 26px;
+  padding: 0 10px;
+  border-top: 1px solid var(--mn-border);
+  background: var(--mn-bg-elevated);
+  color: var(--mn-fg-muted);
+  font-size: 12px;
+  user-select: none;
+  overflow: hidden;
+}
+
+.mn-statusbar__group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* 组里的文字挤不下时打点，而不是把整条栏撑开顶掉右边的按钮
+   （窄窗口下路径 + 统计 + 保存信息三组最容易挤成一团） */
+.mn-statusbar__group > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mn-statusbar__group svg {
+  flex: none;
+}
+
+.mn-statusbar__group--buttons {
+  flex: none;
+  gap: 1px;
+}
+
+.mn-statusbar__muted {
+  color: var(--mn-fg-subtle);
+}
+
+/* 收件箱计数（ADR-0057）：**文字**按钮而不是图标 ——
+   它要传达的是"还剩几条"，数字必须看得见；hover/激活沿用与图标按钮同一套令牌，
+   免得状态栏里长出第二种视觉语言。等宽数字（tabular-nums）让数字变化时按钮不抖。 */
+.mn-statusbar__inbox {
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--mn-accent);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.mn-statusbar__inbox:hover {
+  background: var(--mn-hover);
+}
+
+.mn-statusbar__spacer {
+  flex: 1 1 auto;
+}
+
+/*
+ * 状态栏里的细竖线：把"文档视图（编辑/阅读）"与"知识图谱"两组按钮分开
+ * （用户反馈：图谱独立按钮不和编辑/预览的快捷键放一块）。
+ */
+.mn-statusbar__divider {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 14px;
+  background: var(--mn-border);
+}
+
+.mn-statusbar__select select {
+  border: 1px solid var(--mn-border);
+  border-radius: 4px;
+  background: var(--mn-bg);
+  color: var(--mn-fg-muted);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 0 2px;
+}
+
+.mn-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--mn-fg-subtle);
+}
+
+.mn-status-dot--ok {
+  background: var(--mn-success);
+}
+.mn-status-dot--warn {
+  background: var(--mn-warning);
+}
+.mn-status-dot--danger {
+  background: var(--mn-danger);
+}
+
+}

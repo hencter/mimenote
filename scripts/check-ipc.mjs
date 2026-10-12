@@ -41,7 +41,7 @@ const CORE = 'crates/mn-core/src'
 const INDEX = 'crates/mn-index/src'
 const TS_TYPES = 'apps/desktop/src/ipc/types.ts'
 const TS_CLIENT = 'apps/desktop/src/ipc/client.ts'
-const TS_MOCK = 'apps/desktop/src/ipc/mock-adapter.ts'
+const TS_MOCK = 'apps/desktop/src/ipc/mock/index.ts'
 
 /** [TS interface, Rust 文件, Rust struct]。字段名按 camelCase 换算后必须完全一致。 */
 export const DTO_MANIFEST = [

@@ -47,7 +47,7 @@ import {
 import { paletteFrom, type GraphPalette } from '@/features/graph/canvas/palette'
 import type { PaintContext, ViewTransform } from '@/features/graph/canvas/paint'
 import { leadDash } from '@/features/graph/link-edge'
-import type { EdgeStyle, GraphEdgeVisual, Point } from '@/features/graph/layout'
+import type { EdgeStyle, GraphEdgeVisual, Point } from '@/domain/graph/layout'
 
 // ---------------------------------------------------------------------------
 // 记录型假上下文（与 tests/graph-paint.test.ts 同一套做法）

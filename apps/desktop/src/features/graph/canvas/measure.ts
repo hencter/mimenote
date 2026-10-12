@@ -86,7 +86,7 @@ const MEASURE_CACHE_LIMIT = 4096
 export function fontString(font: FontSpec, family: string = DEFAULT_FONT_FAMILY): string {
   const parts: string[] = []
   if (font.italic === true) parts.push('italic')
-  // 600 而不是 700：与 app.css 里标题/`strong` 的 `font-weight: 600` 接近，
+  // 600 而不是 700：与 features/preview/preview.css 里标题/`strong` 的 `font-weight: 600` 接近，
   // 也让"粗体"在 canvas 上不至于糊成一团（多数 UI 字体的 700 在小字号下笔画粘连）
   if (font.bold === true) parts.push('600')
   parts.push(`${font.size}px`)

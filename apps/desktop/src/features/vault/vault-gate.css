@@ -1,0 +1,98 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
+
+/*
+ * Vault 门闸（`.mn-gate`）：还没打开 Vault 时的首屏。
+ *
+ * B1：从 `styles/app.css` 迁入 1210-1295（原"Vault 门闸"段）。
+ */
+
+/* ------------------------------------------------------------ Vault 门闸 */
+
+.mn-gate {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 24px;
+  background: radial-gradient(
+    1200px 600px at 50% -10%,
+    color-mix(in srgb, var(--mn-accent) 12%, transparent),
+    transparent
+  );
+}
+
+.mn-gate__card {
+  width: min(620px, 100%);
+  padding: 28px 30px;
+  border: 1px solid var(--mn-border);
+  border-radius: 12px;
+  background: var(--mn-bg-elevated);
+  box-shadow: var(--mn-shadow);
+}
+
+.mn-gate__brand {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.mn-gate__logo {
+  display: block;
+  width: min(360px, 76%);
+  height: 112px;
+  object-fit: cover;
+  object-position: center;
+}
+
+.mn-gate__tagline {
+  margin: 0;
+  color: var(--mn-fg-muted);
+}
+
+.mn-gate__features {
+  margin: 18px 0 22px;
+  padding-left: 20px;
+  color: var(--mn-fg-muted);
+}
+
+.mn-gate__features li {
+  margin: 4px 0;
+}
+
+.mn-gate__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mn-gate__error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--mn-danger);
+  border-radius: var(--mn-radius);
+  color: var(--mn-danger);
+}
+
+.mn-gate__hint {
+  margin: 16px 0 0;
+  color: var(--mn-fg-subtle);
+  font-size: 12px;
+}
+
+.mn-gate__runtime {
+  margin: 18px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--mn-border);
+  color: var(--mn-fg-subtle);
+  font-size: 11px;
+  font-family: var(--mn-font-mono);
+}
+
+}

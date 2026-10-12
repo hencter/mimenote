@@ -12,7 +12,7 @@
  * ```
  */
 
-import type { Point } from '../layout'
+import type { Point } from '@/domain/graph/layout'
 
 /**
  * 我们用到的那一小撮 2D 上下文。

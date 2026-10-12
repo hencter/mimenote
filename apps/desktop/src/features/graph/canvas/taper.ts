@@ -32,7 +32,7 @@
  * 画笔拿到空数组就什么都不画（`edge-path.ts` 的"非有限值写 0，绝不给 SVG 送 NaN"同一条纪律）。
  */
 
-import type { Point } from '../layout'
+import type { Point } from '@/domain/graph/layout'
 
 /** 收尖之后终点保留的线宽（相对起点，0 = 收成一个点）。 */
 export const TAPER_TIP_RATIO = 0.12

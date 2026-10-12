@@ -13,8 +13,8 @@
  */
 
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { App } from '@/App'
@@ -27,27 +27,45 @@ import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 
 /**
- * 直接从磁盘读样式表。
+ * 直接从磁盘读**全部**样式表。
  *
  * 不用 `import '@/styles/app.css?raw'`：vitest 默认不处理 CSS 导入，
  * 拿到的可能是空字符串，会让契约测试"永远通过"——比没有测试更糟。
+ *
+ * 为什么读全部 `src/**` 下的 `.css` 拼接，而不是某一个文件（B1，ADR-0060 §4）：
+ * 这些用例问的是"产品里存在这条布局契约吗"，而不是"它恰好住在 `styles/app.css` 里吗"。
+ * B1 已把 `styles/app.css` 按归属拆成 `features/layout/shell.css`、`styles/base.css`、
+ * `components/*.css` 等；规则落在哪个文件由门禁保证（层名按路径、BEM 块唯一、跨文件共享块
+ * 只减不增），不由这里保证 —— 所以这里只把"源"的范围放大，**断言一个字没改**。
+ * 其中"选择器一个都不该留下"那条负面断言也因此仍然覆盖全仓样式表。
  */
-function readAppCss(): string {
-  const candidates = [
-    resolve(process.cwd(), 'src/styles/app.css'),
-    resolve(process.cwd(), 'apps/desktop/src/styles/app.css'),
-  ]
+function readStyles(): string {
+  const candidates = [resolve(process.cwd(), 'src'), resolve(process.cwd(), 'apps/desktop/src')]
   for (const candidate of candidates) {
     try {
-      return readFileSync(candidate, 'utf8')
+      if (!statSync(candidate).isDirectory()) continue
+      return cssFiles(candidate)
+        .sort()
+        .map((file) => readFileSync(file, 'utf8'))
+        .join('\n')
     } catch {
       // 换下一个候选路径
     }
   }
-  throw new Error(`找不到 app.css（尝试过：${candidates.join('、')}）`)
+  throw new Error(`找不到前端源码目录（尝试过：${candidates.join('、')}）`)
 }
 
-const appCss = readAppCss()
+/** 递归列出目录下的 `.css`（排序由调用方做，结果因此稳定）。 */
+function cssFiles(dir: string, out: string[] = []): string[] {
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name)
+    if (statSync(path).isDirectory()) cssFiles(path, out)
+    else if (path.endsWith('.css')) out.push(path)
+  }
+  return out
+}
+
+const styles = readStyles()
 
 /** 取出某条规则的声明块（仅用于契约断言）。 */
 function ruleBody(css: string, selector: string): string {
@@ -316,23 +334,23 @@ describe('链接面板（M2）', () => {
 
 describe('布局契约（防止再次出现"必须先选中笔记才对得齐窗口"）', () => {
   it('外壳用列方向 flex，不使用位置化的 grid-template-rows', () => {
-    const app = ruleBody(appCss, '.mn-app')
+    const app = ruleBody(styles, '.mn-app')
     expect(app).toContain('flex-direction: column')
     expect(app).not.toContain('grid-template-rows')
   })
 
   it('主体独占剩余高度并允许内部滚动', () => {
-    const body = ruleBody(appCss, '.mn-body')
+    const body = ruleBody(styles, '.mn-body')
     expect(body).toContain('flex: 1 1 auto')
     expect(body).toContain('min-height: 0')
   })
 
   it('状态栏不参与剩余空间分配；标题栏的规则已整组退役（ADR-0038）', () => {
-    expect(ruleBody(appCss, '.mn-statusbar')).toContain('flex: 0 0 auto')
-    expect(ruleBody(appCss, '.mn-conflict')).toContain('flex: 0 0 auto')
+    expect(ruleBody(styles, '.mn-statusbar')).toContain('flex: 0 0 auto')
+    expect(ruleBody(styles, '.mn-conflict')).toContain('flex: 0 0 auto')
     // 独立标题栏退役：选择器一个都不该留下（留档说明可以提，规则不行）
-    expect(appCss).not.toContain('.mn-titlebar {')
-    expect(appCss).not.toContain('.mn-titlebar__left')
+    expect(styles).not.toContain('.mn-titlebar {')
+    expect(styles).not.toContain('.mn-titlebar__left')
   })
 
   it('窗口按钮是标签条右端的固定槽：不随标签滚动、无边框（shadcn ghost）', () => {
@@ -343,18 +361,18 @@ describe('布局契约（防止再次出现"必须先选中笔记才对得齐窗
       3. **不画边框 / 分隔线**（用户要求，参考 shadcn 的 ghost icon button）：
          命中区靠 30×30 的圆角 hover 底色表达，而不是靠一条边线。
     */
-    const controls = ownRuleBody(appCss, '.mn-window-controls')
+    const controls = ownRuleBody(styles, '.mn-window-controls')
     expect(controls).toContain('flex: 0 0 auto')
     expect(controls).toContain('align-items: center')
     expect(controls).not.toContain('border')
 
-    const button = ownRuleBody(appCss, '.mn-window-controls__button')
+    const button = ownRuleBody(styles, '.mn-window-controls__button')
     expect(button).toContain('border: none')
     expect(button).toContain('border-radius: var(--radius-md)')
   })
 
   it('文件树显式允许收缩（contain: strict 让它没有固有高度）', () => {
-    const tree = ruleBody(appCss, '.mn-tree')
+    const tree = ruleBody(styles, '.mn-tree')
     expect(tree).toContain('min-height: 0')
     expect(tree).toContain('contain: strict')
   })

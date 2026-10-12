@@ -14,7 +14,7 @@
  *    不能依赖"编辑器将来不会占用这个键位"。）
  * 2. **Esc 不能漏给全局快捷键**：面板是模态层，Esc 只应该关闭它。
  *    捕捉阶段处理 + 阻止冒泡，冒泡链上的全局快捷键就收不到。
- *    （与 `components/ConfirmDialog.tsx` 的 Esc 处理是同一套路。）
+ *    （与 `features/shell/ConfirmDialog.tsx` 的 Esc 处理是同一套路。）
  * 3. 全局快捷键只在"非输入元素"上生效（`keymap.ts` 的 `isTextEntryTarget`），
  *    而这里无视焦点位置：面板的呼出键必须在任何地方都能用。
  *

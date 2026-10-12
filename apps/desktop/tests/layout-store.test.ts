@@ -12,8 +12,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { DEFAULT_DOCK_LAYOUT } from '@/features/dock/dock-layout'
-import { itemsOf, leafOfItem, noteItem } from '@/features/layout/tree-layout'
+import { DEFAULT_DOCK_LAYOUT } from '@/domain/layout/dock-layout'
+import { itemsOf, leafOfItem, noteItem } from '@/domain/layout/tree-layout'
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter } from '@/ipc/mock-adapter'
 import { installTabsSync, useTabsStore } from '@/state/tabs-store'

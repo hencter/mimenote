@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from 'vitest'
 
+import { fromDockLayout } from '@/domain/layout/layout-sync'
 import {
   DEFAULT_MAIN_LEAF_ID,
   MAX_RATIO,
@@ -19,7 +20,6 @@ import {
   defaultLayout,
   evenSplit,
   findLeaf,
-  fromDockLayout,
   isViewModule,
   itemsOf,
   leafOfItem,
@@ -34,7 +34,7 @@ import {
   topRightLeafId,
   type LayoutItemId,
   type TreeLayout,
-} from '@/features/layout/tree-layout'
+} from '@/domain/layout/tree-layout'
 
 /** 找某个节点的父 split（断言"这一刀切在哪个方向"时要看父节点）。 */
 function parentOf(layout: TreeLayout, childId: string): { axis: string; a: TreeLayout; b: TreeLayout } | null {

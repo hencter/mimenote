@@ -28,7 +28,7 @@ import type { DragEvent as ReactDragEvent } from 'react'
 
 import { moveEntry } from '@/app/actions'
 import { useLayoutDrag } from '@/features/layout/layout-drag'
-import { noteItem } from '@/features/layout/tree-layout'
+import { noteItem } from '@/domain/layout/tree-layout'
 import {
   canDrag,
   dragPayloadOf,

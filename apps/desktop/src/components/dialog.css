@@ -1,0 +1,60 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.components {
+
+/*
+ * 对话框基座（`.mn-overlay` 遮罩 + `.mn-dialog` 及其 header/message/actions）。
+ * 归属 components 的理由：`mn-dialog` 被 5 个特性各加一个修饰符（`--export`/`--move`/`--rename`/
+ * `--tag-rename` …）使用 —— 基座只有一份，修饰符住各自的特性文件（跨文件共享块登记在案）。
+ *
+ * B1：从 `styles/app.css` 迁入 1164-1209（原"对话框"段）。
+ */
+
+/* --------------------------------------------------------------- 对话框 */
+
+.mn-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 50;
+}
+
+.mn-dialog {
+  width: min(520px, calc(100vw - 40px));
+  padding: 16px 18px;
+  border: 1px solid var(--mn-border);
+  border-radius: calc(var(--mn-radius) + 2px);
+  background: var(--mn-bg-elevated);
+  box-shadow: var(--mn-shadow);
+}
+
+.mn-dialog__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--mn-warning);
+}
+
+.mn-dialog__header h2 {
+  margin: 0;
+  font-size: 15px;
+  color: var(--mn-fg);
+}
+
+.mn-dialog__message {
+  margin: 10px 0 16px;
+  white-space: pre-wrap;
+  color: var(--mn-fg-muted);
+}
+
+.mn-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+}

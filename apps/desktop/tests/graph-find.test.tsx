@@ -19,7 +19,7 @@ import {
   findGraphMatches,
 } from '@/features/graph/find'
 import { GraphCanvas } from '@/features/graph/GraphCanvas'
-import { CARD_HEIGHT, CARD_WIDTH, buildLayout } from '@/features/graph/layout'
+import { CARD_HEIGHT, CARD_WIDTH, buildLayout } from '@/domain/graph/layout'
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter } from '@/ipc/mock-adapter'
 import type { GraphNode } from '@/ipc/types'

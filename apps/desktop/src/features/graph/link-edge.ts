@@ -68,7 +68,7 @@ import type {
   MeasureText,
 } from './canvas/text-layout'
 import { DEFAULT_METRICS, fontFor, fontOfRun, lineHeightFor } from './canvas/text-layout'
-import { centerOf, type Point, type Rect } from './layout'
+import { centerOf, type Point, type Rect } from '@/domain/graph/layout'
 
 /** 一条边在画布上的完整几何：卡片内的一段虚线引线 + 卡片外的一段张力曲线。 */
 export interface LinkEdgeGeometry {

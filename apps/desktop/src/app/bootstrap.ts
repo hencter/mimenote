@@ -7,9 +7,11 @@
 
 import { isTauriRuntime, setIpcAdapter } from '@/ipc/client'
 import { ipc } from '@/ipc/client'
+import { setMacPlatformResolver } from '@/domain/keymap'
 import { installKeymapResolver } from '@/state/keymap-store'
 import { useUiStore } from '@/state/ui-store'
 import { applyTheme, getTheme } from '@/theme/apply'
+import { isMacPlatform } from './env'
 import { registerBuiltinCommands } from './builtin-commands'
 
 export type AdapterKind = 'tauri' | 'mock'
@@ -19,6 +21,11 @@ export interface BootstrapResult {
 }
 
 export async function bootstrap(): Promise<BootstrapResult> {
+  // 0. 平台探测装进 domain 的注入点（ADR-0060）：键位解析要区分 Cmd / Ctrl，
+  //    但 `domain` 不许读 `navigator` —— 探测住在这边，domain 只消费结果。
+  //    必须在任何按键处理之前装好（命令注册与渲染都在后面）。
+  setMacPlatformResolver(isMacPlatform)
+
   // 1. 主题先落地，避免首帧闪烁
   const ui = useUiStore.getState()
   applyTheme(getTheme(ui.themeId))

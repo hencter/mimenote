@@ -18,7 +18,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import './lightbox.css'
 // 预览里图片的呈现细节（图注 / 骨架 / 超大图限制）与灯箱属于同一件事：都只服务"图片"这个特性。
-// 单独一个文件是因为 `styles/app.css` 不在本特性的可改范围，而这些规则必须与 `domain/markdown.ts`
+// 单独一个文件是因为 共享样式表不在本特性的可改范围，而这些规则必须与 `domain/markdown.ts`
 // 渲染出来的 `.mn-figure / .mn-image__caption / .mn-image__hint` 成对维护（类名改一处就要改两处）。
 import './preview-image.css'
 

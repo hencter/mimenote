@@ -11,7 +11,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { openNote, openNoteInNewTab } from '@/app/actions'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { ConfirmDialog } from '@/features/shell/ConfirmDialog'
 import { TreeHost } from '@/features/layout/TreeHost'
 import { useLayoutDrag } from '@/features/layout/layout-drag'
 import {
@@ -23,7 +23,7 @@ import {
   moveItem,
   noteItem,
   type TreeLayout,
-} from '@/features/layout/tree-layout'
+} from '@/domain/layout/tree-layout'
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter, MOCK_VAULT_PATH, type MockAdapter } from '@/ipc/mock-adapter'
 import { useConfirmStore } from '@/state/confirm-store'

@@ -100,7 +100,7 @@ export type CalloutLinePosition = 'first' | 'middle' | 'last' | 'only'
  * `depth > 1` 时补一个缩进类：隐藏掉 `>` 之后，嵌套引用会失去原本由 `> ` 撑出来的缩进
  * （与 `mn-md-quote--nested` 同一个补偿，值也成对维护）。
  *
- * 强调色**不再抄一遍色表**：`mn-callout--<type>` 是 `styles/app.css` 里那条
+ * 强调色**不再抄一遍色表**：`mn-callout--<type>` 是 `features/preview/preview.css` 里那条
  * "只声明 `--mn-callout-accent`、别的属性一概没有"的规则。把类名挂到行上，行元素就有那个
  * 变量，行内的一切（左边框、图标、标题）都读同一个值 —— 于是"阅读视图是蓝色、编辑器是绿色"
  * 这类差异在结构上不可能出现。

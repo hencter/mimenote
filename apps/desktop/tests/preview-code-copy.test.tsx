@@ -5,7 +5,7 @@
  * 为什么要单测这段 DOM 操作：它挂在 React 拥有的 `dangerouslySetInnerHTML` 子树里 ——
  * 一旦"每次渲染都多挂一个按钮"或"卸载后按钮留在页面上"，就说明可逆性被破坏了；
  * 这两件事在界面上表现为"按钮越点越多 / 幽灵按钮点了没反应"，很难靠肉眼定位。
- * 剪贴板走 `domain/clipboard.ts`（`navigator.clipboard` + `execCommand` 兜底），
+ * 剪贴板走 `app/clipboard.ts`（`navigator.clipboard` + `execCommand` 兜底），
  * 因此这里可以用桩精确控制成功与失败两条路。
  */
 
@@ -13,7 +13,7 @@ import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { openNote } from '@/app/actions'
-import { copyText } from '@/domain/clipboard'
+import { copyText } from '@/app/clipboard'
 import { CODE_COPY_CLASS, CODE_COPY_FEEDBACK_MS } from '@/features/preview/code-copy'
 import { MarkdownPreview } from '@/features/preview/MarkdownPreview'
 import { setIpcAdapter } from '@/ipc/client'

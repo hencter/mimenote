@@ -13,7 +13,7 @@
  * 副作用可逆：按钮与定时器都记在返回的清理函数里，卸载/重新渲染时一并清掉。
  */
 
-import { copyText } from '@/domain/clipboard'
+import { copyText } from '@/app/clipboard'
 
 /** 复制按钮的类名（E2E 与样式共用，避免字符串散落）。 */
 export const CODE_COPY_CLASS = 'mn-code-copy'

@@ -21,19 +21,37 @@ import { describe, expect, it } from 'vitest'
 
 import { Icon, ICON_SIZES } from '@/components/Icon'
 
-function readAppCss(): string {
-  const candidates = [
-    resolve(process.cwd(), 'src/styles/app.css'),
-    resolve(process.cwd(), 'apps/desktop/src/styles/app.css'),
-  ]
+/**
+ * 直接从磁盘读**全部**样式表（B1，ADR-0060 §4）。
+ *
+ * 判据问的是"产品里存在这条 `--icon-*` 刻度吗"，而不是"它恰好住在 `styles/app.css` 里吗"：
+ * app.css 已按归属拆成 `styles/tokens.css` 等；规则落在哪个文件由门禁保证，不由这里保证 ——
+ * 所以这里只把"源"的范围放大，**断言一个字没改**。
+ */
+function readStyles(): string {
+  const candidates = [resolve(process.cwd(), 'src'), resolve(process.cwd(), 'apps/desktop/src')]
   for (const candidate of candidates) {
     try {
-      return readFileSync(candidate, 'utf8')
+      if (!statSync(candidate).isDirectory()) continue
+      return cssFiles(candidate)
+        .sort()
+        .map((file) => readFileSync(file, 'utf8'))
+        .join('\n')
     } catch {
       // 换下一个候选路径
     }
   }
-  throw new Error(`找不到 app.css（尝试过：${candidates.join('、')}）`)
+  throw new Error(`找不到前端源码目录（尝试过：${candidates.join('、')}）`)
+}
+
+/** 递归列出目录下的 `.css`（排序由调用方做，结果因此稳定）。 */
+function cssFiles(dir: string, out: string[] = []): string[] {
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name)
+    if (statSync(path).isDirectory()) cssFiles(path, out)
+    else if (path.endsWith('.css')) out.push(path)
+  }
+  return out
 }
 
 /** 递归列出 `src/` 下的 ts/tsx 源码（跳过 node_modules 与 dist 之类）。 */
@@ -96,7 +114,7 @@ describe('图标尺寸刻度', () => {
   })
 
   it('CSS 侧的 `--icon-*` 与组件刻度逐字一致（两处数字不许各写各的）', () => {
-    const css = readAppCss()
+    const css = readStyles()
     for (const [name, pixels] of Object.entries(ICON_SIZES)) {
       const matched = new RegExp(`--icon-${name}:\\s*(\\d+)px`, 'u').exec(css)
       expect(matched?.[1], `--icon-${name} 应当与 ICON_SIZES.${name} 一致`).toBe(String(pixels))

@@ -18,7 +18,7 @@ import {
   type LayoutMetrics,
   type MeasureText,
 } from '@/features/graph/canvas/text-layout'
-import type { Point, Rect } from '@/features/graph/layout'
+import type { Point, Rect } from '@/domain/graph/layout'
 import {
   cardLocalToWorld,
   findLinkAnchor,

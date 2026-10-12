@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { migrateLayout } from '@/features/layout/layout-sync'
+import { migrateLayout } from '@/domain/layout/layout-sync'
 import { keyboardMoveItem } from '@/features/layout/tree-keys'
 import {
   DEFAULT_MAIN_LEAF_ID,
@@ -18,7 +18,7 @@ import {
   moveItem,
   noteItem,
   type TreeLayout,
-} from '@/features/layout/tree-layout'
+} from '@/domain/layout/tree-layout'
 
 /** 一棵带笔记的树：main 叶有 a/b 两篇笔记，四个模块各占一格（默认迁移形态）。 */
 const base = (): TreeLayout => migrateLayout(undefined, { dock: null, notes: ['a.md', 'b.md'] })

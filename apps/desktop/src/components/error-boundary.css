@@ -1,0 +1,54 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.components {
+
+/*
+ * 崩溃界面（`.mn-crash`）：React 错误边界接住异常时的最后一屏。
+ *
+ * B1：从 `styles/app.css` 迁入 1296-1337（原"崩溃界面"段）。
+ */
+
+/* --------------------------------------------------------- 崩溃界面 */
+
+.mn-crash {
+  max-width: 760px;
+  margin: 48px auto;
+  padding: 0 24px;
+  overflow: auto;
+  height: 100%;
+}
+
+.mn-crash h1 {
+  color: var(--mn-danger);
+}
+
+.mn-crash__message {
+  font-family: var(--mn-font-mono);
+  color: var(--mn-fg);
+  white-space: pre-wrap;
+}
+
+.mn-crash__hint {
+  color: var(--mn-fg-muted);
+}
+
+.mn-crash__actions {
+  display: flex;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.mn-crash__stack {
+  padding: 12px;
+  border: 1px solid var(--mn-border);
+  border-radius: var(--mn-radius);
+  background: var(--mn-code-bg);
+  color: var(--mn-fg-muted);
+  font-family: var(--mn-font-mono);
+  font-size: 11px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+}

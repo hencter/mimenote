@@ -1,8 +1,12 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
 /*
  * 预览里图片的呈现细节：图注、等待态骨架、超大图封顶、"点击查看原图"。
  *
- * 为什么放在 `features/lightbox/` 而不是 `styles/app.css`：这些规则只服务"图片"这一个特性，
- * app.css 是所有特性的公共文件（改动会外溢）。类名与 `domain/markdown.ts` 的
+ * 为什么放在 `features/lightbox/` 而不是全局共用的样式表：这些规则只服务"图片"这一个特性，
+ * 那种表所有特性都碰（改动会外溢）。类名与 `domain/markdown.ts` 的
  * `.mn-figure` / `.mn-image__caption` / `.mn-image__hint` **成对维护**：改一处必须改两处。
  *
  * 代价（需要在接线时知道）：这些规则随 `<ImageLightbox />` 一起加载。灯箱没挂载时，
@@ -172,4 +176,5 @@
 
 .mn-preview__body .mn-wikilink__embed {
   border-bottom: 1px dashed currentColor;
+}
 }

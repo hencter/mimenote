@@ -31,7 +31,7 @@ import {
   useGraphStore,
 } from '@/state/graph-store'
 import { useVaultStore } from '@/state/vault-store'
-import { forcePreset } from '@/features/graph/force-presets'
+import { forcePreset } from '@/domain/graph/force-presets'
 
 const VAULT_ROOT = 'C:\\Mock\\Vault'
 const OTHER_VAULT = 'C:\\Other\\Vault'

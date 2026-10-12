@@ -13,7 +13,7 @@
 
 import { create } from 'zustand'
 
-import type { LayoutItemId } from './tree-layout'
+import type { LayoutItemId } from '@/domain/layout/tree-layout'
 
 interface LayoutDragState {
   /** 正在拖的标签；`null` = 没有拖动。 */

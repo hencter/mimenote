@@ -4,7 +4,7 @@
  * ADR-0038 之后它从标题栏下移进**文件树工具栏**（业务控件不再和窗口按钮挤出一条 chrome）：
  * 那里是内容层的工具区域（新建/重命名/移动/排序都在同一行），导出与它们同属"对文档的操作"。
  * 文件树被收起时仍可从命令面板（`export.html` / `export.pdf` / `export.site`）触达。
- * 样式（`.mn-export-launch`）写在 `export.css` 里，**不动共享的 `styles/app.css`**。
+ * 样式（`.mn-export-launch`）写在 `export.css` 里，**不动共享样式表**。
  */
 
 import { Icon } from '@/components/Icon'

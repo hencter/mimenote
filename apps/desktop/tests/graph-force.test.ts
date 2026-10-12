@@ -16,7 +16,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { rectsIntersect, type Rect } from '@/features/graph/layout'
+import { rectsIntersect, type Rect } from '@/domain/graph/layout'
 import {
   DEFAULT_FORCE_PARAMS,
   createForceSimulation,
@@ -24,8 +24,8 @@ import {
   type ForceNode,
   type ForceParams,
   type ForceSimulation,
-} from '@/features/graph/force'
-import { FORCE_PRESETS, forcePreset } from '@/features/graph/force-presets'
+} from '@/domain/graph/force'
+import { FORCE_PRESETS, forcePreset } from '@/domain/graph/force-presets'
 
 // ---------------------------------------------------------------------------
 // 夹具

@@ -21,7 +21,7 @@ import {
   formatForceParam,
   useGraphStore,
 } from '@/state/graph-store'
-import { FORCE_PRESETS, forcePreset } from './force-presets'
+import { FORCE_PRESETS, forcePreset } from '@/domain/graph/force-presets'
 import './force-panel.css'
 
 /** 当前参数是不是就等于某个预设那一套（是的话界面显示预设名，否则显示"自定义"）。 */

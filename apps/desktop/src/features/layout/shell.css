@@ -1,0 +1,80 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
+
+/*
+ * 应用外壳：窗口的列方向 flex 骨架（`.mn-app`/`.mn-body`）与三种内容面（`.mn-pane`）。
+ * 归属 features/layout 的理由：ADR-0035 之后"侧栏/主区域"不再是固定容器，而是容器切割树上的格子，
+ * 外壳的排布就是布局域的职责。
+ *
+ * B1：从 `styles/app.css` 迁入 196-223、271-307（原"布局"段）。窗口按钮在
+ * `features/window/window-controls.css`。
+ */
+
+
+/* ------------------------------------------------------------------ 布局 */
+
+/*
+ * 外壳用**列方向 flex**，而不是位置化的 grid-template-rows。
+ *
+ * 原因（曾经的真实 bug）：冲突横幅是可选节点，`<ConflictBanner />` 无冲突时返回 null。
+ * 若用 `grid-template-rows: auto auto 1fr auto` 按位置排布，少一个子节点就会让
+ * 「主体」落到 auto 行、「状态栏」占用 1fr 行 —— 结果是主体被压成内容高度、
+ * 窗口下方留空，直到打开一篇笔记把内容撑高才"看起来对齐窗口"。
+ *
+ * flex 不关心有没有中间节点：谁声明 flex-grow 谁吃掉剩余空间。
+ */
+.mn-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/*
+ * 独立标题栏已退役（ADR-0038）：`.mn-titlebar / __left / __center / __right /
+ * __brand / __vault / __meta` 整组删除 —— 内容从窗口最顶边开始，有效垂直空间多出 36px。
+ * 业务信息各自归位：库名/统计在状态栏，导出在文件树工具栏，路径在状态栏最左。
+ * 唯一留下的是窗口按钮（下面），它住进主叶标签条的右端（`LeafTabs` 的窗口按钮槽）。
+ */
+
+.mn-body {
+  /* 唯一吃掉剩余高度的区域；min-height:0 允许内部滚动而不是撑破窗口 */
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/*
+ * `.mn-sidebar` 与 `.mn-main` 已随容器切割树（ADR-0035）删除：
+ * "左侧那一栏"与"主区域"不再是固定容器，而是树上的格子（`.mn-leaf`）。
+ */
+
+.mn-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  flex-grow: 0;
+  flex-shrink: 1;
+}
+
+.mn-pane--editor {
+  background: var(--mn-editor-bg);
+}
+
+/*
+ * 图谱画布：主区域里唯一"不该有内边距、不该滚动"的面 —— 画布自己管平移与缩放。
+ * `overflow: hidden` 是必须的：卡片超出视口时不能让外层出现滚动条（那会和画布的平移打架）。
+ */
+.mn-pane--graph {
+  flex: 1 1 auto;
+  overflow: hidden;
+  background: var(--mn-bg);
+  position: relative;
+}
+
+}

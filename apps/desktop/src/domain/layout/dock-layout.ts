@@ -4,12 +4,12 @@
  * 这个文件现在只剩两个用途：
  *
  * 1. **迁移**：`ui-store` 恢复时，若 localStorage 里只有旧的 `dockLayout`，
- *    由 `features/layout/layout-sync.ts` 的 `migrateLayout` 转成切割树；
+ *    由 `domain/layout/layout-sync.ts` 的 `migrateLayout` 转成切割树；
  * 2. **回滚可读**：`mimenote.ui.v1` 里的 `dockLayout` 键**不删** —— 回滚到旧版本时
  *    还能读到升级前那份布局。
  *
  * 因此这里只保留类型、缺省值与形状校验；操作面（搬移 / 键盘 / 落点下标）随渲染器
- * 一起退役，树的等价物在 `features/layout/tree-layout.ts`（操作）与
+ * 一起退役，树的等价物在 `domain/layout/tree-layout.ts`（操作）与
  * `features/layout/tree-keys.ts`（键盘）。
  */
 

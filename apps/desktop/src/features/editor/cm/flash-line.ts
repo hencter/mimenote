@@ -132,7 +132,7 @@ const flashLineTimer = ViewPlugin.fromClass(
  * 底色走主题令牌而不是写死颜色（换主题 / Vault CSS 片段都能跟着变）；用半透明混合而不是
  * 直接用 `--mn-accent`：闪烁那 800ms 里正文必须仍然可读，实色强调色配正文颜色会糊成一片。
  *
- * `prefers-reduced-motion` 下 `styles/app.css` 会把动画时长压到 0.01ms —— 那时这一行仍留着
+ * `prefers-reduced-motion` 下 `styles/base.css` 会把动画时长压到 0.01ms —— 那时这一行仍留着
  * 一层静态底色，直到定时器把它摘掉。于是"关掉动效"的用户同样能看到落点，只是不闪。
  */
 export const flashLineTheme = EditorView.theme({

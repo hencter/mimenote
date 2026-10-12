@@ -131,10 +131,18 @@ function defaultBindingList(command: Command): readonly string[] {
 }
 
 /*
- * 键盘原语（`normalizeChord` / `normalizeKeyName` / `isMacPlatform` / `chordFromEvent` /
- * `formatChord`）的实现搬到了 `domain/keymap.ts`：它们是纯逻辑，而键位解析（ADR-0055）
- * 必须用到它们 —— domain 不能反过来依赖 app。这里**再导出**同一组名字，
- * 既有调用点（`app/keymap.ts`、面板、测试）零改动，而实现只有一份。
+ * 键盘原语（`normalizeChord` / `normalizeKeyName` / `chordFromEvent` / `formatChord`）
+ * 的实现搬到了 `domain/keymap.ts`：它们是纯逻辑，而键位解析（ADR-0055）必须用到它们 ——
+ * domain 不能反过来依赖 app。`isMacPlatform` 反过来**搬出**了 domain（它读 `navigator`，
+ * 按 ADR-0060 的纯净性判据不住在那边），现在由 `app/env.ts` 提供、在这里与键位原语一起再导出，
+ * 于是既有调用点（`app/keymap.ts`、面板、测试）零改动，而实现各只有一份。
  */
-export { chordFromEvent, formatChord, isMacPlatform, normalizeChord, normalizeKeyName } from '@/domain/keymap'
+export {
+  chordFromEvent,
+  formatChord,
+  normalizeChord,
+  normalizeKeyName,
+  setMacPlatformResolver,
+} from '@/domain/keymap'
+export { isMacPlatform } from '@/app/env'
 

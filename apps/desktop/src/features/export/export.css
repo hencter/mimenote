@@ -1,7 +1,11 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
 /*
  * 导出特性自己的样式：对话框的两个选项、进度行，以及**打印时的应用外壳隐藏**。
  *
- * 为什么单独成文件：`styles/app.css` 不在本次改动的可改范围，而且这些规则只服务导出这一个
+ * 为什么单独成文件：这些规则只服务导出这一个
  * 特性（对话框基础布局仍复用 `.mn-overlay` / `.mn-dialog` / `.mn-button`，颜色全部走主题变量）。
  *
  * ⚠️ 打印规则必须与 `export-html.ts` 的打印样式**分工明确**：
@@ -104,24 +108,33 @@
 }
 
 @media print {
+  /*
+   * 打印覆盖**不再需要 `!important`**（B1 删掉了这里原有的 5 处）。
+   *
+   * 为什么可以删：本文件在 `mn.features` 层，而它要压过的 `body { overflow: hidden }`、
+   * `html, body, #root { height: 100% }`、`body { background: var(--mn-bg) }` 都在 `mn.base` 层
+   * （`styles/base.css`）—— 层序先于权重比较，普通声明就够赢。删掉之后全仓 `!important` 只剩 4 处，
+   * 都是"层序治不了"的（`prefers-reduced-motion` 的动画时长、CodeMirror 的行内 z-index）。
+   */
   /* 只留打印容器：标题栏、侧栏、文件树、编辑器、面板、状态栏、toast、对话框全部不打印 */
   body > *:not(#mn-print-root) {
-    display: none !important;
+    display: none;
   }
 
   #mn-print-root {
-    display: block !important;
+    display: block;
   }
 
   /* 滚动条在纸上没有意义，而且会在版面右侧留下一条竖线 */
   html,
   body {
-    overflow: visible !important;
-    height: auto !important;
-    background: #ffffff !important;
+    overflow: visible;
+    height: auto;
+    background: #ffffff;
   }
 
   ::-webkit-scrollbar {
     display: none;
   }
+}
 }

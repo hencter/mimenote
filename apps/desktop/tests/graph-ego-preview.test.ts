@@ -20,7 +20,7 @@ import {
   type FontSpec,
   type MeasureText,
 } from '@/features/graph/canvas/text-layout'
-import { layoutEgo } from '@/features/graph/layout-ego'
+import { layoutEgo } from '@/domain/graph/layout-ego'
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter } from '@/ipc/mock-adapter'
 import { useGraphStore } from '@/state/graph-store'

@@ -1,3 +1,7 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
 /*
  * 标签过滤控件样式（文件树头部）。
  *
@@ -7,7 +11,7 @@
 
 /*
  * 工具栏原本是单行 flex（搜索框 + 一排图标按钮），控件要独占第二行。
- * 用复合选择器而不是单类名：`flex-wrap` 是覆盖 app.css 的 `.mn-tree-toolbar`，
+ * 用复合选择器而不是单类名：`flex-wrap` 是覆盖 `features/vault/tree.css` 的 `.mn-tree-toolbar`（B1 之前那条在 app.css 里），
  * 同优先级下谁赢取决于两个样式表的加载顺序 —— 复合选择器把这件事变成确定的。
  */
 .mn-tree-toolbar.mn-tree-toolbar--with-tags {
@@ -265,7 +269,7 @@
 /*
  * 标签过滤的空态里有两三个按钮（重新过滤 / 清除标签过滤 / 清除文本过滤），
  * 它们是一组"退路"，横排一行比在 `.mn-tree--empty` 的竖排里各占一行更好读。
- * 放在这里而不是 `styles/app.css`：那是全仓共用的样式表，而这条只服务于本能力带来的界面。
+ * 放在这里而不是全局共享的样式表（B1 之前是 `styles/app.css`）：那种表全仓共用，而这条只服务于本能力带来的界面。
  */
 .mn-tree__empty-buttons {
   display: flex;
@@ -319,4 +323,5 @@
   border-color: var(--mn-border);
   border-style: dashed;
   color: var(--mn-fg-muted);
+}
 }

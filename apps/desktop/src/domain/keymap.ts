@@ -238,15 +238,23 @@ export function normalizeKeyName(key: string): string {
   return key
 }
 
-/** 是否为 macOS（决定 `Mod` 用 Cmd 还是 Ctrl）。 */
-export function isMacPlatform(): boolean {
-  if (typeof navigator === 'undefined') return false
-  const platform = navigator.platform ?? ''
-  return /mac|iphone|ipad/i.test(platform) || /Mac/i.test(navigator.userAgent)
+/**
+ * "主修饰键是不是 Cmd"的**注入点**（ADR-0060 的 domain 纯净性）。
+ *
+ * 为什么不是一个 `isMacPlatform()` 直接读 `navigator`：那会让 `domain` 碰浏览器全局 ——
+ * 按 ADR-0060 的判据，碰了就说明它不该住 domain。环境探测住在 `app/env.ts`
+ * （运行时层），由 `app/bootstrap.ts` 在启动时装进来；**未安装时的默认值是 `false`**
+ * （Windows/Linux 语义），于是纯单测里的行为是确定的，不依赖 jsdom 的 `navigator` 长什么样。
+ */
+let macPlatformResolver: () => boolean = () => false
+
+/** 安装平台探测（`bootstrap` 里调一次；传 `null` 回到"非 mac"）。 */
+export function setMacPlatformResolver(next: (() => boolean) | null): void {
+  macPlatformResolver = next ?? (() => false)
 }
 
 /** 键盘事件 → 归一化快捷键串（无有效主键时返回空串）。 */
-export function chordFromEvent(event: KeyboardEvent, isMac = isMacPlatform()): string {
+export function chordFromEvent(event: KeyboardEvent, isMac = macPlatformResolver()): string {
   const modifiers: string[] = []
   const primary = isMac ? event.metaKey : event.ctrlKey
   if (primary) modifiers.push('Mod')
@@ -265,7 +273,7 @@ export function chordFromEvent(event: KeyboardEvent, isMac = isMacPlatform()): s
 }
 
 /** 人类可读的快捷键展示（状态栏/命令面板/设置页用）。 */
-export function formatChord(chord: string, isMac = isMacPlatform()): string {
+export function formatChord(chord: string, isMac = macPlatformResolver()): string {
   return normalizeChord(chord)
     .split('+')
     .map((part) => {

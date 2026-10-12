@@ -9,13 +9,13 @@ import { describe, expect, it } from 'vitest'
 
 import {
   DEFAULT_MODULE_HOME,
+  fromDockLayout,
   migrateLayout,
   reconcileLayout,
-} from '@/features/layout/layout-sync'
+} from '@/domain/layout/layout-sync'
 import {
   attachItem,
   defaultLayout,
-  fromDockLayout,
   itemsOf,
   leafOfItem,
   leaves,
@@ -25,8 +25,8 @@ import {
   setActive,
   type TreeLayout,
   type ViewModuleId,
-} from '@/features/layout/tree-layout'
-import { DEFAULT_DOCK_LAYOUT } from '@/features/dock/dock-layout'
+} from '@/domain/layout/tree-layout'
+import { DEFAULT_DOCK_LAYOUT } from '@/domain/layout/dock-layout'
 
 const ALL_MODULES: readonly ViewModuleId[] = ['tree', 'links', 'tags', 'outline']
 

@@ -1,3 +1,7 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
 /*
  * 容器切割树的渲染样式（ADR-0035）。
  *
@@ -193,4 +197,5 @@
 .mn-tree-bottom > .mn-recent-vaults {
   flex: 1 1 auto;
   min-width: 0;
+}
 }

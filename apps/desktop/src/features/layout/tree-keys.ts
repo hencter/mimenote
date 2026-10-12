@@ -1,7 +1,7 @@
 /**
  * 容器切割树的**键盘等价物**（ADR-0035：拖拽之外的第二条路，可访问性要求）。
  *
- * 键位是旧停靠模型那一套（`Alt+1/2/3` + `Alt+方向键`，见 `features/dock/dock-layout.ts`
+ * 键位是旧停靠模型那一套（`Alt+1/2/3` + `Alt+方向键`，见 `domain/layout/dock-layout.ts`
  * 的历史版本）在树上的对应物：
  *
  * | 按键 | 语义 |
@@ -27,8 +27,8 @@ import {
   moveItem,
   type SplitAxis,
   type TreeLayout,
-} from './tree-layout'
-import type { LayoutItemId } from './tree-layout'
+} from '@/domain/layout/tree-layout'
+import type { LayoutItemId } from '@/domain/layout/tree-layout'
 
 /** `Alt+数字` 与落点的对应：1 左、2 右、3 下（沿用旧停靠模型的肌肉记忆）。 */
 const SIDE_BY_KEY: Readonly<Record<string, { edge: 'left' | 'right' | 'bottom'; axis: SplitAxis }>> = {

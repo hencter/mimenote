@@ -1,0 +1,66 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
+
+/*
+ * 编辑器宿主（`.mn-editor`/`__surface`/`__placeholder`）与它的 CodeMirror 基座。
+ * 编辑器**内部**的样式一律走 `EditorView.theme`（`features/editor/cm` 下各模式自己的 theme.ts）；
+ * 这里只有 3 条 `cm-` 选择器，都是"CM 挂在宿主上、theme 管不到"的那一层，门禁冻结其数量 ≤3。
+ *
+ * 为什么保留 2 处 `!important`（`.mn-editor__surface .cm-selectionLayer` 的 `z-index`、
+ * `.cm-selectionBackground` 的 `background`）：CM6 的 `layer()` 把 `z-index` 写成**行内普通样式**，
+ * 作者 `!important` 是唯一能压过它的东西 —— 与层序无关，所以这两处不是"没分层"的补丁。
+ *
+ * B1：从 `styles/app.css` 迁入 513-560（原"编辑器"段）。
+ */
+
+/* -------------------------------------------------------------- 编辑器 */
+
+/*
+ * 编辑器宿主（.mn-editor）。
+ *
+ * 它曾经有一条 26px 的「当前路径」工具栏（.mn-editor__path / .mn-editor__status）——
+ * 已整条搬到标题栏中区（ADR-0029），所以这里只剩"占位提示"与"编辑面板"两种形态。
+ */
+.mn-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/*
+  滚动**留在 CodeMirror 自己的 scroller 上**，不要改成"整个面板滚动 + 编辑器长到全文高"。
+  那条路看着更简单，实际会同时坏掉两件事：
+  1. `EditorView.scrollIntoView`（搜索命中/大纲跳转的"滚到视口正中"）作用在 `.cm-scroller` 上，
+     它一旦 `overflow: visible` 就无处可滚 —— 跳转落点在屏幕外，用户只看到"跳了但没滚"；
+  2. CM 的视口窗口化按 scroller 的**可视高度**算：高度等于全文时它会把所有行都渲染出来，
+     大文档的 DOM 量直接回到"整篇都在 DOM 里"（ADR-0020 那笔账）。
+*/
+.mn-editor__surface {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.mn-editor__surface .cm-editor {
+  height: 100%;
+}
+/* CodeMirror 的 layer() 写入行内 z-index:-2，必须明确覆盖才能让选区位于块底色上方。 */
+.mn-editor__surface .cm-selectionLayer { z-index: 3 !important; pointer-events: none; }
+.mn-editor__surface .cm-selectionBackground {
+  background: color-mix(in srgb, var(--mn-accent) 38%, transparent) !important;
+}
+
+.mn-editor__placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  color: var(--mn-fg-subtle);
+}
+
+}

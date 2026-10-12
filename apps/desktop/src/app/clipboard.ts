@@ -1,6 +1,11 @@
 /**
  * 复制文本到系统剪贴板。
  *
+ * **为什么住在 `app/` 而不是 `domain/`**（ADR-0060）：它要碰 `document` 与 `navigator`，
+ * 而 `domain/**` 的判据是"不 import React、不碰 DOM、不读 store"。这条功能过去放在
+ * `domain/clipboard.ts`，架构门禁把它登记成"domain 纯净性"债务；现在它搬到这里，
+ * 纯逻辑（页面上的文本生成、要复制什么）仍然在各特性的 `domain` 侧。
+ *
  * 为什么要两条路：`navigator.clipboard` 只在**安全上下文**里存在，而 Tauri 的
  * 自定义协议（`tauri://localhost`）在部分 WebView 版本里不算安全上下文 —— 直接依赖它
  * 会出现"按钮点了没反应"。于是先试现代 API，失败再退回"临时 `<textarea>` + `execCommand`"，

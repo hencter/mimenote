@@ -33,9 +33,9 @@
  *   可选字段，缺省 `DEFAULT_METRICS`（与 `layoutCard` 的缺省一致）。
  *   ⚠️ 调用方给 `layoutCard` 传了自定义 metrics 时**必须**把同一份交给画笔，否则就是
  *   "按 A 套数字折行、按 B 套数字画字"，卡片右边会溢出。
- * - `token?`：callout 的强调色只能通过"令牌 → 颜色"问出来（颜色只有 app.css 一份），
+ * - `token?`：callout 的强调色只能通过"令牌 → 颜色"问出来（颜色只有 features/preview/preview.css 一份），
  *   而 `PaintInput` 里没有别的地方能拿到令牌读取器。缺省时退到 `palette.quoteBorder` ——
- *   与 app.css 里 `var(--mn-callout-accent, var(--mn-quote-border))` 的兜底逐字一致。
+ *   与 features/preview/preview.css 里 `var(--mn-callout-accent, var(--mn-quote-border))` 的兜底逐字一致。
  * - （第三个可选字段一个都没有了：`mode` / `hop` / `isRoot` 都按任务书给的原样收下，
  *   见各自字段上的说明。）
  *
@@ -47,7 +47,7 @@
  * 本文件里所有分支都只依赖入参。
  */
 
-import type { GraphEdgeVisual, Rect } from '../layout'
+import type { GraphEdgeVisual, Rect } from '@/domain/graph/layout'
 import type { InlineRun } from './blocks'
 import { type PaintContext, type ViewTransform } from './context'
 import { paintEdgeLayer, type PaintedEdge } from './edge-paint'
@@ -198,13 +198,13 @@ const CALLOUT_TINT_ALPHA = 0.12
 /**
  * callout 强调色缺省时用来兜底的令牌名。
  *
- * `--mn-quote-border` 而不是某个写死的颜色：app.css 里 callout 的强调色正是
+ * `--mn-quote-border` 而不是某个写死的颜色：features/preview/preview.css 里 callout 的强调色正是
  * `var(--mn-callout-accent, var(--mn-quote-border))` —— 强调色缺失时阅读视图染的也是这个中性色。
  * 调色板里已经有这个令牌读出来的值（`palette.quoteBorder`），直接复用，不重复读一次 DOM。
  */
 const QUOTE_BORDER_TOKEN = '--mn-quote-border'
 
-/** app.css 里那条"只声明 `--mn-callout-accent`"的规则所赋值的变量名（见 `tokenReader`）。 */
+/** features/preview/preview.css 里那条"只声明 `--mn-callout-accent`"的规则所赋值的变量名（见 `tokenReader`）。 */
 const CALLOUT_ACCENT_TOKEN = '--mn-callout-accent'
 
 // ---------------------------------------------------------------------------
@@ -336,8 +336,8 @@ function focusedPaths(input: PaintInput): ReadonlySet<string> {
  * 没给的时候只回答两个名字，都答"引用竖线色"：
  *
  * - `--mn-quote-border` → 它就是 `palette.quoteBorder` 本身；
- * - `--mn-callout-accent` → app.css 里这个变量缺失时的兜底正是 `var(--mn-quote-border)`，
- *   所以"这一帧的强调色 = 引用竖线色"在语义上就是 app.css 那条兜底链的结论。
+ * - `--mn-callout-accent` → features/preview/preview.css 里这个变量缺失时的兜底正是 `var(--mn-quote-border)`，
+ *   所以"这一帧的强调色 = 引用竖线色"在语义上就是 features/preview/preview.css 那条兜底链的结论。
  *
  * 于是 `calloutAccent` 的降级链在"没有令牌读取器"这一档上落在**调用方给的调色板**上，
  * 而不是落在 `palette.ts` 里的常量上 —— 调色板才是这一帧真正的主题来源
@@ -1114,11 +1114,11 @@ function drawTableBlock(
  * 子块的 `indent` 里已经含了 `calloutBodyInset`，所以这里只把"容器内容区原点"交给 `drawBlock`，
  * 不需要（也不该）知道内缩是怎么算的 —— 一旦画笔自己算一遍内缩，容器高度与子块位置就会用两套数字。
  *
- * 层级靠染色表达，不画边框不画竖条（与阅读视图同一哲学，见 app.css 的 callout 注释）：
+ * 层级靠染色表达，不画边框不画竖条（与阅读视图同一哲学，见 features/preview/preview.css 的 callout 注释）：
  * 强调色 12% 盖在卡片底上 —— canvas 没有 color-mix，用 `globalAlpha` 分两遍画，
  * 效果与 CSS 的 `color-mix(accent 12%, transparent)` 同一观感。
  *
- * 强调色**不在这里定**：颜色只有 app.css 一份，`accentOf` 按类型去问令牌（见 `palette.calloutAccent`）。
+ * 强调色**不在这里定**：颜色只有 features/preview/preview.css 一份，`accentOf` 按类型去问令牌（见 `palette.calloutAccent`）。
  * 未知类型（用户手写 `[!摘录]`）在 `blocks.ts` 里已经回落成 `note`，这里不会拿到没见过的类型名。
  */
 function drawCalloutBlock(

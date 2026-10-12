@@ -1,0 +1,141 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.tokens {
+
+/*
+ * 设计令牌层（mn.tokens，最低层）：@font-face + `:root` 兜底 + VI 别名层（ADR-0031）。
+ *
+ * 颜色/字体全部来自 CSS 变量（`--mn-*`），由 `theme/themes/*.json` 提供、运行时由
+ * `theme/apply.ts` 写入 `<html>` —— 因此新增主题**不需要改这个文件**；下面的 `:root` 只是
+ * 主题加载失败时的兜底（正常情况下 bootstrap 会先写变量）。
+ *
+ * 为什么"层序声明"在每个样式表顶部都重复一遍：`@layer a, b, c, d;` 幂等，但**只有声明过的层序才
+ * 有效**。写在这里而不是某个"入口文件"，样式顺序就与打包/注入顺序彻底无关 —— 从前
+ * B1 之前 `main.tsx` 的 `import './styles/app.css'` 排在 `@/App` 之后（于是"基座样式"反而最后注入、
+ * 同权重时最强）这个偶然事实，被这一行彻底消掉。
+ *
+ * 用户片段因此**变强**：`theme/snippets.ts` 把 `.mimenote/snippets/*.css` 作为 `<style>` 挂到
+ * `<head>`，它们不带层；而未分层的普通声明压过**任何**分层里的普通声明 —— 用户覆盖内置样式
+ * 不再需要 `!important`（反而用了会在"作者 important"里排最后）。
+ *
+ * B1：本文件承接 `styles/app.css` 的 1-42 行（@font-face + `:root` 兜底）与 60-138 行
+ * （VI 别名层）。`--icon-*` 与 `components/Icon.tsx` 的 `ICON_SIZES` 逐字一致，由
+ * `tests/icon.test.tsx` 把守；别名层仍由 `tests/design-tokens.test.ts` 管。
+ */
+
+
+/* Maple Mono（OFL-1.1，见 `public/fonts/OFL.txt`，会原样进产物）：构建期捆绑的 woff2
+   （CN Regular/Bold —— 拉丁与中日韩在同一文件里，中西文 2:1 网格）。
+   文件住在 `public/fonts/`（Vite 原样复制，不走管线处理 — 大文件不需要）。
+   `font-display: swap`：字体还在解码时先用回退字体顶着，不白屏。 */
+@font-face {
+  font-family: 'Maple Mono';
+  src: url('/fonts/MapleMonoCN-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Maple Mono';
+  src: url('/fonts/MapleMonoCN-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --mn-bg: #14161a;
+  --mn-fg: #d7dce5;
+  --mn-border: #272b33;
+  --mn-accent: #7aa2f7;
+  --mn-font-ui: 'Segoe UI', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  --mn-font-mono: 'Maple Mono', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  /* 默认字号：**三档统一 16**（阅读视图没被设置页写过时回落到编辑器那一档，
+     也就是 `features/preview/preview.css` 里阅读正文那一条的回落链）。
+     用户报过"整体默认字体统一 16 号"，这里就是那件事的落点；设置页仍然三档可调。 */
+  --mn-font-size-ui: 16px;
+  --mn-font-size-editor: 16px;
+  --mn-radius: 6px;
+}
+
+/* ---------------------------------------------------------------------------
+ * 设计令牌的**别名层**（VI 规范名 ↔ 本项目的存储名，ADR-0031）
+ *
+ * 规则：
+ * 1. `--mn-*` 是**存储格式** —— 主题 JSON 的键、`REQUIRED_TOKENS` 的清单、用户 CSS 片段里
+ *    写的东西，一律不动（三套内置主题与既有片段因此一个字都不用改）；
+ * 2. VI 规范名（`--bg-base` / `--text-primary` / `--brand-primary` / `--radius-md` / `--space-4` …）
+ *    是**公开的书写面**：插件、用户样式片段、新写的组件都用它，语义更清楚；
+ * 3. 值一律是 `var(--mn-…)`，**不许写死颜色** —— 单测（`tests/design-tokens.test.ts`）会拦住；
+ * 4. 主题作者**可以**定义的可选项走"可选令牌 + 兜底"（`var(--mn-xxx, 兜底)`，与 ADR-0028 的
+ *    `--mn-edge-out` 同一个套路）：不给也能跑，给了就生效，因此**不进 `REQUIRED_TOKENS`**，
+ *    否则所有既有主题会在启动时报缺令牌。
+ * --------------------------------------------------------------------------- */
+:root {
+  /* 背景 */
+  --bg-base: var(--mn-bg);
+  --bg-subtle: var(--mn-bg-subtle, var(--mn-bg-sidebar));
+  --bg-elevated: var(--mn-bg-elevated);
+  --bg-muted: var(--mn-bg-muted, var(--mn-hover));
+  --bg-inverse: var(--mn-bg-inverse, var(--mn-fg));
+
+  /* 文字 */
+  --text-primary: var(--mn-fg);
+  --text-secondary: var(--mn-fg-muted);
+  --text-tertiary: var(--mn-fg-subtle);
+
+  /* 品牌与语义色 */
+  --brand-primary: var(--mn-accent);
+  --brand-on-primary: var(--mn-accent-fg);
+  --brand-hover: var(--mn-brand-hover, var(--mn-accent));
+  --brand-active: var(--mn-brand-active, var(--mn-accent));
+  --success: var(--mn-success);
+  --warning: var(--mn-warning);
+  --danger: var(--mn-danger);
+  --info: var(--mn-info, var(--mn-link));
+
+  /* 边框 */
+  --border-default: var(--mn-border);
+  --border-muted: var(--mn-border-muted, var(--mn-border));
+
+  /* 圆角：以 `--mn-radius` 为中心派生，换主题只改一个数 */
+  --radius-sm: calc(var(--mn-radius) - 2px);
+  --radius-md: var(--mn-radius);
+  --radius-lg: calc(var(--mn-radius) + 2px);
+  --radius-full: 999px;
+
+  /* 字体族：阅读与编辑各自一档。默认**都回落到现在的 UI 字体** ——
+     把它们变成衬线/等宽是一次观感改动，要有意为之（VI 里的 Source Serif / JetBrains Mono
+     属于"可选皮肤"，不进默认值，否则机器上没装那套字时会掉到宋体一类难看的回退上）。 */
+  --font-reading: var(--mn-font-reading, var(--mn-font-ui));
+  --font-editor: var(--mn-font-editor, var(--mn-font-ui));
+  --font-code: var(--mn-font-mono);
+  --font-ui: var(--mn-font-ui);
+
+  /* 图标尺寸刻度（ADR-0033）：与 `components/Icon.tsx` 的 `ICON_SIZES` 逐字一致，
+     单测会把两边钉在一起。SVG 图标由组件按刻度渲染；CSS 里要和同一把尺子对齐时读这几个。 */
+  --icon-xs: 12px;
+  --icon-sm: 14px;
+  --icon-md: 16px;
+  --icon-lg: 20px;
+  --icon-xl: 24px;
+
+  /* 间距阶梯：8pt 栅格，编号 = px ÷ 4。**只是先定义**（VI 第 2.5 节）——
+     把散落在样式里的 6/10/14px 收敛到这一套是单独一轮的事，观感会变。 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  /* 字号阶梯：相对基础字号（em），因此用户调大字号时整个界面**一起**长 */
+  --font-size-xs: 0.85em;
+  --font-size-sm: 0.92em;
+  --font-size-md: 1em;
+  --font-size-lg: 1.15em;
+}
+}

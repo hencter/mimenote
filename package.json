@@ -18,6 +18,8 @@
     "test:scripts": "node --test scripts/*.test.mjs",
     "check:version": "node scripts/check-version.mjs",
     "check:ipc": "node scripts/check-ipc.mjs",
+    "check:architecture": "node scripts/check-architecture.mjs",
+    "check:css-layers": "node scripts/check-css-layers.mjs",
     "test:e2e": "pnpm --filter @mimenote/desktop test:e2e",
     "test:e2e:app": "pnpm --filter @mimenote/desktop test:e2e:app",
     "test:e2e:app:smoke": "pnpm --filter @mimenote/desktop test:e2e:app:smoke",
@@ -26,6 +28,6 @@
     "test:rust": "cargo test --workspace",
     "lint:rust": "cargo clippy --workspace --all-targets -- -D warnings",
     "fmt:rust": "cargo fmt --all",
-    "check": "pnpm check:version && pnpm check:ipc && pnpm typecheck && pnpm test && cargo test --workspace"
+    "check": "pnpm check:version && pnpm check:ipc && pnpm check:architecture && pnpm check:css-layers && pnpm typecheck && pnpm test && cargo test --workspace"
   }
 }

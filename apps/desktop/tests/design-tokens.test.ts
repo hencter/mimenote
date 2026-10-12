@@ -15,37 +15,56 @@
  * 3. 间距阶梯与圆角派生得对（圆角以 `--mn-radius` 为中心，换主题只改一个数）。
  */
 
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
 import { REQUIRED_TOKENS } from '@/theme/tokens'
 
-/** 直接从磁盘读 app.css（与 `tests/app-shell.test.tsx` 同一套候选路径与理由）。 */
-function readAppCss(): string {
-  const candidates = [
-    resolve(process.cwd(), 'src/styles/app.css'),
-    resolve(process.cwd(), 'apps/desktop/src/styles/app.css'),
-  ]
+/**
+ * 直接从磁盘读**全部**样式表（与 `tests/app-shell.test.tsx` 同一套候选路径与理由）。
+ *
+ * 为什么读全部 `src/**` 下的 `.css` 拼接，而不是某一个文件（B1，ADR-0060 §4）：
+ * 本文件的判据是"产品里存在这条别名/字体规则吗"，而不是"它恰好住在 `styles/app.css` 里吗"。
+ * B1 已把 `styles/app.css` 按归属拆成 `styles/tokens.css`（+ `styles/base.css` +
+ * `components/*.css` + `features/**`），规则落在哪个文件由门禁保证（层名按路径、BEM 块唯一、
+ * 跨文件共享块只减不增），不由这里保证 —— 所以这里只把"源"的范围放大，**断言一个字没改**。
+ */
+function readStyles(): string {
+  const candidates = [resolve(process.cwd(), 'src'), resolve(process.cwd(), 'apps/desktop/src')]
   for (const candidate of candidates) {
     try {
-      return readFileSync(candidate, 'utf8')
+      if (!statSync(candidate).isDirectory()) continue
+      return cssFiles(candidate)
+        .sort()
+        .map((file) => readFileSync(file, 'utf8'))
+        .join('\n')
     } catch {
       // 换下一个候选路径
     }
   }
-  throw new Error(`找不到 app.css（尝试过：${candidates.join('、')}）`)
+  throw new Error(`找不到前端源码目录（尝试过：${candidates.join('、')}）`)
 }
 
-const appCss = readAppCss()
+/** 递归列出目录下的 `.css`（排序由调用方做，结果因此稳定）。 */
+function cssFiles(dir: string, out: string[] = []): string[] {
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name)
+    if (statSync(path).isDirectory()) cssFiles(path, out)
+    else if (path.endsWith('.css')) out.push(path)
+  }
+  return out
+}
+
+const styles = readStyles()
 
 /** 别名层那一段（以 `--bg-base` 所在的那条规则为准）。 */
 function aliasBlock(): string {
-  const at = appCss.indexOf('--bg-base:')
-  if (at === -1) throw new Error('app.css 里没有别名层（找不到 --bg-base）')
-  const open = appCss.lastIndexOf(':root {', at)
-  return appCss.slice(open, appCss.indexOf('}', at))
+  const at = styles.indexOf('--bg-base:')
+  if (at === -1) throw new Error('样式表里没有别名层（找不到 --bg-base）')
+  const open = styles.lastIndexOf(':root {', at)
+  return styles.slice(open, styles.indexOf('}', at))
 }
 
 /** 取别名层里某个名字的声明值。 */
@@ -181,9 +200,9 @@ describe('首要字体 Maple Mono（用户指定，OFL-1.1 捆绑）', () => {
     }
   })
 
-  it('app.css 里有 @font-face（swap，不白屏），字体文件随产物发布', () => {
-    expect(appCss).toContain("font-family: 'Maple Mono'")
-    expect(appCss).toContain('font-display: swap')
+  it('样式表里有 @font-face（swap，不白屏），字体文件随产物发布', () => {
+    expect(styles).toContain("font-family: 'Maple Mono'")
+    expect(styles).toContain('font-display: swap')
     for (const file of ['MapleMonoCN-Regular.woff2', 'MapleMonoCN-Bold.woff2', 'OFL.txt']) {
       const candidates = [
         resolve(process.cwd(), `public/fonts/${file}`),

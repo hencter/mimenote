@@ -1,0 +1,45 @@
+/* 层序在每个样式表顶部重复声明（重复是幂等的）：这样层序只由声明决定，与打包/注入顺序无关。
+   未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
+@layer mn.tokens, mn.base, mn.components, mn.features;
+@layer mn.features {
+
+/*
+ * 冲突横幅（`.mn-conflict`）：外部改动与本地草稿冲突时的提示条。
+ * 归属 features/status 的理由：它是状态呈现，与状态栏同域。
+ *
+ * B1：从 `styles/app.css` 迁入 871-902（原"冲突横幅"段）。
+ */
+
+/* ------------------------------------------------------------ 冲突横幅 */
+
+.mn-conflict {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--mn-warning);
+  background: color-mix(in srgb, var(--mn-warning) 16%, var(--mn-bg-elevated));
+  color: var(--mn-fg);
+}
+
+.mn-conflict__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mn-conflict__body span {
+  color: var(--mn-fg-muted);
+  font-size: 12px;
+}
+
+.mn-conflict__actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+}

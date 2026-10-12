@@ -7,7 +7,7 @@
  *
  * ## 为什么是"读令牌"而不是"再写一份色表"
  *
- * 主题、阅读视图、导出件都以 `styles/app.css` 与 `theme/themes/*.json` 为唯一真源
+ * 主题、阅读视图、导出件都以 `features/preview/preview.css` 与 `theme/themes/*.json` 为唯一真源
  * （`theme/tokens.ts` 的 `REQUIRED_TOKENS` 就是那份契约）。画布这边再抄一份十六进制值，
  * 迟早出现"阅读视图是蓝色、卡片上是绿色"这种没人能解释的差异 —— 而且换主题时它**不会**报错，
  * 只会看起来怪。所以本文件里一个具体颜色都不写死（唯一允许的是"令牌读不到"时的兜底常量，
@@ -27,7 +27,7 @@
  *
  * ## callout 强调色：一处必须知道的落差（不是 bug，见 {@link calloutAccent}）
  *
- * app.css 里 13 种 callout 的写法是 `--mn-callout-accent: var(--mn-callout-note, #448aff)` ——
+ * features/preview/preview.css 里 13 种 callout 的写法是 `--mn-callout-accent: var(--mn-callout-note, #448aff)` ——
  * 具体颜色写在 `var()` 的**兜底位置**上，而 `--mn-callout-note` 这个变量**没有任何主题真的定义过**。
  * JS 的 `getComputedStyle` 读不到 `var()` 里的兜底值，所以 `token('--mn-callout-note')` 得到空串。
  * 本文件不去"补一份 13 色的表"（那正是要避免的第二份真源），而是按下面的链条降级 ——
@@ -71,7 +71,7 @@ export interface GraphPalette {
  * 令牌名 → 用途的映射。放在一处而不是散在 `paletteFrom` 里，是因为"哪个令牌管哪一笔"
  * 本身就是要被审的东西（改一个字段时能一眼看到它问的是哪个令牌）。
  *
- * `codeText` 问的是 `--mn-fg`：app.css 里 `code` / `pre` 只设了背景与等宽字体，
+ * `codeText` 问的是 `--mn-fg`：features/preview/preview.css 里 `code` / `pre` 只设了背景与等宽字体，
  * **没有**单独的前景色令牌（文字沿用正文色）。这里如实跟着走，不自己发明一个
  * `--mn-code-fg`（发明出来的令牌没有任何主题会填，等于把兜底常量伪装成令牌）。
  *
@@ -144,7 +144,7 @@ const FALLBACK: GraphPalette = {
 }
 
 /**
- * app.css 里那条"只声明 `--mn-callout-accent`"的规则所赋值的变量名。
+ * features/preview/preview.css 里那条"只声明 `--mn-callout-accent`"的规则所赋值的变量名。
  *
  * 单独列出来是因为它是**唯一**真的能被读到的 callout 变量：类型类名挂在元素上时
  * （`.mn-callout--note`）`--mn-callout-accent` 才有值，而 `CALLOUT_TYPES[type].token`
@@ -155,7 +155,7 @@ const CALLOUT_ACCENT_VAR = '--mn-callout-accent'
 /**
  * callout 强调色全部读不到时的兜底：**引用竖线色**。
  *
- * 这个选择不是随手取的，而是与 app.css 的兜底链逐字一致：
+ * 这个选择不是随手取的，而是与 features/preview/preview.css 的兜底链逐字一致：
  * `var(--mn-callout-accent, var(--mn-quote-border))` ——
  * 阅读视图在"强调色缺失"时染的也是这个中性色。两边同时降级到同一个颜色，
  * 才不会出现"阅读视图是灰的、画布是蓝的"这种只有一处坏掉才会有的分歧。
@@ -243,11 +243,11 @@ export function readPalette(element: Element): GraphPalette {
  * 降级链（每一档都有理由，别把它简化成一句 `token(...) ?? 常量`）：
  *
  * 1. **类型自己的令牌**（`--mn-callout-note`）：主题若真的定义了它，这是最准的来源；
- * 2. **`--mn-callout-accent`**：app.css 里那条"只声明 `--mn-callout-accent`"的规则。
+ * 2. **`--mn-callout-accent`**：features/preview/preview.css 里那条"只声明 `--mn-callout-accent`"的规则。
  *    调用方完全可以把 `token` 的实现换成"在挂了 `mn-callout--<type>` 类的探针元素上读这个变量"
  *    （所见即所得编辑器 `live-preview/callout.ts` 用的就是这条路，连颜色表都不用抄），
  *    那一档就能拿到真正的 13 种颜色；
- * 3. **引用竖线色**：与 app.css 的 `var(--mn-callout-accent, var(--mn-quote-border))` 逐字一致。
+ * 3. **引用竖线色**：与 features/preview/preview.css 的 `var(--mn-callout-accent, var(--mn-quote-border))` 逐字一致。
  *
  * ⚠️ 已知落差（写清楚免得后人来查）：用 `readPalette` 直接产出的 `token` 只能走到第 3 档 ——
  * 内置主题既不定义 `--mn-callout-note`，元素上也没有 callout 类名。

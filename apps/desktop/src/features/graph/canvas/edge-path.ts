@@ -34,7 +34,7 @@
  * —— 那份复杂度这里用不上。换算成量级：一条边几微秒，几百条边每帧不到 1ms。
  */
 
-import type { Point } from '../layout'
+import type { Point } from '@/domain/graph/layout'
 
 /** 一条命令：只有三种（理由见文件头）。坐标都是**世界坐标**，与几何层同一口径。 */
 export type PathCommand =

@@ -25,7 +25,7 @@ export const MD = {
   /**
    * 强调色**令牌载体的类名前缀**（`mn-callout--note`）。
    *
-   * 它不是 md 层的类名，而是 `styles/app.css` 里那条"只声明 `--mn-callout-accent`"的规则。
+   * 它不是 md 层的类名，而是 `features/preview/preview.css` 里那条"只声明 `--mn-callout-accent`"的规则。
    * 借它来上色，是为了让"类型 → 颜色"全应用只有一份表：编辑器主题里再抄一遍 13 种颜色，
    * 迟早会和阅读视图漂移，而那种差异没有任何测试能提前发现。
    */
@@ -110,7 +110,7 @@ export const WIKILINK_RESOLVED_ATTR = 'data-mn-resolved'
 /**
  * Live Preview 样式。
  *
- * 排版口径**对齐预览面板**（app.css 的 `.mn-preview__body`）：正文用界面字体、标题按级别放大、
+ * 排版口径**对齐预览面板**（features/preview/preview.css 的 `.mn-preview__body`）：正文用界面字体、标题按级别放大、
  * 行内代码与代码块用等宽字体 + 底色、引用是左侧竖线 + 淡色。这样"编辑器就是唯一的写作面"
  * 时，看到的排版与最终渲染不会两套。
  *
@@ -148,7 +148,7 @@ export const livePreviewThemeSpec: { [selector: string]: { [property: string]: s
      叠在一行上只能靠选择器优先级去分胜负（两者特异性相同，谁赢取决于样式表顺序）。
      所以判读阶段就把类名换掉（见 build.ts 的 emitQuoteLines），一行要么是引用、要么是 callout。
      颜色走 `--mn-callout-accent`（由 `mn-callout--<type>` 提供，见 MD.calloutAccent）。
-     与阅读视图同一哲学（见 app.css 的 callout 注释）：染色 + 留白，不画强调色边框。 */
+     与阅读视图同一哲学（见 features/preview/preview.css 的 callout 注释）：染色 + 留白，不画强调色边框。 */
   '.cm-line.mn-md-callout': {
     background:
       'color-mix(in srgb, var(--mn-callout-accent, var(--mn-quote-border)) 12%, transparent)',

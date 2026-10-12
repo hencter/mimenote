@@ -1,9 +1,15 @@
-/** 破坏性操作确认框（键盘可用：Esc 取消，Enter 确认）。 */
+/**
+ * 破坏性操作确认框（键盘可用：Esc 取消，Enter 确认）。
+ *
+ * 为什么住在 `features/shell/`（B9，ADR-0060 §2 的 P5）：它订阅 `state/confirm-store`
+ * —— "谁按了确定"直接决定应用的破坏性动作，所以它是**应用外壳**的一部分，不是能独立复用的通用控件。
+ * 从前它住在 `components/**`，于是"通用控件层值依赖状态层"成了一条要冻结的越界登记。
+ */
 
 import { useEffect, useRef } from 'react'
 
 import { useConfirmStore } from '@/state/confirm-store'
-import { Icon } from './Icon'
+import { Icon } from '@/components/Icon'
 
 export function ConfirmDialog() {
   const request = useConfirmStore((state) => state.request)

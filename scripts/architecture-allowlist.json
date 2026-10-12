@@ -1,0 +1,61 @@
+{
+  "$comment": "ADR-0060 的债务登记。每一条都是「只允许变小」的冻结项：修好一处就必须删掉对应登记，否则门禁会因为『登记已过期』而变红。要放宽任何一条（例如给待拆文件加行数），必须把理由写进 why/note —— 那一行会出现在 code review 的 diff 里。",
+  "$regenerate": "node scripts/check-architecture.mjs --print-baseline（只打印，不落盘）",
+  "newFileLineLimit": 600,
+  "dependencyViolations": [
+    {
+      "file": "apps/desktop/src/state/keymap-store.ts",
+      "to": "apps/desktop/src/app/commands.ts",
+      "why": "状态层依赖组合根的命令表。修法：命令注册表（纯注册 + 键位解析）下沉为 domain/commands，app/commands 只做再导出（与 ADR-0055 的 keymap 下沉同一手法）。"
+    }
+  ],
+  "domViolations": [],
+  "cycles": [],
+  "cssSharedBlocks": [
+    { "block": "mn-button", "files": ["apps/desktop/src/components/ui-controls.css", "apps/desktop/src/features/tags/tags-panel.css", "apps/desktop/src/features/vault/tag-filter.css"], "note": "通用按钮块。B1 把基座（含 --primary/--danger/--ghost）从 app.css 归位到 components/ui-controls.css；tags-panel 与 tag-filter 仍各写一条 --small 修饰符 —— 按 ADR-0060 §4 应改成各特性自己的块名。" },
+    { "block": "mn-dialog", "files": ["apps/desktop/src/components/dialog.css", "apps/desktop/src/features/export/export.css", "apps/desktop/src/features/tags/tags-panel.css", "apps/desktop/src/features/vault/move-dialog.css", "apps/desktop/src/features/vault/rename-dialog.css"], "note": "对话框基座（.mn-overlay 遮罩 + .mn-dialog 及 header/message/actions）已在 components/dialog.css；四个特性仍写 .mn-dialog--<特性> 修饰符 —— 按 §4 修饰符应改成各特性的块名。" },
+    { "block": "mn-icon", "files": ["apps/desktop/src/components/properties.css", "apps/desktop/src/components/ui-controls.css"], "note": "properties.css 仍重复定义通用图标尺寸（app.css 那半已归位到 components/ui-controls.css）。" },
+    { "block": "mn-icon-button", "files": ["apps/desktop/src/components/ui-controls.css", "apps/desktop/src/features/layout/tree-host.css"], "note": "通用尺寸已在 components/ui-controls.css（B1 按 §6.4 归位）；tree-host 仍为 .mn-tree-bottom 写 32px 的尺寸变体 —— 应改成 tree-host 自己的块名。" },
+    { "block": "mn-image", "files": ["apps/desktop/src/features/editor/cm/live-preview/table.css", "apps/desktop/src/features/lightbox/preview-image.css"], "note": "预览图片块被两个预览相关文件各写一半，需要指定唯一归属（建议 features/preview）。" },
+    { "block": "mn-image-placeholder", "files": ["apps/desktop/src/features/lightbox/preview-image.css", "apps/desktop/src/features/preview/preview.css"], "note": "占位图样式仍分家：lightbox 的 preview-image.css 与阅读视图的 features/preview/preview.css 各一半（B1 只是把 app.css 那一半搬进 preview.css）—— 渲染管线的唯一判据不应分家。" },
+    { "block": "mn-links", "files": ["apps/desktop/src/features/layout/tree-host.css", "apps/desktop/src/features/links/links-panel.css"], "note": "链接面板的块仍分家：links-panel.css 承接了 app.css 那一半，tree-host.css 仍写另一半。" },
+    { "block": "mn-outline", "files": ["apps/desktop/src/features/layout/tree-host.css", "apps/desktop/src/features/outline/outline.css"], "note": "tree-host 给大纲面板加了容器尺寸规则，应归 outline.css。" },
+    { "block": "mn-overlay", "files": ["apps/desktop/src/components/dialog.css", "apps/desktop/src/features/palette/palette.css", "apps/desktop/src/features/settings/settings.css"], "note": "遮罩基座已在 components/dialog.css；palette 与 settings 各写一条 --palette/--settings 修饰符（贴顶对齐、内边距）—— 修饰符该归各自的块名，属主从 2 个涨到 3 个正是这条债的收敛目标。" },
+    { "block": "mn-pane", "files": ["apps/desktop/src/features/layout/shell.css", "apps/desktop/src/features/layout/tree-host.css"], "note": "容器模型仍分家：基座（.mn-pane 的三种形态）在 features/layout/shell.css，tree-host.css 另写 .mn-leaf__content > .mn-pane —— 同属 features/layout，应合成一处。" },
+    { "block": "mn-preview", "files": ["apps/desktop/src/features/lightbox/preview-image.css", "apps/desktop/src/features/preview/preview-code.css", "apps/desktop/src/features/preview/preview.css"], "note": "阅读视图正文块仍横跨三个文件（B1 把 app.css 那部分并进了 features/preview/preview.css）—— preview-image 与 preview-code 各写一半，是与 domain/links.ts 的单一判据最该对齐的一块。" },
+    { "block": "mn-recent-vaults", "files": ["apps/desktop/src/components/ui-controls.css", "apps/desktop/src/features/layout/tree-host.css"], "note": "最近 Vault 列表既在通用控件里又在 tree-host 里定义。" },
+    { "block": "mn-select", "files": ["apps/desktop/src/components/ui-controls.css", "apps/desktop/src/features/editor/frontmatter-editor.css"], "note": "frontmatter 编辑器覆盖了通用下拉的尺寸。" },
+    { "block": "mn-tabs", "files": ["apps/desktop/src/features/layout/tree-host.css", "apps/desktop/src/features/tabs/tabs.css"], "note": "标签条块分家。" },
+    { "block": "mn-tags", "files": ["apps/desktop/src/features/layout/tree-host.css", "apps/desktop/src/features/tags/tags-panel.css"], "note": "标签面板块分家。" },
+    { "block": "mn-tree", "files": ["apps/desktop/src/features/vault/columns-tree.css", "apps/desktop/src/features/vault/drag-drop.css", "apps/desktop/src/features/vault/tag-filter.css", "apps/desktop/src/features/vault/tree.css"], "note": "文件树块被四个文件写（tree.css 承接了 app.css 那部分，其余是多列 / 拖拽 / 标签过滤三个变体）—— 一个块四个『判据』，这正是 CSS 归属要治的核心症状。" },
+    { "block": "mn-tree-row", "files": ["apps/desktop/src/features/vault/drag-drop.css", "apps/desktop/src/features/vault/tree.css"], "note": "拖拽态（drag-drop.css）与常态（tree.css，承接 app.css）分家：常态已归位到 features/vault/tree.css。" },
+    { "block": "mn-tree-toolbar", "files": ["apps/desktop/src/components/ui-controls.css", "apps/desktop/src/features/vault/tag-filter.css", "apps/desktop/src/features/vault/tree.css"], "note": "工具栏被三个文件写：常态在 features/vault/tree.css；tag-filter.css 用复合选择器写过滤态；components/ui-controls.css 里那条是工具栏内部 icon-button 的尺寸（B1 按 §6.4 归位到通用控件）—— 前两处应合成一处。" },
+    { "block": "mn-wikilink", "files": ["apps/desktop/src/features/editor/cm/live-preview/table.css", "apps/desktop/src/features/lightbox/preview-image.css", "apps/desktop/src/features/preview/preview.css"], "note": "wikilink 是五处渲染管线共用的判据，样式却散在三个文件里（B1 把 app.css 那部分并进了 features/preview/preview.css）—— 与 domain/links.ts 的单一判据对照着看。" }
+  ],
+  "cssPendingLayers": [],
+  "cssImportantBudget": {
+    "apps/desktop/src/styles/base.css": 2,
+    "apps/desktop/src/features/editor/editor-shell.css": 2
+  },
+  "cssCmSelectors": {
+    "apps/desktop/src/features/editor/editor-shell.css": 3
+  },
+  "oversizeFiles": [
+    { "file": "apps/desktop/src/features/editor/cm/live-preview/build.ts", "lines": 1261 },
+    { "file": "apps/desktop/src/features/graph/canvas/paint.ts", "lines": 1229 },
+    { "file": "apps/desktop/src/features/graph/canvas/blocks.ts", "lines": 1102 },
+    { "file": "apps/desktop/src/ipc/types.ts", "lines": 896 },
+    { "file": "apps/desktop/src/state/settings-store.ts", "lines": 867 },
+    { "file": "apps/desktop/src/features/graph/link-edge.ts", "lines": 854 },
+    { "file": "apps/desktop/src/features/graph/canvas/text-layout.ts", "lines": 824 },
+    { "file": "apps/desktop/src/features/graph/graph.css", "lines": 822, "note": "上限 817 → 822：B1 给每个样式表加层序声明 + `@layer` 包装（门禁强制），本文件 +5 行纯样板（2 行头部注释 + 层序声明 + 开/闭括号），**声明与顺序零改动**。往后任何真实增长仍会红。" },
+    { "file": "apps/desktop/src/domain/markdown-core.ts", "lines": 807 },
+    { "file": "apps/desktop/src/app/builtin-commands.ts", "lines": 786 },
+    { "file": "apps/desktop/src/features/vault/FileTree.tsx", "lines": 782 },
+    { "file": "apps/desktop/src/state/note-store.ts", "lines": 780 },
+    { "file": "apps/desktop/src/state/vault-store.ts", "lines": 758 },
+    { "file": "apps/desktop/src/features/export/site-export.ts", "lines": 724 },
+    { "file": "apps/desktop/src/features/preview/MarkdownPreview.tsx", "lines": 614 },
+    { "file": "apps/desktop/src/features/export/export-html.ts", "lines": 605 }
+  ]
+}
