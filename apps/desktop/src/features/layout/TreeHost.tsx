@@ -458,39 +458,58 @@ function LeafPane({ leaf, ctx }: { leaf: LeafNode; ctx: RenderContext }) {
 /** 叶子内容的分派（规则见文件头，就这一套）。 */
 function LeafContent({ shown, ctx }: { shown: LayoutItemId | null; ctx: RenderContext }) {
   const viewMode = useUiStore((state) => state.viewMode)
+  const openedFile = useUiStore((state) => state.openedFile)
   if (shown !== null && isViewModule(shown)) return <ModuleContent id={shown} />
 
   const note = shown === null ? null : notePathOf(shown)
   if (note !== null && !isMarkdown(note)) return <section className="mn-pane mn-pane--file"><FileViewer relPath={note} /></section>
-  /*
-    ⚠️ **当前文档那一格必须先交给 `MainViews`**，不能走下面的"每格一个编辑器"分支。
-    `MainViews` 负责的不只是编辑器：附件查看器（`openedFile`，ADR-0032）、阅读视图、图谱
-    都住在它里面。若当前文档在编辑视图下直接渲染 `MarkdownEditor`，那么"文件树里点一张图片/
-    一个 `.txt`"就再也不显示查看器了 —— 这正是 UI E2E 抓到的回归
-    （`e2e/ui.e2e.test.ts` 的"文件树里点一个 `.txt`"用例：先打开一篇笔记、再点附件）。
-
-    "一格一个编辑器"针对的是**非当前文档**那些格子（它们是只读的，见下面那个分支）。
-  */
-  if (note !== null && note === ctx.currentDoc) return <MainViews />
-  if (note !== null && viewMode === 'edit') {
-    /*
-      非当前文档在这一格里也有自己的编辑器（只读，见 `MarkdownEditor` 的 `data-note-path`），
-      因此"把这一格变成当前"由**点击内容**触发。
-      ⚠️ 不能挂在编辑器的 focus 上：搜索面板/浮层关闭会把焦点还给上一篇笔记的编辑器，
-      而那一刻 React 还没把 `notePath` 换成新文档 —— 旧路径于是把自己重新激活，
-      刚跳过去的笔记在 100ms 后被顶回去（实测过，`line-jump` 的接线用例钉住）。
-    */
-    return (
-      <section
-        className="mn-pane mn-pane--editor"
-        onPointerDownCapture={() => { void useTabsStore.getState().activate(note) }}
-      >
-        <MarkdownEditor notePath={note} />
-      </section>
-    )
-  }
   if (note !== null) {
-    // 非当前文档、且当前是阅读/图谱视图：只读预览（与图谱浮窗同一条渲染链路）
+    const isCurrent = note === ctx.currentDoc
+    /*
+      ⚠️ **附件查看器（`openedFile`，ADR-0032）优先**：当前文档那一格在"文件树里点一张图片/
+      一个 `.txt`"之后必须换成查看器。这正是 UI E2E 抓到的回归
+      （"先打开一篇笔记、再点附件"，见 `e2e/ui.e2e.test.ts`）。
+    */
+    if (isCurrent && openedFile !== null) {
+      return (
+        <section className="mn-pane mn-pane--file">
+          <FileViewer relPath={openedFile} />
+        </section>
+      )
+    }
+    /*
+      编辑视图：**当前与非当前走同一个元素形状**（`<section class="mn-pane mn-pane--editor">`
+      里放 `<MarkdownEditor>`），只是"点击是否把它变成当前"不同。
+
+      为什么必须同形：React 按位置 + 类型复用子树。从前当前文档那一格渲染的是
+      `<MainViews/>`、非当前那格是内联的 `<section>` —— 于是**点一下非当前那格把它变成当前**
+      会让 React 把整棵子树卸载重建：CodeMirror 实例没了（光标、滚动、撤销历史一起丢），
+      属性面板的展开态也回到默认。同形之后这一步只是换个 prop，实例原地保留。
+    */
+    if (viewMode === 'edit') {
+      return (
+        <section
+          className="mn-pane mn-pane--editor"
+          onPointerDownCapture={
+            isCurrent ? undefined : () => { void useTabsStore.getState().activate(note) }
+          }
+        >
+          <MarkdownEditor notePath={note} />
+        </section>
+      )
+    }
+    // 阅读/图谱视图：当前文档渲染真视图，别的格子渲染只读预览（与图谱浮窗同一条渲染链路）
+    if (isCurrent) {
+      return viewMode === 'read' ? (
+        <section className="mn-pane">
+          <MarkdownPreview />
+        </section>
+      ) : (
+        <section className="mn-pane mn-pane--graph">
+          <GraphCanvas />
+        </section>
+      )
+    }
     return <StaticNotePreview relPath={note} className="mn-leaf__preview" />
   }
   // 空叶（`shown === null` 时这只可能是主叶 —— 不变式 2 保证空叶是整树最后一格）
@@ -498,14 +517,23 @@ function LeafContent({ shown, ctx }: { shown: LayoutItemId | null; ctx: RenderCo
 }
 
 /**
- * 主视图：当前文档的三种形态（编辑 / 阅读 / 图谱）或附件查看器（ADR-0032）。
+ * 空叶的主视图：当前文档的三种形态（编辑 / 阅读 / 图谱）或附件查看器（ADR-0032）。
  *
- * 从旧 `App.tsx` 的 `.mn-main` 里原样搬来 —— 区别只是它现在渲染在"当前文档所在的格子"
- * 里，而不是一个固定的主区域。
+ * 从前它也负责"当前文档所在的格子"，但那条路已经收进 {@link LeafContent} 的笔记分支
+ * （理由见那里的注释：两条分支的元素形状必须一致，否则激活一格就会重建编辑器）。
+ * 现在它只剩一个用途：**空的主叶** —— 那时没有 `notePath` 可传，编辑器也还没有文档。
  */
 function MainViews() {
   const viewMode = useUiStore((state) => state.viewMode)
   const openedFile = useUiStore((state) => state.openedFile)
+  /**
+   * 当前文档路径**显式**传给编辑器。
+   *
+   * 从前这里是 `<MarkdownEditor />`（"当前文档"由组件内部读 store 猜）。分栏之后每格一个
+   * 编辑器实例、各有自己的文档，靠"内部读当前文档"来绑定就会让两格抢同一篇 ——
+   * 显式传路径是这一层唯一的正确做法（`notePath` 缺失时的兜底仍然保留）。
+   */
+  const currentDoc = useNoteStore((state) => state.doc?.relPath ?? null)
 
   if (openedFile !== null) {
     return (
@@ -517,7 +545,7 @@ function MainViews() {
   if (viewMode === 'edit') {
     return (
       <section className="mn-pane mn-pane--editor">
-        <MarkdownEditor />
+        <MarkdownEditor notePath={currentDoc ?? undefined} />
       </section>
     )
   }

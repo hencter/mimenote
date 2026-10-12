@@ -45,6 +45,10 @@ pub struct SearchResult {
     /// 原样回显用户输入。
     pub query: String,
     /// 命中（已按 `score` 降序 → `relPath` → `line` 排好，最多 `limit` 条）。
+    ///
+    /// 条数还有第二个上限：**同一篇笔记最多 5 条**（`mn_index::search::SearchIndex::search`
+    /// 的每篇上限，ADR-0059）—— 否则一篇清单式笔记能占满整个列表。这是"结果装配"层的降噪，
+    /// 不是契约字段：`total` 仍是全部命中**行**数（含被砍掉的），前端"还有 N 条未显示"照旧。
     pub hits: Vec<SearchHit>,
     /// 命中总数（可能大于 `hits.len()`）。
     pub total: u32,
@@ -199,6 +203,49 @@ mod tests {
         assert_eq!(result.hits[0].line, 2);
         assert!(result.hits[0].snippet.contains("关键词"));
         assert!(result.hits[0].snippet.chars().count() <= 120);
+    }
+
+    #[test]
+    fn search_does_not_let_one_note_fill_the_whole_list() {
+        // 洪水笔记：60 行极短命中行；另外 60 篇各命中一行（长行 → bm25 更低）。
+        // 没有每篇上限时，这一批会返回 50 条**同一篇**的命中（ADR-0059 记录的实测缺陷）。
+        let flood: String = (0..60).map(|_| "关键词\n".to_string()).collect();
+        let mut files: Vec<(String, String)> = vec![("洪水.md".to_string(), flood)];
+        for i in 0..60 {
+            files.push((
+                format!("普通{i:02}.md"),
+                format!("关键词 后面跟着一长串用来拉低 bm25 的填充内容 {i}\n"),
+            ));
+        }
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(rel, text)| (rel.as_str(), text.as_str()))
+            .collect();
+        let (_dir, state) = state_with(&refs);
+
+        let result = search_query_in(&state, "关键词", None).unwrap();
+        assert_eq!(result.total, 120, "total 仍是全部命中行数");
+        assert_eq!(result.hits.len(), 50, "上限仍是 limit");
+        assert_eq!(
+            result
+                .hits
+                .iter()
+                .filter(|hit| hit.rel_path == "洪水.md")
+                .count(),
+            5,
+            "同一篇最多 5 条（与前端 Mock 的 MOCK_HITS_PER_NOTE 同一个数）"
+        );
+        let mut paths: Vec<&str> = result
+            .hits
+            .iter()
+            .map(|hit| hit.rel_path.as_str())
+            .collect();
+        paths.sort_unstable();
+        paths.dedup();
+        assert!(
+            paths.len() > 5,
+            "列表里要能看到多篇笔记，而不是同一篇的第 N 行：{paths:?}"
+        );
     }
 
     #[test]

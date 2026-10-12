@@ -62,7 +62,7 @@ beforeEach(() => {
   setIpcAdapter(createMockAdapter())
   registerBuiltinCommands()
   window.localStorage.clear()
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useUiStore.setState({ openedFile: null, viewMode: 'edit' })
   useTabsStore.setState({ tabs: [] })
   useVaultStore.setState({

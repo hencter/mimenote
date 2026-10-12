@@ -29,7 +29,9 @@ import {
 
 import { AboutSection } from './AboutSection'
 import { AppearanceSection } from './AppearanceSection'
+import { ConfigSection } from './ConfigSection'
 import { EditorSection } from './EditorSection'
+import { KeymapSection } from './KeymapSection'
 import { VaultSection } from './VaultSection'
 import { applyAppearanceOverrides, clearAppearanceOverrides } from './font-overrides'
 
@@ -38,7 +40,9 @@ import './settings.css'
 const SECTION_ICONS: Record<SettingsSection, IconName> = {
   appearance: 'palette',
   editor: 'pencil',
+  keymap: 'keyboard',
   vault: 'folder',
+  config: 'fileCode',
   about: 'info',
 }
 
@@ -266,7 +270,9 @@ export function SettingsDialog() {
             <p className="mn-visually-hidden">{meta.description}</p>
             {section === 'appearance' && <AppearanceSection />}
             {section === 'editor' && <EditorSection />}
+            {section === 'keymap' && <KeymapSection />}
             {section === 'vault' && <VaultSection />}
+            {section === 'config' && <ConfigSection />}
             {section === 'about' && <AboutSection />}
           </div>
         </div>

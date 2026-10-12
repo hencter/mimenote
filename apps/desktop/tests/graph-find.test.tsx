@@ -51,7 +51,7 @@ const NODES: GraphNode[] = [
 ]
 
 function resetStores(): void {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useLinksStore.getState().clear()
   useUiStore.setState({ viewMode: 'graph' })
   useGraphStore.setState({

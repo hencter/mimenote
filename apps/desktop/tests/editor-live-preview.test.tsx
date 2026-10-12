@@ -231,7 +231,7 @@ beforeEach(() => {
     },
   })
   resetAssets()
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useLinksStore.getState().clear()
   useVaultStore.setState({ info: null, status: 'idle' })
 })

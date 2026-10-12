@@ -196,6 +196,39 @@ export interface SnippetFile {
   sizeBytes: number
 }
 
+/**
+ * Vault 配置文件的读取结果（`config_read`，ADR-0055）。
+ *
+ * 三个字段要么同时有值，要么同时为 `null`（"还没有配置文件"是正常状态，不是错误）。
+ * `format` 是宿主按命中的**文件名**报出来的，前端据此选择解析器 ——
+ * 格式判据只有前端一份（`domain/config-file.ts`）。
+ */
+export interface ConfigFileDto {
+  /** Vault 内相对路径，例如 `.mimenote/config.toml`。 */
+  path: string | null
+  format: 'toml' | 'yaml' | 'json' | null
+  /** 原文（宿主不解析）。 */
+  content: string | null
+}
+
+/** 配置文件写入结果（`config_write`）。 */
+export interface ConfigWriteOutcome {
+  /** 实际写入的 Vault 内相对路径（由格式决定，不是调用方指定的）。 */
+  path: string
+}
+
+/**
+ * 模板文件的**元信息**（`templates_list`，ADR-0056）。
+ *
+ * 只给元信息、不给正文：列表只用来画下拉框，正文在用户真的选中某个模板时
+ * 再按 `relPath` 走 `note_read`。
+ */
+export interface TemplateFile {
+  name: string
+  relPath: string
+  sizeBytes: number
+}
+
 /** 版本信息。 */
 export interface VersionInfo {
   app: string

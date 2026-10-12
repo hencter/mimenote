@@ -5,8 +5,9 @@
  *
  * - **笔记标签**：点击 → `tabs-store.activate`（全局唯一当前文档切过去，对账会把这一格的
  *   激活项跟过去）；中键 / × 关闭；右键是旧全局标签栏那份菜单（关闭 / 关闭其他 /
- *   关闭全部 / 在文件树中定位）；未保存（●）与冲突标记只出现在**当前文档**的标签上
- *   （note-store 只持有一份文档，其它标签不可能脏）。
+ *   关闭全部 / 在文件树中定位）；未保存（●）与冲突标记出现在**该篇自己的**标签上
+ *   （分栏之后几格可以同时脏几篇，`note-store` 按篇记账 —— 只标当前那篇会让别格里的
+ *   未保存修改在界面上完全看不见）。
  * - **模块标签**：点击 → 这一格切到它；右键 / `Enter` 是位置菜单（搬到主叶左/右/下、
  *   条内前移/后移、隐藏这一块）；**没有 ×**（侧栏不需要关闭按钮，显隐走菜单与快捷键，
  *   见 `module-visibility.ts`）。
@@ -112,10 +113,17 @@ export function LeafTabs({ leaf, items, dropIndex, windowControls = false }: Lea
   const activate = useTabsStore((state) => state.activate)
   const closeTab = useTabsStore((state) => state.closeTab)
 
-  // 笔记标签的"当前"读 note-store（唯一事实来源）；模块标签的"当前" = 这一格的 active
-  const currentDoc = useNoteStore((state) => state.doc?.relPath ?? null)
-  const dirty = useNoteStore((state) => state.dirty)
-  const conflicted = useNoteStore((state) => state.conflict !== null)
+  /*
+   * 脏 / 冲突标记**按标签自己那一篇**取。
+   *
+   * 从前只有"当前文档"可能脏（单文档模型），所以订阅两个布尔值就够；分栏之后几格可以同时
+   * 开着几篇、同时脏着几篇 —— 只看当前那一篇的话，右边那格的未保存修改在标签条上**没有任何
+   * 痕迹**，用户按下"关闭其他"就会把它一起丢掉。
+   *
+   * 订阅的是两条**引用稳定**的路径清单（集合没变就不换新数组），所以按键不会让标签条重渲染。
+   */
+  const dirtyPaths = useNoteStore((state) => state.dirtyPaths)
+  const conflictPaths = useNoteStore((state) => state.conflictPaths)
 
   const stripRef = useRef<HTMLDivElement | null>(null)
   /** 右键菜单（`null` = 没打开）。位置与目标标签都在这里。 */
@@ -354,15 +362,15 @@ export function LeafTabs({ leaf, items, dropIndex, windowControls = false }: Lea
               {...(note !== null
                 ? (() => {
                     // 未保存/冲突后缀同时进 title 与 aria-label：可见文案只圈文件名，
-                    // 状态给悬停与读屏（与旧全局标签栏同一契约）
-                    const isCurrent = currentDoc === note
-                    const statusSuffix = !isCurrent
-                      ? ''
-                      : conflicted
-                        ? '（冲突）'
-                        : dirty
-                          ? '（未保存）'
-                          : ''
+                    // 状态给悬停与读屏（与旧全局标签栏同一契约）。**按这一篇**算，
+                    // 不再是"只有当前那篇才可能脏"。
+                    const isDirty = dirtyPaths.includes(note)
+                    const isConflicted = conflictPaths.includes(note)
+                    const statusSuffix = isConflicted
+                      ? '（冲突）'
+                      : isDirty
+                        ? '（未保存）'
+                        : ''
                     return {
                       title: `${note}${statusSuffix}`,
                       'aria-label': `${note}${statusSuffix}`,
@@ -388,13 +396,13 @@ export function LeafTabs({ leaf, items, dropIndex, windowControls = false }: Lea
                 // 功能型标签 = 图标（见 MODULE_ICONS 的注释）；文字说明留在 title/aria-label
                 <Icon name={MODULE_ICONS[item as ViewModuleId]} size="md" className="mn-tabs__module-icon" />
               )}
-              {note !== null && currentDoc === note && (conflicted || dirty) && (
+              {note !== null && (conflictPaths.includes(note) || dirtyPaths.includes(note)) && (
                 <span
-                  className={`mn-tabs__mark mn-tabs__mark--${conflicted ? 'conflict' : 'dirty'}`}
-                  title={MARK_TITLE[conflicted ? 'conflict' : 'dirty']}
+                  className={`mn-tabs__mark mn-tabs__mark--${conflictPaths.includes(note) ? 'conflict' : 'dirty'}`}
+                  title={MARK_TITLE[conflictPaths.includes(note) ? 'conflict' : 'dirty']}
                   aria-hidden="true"
                 >
-                  {conflicted ? <Icon name="alert" size="xs" /> : '●'}
+                  {conflictPaths.includes(note) ? <Icon name="alert" size="xs" /> : '●'}
                 </span>
               )}
               {/* 笔记标签才有 ×（关掉）；模块标签没有 —— 侧栏的显隐走右键菜单的"隐藏这一块"

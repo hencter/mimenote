@@ -82,7 +82,7 @@ beforeEach(() => {
   registerBuiltinCommands()
   window.localStorage.clear()
   configureAutosave({ delayMs: DEFAULT_SETTINGS.autosaveDelayMs })
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   // 只重置与本文件相关的那几项：视图模式之类与本功能无关，不做耦合（避免别处重构把它带红）
   useUiStore.setState({
     paletteMode: null,

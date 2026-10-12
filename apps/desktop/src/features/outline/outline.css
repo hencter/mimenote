@@ -33,6 +33,10 @@
 }
 
 .mn-outline__count {
+  /* 头部现在有三个孩子（标题 / 计数 / 隐藏按钮）。头是 `space-between`，
+     不给计数一个 `margin-left:auto` 的话它会被甩到正中当分隔符 ——
+     加上它，计数与隐藏按钮一起靠右，与旧观感一致。 */
+  margin-left: auto;
   color: var(--mn-fg-subtle);
   font-variant-numeric: tabular-nums;
 }

@@ -1,6 +1,10 @@
 /** 内置命令表（M1 的全部命令；M2 的命令面板直接渲染这张表）。 */
 
+import type { Command as EditorCommand, EditorView } from '@codemirror/view'
+
 import { useGraphStore } from '@/state/graph-store'
+import { useInboxStore } from '@/state/inbox-store'
+import { useTemplateStore } from '@/state/template-store'
 import { useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
 import { useSettingsStore } from '@/state/settings-store'
@@ -9,11 +13,13 @@ import { useTagsStore } from '@/state/tags-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 import { requestExportKind } from '@/features/export/export-events'
+import { insertLinkCommand, toggleInlineMarkCommand } from '@/features/editor/cm/format'
 import { formatTableCommand } from '@/features/editor/cm/table-format'
 import { findEditorView } from '@/features/editor/line-jump'
 import { DEFAULT_DOCK_LAYOUT } from '@/features/dock/dock-layout'
 import { reconcileLayout } from '@/features/layout/layout-sync'
 import { fromDockLayout } from '@/features/layout/tree-layout'
+import { toggleTreeLayout } from '@/features/vault/tree-layout-pref'
 import { isMarkdown } from '@/domain/paths'
 import {
   closeVault,
@@ -54,6 +60,21 @@ const isGraphView = (): boolean => useUiStore.getState().viewMode === 'graph'
 
 /** 图谱命令未生效时的统一说明（面板里显示在置灰项旁边；怎么切过去由 `view.graph` 那条命令展示）。 */
 const NEED_GRAPH_VIEW = '需要先切换到知识图谱视图'
+
+/**
+ * 把一条**编辑器**命令交给当前编辑器执行。
+ *
+ * 编辑器实例只有 `features/editor` 知道怎么找（DOM 查法写在 `line-jump.ts` 里），
+ * 命令层不持有 view。编辑器不在场时（阅读/图谱视图）`findEditorView()` 返回 null，
+ * 这里就什么都不做 —— 与"按了没反应"不同：`when` 已经保证了"有文档"才可用。
+ *
+ * 所有需要编辑器的命令（格式化、表格对齐、将来更多）都走这一条路：
+ * 少一处 `findEditorView()` 调用，就少一处"有人忘了判空"的机会。
+ */
+function runEditorCommand(command: EditorCommand, view: EditorView | null = findEditorView()): void {
+  if (view === null) return
+  command(view)
+}
 
 /**
  * 文件树选中项能否改名 / 移动：**笔记与文件夹都可以**。
@@ -103,7 +124,10 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     id: PALETTE_COMMAND_IDS.open,
     title: '命令面板…',
     category: '通用',
-    keybinding: 'Mod+K',
+    // ADR-0055：命令面板挪到 `Mod+Shift+P`，把 `Mod+K` 让给"插入链接"。
+    // 依据是**频率**：写作时插入链接是每分钟级的动作，而命令面板是每小时级的；
+    // 而且 `Mod+Shift+P` 与 VS Code 一致，`Mod+K` 与 Obsidian 一致 —— 两边都不别扭。
+    keybinding: 'Mod+Shift+P',
     run: () => {
       useUiStore.getState().openPalette('commands')
     },
@@ -146,6 +170,9 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     id: 'view.toggleLineNumbers',
     title: '编辑器：显示 / 隐藏行号',
     category: '视图',
+    // ADR-0055：这条此前**没有**快捷键。归到 `Mod+Alt+N`（N = numbers）：
+    // 它是"我怎么写"的次级开关，不该占 L1/L2 的位置，但不给键位又只能从面板翻。
+    keybinding: 'Mod+Alt+N',
     // 与"打开设置"一样不设 `when`：它是个纯显示开关，没有 Vault 时也说得通（编辑器在空态）
     run: () => {
       const settings = useSettingsStore.getState()
@@ -157,7 +184,9 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     id: 'vault.open',
     title: '打开 Vault…',
     category: 'Vault',
-    keybinding: 'Mod+O',
+    // ADR-0055：`Mod+O` 原本给了这条**低频**动作（一天一次），而"快速切换笔记"是每分钟级的；
+    // 打开 Vault 因此降到 L3（`Mod+Alt+O`），`Mod+O` 在 Obsidian 档案里给快速切换。
+    keybinding: 'Mod+Alt+O',
     run: openVaultInteractive,
   },
   {
@@ -320,7 +349,21 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     id: 'export.pdf',
     title: '打印 / 另存为 PDF…',
     category: '导出',
-    keybinding: 'Mod+Shift+P',
+    /*
+     * ADR-0055：这条原来是 `Mod+Shift+P`，与**命令面板**（同样 `Mod+Shift+P`）撞了。
+     *
+     * 为什么不是把命令面板让开：`Mod+Shift+P` 是 VS Code 用户对"命令面板"的肌肉记忆，
+     * 而命令面板是 L2 里最常按的一条；导出 PDF 是 L3 的动作（一天几次、且后面还跟着
+     * 系统打印对话框）。按"频率决定键位"这条唯一依据，让开的是**导出**。
+     *
+     * 取 `Mod+Alt+P`（P = PDF）：与 `Mod+Alt+S`（静态站点）、`Mod+Shift+S`（自包含 HTML）
+     * 一起构成导出族，而 `Mod+Alt+*` 正是已经存在的"次一级动作"层。
+     *
+     * 这条冲突还顺带暴露了一个门禁缺陷：`findChordConflicts` 的 `real` 判据依赖 `when()`，
+     * 在"没有打开任何笔记"的环境里 `Mod+Shift+P` 会被判成互斥而不报 —— 因此 keymap-defaults
+     * 用例改成**与环境无关的结构性判据**（见 tests/keymap-defaults.test.tsx）。
+     */
+    keybinding: 'Mod+Alt+P',
     when: hasDocument,
     unavailableReason: '需要先打开一篇笔记',
     run: () => {
@@ -385,7 +428,9 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     id: 'view.toggleSidebar',
     title: '显示 / 隐藏侧栏',
     category: '视图',
-    keybinding: 'Mod+B',
+    // ADR-0055：`Mod+B` 归还给"加粗"（任何编辑器里它都是加粗），侧栏挪到 `Mod+Shift+B`。
+    // 面板一律 `Mod+Shift+<记忆字母>`，这条与标签/链接/大纲面板同一层。
+    keybinding: 'Mod+Shift+B',
     run: () => {
       useUiStore.getState().toggleSidebar()
     },
@@ -530,8 +575,74 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
       // 编辑器实例只有 `features/editor` 知道怎么找（DOM 查法写在 `line-jump.ts` 里）：
       // 命令层不持有 view，只是"转交给当前编辑器"。编辑器不在场时 `findEditorView` 返回 null，
       // 这里就什么都不做 —— 与"按了没反应"不同，`when` 已经保证了有文档才可用。
-      const view = findEditorView()
-      if (view !== null) formatTableCommand(view)
+      runEditorCommand(formatTableCommand)
+    },
+  },
+
+  // ---------------------------------------------------------------------------
+  // 行内格式（`note.format*`）—— ADR-0055 的"编辑器手感"部分
+  //
+  // 这些动作此前**根本不存在**：Live Preview（ADR-0009）会把 `**重点**` 渲染成粗体，
+  // 但没有任何一条命令能把它加上去，而 `Mod+B` 还被"显示/隐藏侧栏"占着 ——
+  // 于是在编辑器里按 `Mod+B` 做的是最不相干的事。
+  //
+  // 键位按"手不离开主键区"排：`Mod+B` / `Mod+I` 是每分钟级的动作（左手食指区，无 Shift），
+  // `Mod+K` 插入链接与 Obsidian 一致，`Mod+Shift+K` / `Mod+Shift+X` 是次级（行内代码、删除线）。
+  // 每条命令的 `toggle` 语义与一次撤销的取舍写在 `features/editor/cm/format.ts` 头部。
+  // ---------------------------------------------------------------------------
+  {
+    id: 'note.formatBold',
+    title: '加粗',
+    category: '格式',
+    keybinding: 'Mod+B',
+    when: hasDocument,
+    unavailableReason: '需要先打开一篇笔记',
+    run: () => {
+      runEditorCommand(toggleInlineMarkCommand('bold'))
+    },
+  },
+  {
+    id: 'note.formatItalic',
+    title: '斜体',
+    category: '格式',
+    keybinding: 'Mod+I',
+    when: hasDocument,
+    unavailableReason: '需要先打开一篇笔记',
+    run: () => {
+      runEditorCommand(toggleInlineMarkCommand('italic'))
+    },
+  },
+  {
+    id: 'note.formatLink',
+    title: '插入链接',
+    category: '格式',
+    keybinding: 'Mod+K',
+    when: hasDocument,
+    unavailableReason: '需要先打开一篇笔记',
+    run: () => {
+      runEditorCommand(insertLinkCommand)
+    },
+  },
+  {
+    id: 'note.formatCode',
+    title: '行内代码',
+    category: '格式',
+    keybinding: 'Mod+Shift+K',
+    when: hasDocument,
+    unavailableReason: '需要先打开一篇笔记',
+    run: () => {
+      runEditorCommand(toggleInlineMarkCommand('code'))
+    },
+  },
+  {
+    id: 'note.formatStrike',
+    title: '删除线',
+    category: '格式',
+    keybinding: 'Mod+Shift+X',
+    when: hasDocument,
+    unavailableReason: '需要先打开一篇笔记',
+    run: () => {
+      runEditorCommand(toggleInlineMarkCommand('strike'))
     },
   },
 
@@ -576,6 +687,21 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     },
   },
   {
+    id: 'tree.toggleColumns',
+    title: '文件树：单栏 / 分栏（列视图）',
+    category: '文件树',
+    // ADR-0058 的入口。L3（`Mod+Alt+*`）的理由：这是"我怎么看文件"的次级开关，
+    // 一天切一两次，而且设置页里有同一个开关 —— 不该占用 L1/L2。
+    keybinding: 'Mod+Alt+C',
+    when: hasVault,
+    unavailableReason: '需要先打开 Vault',
+    run: () => {
+      // 翻转逻辑只有一份实现（`tree-layout-pref.ts`）：工具栏那个按钮走的是同一个函数，
+      // 命令层再写一次 `=== 'columns' ? 'single' : 'columns'` 就是第二份判据
+      toggleTreeLayout()
+    },
+  },
+  {
     id: 'tree.focusFilter',
     title: '聚焦文件过滤框',
     category: '文件树',
@@ -586,6 +712,48 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
     unavailableReason: '需要先打开 Vault',
     run: () => {
       requestFilterFocus()
+    },
+  },
+
+  {
+    // 从模板新建（ADR-0056）：`Mod+Shift+N` 与 `Mod+N`（新建笔记）成对 ——
+    // 同一个动作的两种起手式，配 Shift 表示"要挑一个模板"。
+    id: 'template.newFrom',
+    title: '从模板新建…',
+    category: '模板',
+    keybinding: 'Mod+Shift+N',
+    when: hasVault,
+    unavailableReason: '需要先打开 Vault',
+    run: () => {
+      void useTemplateStore.getState().openPicker()
+    },
+  },
+
+  {
+    // 快速捕获（ADR-0057）：一行输入 → 落到收件箱目录里的一篇新笔记。
+    // `Mod+Shift+I` 属于 L2（中频、与"面板/视图"同一层）：捕获是"想到就记"的动作，
+    // 但不需要 L1（每分钟）的位置 —— L1 留给编辑与导航。
+    id: 'inbox.capture',
+    title: '快速捕获…',
+    category: '收件箱',
+    keybinding: 'Mod+Shift+I',
+    when: hasVault,
+    unavailableReason: '需要先打开 Vault',
+    run: () => {
+      useInboxStore.getState().openCapture()
+    },
+  },
+  {
+    // 收件箱视图：按"最后一次动它"倒序列出还没归档的条目。
+    // `Mod+Alt+I` 属于 L3：看收件箱是每天几次的动作，且它自己有计数入口（状态栏）。
+    id: 'inbox.open',
+    title: '打开收件箱',
+    category: '收件箱',
+    keybinding: 'Mod+Alt+I',
+    when: hasVault,
+    unavailableReason: '需要先打开 Vault',
+    run: () => {
+      useInboxStore.getState().openList()
     },
   },
 

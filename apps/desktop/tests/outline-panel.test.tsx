@@ -53,7 +53,7 @@ const NOTE_TEXT = [
 const NOTES = [{ relPath: '笔记/大纲.md', text: NOTE_TEXT }]
 
 function resetStores(): void {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useLinksStore.getState().clear()
   useUiStore.setState({ viewMode: 'edit', outlinePanelVisible: false })
   useVaultStore.setState({

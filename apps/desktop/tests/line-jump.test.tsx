@@ -139,7 +139,7 @@ function annotationsOf(spec: TransactionSpec): readonly Annotation<unknown>[] {
 beforeEach(() => {
   registerBuiltinCommands()
   window.localStorage.clear()
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useUiStore.setState({ paletteMode: null, linksPanelVisible: false, viewMode: 'edit' })
   useVaultStore.setState({
     status: 'idle',
@@ -157,7 +157,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   for (const view of mounted.splice(0)) view.destroy()
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   configureAutosave({ delayMs: 600 })
 })
 

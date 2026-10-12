@@ -131,7 +131,7 @@ function stubTauriRuntime(): void {
 }
 
 function resetStores(): void {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useVaultStore.setState({
     status: 'idle',
     info: null,

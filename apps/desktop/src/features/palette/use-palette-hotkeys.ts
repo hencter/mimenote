@@ -3,13 +3,15 @@
  *
  * 为什么不能只靠 `app/keymap.ts` 的全局快捷键：
  *
- * 1. **Ctrl+K 在编辑器里有别的含义**：CodeMirror 的 `defaultKeymap` 把 `Ctrl-k`
- *    绑到了 `deleteToLineEnd`，而 CM 的监听装在编辑器 DOM 上、事件到达它之前会先
+ * 1. **编辑器会抢键**：CodeMirror 的 `defaultKeymap` 自带一批 `Mod+<键>`（历史上
+ *    `Ctrl-k` → `deleteToLineEnd`），而 CM 的监听装在编辑器 DOM 上、事件到达它之前会先
  *    经过 window 的**捕捉阶段**。全局快捷键是 window 的**冒泡**监听，等它收到时
  *    CM 已经 `preventDefault()` 过了（`keymap.ts` 正是靠 `defaultPrevented` 提前返回），
- *    于是"编辑器聚焦时 Ctrl+K 打不开面板，反而删掉了一行后半截"。
+ *    于是"编辑器聚焦时面板打不开，反而删掉了一行后半截"。
  *    在捕捉阶段抢在 CM 之前处理，并 `stopPropagation()`，CM 就完全看不到这个事件。
- *    （Ctrl+Shift+F 的全文搜索同理走这条路：不依赖"编辑器将来不会占用这个键位"。）
+ *    （ADR-0055 把命令面板挪到 `Mod+Shift+P`、`Mod+K` 给了"插入链接"之后，这条理由
+ *    与具体键位无关：**只要面板的键位还在命令表里，就得走捕捉阶段**，
+ *    不能依赖"编辑器将来不会占用这个键位"。）
  * 2. **Esc 不能漏给全局快捷键**：面板是模态层，Esc 只应该关闭它。
  *    捕捉阶段处理 + 阻止冒泡，冒泡链上的全局快捷键就收不到。
  *    （与 `components/ConfirmDialog.tsx` 的 Esc 处理是同一套路。）
@@ -27,7 +29,7 @@ import { chordFromEvent, commands } from '@/app/commands'
 import { useConfirmStore } from '@/state/confirm-store'
 import { useUiStore } from '@/state/ui-store'
 
-/** 受本监听托管的三个面板命令（`Mod+K` / `Mod+P` / `Mod+Shift+F`）。 */
+/** 受本监听托管的三个面板命令（ADR-0055 之后的默认键位：`Mod+Shift+P` / `Mod+P` / `Mod+Shift+F`）。 */
 const PALETTE_IDS: readonly string[] = [
   PALETTE_COMMAND_IDS.open,
   PALETTE_COMMAND_IDS.quickSwitch,

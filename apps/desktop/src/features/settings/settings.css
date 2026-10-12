@@ -337,3 +337,102 @@
   height: 6px;
   accent-color: var(--mn-accent);
 }
+
+/* ---------------------------------------------------------------------------
+ * 键位分区（ADR-0055）
+ *
+ * 行高与内边距刻意与 `.mn-settings__row` 的同一条节奏（12px 行距、上下 6px），
+ * 否则"键位"这一页在设置里会是唯一一张行距不同的表 —— 那正是要靠眼睛对齐的地方。
+ * 三列固定宽度（标题自适应 / 键位 / 操作）让 kbd 与按钮在整列里垂直对齐，
+ * 而不是每行各按自己的内容宽度飘。
+ * --------------------------------------------------------------------------- */
+
+.mn-keymap-list {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--mn-border);
+}
+
+.mn-keymap-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--mn-border);
+}
+
+.mn-keymap-row__label {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.mn-keymap-row__title {
+  color: var(--mn-fg);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mn-keymap-row__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--mn-fg-subtle);
+  font-size: 11px;
+}
+
+.mn-keymap-row__badge {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--mn-code-bg);
+  color: var(--mn-accent);
+  font-style: normal;
+}
+
+.mn-keymap-row__keys {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mn-keymap-row__kbd {
+  min-width: 24px;
+  padding: 1px 5px;
+  border: 1px solid var(--mn-border);
+  border-radius: 4px;
+  background: var(--mn-code-bg);
+  color: var(--mn-fg);
+  font-family: var(--mn-font-mono);
+  font-size: 11px;
+  text-align: center;
+}
+
+.mn-keymap-row__empty,
+.mn-keymap-row__default {
+  color: var(--mn-fg-subtle);
+  font-size: 11px;
+}
+
+.mn-keymap-row__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.mn-keymap-row__recorder {
+  width: 220px;
+  text-align: center;
+}
+
+.mn-settings__issues {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}

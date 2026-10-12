@@ -13,6 +13,8 @@ import type {
   AssetGrant,
   AttachmentInput,
   AttachmentSaved,
+  ConfigFileDto,
+  ConfigWriteOutcome,
   DocumentStats,
   EntryMeta,
   ExportWriteOutcome,
@@ -37,6 +39,7 @@ import type {
   TagNotes,
   TagRenameOutcome,
   TagSummary,
+  TemplateFile,
   TrashEntry,
   TrashRecord,
   VaultInfo,
@@ -404,6 +407,34 @@ export const ipc = {
     call<GraphData>('graph_ego', { relPath, depth, ...(maxNodes === undefined ? {} : { maxNodes }) }),
 
   snippetsList: () => call<SnippetFile[]>('snippets_list'),
+
+  /**
+   * 列出模板目录里的 `*.md`（ADR-0056）。
+   *
+   * `dirRel` 默认 `.mimenote/templates`（配置键 `templates.dir` 可以改）：
+   * 模板目录是**可配置**的，所以目录名由前端传；宿主会逐段校验路径且只返回 `.md` 的元信息
+   * —— 这不是一个通用"列目录"接口。目录不存在时返回空数组（空态由对话框呈现）。
+   */
+  templatesList: (dirRel = '.mimenote/templates') =>
+    call<TemplateFile[]>('templates_list', { dirRel }),
+
+  /**
+   * 读取 Vault 配置文件（`.mimenote/config.<toml|yaml|json>`，ADR-0055）。
+   *
+   * **不接受路径参数**：以当前打开的 Vault 为准，宿主只按固定的四个候选名找第一个存在的。
+   * 三个字段同时为 `null` 表示"还没有配置文件"（正常状态：首次打开时由前端写入一份）。
+   */
+  configRead: () => call<ConfigFileDto>('config_read'),
+
+  /**
+   * 写入 Vault 配置文件。
+   *
+   * 文件名由 `format` 决定（宿主侧白名单 `toml|yaml|yml|json`），写入走 mn-core 的原子写；
+   * 内容上限 256 KiB。前端负责序列化与"含注释拒绝改写"的纪律（`domain/config-file.ts`）。
+   */
+  configWrite: (format: 'toml' | 'yaml' | 'json', content: string) =>
+    call<ConfigWriteOutcome>('config_write', { format, content }),
+
   versionInfo: () => call<VersionInfo>('version_info'),
 } as const
 

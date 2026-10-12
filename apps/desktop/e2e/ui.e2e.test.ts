@@ -2719,13 +2719,13 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.locator('.cm-content').click()
     // ADR-0035：文件树是一格模块（隐藏 = 那一格收缩，再按一次回到原位）
     const treeBefore = await page.locator('[data-module-tab="tree"]').count()
-    await page.keyboard.press('Control+b')
+    await page.keyboard.press('Control+Shift+b')
     await waitUntil(
       async () => (await page.locator('[data-module-tab="tree"]').count()) !== treeBefore,
       5_000,
-      'Ctrl+B 切换文件树格子',
+      'Ctrl+Shift+B 切换文件树格子',
     )
-    await page.keyboard.press('Control+b')
+    await page.keyboard.press('Control+Shift+b')
     await waitUntil(
       async () => (await page.locator('[data-module-tab="tree"]').count()) === treeBefore,
       5_000,
@@ -2794,7 +2794,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.locator('.cm-content').click()
 
     const themeBefore = await page.locator('html').getAttribute('data-theme')
-    await page.keyboard.press('Control+k')
+    await page.keyboard.press('Control+Shift+p')
     await page.waitForSelector('.mn-palette', { state: 'visible' })
     expect(await page.locator('.mn-palette').getAttribute('aria-label')).toBe('命令面板')
     expect(await page.locator('.mn-palette [role="option"]').count()).toBeGreaterThan(5)
@@ -3967,7 +3967,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     expect(await page.locator('[data-leaf-id="sliver"] [data-module-tab="tags"]').count()).toBe(1)
 
     // 2) 命令面板的「重置布局」把布局拉回默认 + 家位：窄叶消失、没有任何降级格
-    await page.keyboard.press('Control+K')
+    await page.keyboard.press('Control+Shift+P')
     await page.waitForSelector('.mn-palette', { state: 'visible' })
     await page.locator('.mn-palette__input').fill('重置布局')
     // 用 `hasText` 过滤到那一条再等：空查询时列表是完整注册表（不再切片），

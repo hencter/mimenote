@@ -45,10 +45,10 @@ import {
 import { ipc } from '@/ipc/client'
 import type { AttachmentInput } from '@/ipc/types'
 import { MimenoteError, describeError } from '@/ipc/types'
-import { useNoteStore } from '@/state/note-store'
 import { useSettingsStore } from '@/state/settings-store'
 import { toast } from '@/state/toast-store'
 import { useVaultStore } from '@/state/vault-store'
+import { notePathOf } from './cm/note-path'
 
 /** 事件被谁接管（决定事务的 `userEvent`，也是排查"这次插入是谁干的"的锚点）。 */
 type InputSource = 'input.paste' | 'input.drop'
@@ -137,8 +137,13 @@ async function saveImages(
   files: readonly File[],
   options: { at: number | null; source: InputSource },
 ): Promise<void> {
-  const note = useNoteStore.getState().doc
-  if (note === null || useVaultStore.getState().info === null) {
+  /*
+   * 要写进哪一篇的相对路径，取的是**这一格自己**的笔记路径（facet），不是"当前文档"：
+   * 分栏里在右边那格粘贴图片时，用当前文档算出来的相对路径会指向左边的目录 ——
+   * 落盘成功、链接却指错地方（而且看起来很正常）。
+   */
+  const relPath = notePathOf(view)
+  if (relPath === null || useVaultStore.getState().info === null) {
     toast.warn('先打开一篇笔记', '粘贴的图片要存进 Vault，需要知道当前笔记在哪')
     return
   }
@@ -188,16 +193,15 @@ async function saveImages(
     const saved = await ipc.attachmentSave(dir, inputs)
     if (saved.length === 0) return
 
-    // 读字节/落盘是异步的，期间用户可能已经切走了笔记：那就只落盘、不插链接
+    // 读字节/落盘是异步的，期间用户可能已经在这一格里切走了笔记：那就只落盘、不插链接
     // （往另一篇笔记里插一条指向"上一篇"的相对路径，比不插更糟）
-    const current = useNoteStore.getState().doc
-    if (current === null || current.relPath !== note.relPath) {
+    if (notePathOf(view) !== relPath) {
       toast.warn('图片已保存，但没有插入链接', `当前笔记已切换（图片在 ${dir === '' ? 'Vault 根目录' : dir} 里）`)
       return
     }
 
     const markdown = saved
-      .map((item) => attachmentMarkdown(note.relPath, item.relPath))
+      .map((item) => attachmentMarkdown(relPath, item.relPath))
       .join('\n')
     insertAttachmentBlock(view, options.at, markdown, options.source)
 

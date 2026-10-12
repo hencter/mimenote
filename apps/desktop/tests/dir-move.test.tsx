@@ -128,7 +128,7 @@ function resetStores(): void {
   // 下一条用例就会看到一个不知道从哪来的对话框）
   useRenameStore.getState().close()
   useMoveStore.getState().close()
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useTabsStore.setState({ tabs: [], active: null, restoredRoot: null })
   useVaultStore.setState({
     status: 'idle',

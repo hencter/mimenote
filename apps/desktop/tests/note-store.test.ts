@@ -28,7 +28,7 @@ beforeEach(() => {
   })
   setIpcAdapter(adapter)
   configureAutosave({ delayMs: 50 })
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useNoteStore.setState({
     status: 'idle',
     dirty: false,
@@ -44,7 +44,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   vi.useRealTimers()
 })
 

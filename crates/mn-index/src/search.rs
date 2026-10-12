@@ -99,6 +99,47 @@ const MAX_QUERY_TERMS: usize = 16;
 /// 单个查询词最多保留多少字符。
 const MAX_TERM_CHARS: usize = 64;
 
+/// 同一篇笔记最多返回几条命中。
+///
+/// ## 为什么需要它
+///
+/// 索引的粒度是**行**，一篇清单/日志式笔记里同一个词出现几十次是常态。实测（1 万篇语料里
+/// 61 篇共 120 行命中：`flood.md` 60 行、另外 60 篇各 1 行）用默认 `limit = 50` 查时，
+/// 返回的 50 条**全部来自同一篇**，列表里只剩 1 篇笔记 —— 用户按相关度排序想看的是"哪些笔记
+/// 提到了它"，而不是"同一篇的第 37 行"。
+///
+/// ## 为什么是 5
+///
+/// 这个数字**不是这里拍的**：前端 Mock（`apps/desktop/src/ipc/mock-adapter.ts` 的
+/// `MOCK_HITS_PER_NOTE`）从 IPC 契约诞生起就是每篇 5 条，`apps/desktop/tests/search.test.tsx`
+/// 还有一条用例钉着"每篇最多 5 条命中，但 total 是全部命中数"。真机实现此前没有这一层，
+/// 于是**Mock 比真机好**；取 5 是把真机对齐到已经写进前端行为的那个数。
+///
+/// `total` 不受它影响：仍是**全部**命中行数（含被这里砍掉的那些），前端"还有 N 条未显示"照旧。
+const HITS_PER_NOTE: usize = 5;
+
+/// 取数预算 = `limit × FETCH_SLACK`（上限 [`MAX_FETCH_ROWS`]），在 Rust 里按篇截断。
+///
+/// ## 为什么"多取再截"而不是在 SQL 里做
+///
+/// 实测搬运行数几乎不要钱：同一批语料上 `LIMIT 50 / 250 / 1000` 的耗时是
+/// **27 / 28 / 28 ms**（查询 `关键词`）与 **666 / 599 / 605 ms**（查询 `全文搜索`）——
+/// 成本全在 `bm25()` 打分与排序（它们本来就要遍历全部命中）。而 SQL 侧的
+/// `ROW_NUMBER() OVER (PARTITION BY rel_path …)` 实测 **382 → 1751 ms（4.6×）**、
+/// **592 → 1707 ms（2.9×）**：它要为整个命中集再排一次序。见 ADR-0059「替代方案」。
+///
+/// ## 为什么是 8
+///
+/// 预算要能兜住"取回的窗口里同一篇出现很多次、被截掉后仍然凑得满 `limit` 条"：
+/// 窗口内每篇最多出现 25 次时，`limit = 50` 仍能凑满。更高没有意义（多取是免费的，
+/// 但窗口越大，被截掉的无用行也越多），更低则会在密集分布下少给结果。
+const FETCH_SLACK: u32 = 8;
+
+/// 取数预算的硬上限（挡住 `limit × 8` 在大 `limit` 下把整段正文搬进内存）。
+///
+/// 宿主侧 `search_query` 的 `limit` 上限是 200，所以这个上限只在直接调库（基准、测试）时起作用。
+const MAX_FETCH_ROWS: u32 = 1024;
+
 /// mtime 不可得时库里的存值：真实 mtime 永远 ≥ 0，所以它**永远**不会等于任何扫描结果 ——
 /// "不知道 mtime" 必须当成"这一篇要重读"，不能当成"没变"。
 const UNKNOWN_MTIME: i64 = -1;
@@ -191,9 +232,12 @@ pub struct SearchHit {
 /// 一次查询的结果。
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchOutcome {
-    /// 按 `score` 降序 → `rel_path` 升序 → `line` 升序排好的命中（最多 `limit` 条）。
+    /// 按 `score` 降序 → `rel_path` 升序 → `line` 升序排好的命中。
+    ///
+    /// 条数上限有两个：整体 `limit`，以及**同一篇最多 [`HITS_PER_NOTE`] 条**（见 [`SearchIndex::search`]）。
+    /// 排序口径不变 —— 它是那个全序的一个**子序列**，前端依旧不需要二次排序。
     pub hits: Vec<SearchHit>,
-    /// 命中总数（可能大于 `hits.len()`）。
+    /// 命中总数（可能大于 `hits.len()`）。**行**数，含被"每篇上限"砍掉的那些。
     pub total: u32,
 }
 
@@ -809,9 +853,20 @@ impl SearchIndex {
 
     // -- 查询 -------------------------------------------------------------------
 
-    /// 全文检索：`bm25()` 排序 → 取 `limit` 条 + 命中总数。
+    /// 全文检索：`bm25()` 排序 → 按篇降噪 → 取 `limit` 条 + 命中总数。
     ///
     /// 排序是**全序**（`score` → `rel_path` → `line`），前端不需要二次排序。
+    ///
+    /// ## 三步，各自都有实测理由（ADR-0059）
+    ///
+    /// 1. **先取 `fetch_budget(limit)` 行**（不是 `limit` 行）：多取不要钱 —— 实测
+    ///    `LIMIT 50 / 250 / 1000` 的耗时相同，成本全在打分与排序上；
+    /// 2. **按篇截断**（[`select_hits`]）：同一篇最多 [`HITS_PER_NOTE`] 条。在此之前实测
+    ///    61 篇 / 120 行命中的语料会返回 50 条同一篇的命中，列表里只剩一篇笔记；
+    /// 3. **`total` 按需计数**：这次没取满预算 ⇒ 命中集已经穷尽 ⇒ `total` 就是取回的行数，
+    ///    省掉一次 `COUNT(*)`（实测 12–56 ms，且它要把全部命中扫一遍）。
+    ///
+    /// 截断只作用于 `hits`，**不动** `total`：面板的"还有 N 条未显示"仍然如实。
     pub fn search(&self, raw_query: &str, limit: u32) -> Result<SearchOutcome> {
         let Some(match_query) = build_match_query(raw_query) else {
             // 没有可查的词（空串、只有标点）：不碰数据库，直接空结果
@@ -821,38 +876,40 @@ impl SearchIndex {
             });
         };
         let terms = query_terms(raw_query);
+        let budget = fetch_budget(limit);
         let conn = self.conn();
-
-        let total: i64 = conn
-            .query_row(COUNT_MATCH, params![match_query], |row| row.get(0))
-            .map_err(|error| self.db(error))?;
 
         let mut statement = conn.prepare(QUERY_MATCH).map_err(|error| self.db(error))?;
         let rows = statement
-            .query_map(params![match_query, limit], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, u32>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, f64>(3)?,
-                ))
+            .query_map(params![match_query, budget], |row| {
+                Ok(FetchedRow {
+                    rel_path: row.get::<_, String>(0)?,
+                    line: row.get::<_, u32>(1)?,
+                    text: row.get::<_, String>(2)?,
+                    score: row.get::<_, f64>(3)?,
+                })
             })
             .map_err(|error| self.db(error))?;
 
-        let mut hits = Vec::new();
+        let mut fetched = Vec::new();
         for row in rows {
-            let (rel_path, line, text, score) = row.map_err(|error| self.db(error))?;
-            hits.push(SearchHit {
-                rel_path,
-                line,
-                snippet: build_snippet(&text, &terms),
-                score,
-            });
+            fetched.push(row.map_err(|error| self.db(error))?);
         }
 
+        // 没取满预算 → 命中集就这么大，`total` 不必再问数据库（省掉一次全量计数扫描）。
+        // 取满了才计数：这时"恰好等于预算"与"更多"分不出来。
+        let total = if fetched.len() < budget as usize {
+            fetched.len() as u32
+        } else {
+            let total: i64 = conn
+                .query_row(COUNT_MATCH, params![match_query], |row| row.get(0))
+                .map_err(|error| self.db(error))?;
+            total.max(0) as u32
+        };
+
         Ok(SearchOutcome {
-            total: total.max(0) as u32,
-            hits,
+            total,
+            hits: select_hits(fetched, &terms, limit),
         })
     }
 
@@ -1294,6 +1351,55 @@ LIMIT ?2";
 // ---------------------------------------------------------------------------
 // 查询串与 snippet（纯函数，可单测）
 // ---------------------------------------------------------------------------
+
+/// 从库里取回、**尚未按篇截断**的一行命中。
+///
+/// `text` 是原文行（不是 snippet）：`snippet` 的裁剪只为**留下**的行做，
+/// 多取的那些行不白花裁剪成本（120 字符的窗口要按字符扫一遍命中位置）。
+struct FetchedRow {
+    rel_path: String,
+    line: u32,
+    text: String,
+    score: f64,
+}
+
+/// 取数预算：多取 [`FETCH_SLACK`] 倍，但不超过 [`MAX_FETCH_ROWS`]、且**永远不小于 `limit`**
+/// （否则一次合法的查询会因为预算比 `limit` 还小返回不足数）。
+fn fetch_budget(limit: u32) -> u32 {
+    limit
+        .saturating_mul(FETCH_SLACK)
+        .min(MAX_FETCH_ROWS)
+        .max(limit)
+}
+
+/// 在**已经排好序**的行上按篇截断，并对留下的行构造 snippet。
+///
+/// 输入必须是全序（`score` 降序 → `rel_path` → `line`），输出是它的**子序列** ——
+/// 也就是说排序口径没变，只是"同一篇的第 [`HITS_PER_NOTE`] 条之后"不再占位。
+///
+/// 取不满 `limit` 是允许的（取回窗口里可能只有极少数笔记且都被截断）：宁可少给，
+/// 也不把同一篇的十几行塞进列表 —— 那正是这个函数存在的原因。
+fn select_hits(rows: Vec<FetchedRow>, terms: &[String], limit: u32) -> Vec<SearchHit> {
+    let mut hits = Vec::new();
+    let mut per_note: HashMap<String, usize> = HashMap::new();
+    for row in rows {
+        if hits.len() >= limit as usize {
+            break;
+        }
+        let seen = per_note.entry(row.rel_path.clone()).or_insert(0);
+        if *seen >= HITS_PER_NOTE {
+            continue;
+        }
+        *seen += 1;
+        hits.push(SearchHit {
+            snippet: build_snippet(&row.text, terms),
+            rel_path: row.rel_path,
+            line: row.line,
+            score: row.score,
+        });
+    }
+    hits
+}
 
 /// 把用户输入转成**安全**的 FTS5 查询串；返回 `None` 表示没有可查的词。
 ///
@@ -1889,6 +1995,140 @@ mod tests {
         let outcome = index.search("hello", 5).unwrap();
         assert_eq!(outcome.hits.len(), 5);
         assert_eq!(outcome.total, 20, "total 是命中总数，不是 hits.len()");
+    }
+
+    // -- 每篇命中上限与取数预算（ADR-0059） --------------------------------------
+
+    /// 一篇笔记不能吃掉整个结果列表：实测过的语料（61 篇 / 120 行命中）里，
+    /// 没有上限时 `limit = 50` 的 50 条**全部**来自同一篇。
+    #[test]
+    fn one_note_cannot_flood_the_result_list() {
+        // 洪水笔记：60 行极短命中行（bm25 对短文档给高分）
+        let flood: String = (0..60).map(|_| "关键词\n".to_string()).collect();
+        let mut notes: Vec<(String, String)> = vec![("flood.md".to_string(), flood)];
+        // 60 篇普通笔记：命中行更长 → 分数更低
+        for i in 0..60 {
+            notes.push((
+                format!("note{i:03}.md"),
+                format!("关键词 后面跟着一长串用来拉低 bm25 的填充内容 {i}\n"),
+            ));
+        }
+        let refs: Vec<(&str, &str)> = notes
+            .iter()
+            .map(|(rel, text)| (rel.as_str(), text.as_str()))
+            .collect();
+        let index = index_of(&refs);
+
+        let outcome = index.search("关键词", 50).unwrap();
+        assert_eq!(outcome.total, 120, "total 是全部命中行数（含被每篇上限砍掉的）");
+        assert_eq!(outcome.hits.len(), 50, "上限是 limit，不是每篇上限");
+        assert_eq!(
+            outcome
+                .hits
+                .iter()
+                .filter(|hit| hit.rel_path == "flood.md")
+                .count(),
+            HITS_PER_NOTE,
+            "同一篇最多 {HITS_PER_NOTE} 条：{:?}",
+            outcome.hits
+        );
+
+        let mut distinct: Vec<&str> = outcome
+            .hits
+            .iter()
+            .map(|hit| hit.rel_path.as_str())
+            .collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert!(
+            distinct.len() > HITS_PER_NOTE,
+            "列表里必须能看到多篇笔记（实际 {} 篇）—— 这正是这个上限存在的理由",
+            distinct.len()
+        );
+    }
+
+    /// 上限与 `limit` 无关：列表远没满时，同一篇也只给 [`HITS_PER_NOTE`] 条。
+    #[test]
+    fn per_note_cap_applies_even_when_the_list_is_not_full() {
+        let body: String = (1..=10).map(|i| format!("关键词 第{i}行\n")).collect();
+        let index = index_of(&[("甲.md", &body), ("乙.md", "关键词 乙\n")]);
+
+        let outcome = index.search("关键词", 50).unwrap();
+        assert_eq!(outcome.total, 11);
+        assert_eq!(
+            outcome
+                .hits
+                .iter()
+                .filter(|hit| hit.rel_path == "甲.md")
+                .count(),
+            HITS_PER_NOTE
+        );
+        assert_eq!(outcome.hits.len(), HITS_PER_NOTE + 1);
+    }
+
+    /// 截断只丢行、**不重排**：返回的仍是"score 降序 → relPath → line"这个全序的子序列。
+    #[test]
+    fn capped_results_keep_the_global_order() {
+        // 同一篇里行越短分越高 → 同一篇内部也会出现分数不同的多条命中
+        let mixed: String = (0..12)
+            .map(|i| format!("关键词{}行\n", "填充".repeat(i)))
+            .collect();
+        let index = index_of(&[
+            ("甲.md", &mixed),
+            ("乙.md", "关键词 乙\n"),
+            ("丙.md", "关键词 丙 更长的一行用来降低分数\n"),
+        ]);
+
+        let outcome = index.search("关键词", 50).unwrap();
+        assert!(outcome.hits.len() > HITS_PER_NOTE, "{:?}", outcome.hits);
+        for pair in outcome.hits.windows(2) {
+            let (first, second) = (&pair[0], &pair[1]);
+            let ordered = second.score < first.score
+                || (second.score == first.score
+                    && (first.rel_path.as_str(), first.line) <= (second.rel_path.as_str(), second.line));
+            assert!(ordered, "截断后仍然必须是全序子序列：{first:?} / {second:?}");
+        }
+    }
+
+    /// 预算：不小于 `limit`、不超过硬上限、饱和乘法不 panic。
+    #[test]
+    fn fetch_budget_is_bounded_and_never_below_the_limit() {
+        assert_eq!(fetch_budget(0), 0);
+        assert_eq!(fetch_budget(1), FETCH_SLACK);
+        assert_eq!(fetch_budget(50), 400);
+        assert_eq!(fetch_budget(200), MAX_FETCH_ROWS, "200 × 8 = 1600 被硬上限截住");
+        assert_eq!(fetch_budget(MAX_FETCH_ROWS + 1), MAX_FETCH_ROWS + 1);
+        assert_eq!(
+            fetch_budget(u32::MAX),
+            u32::MAX,
+            "饱和乘法不 panic，且预算永远不小于 limit"
+        );
+    }
+
+    /// `total` 的两条路径（没取满 → 直接数；取满 → 真的 COUNT）都得给出准确的总数。
+    #[test]
+    fn total_is_exact_on_both_counting_paths() {
+        // 路径一：命中数 < 预算（limit=5 → 预算 40；这里 20 行）→ 不跑 COUNT，total 就是取回行数
+        let short: String = (0..20).map(|i| format!("hello {i}\n")).collect();
+        let small = index_of(&[("甲.md", &short)]);
+        let outcome = small.search("hello", 5).unwrap();
+        assert_eq!(outcome.total, 20);
+        assert_eq!(outcome.hits.len(), 5);
+        assert!(outcome.hits.len() < fetch_budget(5) as usize);
+
+        // 路径二：命中数 > 预算（limit=10 → 预算 80；这里 12 篇 × 20 行 = 240 行）→ 必须 COUNT
+        let body: String = (0..20).map(|i| format!("hello {i}\n")).collect();
+        let notes: Vec<(String, String)> = (0..12)
+            .map(|i| (format!("n{i:02}.md"), body.clone()))
+            .collect();
+        let refs: Vec<(&str, &str)> = notes
+            .iter()
+            .map(|(rel, text)| (rel.as_str(), text.as_str()))
+            .collect();
+        let big = index_of(&refs);
+        let outcome = big.search("hello", 10).unwrap();
+        assert_eq!(outcome.total, 240, "取满预算时必须真的数一遍");
+        assert_eq!(outcome.hits.len(), 10);
     }
 
     #[test]

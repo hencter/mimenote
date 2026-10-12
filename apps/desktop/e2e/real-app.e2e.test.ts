@@ -298,7 +298,7 @@ describe.skipIf(!supported)('真实应用：所见即所得 / 知识图谱 / 设
     await app.page.waitForSelector('.mn-settings', { state: 'visible', timeout: 5_000 })
     // 命令发现走命令面板：菜单退役后面板仍能列出并执行命令
     await app.page.keyboard.press('Escape')
-    await app.page.keyboard.press('Control+k')
+    await app.page.keyboard.press('Control+Shift+p')
     await app.page.waitForSelector('.mn-palette', { state: 'visible', timeout: 5_000 })
     await app.page.keyboard.press('Escape')
   })
@@ -1873,7 +1873,7 @@ describe.skipIf(!supported)('真实应用：回收站恢复（真实磁盘）', 
 
   /** 用命令面板打开回收站（顺带验证命令注册表里有它）。 */
   async function openTrashViaPalette(): Promise<void> {
-    await app.page.keyboard.press('Control+k')
+    await app.page.keyboard.press('Control+Shift+p')
     await app.page.waitForSelector('.mn-palette', { state: 'visible', timeout: 10_000 })
     // 只在**唯一命中**时按回车：`回收站` 会同时匹配到「删除到回收站」（没有选中项时它是置灰的），
     // 面板的 Enter 落在置灰项上什么都不做 —— 这条测试要的是"打开回收站"这一条。

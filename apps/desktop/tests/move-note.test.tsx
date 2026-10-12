@@ -78,7 +78,7 @@ function hover(source: HTMLElement, target: HTMLElement): void {
 }
 
 function resetStores(): void {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useTabsStore.setState({ tabs: [], active: null, restoredRoot: null })
   useVaultStore.setState({
     status: 'idle',

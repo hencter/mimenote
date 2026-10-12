@@ -19,6 +19,7 @@ import LucideAlert from '~icons/lucide/triangle-alert'
 import LucideCalendar from '~icons/lucide/calendar'
 import LucideCheck from '~icons/lucide/check'
 import LucideChevron from '~icons/lucide/chevron-right'
+import LucideCircleDot from '~icons/lucide/circle-dot'
 import LucideClock from '~icons/lucide/clock'
 import LucideColumns from '~icons/lucide/columns-2'
 import LucideDot from '~icons/lucide/dot'
@@ -28,6 +29,8 @@ import LucideFolder from '~icons/lucide/folder'
 import LucideFolderOpen from '~icons/lucide/folder-open'
 import LucideHash from '~icons/lucide/hash'
 import LucideInfo from '~icons/lucide/info'
+import LucideKeyboard from '~icons/lucide/keyboard'
+import LucideFileCode from '~icons/lucide/file-code'
 import LucideLink from '~icons/lucide/link'
 import LucideList from '~icons/lucide/list'
 import LucideMenu from '~icons/lucide/menu'
@@ -83,6 +86,10 @@ const GLYPHS = {
   list: LucideList,
   sparkle: LucideSparkle,
   dot: LucideDot,
+  // "单选"：圆圈 + 中心点。**不要**用 `dot`（中心那个 1 单位的实心点）——
+  // 它在 14px 档下只有 1.2px 宽，属性类型列里那一行会看起来"少了个图标"
+  // （ADR-0051 之后用户报的图标不齐，量出来的主因就是它与其他字形的墨迹宽度差 10 倍）
+  circleDot: LucideCircleDot,
   sidebarRight: LucideSidebarRight,
   menu: LucideMenu,
   settings: LucideSettings,
@@ -95,6 +102,10 @@ const GLYPHS = {
   sort: LucideSort,
   // "标签"：斜挂牌（模块标签页的图标；标签面板头仍用品牌闪点，不改）
   tag: LucideTag,
+  // "键位"：设置页的键位分区用（ADR-0055）。键盘形是这一分区唯一的自解释字形
+  keyboard: LucideKeyboard,
+  // "配置"：设置页的配置分区用（ADR-0055）—— 一个带代码行的文件
+  fileCode: LucideFileCode,
 } as const
 
 export type IconName = keyof typeof GLYPHS

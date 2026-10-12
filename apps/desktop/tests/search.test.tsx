@@ -40,10 +40,9 @@ function pressModShift(key: string, target: Document | Element = document.body):
   fireEvent.keyDown(target, { key, ctrlKey: true, shiftKey: true })
 }
 
-/** 派发 `Ctrl+<key>`（Windows/Linux 的 Mod）。 */
-function pressMod(key: string, target: Document | Element = document.body): void {
-  fireEvent.keyDown(target, { key, ctrlKey: true })
-}
+/* 这里原先还有一个 `pressMod`（`Ctrl+<key>`）辅助函数：ADR-0055 把命令面板
+ * 从 `Ctrl+K` 挪到 `Ctrl+Shift+P` 之后，本文件里已经没有它的调用点，
+ * 留着会撞上 `noUnusedLocals`。将来要按单修饰键时再加回来。 */
 
 /** 派发一个"真实"的 Esc（返回事件对象，便于断言 preventDefault）。 */
 function pressEscape(target: Element): KeyboardEvent {
@@ -124,7 +123,7 @@ async function openSearchPanel(): Promise<{ dialog: HTMLElement; input: HTMLInpu
 beforeEach(() => {
   registerBuiltinCommands()
   window.localStorage.clear()
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useUiStore.setState({ paletteMode: null, linksPanelVisible: false, viewMode: 'read' })
   useVaultStore.setState({
     status: 'idle',
@@ -276,12 +275,13 @@ describe('全文搜索面板', () => {
     ])
   })
 
-  it('命令面板里也能进全文搜索：Ctrl+K → 输入「全文搜索」→ 回车', async () => {
+  it('命令面板里也能进全文搜索：Ctrl+Shift+P → 输入「全文搜索」→ 回车', async () => {
     setIpcAdapter(createMockAdapter())
     render(<App />)
     await openVault()
 
-    pressMod('k')
+    // ADR-0055：命令面板从 `Mod+K` 挪到 `Mod+Shift+P`（`Mod+K` 归"插入链接"）
+    pressModShift('P')
     const palette = await screen.findByRole('dialog', { name: '命令面板' })
     const input = within(palette).getByRole('textbox')
     fireEvent.change(input, { target: { value: '全文搜索' } })

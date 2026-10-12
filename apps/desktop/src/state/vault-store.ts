@@ -21,6 +21,7 @@ import { MimenoteError, describeError } from '@/ipc/types'
 import type { EntryMeta, NoteContent, RenameOutcome, TrashRecord, VaultInfo, VaultSnapshot } from '@/ipc/types'
 import { useNoteStore } from './note-store'
 import { loadJson, loadString, saveJson, saveString } from './persist'
+import { useSettingsStore } from './settings-store'
 import { toast } from './toast-store'
 import { useUiStore } from './ui-store'
 
@@ -251,6 +252,12 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         lastRoot: snapshot.rootPath,
         recentVaults: recordRecentVault(get().recentVaults, snapshot.rootPath, snapshot.name),
       })
+
+      // 配置文件随 Vault 走（ADR-0055）：Vault 一打开就读取它（没有就首次迁移生成）。
+      // 为什么**等**它而不是 fire-and-forget：配置里有字号、键位、文件树形态 ——
+      // 不等就会先按旧值渲染几帧再跳变（字体与键位都会"闪一下"）。
+      // 代价是一次单文件读 + 解析（≤256 KiB，通常 <1ms），远小于这次扫描本身。
+      await useSettingsStore.getState().loadFromVault(snapshot.rootPath)
 
       if (snapshot.truncated) {
         toast.warn(
@@ -679,26 +686,29 @@ function snapshotPatch(snapshot: VaultSnapshot, selected: string | null): Partia
 }
 
 /**
- * 当前打开的笔记若在磁盘上变了，交给 `note-store` 决定"重载"还是"进冲突"。
+ * 已打开的笔记若在磁盘上变了，交给 `note-store` 决定"重载"还是"进冲突"。
  *
  * 判据是**重扫回来的 mtime 与文档的版本令牌**（而不是宿主事件里的路径表）：
  * 路径表有上限、会被截断，而 mtime 比对在任何规模下都成立，也天然覆盖了
  * "同一次风暴里既有别的文件、也有当前笔记"的情况。
+ *
+ * ⚠️ **逐篇**对账（分栏之后这是必须的）：从前全局只有一份文档，所以只看"当前那一篇"就够；
+ * 现在几格可以同时开着几篇，只对当前的那篇做对账，别格里的正文就会停在旧版本上 ——
+ * 而它看起来完全正常（没有冲突、没有提示），是最难发现的一类错误。
  */
 async function followDiskForOpenNote(entries: readonly EntryMeta[]): Promise<void> {
   const note = useNoteStore.getState()
-  const doc = note.doc
-  if (doc === null) return
+  for (const [relPath, doc] of Object.entries(note.docs)) {
+    const entry = entries.find((candidate) => candidate.relPath === relPath)
+    if (entry === undefined) {
+      // 条目表里没有它：磁盘上被删掉或改名搬走了
+      await note.applyExternalChangeFor(relPath, { currentMtimeMs: 0, removed: true })
+      continue
+    }
+    if (entry.mtimeMs === doc.baseMtimeMs) continue // 没变（我们自己写的那种也落在这一档）
 
-  const entry = entries.find((candidate) => candidate.relPath === doc.relPath)
-  if (entry === undefined) {
-    // 条目表里没有它：磁盘上被删掉或改名搬走了
-    await note.applyExternalChange({ currentMtimeMs: 0, removed: true })
-    return
+    await note.applyExternalChangeFor(relPath, { currentMtimeMs: entry.mtimeMs ?? 0 })
   }
-  if (entry.mtimeMs === doc.baseMtimeMs) return // 没变（我们自己写的那种也落在这一档）
-
-  await note.applyExternalChange({ currentMtimeMs: entry.mtimeMs ?? 0 })
 }
 
 /**

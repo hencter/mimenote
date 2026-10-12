@@ -211,7 +211,7 @@ function distanceBetween(a: Rect, b: Rect): number {
 }
 
 function resetStores(): void {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useUiStore.setState({ viewMode: 'graph', paletteMode: null, linksPanelVisible: false })
   useLinksStore.setState({
     status: { phase: 'idle', indexed: 0, total: 0, durationMs: 0, links: 0, reusedNotes: 0 },

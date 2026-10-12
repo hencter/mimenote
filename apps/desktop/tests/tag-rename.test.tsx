@@ -43,7 +43,7 @@ const MERGE = '---\ntags: [甲, 乙]\n---\n\n正文 #甲 与 #乙。\n'
 let adapter: MockAdapter
 
 function resetStores(): void {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useTagsStore.setState({
     open: false,
     relPath: null,

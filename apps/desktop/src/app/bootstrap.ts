@@ -7,6 +7,7 @@
 
 import { isTauriRuntime, setIpcAdapter } from '@/ipc/client'
 import { ipc } from '@/ipc/client'
+import { installKeymapResolver } from '@/state/keymap-store'
 import { useUiStore } from '@/state/ui-store'
 import { applyTheme, getTheme } from '@/theme/apply'
 import { registerBuiltinCommands } from './builtin-commands'
@@ -37,6 +38,10 @@ export async function bootstrap(): Promise<BootstrapResult> {
 
   // 3. 命令
   registerBuiltinCommands()
+
+  // 3.5 键位解析器（ADR-0055）：必须**在命令注册之后**装 ——
+  // 解析器是按命令 id 查"档案 + 用户覆盖"的，命令表为空时装了也解析不出东西。
+  installKeymapResolver()
 
   // 4. 启动握手（不阻塞渲染）：确认 IPC 通道可用，并让宿主日志留下"前端已就绪"的证据
   void ipc

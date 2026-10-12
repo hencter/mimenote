@@ -74,7 +74,7 @@ beforeEach(() => {
   setIpcAdapter(createMockAdapter())
   registerBuiltinCommands()
   window.localStorage.clear()
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useVaultStore.setState({
     status: 'idle',
     info: null,

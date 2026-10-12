@@ -60,8 +60,16 @@ export const DEFAULT_MODULE_HOME: Record<ViewModuleId, 'left' | 'right' | 'botto
 }
 
 export interface ReconcileInput {
-  /** 打开的笔记（顺序即标签顺序，来自 `tabs-store`）。 */
-  notes: readonly string[]
+  /**
+   * 打开的笔记（顺序即标签顺序，来自 `tabs-store`）。
+   *
+   * ⚠️ **不给 ≠ 给了空数组**。`undefined` 的语义是"还没拿到这份名单，别动树上的笔记"，
+   * 空数组是"一篇都没开，把树上的笔记标签全剪掉"。`ui-store` 在模块初始化时读盘、
+   * 那时标签列表还没装载，就是靠这一条把用户拖到别的格子里的笔记位置保住的
+   * （见 `migrateLayout` 的 `notes` 参数说明）；挂载后的第一次对账同样有这个问题 ——
+   * 传 `[]` 会让**每次启动**都把非主叶里的笔记标签搬回主叶。
+   */
+  notes?: readonly string[]
   /** 当前存在的视图模块（**与可见性无关**：隐藏的面板照样在树上，见文件头）。 */
   modules?: readonly ViewModuleId[]
   /** 新模块挂哪儿；缺省用 {@link DEFAULT_MODULE_HOME}。 */
@@ -159,18 +167,21 @@ export function reconcileLayout(layout: TreeLayout, input: ReconcileInput): Tree
   const moduleHome = input.moduleHome ?? ((module) => DEFAULT_MODULE_HOME[module])
   let tree = layout
 
-  // 1) 关掉的笔记：从树上摘掉（认不出的"笔记"标签也顺手清掉）
-  const wanted = new Set(input.notes.map(noteItem))
-  for (const item of itemsOf(tree)) {
-    const path = notePathOf(item)
-    if (path !== null && !wanted.has(item)) tree = removeItem(tree, item)
-  }
+  // 0) 名单未知（`undefined`）：**一个笔记标签都不动**（见 `ReconcileInput.notes`）
+  if (input.notes !== undefined) {
+    // 1) 关掉的笔记：从树上摘掉（认不出的"笔记"标签也顺手清掉）
+    const wanted = new Set(input.notes.map(noteItem))
+    for (const item of itemsOf(tree)) {
+      const path = notePathOf(item)
+      if (path !== null && !wanted.has(item)) tree = removeItem(tree, item)
+    }
 
-  // 2) 新打开的笔记：挂到主叶末尾
-  for (const note of input.notes) {
-    const item = noteItem(note)
-    if (leafOfItem(tree, item) !== null) continue
-    tree = attachItem(tree, item, { leafId: mainLeafId(tree) })
+    // 2) 新打开的笔记：挂到主叶末尾
+    for (const note of input.notes) {
+      const item = noteItem(note)
+      if (leafOfItem(tree, item) !== null) continue
+      tree = attachItem(tree, item, { leafId: mainLeafId(tree) })
+    }
   }
 
   // 3) 视图模块：缺的补上（**不因为被隐藏而移除**，见文件头）

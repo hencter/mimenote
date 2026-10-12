@@ -947,6 +947,25 @@ kbd {
   color: var(--mn-fg-subtle);
 }
 
+/* 收件箱计数（ADR-0057）：**文字**按钮而不是图标 ——
+   它要传达的是"还剩几条"，数字必须看得见；hover/激活沿用与图标按钮同一套令牌，
+   免得状态栏里长出第二种视觉语言。等宽数字（tabular-nums）让数字变化时按钮不抖。 */
+.mn-statusbar__inbox {
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--mn-accent);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.mn-statusbar__inbox:hover {
+  background: var(--mn-hover);
+}
+
 .mn-statusbar__spacer {
   flex: 1 1 auto;
 }

@@ -99,7 +99,7 @@ function mountEditor(doc: string, cursor: number, tabWidth?: number): EditorView
 }
 
 beforeEach(() => {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
 })
 
 afterEach(() => {

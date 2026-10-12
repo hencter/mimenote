@@ -50,6 +50,7 @@ import {
   outdentOnShiftTab,
 } from './list-input'
 import { livePreviewExtensions } from './live-preview/plugin'
+import { templateCompleteExtensions } from './template-complete/plugin'
 import { wikiCompleteExtensions } from './wiki-complete/plugin'
 import { wikiHoverExtensions } from './wiki-hover/wiki-hover'
 
@@ -193,6 +194,10 @@ export function createEditorExtensions(
     // `[[` 笔记补全（ADR-0009 之后的写作手感补齐）：弹层是 ViewPlugin，键位是 Prec.highest ——
     // 但**只在弹层开着时**才吃 Enter/Tab/↑↓/Esc，关闭时一律返回 false（详细分工见该模块文档）
     ...wikiCompleteExtensions(),
+    // `@` 模板记号补全（ADR-0056）：与 `[[` 补全同构的第二个 trigger —— 同一份弹层样式、
+    // 同一组 `Prec.highest` 键位（弹层关着一律返回 false）。两者不可能同时开着：
+    // 光标在 `[[…` 里时模板补全的上下文判定直接返回 null（见 template-complete/context.ts）
+    ...templateCompleteExtensions(),
     // `[[链接]]` 的悬停预览（ADR-0053）：装饰层已经在 `[[…]]` 上挂了 `data-mn-wikilink`，
     // 这里只做"停够时间就把目标笔记的只读正文浮出来"。它什么都不吃掉（见该模块文档），
     // 因此对选词、拖放、点击跳转这三条既有路径零影响

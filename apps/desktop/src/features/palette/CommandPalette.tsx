@@ -38,13 +38,15 @@ import { displayPath } from '@/domain/paths'
 import { describeError } from '@/ipc/types'
 import type { IndexPhase, SearchHit } from '@/ipc/types'
 import { useLinksStore } from '@/state/links-store'
+import { currentChordsOf } from '@/state/keymap-store'
 import { useUiStore, type PaletteMode } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 import {
   buildCommandIndex,
   filterCommands,
   filterNotes,
-  substringMatchIndices,
+  searchHighlightIndices,
+  searchHighlightTerms,
   MAX_PALETTE_RESULTS,
   type NoteIndexEntry,
   type PaletteOutcome,
@@ -105,6 +107,24 @@ function rowClassName(active: boolean, disabled: boolean): string {
 }
 
 /**
+ * 「打开 Vault」当前生效的键位（用于两个空态提示里的"按 X 选择一个文件夹"）。
+ *
+ * **不能写死字面量**：ADR-0055 之后默认键位与档案都可能与旧值不同，用户还能再覆盖 —
+ * 写死的字符串迟早与真实键位分家，提示就变成"指着一个不存在的键"。
+ * 取值走 `currentChordsOf` 的解析链（用户覆盖 → 档案 → 默认表），与设置页、分发器同一份结果；
+ * 万一命令不在注册表里（精简构建/单测），退回**默认表里的原始键位**，
+ * 只在连默认表都拿不到时才用与当前默认值一致的字面量兜底（提示不能变成空白）。
+ */
+function openVaultChord(): string {
+  const resolved = currentChordsOf('vault.open')[0]
+  if (resolved !== undefined) return formatChord(resolved)
+
+  const declared = commands.get('vault.open')?.keybinding ?? null
+  const first = Array.isArray(declared) ? declared[0] : declared
+  return formatChord(first ?? 'Mod+Alt+O')
+}
+
+/**
  * 命令面板 / 快速切换的空态文案。
  *
  * 三种"空"必须说清楚原因，否则用户只会看到一片空白：
@@ -114,7 +134,7 @@ function rowClassName(active: boolean, disabled: boolean): string {
 function emptyMessage(mode: PaletteMode, hasVault: boolean, noteCount: number): string {
   if (mode === 'quickSwitch') {
     if (!hasVault) {
-      return `还没有打开 Vault —— 按 ${formatChord('Mod+O')} 选择一个文件夹后，就能在这里快速切换笔记`
+      return `还没有打开 Vault —— 按 ${openVaultChord()} 选择一个文件夹后，就能在这里快速切换笔记`
     }
     if (noteCount === 0) return '这个 Vault 里还没有 Markdown 笔记'
     return '没有匹配的笔记'
@@ -137,7 +157,7 @@ function searchEmptyMessage(
   indexPhase: IndexPhase,
 ): string {
   if (!hasVault) {
-    return `还没有打开 Vault —— 按 ${formatChord('Mod+O')} 选择一个文件夹后，就能搜索正文内容`
+    return `还没有打开 Vault —— 按 ${openVaultChord()} 选择一个文件夹后，就能搜索正文内容`
   }
   const trimmed = query.trim()
   if (trimmed === '') return '输入关键词，搜索当前 Vault 的正文内容'
@@ -150,7 +170,12 @@ function searchEmptyMessage(
     return describeError(state.error, '搜索失败')
   }
   if (state.loading || state.settledQuery !== trimmed) return '搜索中…'
-  return '没有匹配的正文内容'
+  // 零命中时把"行级索引"的固有限制说出来：宿主的语义是"每个词都要落在同一行"，
+  // 用户输入的多个词分布在同篇笔记的不同行时确实搜不到（ADR-0059 的已知限制），
+  // 不说明的话用户只会以为"库里没有这个词"。
+  return searchHighlightTerms(trimmed).length > 1
+    ? '没有匹配的正文内容（多个关键词需要在同一行里同时出现）'
+    : '没有匹配的正文内容'
 }
 
 export function CommandPalette({
@@ -423,10 +448,14 @@ export function CommandPalette({
                       <span className="mn-palette__item-title">{displayPath(hit.relPath)}</span>
                       <span className="mn-palette__item-sub">
                         {hit.line}:{' '}
-                        {/* 高亮用**子串**下标（不是子序列）：必须与宿主实际命中的位置一致 */}
+                        {/* 高亮用**子串**下标（不是子序列），而且必须**逐词**：
+                            宿主的语义是"每个词各自前缀匹配、全部命中同一行"，拿整串查询去片段里
+                            找连续子串在多数多词查询下什么都找不到（ADR-0059）。
+                            查询串取 `settledQuery` —— 产生这批结果的那一次，而不是输入框里的当前值：
+                            新查询在途期间旧结果仍在列表里，用新词去标旧片段是错的。 */}
                         <Highlighted
                           text={hit.snippet}
-                          indices={substringMatchIndices(hit.snippet, query.trim())}
+                          indices={searchHighlightIndices(hit.snippet, search.settledQuery)}
                         />
                       </span>
                     </li>
@@ -462,7 +491,7 @@ export function CommandPalette({
 /**
  * 命中字符高亮。
  *
- * 下标由匹配阶段给出（`fuzzyMatch` 的子序列下标，或全文搜索的 {@link substringMatchIndices}
+ * 下标由匹配阶段给出（`fuzzyMatch` 的子序列下标，或全文搜索的 {@link searchHighlightIndices}
  * 子串下标），因此这里只做渲染，不重新算匹配；相邻的命中合并成一个 `<mark>`，
  * 避免把词切成碎片影响可读性。
  */

@@ -110,8 +110,15 @@ pub fn run() {
             site_export::export_site_plan,
             site_export::export_site_write_pages,
             site_export::export_site_copy_assets,
+            // —— 配置领域 ——
+            // Vault 配置文件（`.mimenote/config.<toml|yaml|json>`，ADR-0055）：
+            // 不接受路径参数、格式走白名单、写入走原子写 —— 它是"能力明确的窄接口"，
+            // 不是"任意文件读写"的后门（与 `export_write_html` 的扩展名白名单同一纪律）
+            commands::config::config_read,
+            commands::config::config_write,
             // —— 系统领域 ——
             commands::system::snippets_list,
+            commands::system::templates_list,
             commands::system::version_info,
         ])
         .setup(move |app| {

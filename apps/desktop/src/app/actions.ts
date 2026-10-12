@@ -291,9 +291,9 @@ export async function deleteSelected(relPath?: string): Promise<void> {
   try {
     const record = await ipc.noteDelete(target, true)
     useVaultStore.getState().registerDeletedEntry(record)
-    if (useNoteStore.getState().doc?.relPath === target) {
-      useNoteStore.getState().close()
-    }
+    // 关掉**这一篇**（它可能正显示在某一格里，未必是当前文档）：磁盘上已经没有了，
+    // 留在仓库里下次打开就会显示缓存正文。别的格子里的文档一篇都不动。
+    useNoteStore.getState().closeDoc(target)
     toast.success('已移入回收站', '可在「回收站」里恢复')
   } catch (cause) {
     toast.error(describeError(MimenoteError.from(cause), '删除失败'))

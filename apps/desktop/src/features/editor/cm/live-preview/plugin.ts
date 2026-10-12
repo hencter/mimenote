@@ -23,11 +23,12 @@ import {
 import { createNoteFromLink, openNote } from '@/app/actions'
 import { createAssetResolver, type AssetResolver } from '@/domain/assets'
 import { isInternalNoteHref, normalizeLinkTarget } from '@/domain/links'
-import { useLinksStore } from '@/state/links-store'
+import { outboundFor, useLinksStore } from '@/state/links-store'
 import { useNoteStore } from '@/state/note-store'
 import { toast } from '@/state/toast-store'
 import { useVaultStore } from '@/state/vault-store'
 
+import { notePathOf } from '../note-path'
 import {
   flushAssets,
   lookupAsset,
@@ -68,12 +69,20 @@ function assetResolverFor(entries: readonly { relPath: string; isDir: boolean }[
   return resolver
 }
 
-/** 读取当前上下文。每次重算都重新读，不做缓存 —— 链接与授权都是异步来的。 */
-function livePreviewContext(): LivePreviewContext {
+/** 读取某一格自己的上下文。每次重算都重新读，不做缓存 —— 链接与授权都是异步来的。 */
+function livePreviewContext(view: EditorView): LivePreviewContext {
   const vault = useVaultStore.getState()
+  const noteRelPath = notePathOf(view)
+  // 这一格的出链（路径未知时退回旧的单份 `links`，理由见 `handleMouseDown`）。
+  // 还没取到就先给空表：装饰把链接画成悬空是暂时的，取回来会重算（见下面 subscriptions）。
+  const outbound =
+    noteRelPath === null
+      ? (useLinksStore.getState().links?.outbound ?? [])
+      : (outboundFor(noteRelPath) ?? [])
+  if (noteRelPath !== null) useLinksStore.getState().ensureOutbound(noteRelPath)
   return {
-    noteRelPath: useNoteStore.getState().doc?.relPath ?? null,
-    outbound: useLinksStore.getState().links?.outbound ?? [],
+    noteRelPath,
+    outbound,
     resolveAsset: assetResolverFor(vault.entries),
     resolveImage: (rel) => {
       const rootPath = vault.info?.rootPath ?? null
@@ -121,13 +130,31 @@ function handleMouseDown(event: MouseEvent, view: EditorView): boolean {
   if (event.altKey) return false
   event.preventDefault()
 
-  const noteRelPath = useNoteStore.getState().doc?.relPath ?? null
-  const outbound = useLinksStore.getState().links?.outbound ?? []
+  const noteRelPath = notePathOf(view)
+  /*
+   * 出链必须是**这一格这一篇**的：共用"当前文档"那一份会让非当前那格里的有效链接被当成
+   * 悬空，点一下就去新建一篇早就存在的笔记。
+   *
+   * 这一格的路径**未知**时（没接 facet 的编辑器，例如直接 `createEditorExtensions` 的单测）
+   * 退回旧的单份 `links` 口径 —— 那时根本没有"别的篇"可言。
+   *
+   * `null` = 这一篇的出链还没取到 —— 这时**不猜**：先让它去取，这一次的点击原样吃掉。
+   * 宁可"点一下没反应"，也不做一件会造出重复笔记的事。
+   */
+  const outbound =
+    noteRelPath === null
+      ? (useLinksStore.getState().links?.outbound ?? [])
+      : outboundFor(noteRelPath)
+  if (noteRelPath !== null && outbound === null) {
+    useLinksStore.getState().ensureOutbound(noteRelPath)
+    return true
+  }
+  const links = outbound ?? []
 
   const wikiTarget = element.getAttribute(WIKILINK_ATTR)
   if (wikiTarget !== null) {
     const key = normalizeLinkTarget(wikiTarget)
-    const match = outbound.find((link) => normalizeLinkTarget(link.rawTarget) === key)
+    const match = links.find((link) => normalizeLinkTarget(link.rawTarget) === key)
     // 装饰上带的解析结果是"算的时候"的；store 里的可能更新，两者取其一即可
     const resolved =
       match?.resolvedRelPath ?? (element.getAttribute(WIKILINK_RESOLVED_ATTR) || null)
@@ -139,7 +166,7 @@ function handleMouseDown(event: MouseEvent, view: EditorView): boolean {
   const href = element.getAttribute(LINK_ATTR) ?? ''
   if (href === '') return true
   const key = normalizeLinkTarget(href)
-  const match = outbound.find((link) => normalizeLinkTarget(link.rawTarget) === key)
+  const match = links.find((link) => normalizeLinkTarget(link.rawTarget) === key)
   if (match?.resolvedRelPath != null) {
     void openNote(match.resolvedRelPath)
     return true
@@ -181,19 +208,30 @@ const livePreviewPlugin = ViewPlugin.fromClass(
         view.contentDOM.removeEventListener('load', this.onImageLoad, true),
       )
 
-      // 宿主索引回来后，wikilink 的"已解析/悬空"要跟着变
+      // 宿主索引回来后，wikilink 的"已解析/悬空"要跟着变；
+      // 出链缓存（这一格那一篇还有别的格子的）更新时同样要重算。
       this.disposers.push(
         useLinksStore.subscribe((state, previous) => {
-          if (state.links !== previous.links) refreshLivePreview(this.view)
+          if (state.links !== previous.links || state.outboundByPath !== previous.outboundByPath) {
+            refreshLivePreview(this.view)
+          }
         }),
       )
-      // 切换笔记 / 从磁盘重新加载：`revision` 变了就重算（图片是相对笔记解析的）
+      // 这一格那一篇换了 / 从磁盘重新加载了：`revision` 变了就重算
+      // （图片与链接都是**相对这一篇**解析的）。
+      //
+      // ⚠️ 判据必须按**这一格自己的**路径取，不能看"当前文档"：分栏里非当前那格的正文
+      // 变了（外部重新加载、标签编辑回写），当前文档那一篇的 revision 一动不动 ——
+      // 只看当前文档的话那一格会停在旧装饰上。`activeChanged` 保留是为了兼容
+      // "没接 facet 的编辑器"（既有单测）：那种情况下路径确实来自当前文档。
       this.disposers.push(
         useNoteStore.subscribe((state, previous) => {
-          if (
-            state.doc?.relPath !== previous.doc?.relPath ||
-            state.doc?.revision !== previous.doc?.revision
-          ) {
+          const path = notePathOf(this.view)
+          const own = path === null ? undefined : state.docs[path]
+          const ownBefore = path === null ? undefined : previous.docs[path]
+          const ownChanged =
+            (own === undefined) !== (ownBefore === undefined) || own?.revision !== ownBefore?.revision
+          if (ownChanged || state.doc?.relPath !== previous.doc?.relPath) {
             refreshLivePreview(this.view)
           }
         }),
@@ -246,7 +284,7 @@ const livePreviewPlugin = ViewPlugin.fromClass(
 
     /** 重算装饰：只覆盖视口，且不派发任何事务（纯展示层）。 */
     private recompute(): void {
-      const result = buildLivePreview(this.view.state, livePreviewContext(), this.view.visibleRanges)
+      const result = buildLivePreview(this.view.state, livePreviewContext(this.view), this.view.visibleRanges)
       this.decorations = result.decorations
       this.atomicRanges = result.atomicRanges
       // 把"这一屏出现过、但还没授权"的图片一次性交给宿主（同一路径只请求一次）

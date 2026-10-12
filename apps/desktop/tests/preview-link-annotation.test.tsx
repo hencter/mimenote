@@ -84,7 +84,7 @@ async function openWithLinks(text: string, outbound: ResolvedLink[]): Promise<HT
 
 beforeEach(async () => {
   counter.normalize = 0
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useLinksStore.getState().clear()
   useVaultStore.setState({
     status: 'idle',

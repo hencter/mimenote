@@ -1,7 +1,84 @@
 # 交接说明：下一个会话从这里开始
 
 > 这份文件是**临时**的会话交接，不是产品文档。新会话接手顺利之后可以直接删掉它。
-> 最后更新：v0.3.0 之后那一批（ADR-0047 ~ ADR-0051）交付并修完回归之后。
+> 最后更新：ADR-0055 ~ 0059（键位与配置 / 模板语法 / 收件箱 / 分栏文件树 / 搜索质量）交付之后。
+
+## 0. 最近一轮：键位与配置 · 模板语法 · 收件箱 · 分栏文件树 · 搜索质量
+
+四条战线并行（各自先写设计再写代码），ADR 0055 ~ 0059：
+
+| ADR | 内容 | 设计文档 |
+| --- | --- | --- |
+| [0055](adr/0055-keymap-and-config-file.md) | 键位解析链（**用户覆盖 → 档案 → 默认表**）+ Vault 配置文件（`.mimenote/config.toml\|yaml\|json` 三格式同构）+ 行内格式化命令（`Mod+B/I/K` 等） | [design/01](design/01-keymap-and-config.md) |
+| [0056](adr/0056-template-syntax.md) | **MimeNote 模板语法 `@`**（无结束符、否定式边界、12 个内建变量、模板展开 + 编辑器内联补全共用一份判据） | [design/02](design/02-template-syntax.md) |
+| [0057](adr/0057-inbox.md) | **收件箱**（独立目录、默认单篇时间戳笔记、状态即位置、归档走既有移动链路） | [design/03](design/03-inbox.md) |
+| [0058](adr/0058-miller-columns.md) | **苹果式分栏文件树**（Miller columns）+ 单栏 ⇄ 分栏（`Mod+Alt+C`，默认单栏） | [design/04](design/04-miller-columns.md) |
+| [0059](adr/0059-search-quality.md) | **搜索质量**（每篇命中上限 5、按需 COUNT、逐词高亮 + `settledQuery`；不动 schema） | [design/05](design/05-search.md) |
+
+**键位表的净变化（`Mod+B` 归还给"加粗"）**：命令面板 `Mod+K` → `Mod+Shift+P`；插入链接占 `Mod+K`；
+打开 Vault `Mod+O` → `Mod+Alt+O`；侧栏 `Mod+B` → `Mod+Shift+B`；导出 PDF `Mod+Shift+P` → `Mod+Alt+P`
+（它与新命令面板撞了 —— 是 `tests/keymap-defaults.test.tsx` 的**结构性**冲突判据抓出来的）；
+新增 `Mod+Shift+N` 从模板新建、`Mod+Shift+I` 捕获、`Mod+Alt+I` 收件箱、`Mod+Alt+C` 单栏/分栏、`Mod+Alt+N` 行号。
+
+**本轮收尾时的实测数字**：
+
+```
+pnpm typecheck                ✓ 无错误
+pnpm test                     ✓ 127 个测试文件 / 2222 条
+cargo test --workspace        ✓ mn-core 219 · mn-index 174+10 · mimenote 193 · cli 6（0 失败）
+pnpm check:version / check:ipc ✓ 0.3.0 一致；43 条命令三方一致
+cargo clippy -D warnings      ✓ 干净
+pnpm build                    ✓ 2.4s（index 1787 kB —— 超 1100 kB 警告线，见下）
+```
+
+**没跑**：`pnpm test:e2e:ui` / `test:e2e:app`（下一阶段；app 侧要先 `tauri build --no-bundle`）。
+
+**留给下一阶段的两件事**：
+1. **E2E 键位残留**已同步（`e2e/ui.e2e.test.ts` 与 `real-app.e2e.test.ts` 里 `Control+k` → `Control+Shift+p`、
+   `Control+b` → `Control+Shift+b`），但**没有跑过**；应用层 E2E 还要覆盖"收件箱目录不存在时的第一次捕获"
+   （真实宿主 `note_create` 要求父目录已存在，Mock 会自动补 —— inbox 队友已用"先建在根再 move"兜住）。
+2. **包体**：`dist/assets/index-*.js` 1787 kB（vite 配置里的注释还写着"约 950KB"）。这是几轮累积的结果，
+   与 ADR-0001 的冷启动预算直接相关 —— 建议在 M5 一起量：要么分包、要么把大文档预览那条链路再推迟加载。
+
+## 0.5 上一轮：每格一个文档（ADR-0054）
+
+用户原话三条：**"分栏里每个栏目都可以编辑"**、**"属性面板的显示和隐藏是鼠标悬浮过去才出现，
+功能面板隐藏需要功能面板进行"**、**"图标没对齐！细节问题"**。
+
+`note-store` 从"当前文档"升级成**文档仓库**（`docs` + `activePath`；`doc`/`dirty`/`status`/
+`conflict`/… 成为 `docs[activePath]` 的**派生镜像**，旧 API 一字不改），于是：
+**每格都能编辑与自动保存**（每篇各有防抖定时器、冲突态与 `(mtime,size)` 令牌）、
+**每格一个属性面板**、每格自己的笔记路径进 CodeMirror facet（图片解析 / `[[` 候选排序 /
+**粘贴附件的相对路径**）、出链按路径缓存、脏标记与关标签确认按篇。
+细节三修 + 两个顺带发现的真 bug 见 [ADR-0054](adr/0054-per-pane-documents.md)。
+
+**本轮的实测数字（收尾时跑的）**：
+
+```
+pnpm typecheck                  ✓ 无错误
+pnpm test                       ✓ 113 个测试文件 / 1933 条
+pnpm test:e2e:ui                ✓ 74 条（ui.e2e 69 + properties-layout 4 + split-panes 1）
+```
+
+没有动 Rust（`cargo test` / `clippy` / `fmt` 与上一轮相同）；**`pnpm test:e2e:app` 本轮没跑** ——
+它要求先 `tauri build --no-bundle` 重建 release 二进制（前端改了它就跑旧前端）。
+
+### 两处"看代码看不出来"的坑（都已被用例钉住）
+
+1. **`open()` 对"已在仓库里且干净"的那篇必须重新读盘**。我一开始为了"别吃掉别格里的编辑"
+   改成"已在仓库就只切当前"，结果 `ui.e2e.test.ts` 的"重命名笔记…并验证可逆"红了：
+   重命名会**外部改写别的笔记**（改指向它的链接），而阅读视图渲染的是**内存正文** ——
+   不重读就永远显示旧链接。正确口径：**干净 → 重读；脏/冲突 → 只切当前**。
+2. **`reconcileLayout` 的 `notes: []` 与"名单未知"是两件事**。`installTabsSync` 挂载时的
+   第一次对账发生在 `tabs-store` 装载之前，传 `[]` 会把树上所有笔记标签剪掉，再由
+   `syncFromNote` 挂回**主叶末尾** —— 也就是"每次启动把非主叶的笔记搬回主叶"。
+   现在 `notes` 可选（`undefined` = 别动笔记标签），判据是 `restoredRoot === 当前 Vault 根`。
+
+> 验证这类改动的**唯一可靠办法**：`git worktree add` 一份 HEAD + 把 `node_modules`
+> 做成 junction，用 `node ./node_modules/vite/bin/vite.js build` 与
+> `node ./node_modules/vitest/vitest.mjs run -c vitest.e2e.config.ts e2e/ui.e2e.test.ts`
+> 跑基线（pnpm 在 worktree 里会试图 install 而失败）。本轮就是靠它把 31 条失败判定成
+> "我引入的回归"而不是"本来就红"。
 
 ## 0. 一句话现状
 
@@ -117,20 +194,27 @@ pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— �
    仍未做：**标签面板拖拽成树**、**静态站点站内搜索与增量重导出**、
    **大文档预览的分块 + 视口窗口化**（ADR-0020 的收尾）。
 5. 图谱卡片：卡片内搜索高亮；切割树收尾：只读预览补图、`Alt+↑/↓`、
-   **笔记左右对照编辑**（要先做多文档模型 —— 注意 ADR-0049 只做到了"每格一个只读编辑器"，
-   全局仍然只有一份 `note-store.doc`）。
+   **同一篇笔记的左右对照编辑**（ADR-0054 已经交付了**多文档仓库**，所以"不同篇同时可写"
+   已经不缺；缺的是"**同一篇**的两份视图 + 两套光标"—— 它撞 ADR-0035 不变式 1
+   "每个标签全树恰好出现一次"，要单独设计）。
 6. M4 插件系统的剩余部分（动态加载、Worker 隔离、四类 API、设置页插件分区）。
 
 ## 4. 工程约定与红线（新会话务必遵守）
 
 - **注释与文档一律中文，注释解释"为什么"**（取舍、代价、踩过的坑），不复述代码在做什么。
 - **提交由主会话做**：派出去的子代理**绝不执行 git 写操作**，只允许 `status`/`log`/`diff` 这类只读命令。
-  每个交付项 = feature commit + docs-sync commit；ADR 放 `docs/adr/`，**下一个编号是 0053**。
+  每个交付项 = feature commit + docs-sync commit；ADR 放 `docs/adr/`，**下一个编号是 0060**
+  （0055 键位与三格式配置、0056 模板语法、0057 收件箱、0058 分栏文件树、0059 搜索质量已占用）。
 - **`examples/demo-vault/` 是用户自己的草稿区**：不要动、不要提交里面的文件（包括**已被跟踪但被改过**的
   那两篇 —— 用户在里面手动试语法，`updated:` 时间戳是应用自己盖的章）。
 - **判据只有一份**（改一处必须同时改另一处时才允许两份，且两边都要有用例）：
   callout `domain/callouts.ts`、任务列表 `domain/task-list.ts`、frontmatter 展示 `domain/frontmatter.ts`、
   **frontmatter 编辑 `domain/frontmatter-edit.ts`**、**行内标签 `domain/inline-tags.ts`**、
+  **键位解析 `domain/keymap.ts`**（默认表 + 档案 + 用户覆盖；`app/commands.ts` 只提供注入点，
+  键盘原语也在这一个文件里）、**配置文件的格式判据 `domain/config-file.ts`**
+  （解析/序列化/注释检测；字段与默认值只在 `state/settings-store.ts` —— **它是配置文件的唯一写者**）、
+  **模板记号 `domain/template/scan.ts`**（编辑器补全与模板展开共用）、
+  **收件箱条目判定 `domain/inbox.ts`**、**分栏列模型 `domain/columns.ts`**、
   文件树排序 `domain/tree.ts`、布局模型 `features/layout/tree-layout.ts`、落点几何 `features/layout/drop-target.ts`、
   键盘等价物 `features/layout/tree-keys.ts`、连线形状 `features/graph/edge-routing.ts`、
   连线的样式与画法 `features/graph/canvas/edge-paint.ts`、路径语法 `canvas/edge-path.ts`。
@@ -168,6 +252,26 @@ pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— �
   `new MouseEvent('dragover', { clientX, clientY })` + `Object.defineProperty(event, 'dataTransfer', …)`。
 
 ## 6. 关键文件地图（本轮新增/变动）
+
+**ADR-0054（每格一个文档）这一轮**：
+
+- `apps/desktop/src/state/note-store.ts`：**文档仓库**。`docs` + `activePath` + 派生镜像；
+  **唯一写入点 `commit()`**，它的返回三态（路径 / `null` 清空 / `undefined` 不改）必须分清 ——
+  `null` 被 `??` 吞掉过一次，"关闭当前文档"从此关不掉；
+- `apps/desktop/src/features/editor/cm/note-path.ts`：`notePathFacet` + `notePathOf(view)`
+  （"这一格在显示哪一篇"，facet 空时退回当前文档）；
+- `apps/desktop/src/state/links-store.ts`：`outboundByPath` / `ensureOutbound` / `outboundFor`
+  （按路径的出链缓存；`null` = 未知，点击侧**不许**凭未知去新建笔记）；
+- `apps/desktop/src/features/layout/TreeHost.tsx` 的 `LeafContent`：**两条分支元素形状一致**
+  （否则激活一格会重建编辑器）；`MainViews` 现在只服务"空的主叶"；
+- `apps/desktop/src/features/layout/layout-sync.ts` 的 `ReconcileInput.notes`：**可选**
+  （`undefined` = 名单未知，别动笔记标签）；
+- `apps/desktop/e2e/properties-layout.e2e.test.ts`（属性区排版：图标对齐 / 悬浮显隐 /
+  切回自动展开 / 面板自带隐藏入口）与 `apps/desktop/e2e/split-panes.e2e.test.ts`
+  （分栏两格各自可写、互不串、脏标记与落盘）；
+- `apps/desktop/tests/note-repository.test.ts`：仓库模型的单测（含"干净要重读 / 脏了不重读"）。
+
+**上一轮（ADR-0047 ~ 0051）**：
 
 - `apps/desktop/src/domain/frontmatter-edit.ts`：三种围栏的解析与改写（判据一份，含 `tomlHasComment`）。
 - `apps/desktop/src/features/editor/FrontmatterEditor.tsx`（+ `PropertyInput.tsx` / `PropertySelect.tsx`）

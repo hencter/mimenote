@@ -2,7 +2,8 @@
  * 命令面板 / 快速切换的**匹配与索引**（纯函数，不依赖 React / store / IPC）。
  *
  * 单独成模块的原因：面板的交互只有几十行，真正的算法都在这里 —— 拆出来既能单测，
- * 也方便把同一套匹配复用到全文搜索面板（M2 已接入：{@link substringMatchIndices}）。
+ * 也方便把同一套匹配复用到全文搜索面板（M2 已接入：{@link substringMatchIndices} 与
+ * {@link searchHighlightIndices}）。
  *
  * 性能约束（architecture.md §6 的 1 万笔记基线）：
  *
@@ -163,6 +164,50 @@ export function substringMatchIndices(text: string, query: string): readonly num
     at = haystack.indexOf(needle, at + needle.length)
   }
   return indices
+}
+
+/**
+ * 高亮时最多拆几个词。
+ *
+ * 与宿主 `MAX_QUERY_TERMS` 同口径（16）：一词一次 `indexOf` 扫描，多出来的词只会白扫。
+ */
+const MAX_HIGHLIGHT_TERMS = 16
+
+/**
+ * 把一个查询串拆成**用于高亮的词**，与宿主 `query_terms` 同口径：
+ * 按空白切、丢掉不含字母数字的词（`(((` 与 `😀` 在宿主那边也被丢掉，不会命中任何东西）。
+ *
+ * 为什么高亮必须逐词而不是拿整串去 `indexOf`：宿主的语义是"逐词 AND"（每个词各自前缀匹配），
+ * 而片段里几乎不可能出现整串连续的 `天气 代码` —— 用整串去匹配的结果是**一个 `<mark>` 都没有**
+ * （ADR-0059 记录的实测缺陷）。
+ */
+export function searchHighlightTerms(query: string): string[] {
+  const terms: string[] = []
+  for (const raw of query.split(/\s+/)) {
+    if (raw === '' || !/[\p{L}\p{N}]/u.test(raw)) continue
+    terms.push(raw)
+    if (terms.length >= MAX_HIGHLIGHT_TERMS) break
+  }
+  return terms
+}
+
+/**
+ * 全文搜索片段的**多词**子串高亮：逐词展开所有出现位置，合并去重后升序返回。
+ *
+ * 与单针版 {@link substringMatchIndices} 只差"逐词遍历 + 合并"，因此单扩展 Unicode
+ * 造成的大小写错位处理沿用同一套判据（宁可不命中，也不把 `<mark>` 标在错误的字符上）。
+ */
+export function searchHighlightIndices(text: string, query: string): readonly number[] {
+  const terms = searchHighlightTerms(query)
+  if (terms.length === 0) return NO_INDICES
+  if (terms.length === 1) return substringMatchIndices(text, terms[0] ?? '')
+
+  // Set 同时解决"两个词命中同一段"的重叠：下标必须严格升序，`Highlighted` 依赖它合并区间
+  const merged = new Set<number>()
+  for (const term of terms) {
+    for (const index of substringMatchIndices(text, term)) merged.add(index)
+  }
+  return merged.size === 0 ? NO_INDICES : [...merged].sort((a, b) => a - b)
 }
 
 // ---------------------------------------------------------------------------

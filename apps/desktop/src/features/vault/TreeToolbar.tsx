@@ -20,9 +20,11 @@ import { Tooltip } from '@/components/Tooltip'
 import { Icon } from '@/components/Icon'
 import type { TreeSort } from '@/domain/tree'
 import { ExportButton } from '@/features/export/ExportButton'
+import { hideModule } from '@/features/layout/module-visibility'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 import { TagFilterControl } from './TagFilterControl'
+import { toggleTreeLayout, useTreeLayout } from './tree-layout-pref'
 
 import './tree-sort.css'
 
@@ -42,6 +44,8 @@ export function TreeToolbar() {
   const info = useVaultStore((state) => state.info)
   const treeSort = useUiStore((state) => state.treeSort)
   const setTreeSort = useUiStore((state) => state.setTreeSort)
+  /** 文件树画法（单栏 / 分栏）。偏好落在 `settings-store`，见 `tree-layout-pref.ts`。 */
+  const columnsOn = useTreeLayout() === 'columns'
   const inputRef = useRef<HTMLInputElement | null>(null)
   const [sortOpen, setSortOpen] = useState(false)
   const sortRef = useRef<HTMLDivElement | null>(null)
@@ -125,6 +129,23 @@ export function TreeToolbar() {
               onClick={collapseAll}
             >
               <Icon name="collapseAll" /><span>折叠</span>
+            </button>
+          </Tooltip>
+          {/*
+            单栏 ⇄ 分栏（Miller columns，ADR-0058）：与展开/折叠同属"视图整理"这一组
+            —— 它同样只改变**看得见多少、怎么看**，不动任何文件。
+            `aria-pressed` 表达"此刻是否在分栏"（一个开关型按钮的两态，而不是"再做一次"），
+            与排序按钮的 `aria-expanded` 是两种不同的语义，别混。
+          */}
+          <Tooltip label={columnsOn ? '切回单栏文件树（Ctrl+Alt+C）' : '切换为分栏文件树（Ctrl+Alt+C）'}>
+            <button
+              type="button"
+              className={`mn-icon-button${columnsOn ? ' mn-icon-button--active' : ''}`}
+              aria-label="切换分栏视图"
+              aria-pressed={columnsOn}
+              onClick={toggleTreeLayout}
+            >
+              <Icon name="columns" /><span>分栏</span>
             </button>
           </Tooltip>
         </span>
@@ -224,6 +245,21 @@ export function TreeToolbar() {
           它们的等价入口在文件树右键菜单与快捷键里。
         */}
         <ExportButton />
+        {/*
+          「隐藏这一块」住在**面板自己**的头上（用户要求：功能面板的隐藏由功能面板进行）——
+          与标签面板 / 链接面板头部的那个关闭按钮同一约定，不再只依赖标签条的右键菜单。
+          走 `hideModule` = 与 `Ctrl+B` **同一条开关**，因此"隐藏 ≠ 移除"：树里的位置原样留着，
+          再打开就回原位（见 `module-visibility.ts` 文件头）。
+        */}
+        <button
+          type="button"
+          className="mn-icon-button"
+          aria-label="隐藏文件树面板"
+          title="隐藏文件树（Ctrl+B）"
+          onClick={() => hideModule('tree')}
+        >
+          <Icon name="x" size="xs" />
+        </button>
       </div>
 
       <TagFilterControl />

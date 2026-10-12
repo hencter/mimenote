@@ -26,11 +26,13 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Toasts } from '@/components/Toasts'
 import { TrashDialog } from '@/features/trash/TrashDialog'
 import { ExportDialog } from '@/features/export/ExportDialog'
+import { InboxHost } from '@/features/inbox/InboxHost'
 import { ImageLightbox } from '@/features/lightbox/ImageLightbox'
 import { PaletteHost } from '@/features/palette/PaletteHost'
 import { SettingsDialog } from '@/features/settings/SettingsDialog'
 import { ConflictBanner } from '@/features/status/ConflictBanner'
 import { StatusBar } from '@/features/status/StatusBar'
+import { TemplatePickerDialog } from '@/features/template/TemplatePickerDialog'
 import { useWindowTitle } from '@/features/status/window-title'
 import { TreeHost } from '@/features/layout/TreeHost'
 import { VaultGate } from '@/features/vault/VaultGate'
@@ -191,6 +193,12 @@ export function App() {
       <SettingsDialog />
       <ExportDialog />
       <TrashDialog />
+      {/* 收件箱：捕获框与列表两层面板由它按 `inbox-store.panel` 渲染（ADR-0057）。
+          与回收站同级挂在这里：它们都是"盖在正文之上的会话级面板"。 */}
+      <InboxHost />
+      {/* 从模板新建：选模板 + `@prompt` 的问答都在这一层（ADR-0056）。
+          `open === false` 时组件自己返回 `null`，常驻挂载没有代价。 */}
+      <TemplatePickerDialog />
     </div>
   )
 }

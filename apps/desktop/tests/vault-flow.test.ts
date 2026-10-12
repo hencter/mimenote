@@ -16,7 +16,7 @@ import { useVaultStore } from '@/state/vault-store'
 let adapter: MockAdapter
 
 function resetStores(): void {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useVaultStore.setState({
     status: 'idle',
     info: null,

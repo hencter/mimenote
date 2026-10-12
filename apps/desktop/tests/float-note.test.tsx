@@ -166,7 +166,7 @@ function drag(target: Element, from: { x: number; y: number }, to: { x: number; 
 
 beforeEach(() => {
   opened.relPaths.length = 0
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   setIpcAdapter(createMockAdapter())
 })
 

@@ -13,7 +13,11 @@
 .mn-metadata [role=alert] { color:var(--mn-danger); }
 .mn-metadata__panel footer { justify-content:flex-end; }
 .mn-metadata__type { position:relative; width:24px; height:28px; display:grid; place-items:center; color:var(--mn-fg-muted); }
-.mn-metadata__type .mn-select--icon { min-width:24px; width:24px; height:28px; padding:3px; border:0; background:transparent; }
+/* 图标必须**居中在这个 24px 槽里**：`.mn-select` 默认 `justify-content:space-between`，
+   单个子元素会被顶到行首，而它的 `padding:4px 6px 4px 8px` 是不对称的 ——
+   两者叠加让图标整体左偏 2px（真实 Edge 实测：槽 535.64..559.64，图标 538.64..552.64，
+   中心 545.64 vs 槽中心 547.64）。这里把内边距归零并改成居中，图标中心与槽中心重合。 */
+.mn-metadata__type .mn-select--icon { min-width:24px; width:24px; height:28px; padding:0; justify-content:center; border:0; background:transparent; }
 .mn-metadata__type:focus-within { outline:2px solid var(--mn-accent); border-radius:4px; }
 .mn-metadata__row label { padding-top:5px; }
 .mn-metadata__value { min-width:0; }
@@ -41,6 +45,13 @@
 .mn-metadata .mn-metadata__add-trigger { opacity:0; border:0; background:transparent; padding:6px 0; color:var(--mn-fg-muted); transition:opacity 120ms; }
 .mn-metadata:hover .mn-metadata__add-trigger,.mn-metadata:focus-within .mn-metadata__add-trigger { opacity:1; }
 @media (hover:none) { .mn-metadata .mn-metadata__add-trigger { opacity:1; } }
+/* 属性区的**显隐控制**（「笔记属性 ⌃/⌄」）默认隐形，鼠标移到属性区或键盘聚焦才浮出来 ——
+   与上一行「＋ 添加笔记属性」同一套约定（用户要求：悬浮过去才出现）。
+   刻意保留它的盒而不是 `display:none`：收起态下这一行仍然占位、仍然可以悬停，
+   否则控件既看不见又碰不到，面板就再也打不开了。 */
+.mn-metadata .mn-metadata__toggle { opacity:0; transition:opacity 120ms; }
+.mn-metadata:hover .mn-metadata__toggle,.mn-metadata:focus-within .mn-metadata__toggle { opacity:1; }
+@media (hover:none) { .mn-metadata .mn-metadata__toggle { opacity:1; } }
 .mn-metadata__row { align-items:center; }
 .mn-metadata__row:focus-within { border-radius:6px; background:color-mix(in srgb,var(--mn-accent) 4%,transparent); }
 .mn-metadata__type[draggable=true],.mn-metadata__type[draggable=true] button { cursor:grab; }

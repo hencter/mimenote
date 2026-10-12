@@ -89,7 +89,7 @@ beforeEach(async () => {
   authorizeGate = Promise.resolve()
   stubTauriRuntime()
   installAdapter(ONE_IMAGE)
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useLinksStore.getState().clear()
   useVaultStore.setState({
     status: 'idle',

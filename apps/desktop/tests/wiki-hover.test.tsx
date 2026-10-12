@@ -361,7 +361,7 @@ beforeEach(() => {
   // 否则它会把尺寸换回旧值（真实踩过：断言"翻到上方"时位置纹丝不动）
   vi.restoreAllMocks()
   setIpcAdapter(createMockAdapter())
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useLinksStore.getState().clear()
   useVaultStore.setState({ info: null, entries: [] })
   setCurrentNote(NOTE)

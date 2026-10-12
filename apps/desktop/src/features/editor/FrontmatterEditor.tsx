@@ -1,20 +1,51 @@
-import { useEffect, useState } from 'react'
-import { editMetadataField, metadataBlock, parseMetadata, renameMetadata, reorderMetadata, replaceMetadata, serializeMetadata, tomlHasComment, type MetadataFormat } from '@/domain/frontmatter-edit'
+import { useEffect, useRef, useState } from 'react'
+import { editMetadataField, metadataBlock, parseMetadata, renameMetadata, reorderMetadata, replaceMetadata, serializeMetadata, tomlHasComment, type MetadataBlock, type MetadataFormat } from '@/domain/frontmatter-edit'
 import './frontmatter-editor.css'
 import { PropertyInput } from './PropertyInput'
 import { Select } from '@/components/Select'
 
-export function FrontmatterEditor({ read, apply, onSourceMode }: { read: () => string; apply: (text: string) => void; onSourceMode: (raw: boolean) => void }) {
-  const initial = metadataBlock(read())
-  const [open, setOpen] = useState(() => initial !== null)
-  const [source, setSource] = useState(() => initial?.source ?? '')
-  const [format, setFormat] = useState<MetadataFormat>(() => initial?.format ?? 'yaml')
+export function FrontmatterEditor({ read, apply, onSourceMode, seed }: {
+  read: () => string
+  apply: (text: string) => void
+  onSourceMode: (raw: boolean) => void
+  /**
+   * 文档**这一版**的 frontmatter 区块（`null` = 这篇没有合法区块）。
+   *
+   * 为什么要有这个 prop：非当前分栏的正文是**挂载之后**才异步读到的，挂载那一刻编辑器里
+   * 可能还是空的 —— 只看挂载瞬间的话，从"没有 frontmatter 的笔记"切回"有 frontmatter 的笔记"
+   * 时面板会停在**折叠态**（真实 Edge 探针实测 `collapsedOnReturn = true`）。
+   * 不传 = 退回"挂载时从编辑器里读一次"的旧形态（单测直接这么用）。
+   */
+  seed?: MetadataBlock | null
+}) {
+  const [mountSeed] = useState<MetadataBlock | null>(() => (seed !== undefined ? seed : metadataBlock(read())))
+  const [open, setOpen] = useState(() => mountSeed !== null)
+  const [source, setSource] = useState(() => mountSeed?.source ?? '')
+  const [format, setFormat] = useState<MetadataFormat>(() => mountSeed?.format ?? 'yaml')
   const [raw, setRaw] = useState(false)
   const [error, setError] = useState('')
   const [key, setKey] = useState('')
   const [adding, setAdding] = useState(false)
   const [draftValue, setDraftValue] = useState('')
-  useEffect(() => { if (!raw) { setSource(initial?.source ?? ''); setFormat(initial?.format ?? 'yaml') } }, [initial?.source, initial?.format, raw])
+  /**
+   * 用户主动收起过面板：这一版文档不再自动展开。
+   * 换笔记会重建组件（`key`），于是它天然复位 —— 不必自己记路径。
+   */
+  const dismissed = useRef(false)
+  // 这一版文档变了（换笔记 / 外部重新加载 / 分栏异步读到正文）：面板跟着它走。
+  useEffect(() => {
+    if (seed === undefined) return
+    setSource(seed?.source ?? '')
+    setFormat(seed?.format ?? 'yaml')
+    setError('')
+    if (seed !== null && !dismissed.current) setOpen(true)
+  }, [seed])
+  // 旧形态（没有 seed 的调用方）：只在「编辑源码」切回来时回读一次
+  useEffect(() => {
+    if (seed !== undefined || raw) return
+    setSource(mountSeed?.source ?? '')
+    setFormat(mountSeed?.format ?? 'yaml')
+  }, [mountSeed, raw, seed])
   let data: Record<string, unknown> = {}
   let parseError = ''
   try { data = parseMetadata(source, format) } catch (cause) { parseError = String(cause) }
@@ -30,9 +61,11 @@ export function FrontmatterEditor({ read, apply, onSourceMode }: { read: () => s
   return <div className="mn-metadata">
     <button type="button" className="mn-metadata__toggle" aria-expanded={open} onClick={() => {
       if (!open) {
-        const text = read(); const block = metadataBlock(text)
+        const block = seed !== undefined ? seed : metadataBlock(read())
         setSource(block?.source ?? ''); setFormat(block?.format ?? 'yaml'); setError('')
       }
+      // 用户主动收起 = 这一版文档别再无谓地自动展开；手动展开则把这面旗放回去
+      dismissed.current = open
       setOpen(!open)
     }}>笔记属性 {open ? '⌃' : '⌄'}</button>
     {(open || raw) && <div className="mn-metadata__panel">

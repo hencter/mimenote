@@ -36,7 +36,7 @@ const NOTES = [
 let adapter: MockAdapter
 
 function resetStores(): void {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useTagsStore.setState({
     open: false,
     relPath: null,

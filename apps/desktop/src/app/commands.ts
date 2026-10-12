@@ -6,6 +6,8 @@
  * 因此它必须从 M1 起就是**可逆、可枚举、可版本化**的。
  */
 
+import { normalizeChords } from '@/domain/keymap'
+
 /** 命令定义。 */
 export interface Command {
   /** 稳定 ID（`域.动作`，例如 `note.save`）。 */
@@ -14,7 +16,12 @@ export interface Command {
   title: string
   /** 分组（命令面板的排序与筛选依据）。 */
   category: string
-  /** 默认快捷键，例如 `Mod+S`（`Mod` = Ctrl 或 Cmd）。 */
+  /**
+   * **默认**快捷键，例如 `Mod+S`（`Mod` = Ctrl 或 Cmd）。
+   *
+   * 语义在 ADR-0055 之后收窄为"默认值"：运行时生效的键位由 `state/keymap-store`
+   * 安装到本模块的解析器决定（用户覆盖 → 档案 → 这里的默认值），见 `setBindingResolver`。
+   */
   keybinding?: string | string[]
   /** 生效条件；返回 false 时快捷键不响应、面板置灰。 */
   when?: () => boolean
@@ -96,85 +103,38 @@ export class CommandRegistry {
 /** 全局注册表。 */
 export const commands = new CommandRegistry()
 
-function bindingsOf(command: Command): string[] {
+/**
+ * 快捷键解析器（由 `state/keymap-store` 安装）。
+ *
+ * 为什么要注入、而不是在这里直接读设置：命令表是 M1 就定下的**数据结构**，
+ * 而"档案 + 用户覆盖"属于设置层。让注册表反向依赖设置层会成环，也会让这个最小内核
+ * 多背一份配置状态。未安装解析器时（例如纯单测）按命令自带的默认值分发 —— 行为与从前一致。
+ */
+export type BindingResolver = (command: Command) => readonly string[]
+
+let bindingResolver: BindingResolver | null = null
+
+/** 安装/卸载解析器；传 `null` 回到"只用默认表"。 */
+export function setBindingResolver(next: BindingResolver | null): void {
+  bindingResolver = next
+}
+
+function bindingsOf(command: Command): readonly string[] {
+  const resolved = bindingResolver === null ? defaultBindingList(command) : bindingResolver(command)
+  return normalizeChords(resolved)
+}
+
+/** 命令自带的默认键位（解析器缺席时的唯一来源）。 */
+function defaultBindingList(command: Command): readonly string[] {
   if (command.keybinding === undefined) return []
-  const list = Array.isArray(command.keybinding) ? command.keybinding : [command.keybinding]
-  return list.map(normalizeChord)
+  return Array.isArray(command.keybinding) ? command.keybinding : [command.keybinding]
 }
 
-/** 归一化快捷键写法：`mod+s` → `Mod+S`。 */
-export function normalizeChord(chord: string): string {
-  return chord
-    .split('+')
-    .map((part) => part.trim())
-    .filter((part) => part !== '')
-    .map((part) => {
-      if (part.toLowerCase() === 'mod') return 'Mod'
-      if (part.toLowerCase() === 'alt') return 'Alt'
-      if (part.toLowerCase() === 'shift') return 'Shift'
-      return normalizeKeyName(part)
-    })
-    .join('+')
-}
+/*
+ * 键盘原语（`normalizeChord` / `normalizeKeyName` / `isMacPlatform` / `chordFromEvent` /
+ * `formatChord`）的实现搬到了 `domain/keymap.ts`：它们是纯逻辑，而键位解析（ADR-0055）
+ * 必须用到它们 —— domain 不能反过来依赖 app。这里**再导出**同一组名字，
+ * 既有调用点（`app/keymap.ts`、面板、测试）零改动，而实现只有一份。
+ */
+export { chordFromEvent, formatChord, isMacPlatform, normalizeChord, normalizeKeyName } from '@/domain/keymap'
 
-/** 键名归一化（与 KeyboardEvent.key 对齐）。 */
-export function normalizeKeyName(key: string): string {
-  const map: Record<string, string> = {
-    ' ': 'Space',
-    Esc: 'Escape',
-    Up: 'ArrowUp',
-    Down: 'ArrowDown',
-    Left: 'ArrowLeft',
-    Right: 'ArrowRight',
-    Del: 'Delete',
-    Return: 'Enter',
-  }
-  const mapped = map[key]
-  if (mapped !== undefined) return mapped
-  if (key.length === 1) return key.toUpperCase()
-  return key
-}
-
-/** 是否为 macOS（决定 `Mod` 用 Cmd 还是 Ctrl）。 */
-export function isMacPlatform(): boolean {
-  if (typeof navigator === 'undefined') return false
-  const platform = navigator.platform ?? ''
-  return /mac|iphone|ipad/i.test(platform) || /Mac/i.test(navigator.userAgent)
-}
-
-/** 键盘事件 → 归一化快捷键串（无有效主键时返回空串）。 */
-export function chordFromEvent(event: KeyboardEvent, isMac = isMacPlatform()): string {
-  const modifiers: string[] = []
-  const primary = isMac ? event.metaKey : event.ctrlKey
-  if (primary) modifiers.push('Mod')
-  if (event.altKey) modifiers.push('Alt')
-  if (event.shiftKey) modifiers.push('Shift')
-
-  const rawKey = event.key
-  if (rawKey === 'Control' || rawKey === 'Meta' || rawKey === 'Alt' || rawKey === 'Shift') return ''
-  if (rawKey === 'Unidentified') return ''
-
-  // 纯修饰键之外的按键：字母/数字统一大写，其余按名称
-  let key = normalizeKeyName(rawKey)
-  if (/^[a-z]$/.test(key)) key = key.toUpperCase()
-
-  return [...modifiers, key].join('+')
-}
-
-/** 人类可读的快捷键展示（状态栏/命令面板用）。 */
-export function formatChord(chord: string, isMac = isMacPlatform()): string {
-  return normalizeChord(chord)
-    .split('+')
-    .map((part) => {
-      if (part === 'Mod') return isMac ? '⌘' : 'Ctrl'
-      if (part === 'Alt') return isMac ? '⌥' : 'Alt'
-      if (part === 'Shift') return isMac ? '⇧' : 'Shift'
-      if (part === 'ArrowUp') return '↑'
-      if (part === 'ArrowDown') return '↓'
-      if (part === 'ArrowLeft') return '←'
-      if (part === 'ArrowRight') return '→'
-      if (part === 'Escape') return 'Esc'
-      return part
-    })
-    .join(isMac ? '' : '+')
-}

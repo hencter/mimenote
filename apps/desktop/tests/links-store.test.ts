@@ -18,7 +18,7 @@ beforeEach(() => {
   adapter = createMockAdapter()
   setIpcAdapter(adapter)
   useLinksStore.getState().clear()
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useLinksStore.setState({ status: { phase: 'idle', indexed: 0, total: 0, durationMs: 0, links: 0, reusedNotes: 0 } })
 })
 

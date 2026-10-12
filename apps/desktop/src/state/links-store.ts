@@ -10,6 +10,7 @@ import { create } from 'zustand'
 import { ipc } from '@/ipc/client'
 import { MimenoteError } from '@/ipc/types'
 import type { IndexStatus, NoteLinks } from '@/ipc/types'
+import { useNoteStore } from '@/state/note-store'
 
 /** 宿主推送索引进度的事件名（与 `src-tauri/src/indexer.rs` 保持一致）。 */
 export const INDEX_STATUS_EVENT = 'mn://index-status'
@@ -29,8 +30,19 @@ interface LinksState {
   links: NoteLinks | null
   loading: boolean
   error: MimenoteError | null
+  /**
+   * 按路径缓存的**出链**（当前笔记那一份也在里面）。
+   *
+   * 为什么需要它：分栏之后同一个界面里可能有几篇笔记同时显示，而每一篇的 `[[链接]]`
+   * 必须按**自己那一篇**的出链判断"解析得到 / 悬空"。共用一个 `links` 的后果很具体：
+   * 非当前那格里的有效链接会被判成悬空，点一下就会弹出"要新建这篇笔记吗"——
+   * 而它其实早就存在。
+   */
+  outboundByPath: Record<string, NoteLinks['outbound']>
 
   refresh: (relPath: string | null) => Promise<void>
+  /** 确保某一篇的出链在缓存里（缺席就取一次；同一路径的并发请求合并成一次）。 */
+  ensureOutbound: (relPath: string) => void
   refreshStatus: () => Promise<void>
   clear: () => void
 }
@@ -74,11 +86,12 @@ function scheduleStatusPoll(): void {
   }, STATUS_POLL_MS)
 }
 
-export const useLinksStore = create<LinksState>((set) => ({
+export const useLinksStore = create<LinksState>((set, get) => ({
   status: IDLE_STATUS,
   links: null,
   loading: false,
   error: null,
+  outboundByPath: {},
 
   refresh: async (relPath) => {
     if (relPath === null) {
@@ -92,11 +105,30 @@ export const useLinksStore = create<LinksState>((set) => ({
     try {
       const links = await ipc.noteLinks(relPath)
       if (seq !== requestSeq) return
-      set({ links, loading: false, error: null })
+      set((state) => ({
+        links,
+        loading: false,
+        error: null,
+        // 当前笔记那一份也进缓存：分栏里别的格子按它自己的路径取（见 `outboundByPath`）
+        outboundByPath: { ...state.outboundByPath, [relPath]: links.outbound },
+      }))
     } catch (cause) {
       if (seq !== requestSeq) return
       set({ links: null, loading: false, error: MimenoteError.from(cause) })
     }
+  },
+
+  ensureOutbound: (relPath) => {
+    if (get().outboundByPath[relPath] !== undefined) return
+    if (outboundInflight.has(relPath)) return
+    outboundInflight.add(relPath)
+    void ipc.noteLinks(relPath).then((links) => {
+      outboundInflight.delete(relPath)
+      set((state) => ({ outboundByPath: { ...state.outboundByPath, [relPath]: links.outbound } }))
+    }).catch(() => {
+      // 取不到就让它保持"未知"（装饰层按悬空画，但点击不会去新建 —— 见 live-preview 的判据）
+      outboundInflight.delete(relPath)
+    })
   },
 
   refreshStatus: async () => {
@@ -116,9 +148,31 @@ export const useLinksStore = create<LinksState>((set) => ({
   clear: () => {
     requestSeq += 1
     stopStatusPolling()
-    set({ links: null, loading: false, error: null, status: IDLE_STATUS })
+    outboundInflight.clear()
+    set({ links: null, loading: false, error: null, status: IDLE_STATUS, outboundByPath: {} })
   },
 }))
+
+/** 正在取的那几篇（把同一路径的并发请求合并成一次）。 */
+const outboundInflight = new Set<string>()
+
+/**
+ * 某一篇此刻的出链；`null` = **还没取到**（与"取到了、但一条也没有"是两件事）。
+ *
+ * 区分这两者很重要：装饰层可以把"未知"画成悬空（宁可暂不亮），但**点击**不能凭它去新建
+ * 一篇早就存在的笔记 —— 调用方用 `null` 走"先取、这次不处理"那条路。
+ *
+ * 兜底：`links` 这一份仍然代表**当前文档**（旧口径）。很多既有接线与单测直接
+ * `setState({ links })` 而不经过 `refresh`，那时按路径的缓存是空的 —— 请求的正是当前文档时
+ * 用它就是对的；请求别的篇则必须等 `ensureOutbound` 取回来（不许拿别人的出链去解析）。
+ */
+export function outboundFor(relPath: string): NoteLinks['outbound'] | null {
+  const state = useLinksStore.getState()
+  const cached = state.outboundByPath[relPath]
+  if (cached !== undefined) return cached
+  const active = useNoteStore.getState().doc?.relPath ?? null
+  return relPath === active ? (state.links?.outbound ?? null) : null
+}
 
 /** 把宿主推来的索引进度写入 store（供事件订阅与测试调用）。 */
 export function applyIndexStatus(status: IndexStatus): void {

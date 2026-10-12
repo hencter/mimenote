@@ -22,13 +22,15 @@
 //! | 链接索引 | [`links`] | `index_status` / `note_links` |
 //! | 知识图谱 | [`graph`] | `graph_data` / `graph_ego` |
 //! | 全文搜索 | [`search`] | `search_query` |
-//! | 系统 | [`system`] | `snippets_list` / `version_info` |
+//! | 配置 | [`config`] | `config_read` / `config_write` |
+//! | 系统 | [`system`] | `snippets_list` / `templates_list` / `version_info` |
 //! | 图片资源 | `crate::assets` | `asset_authorize` / `asset_read_base64` |
 //! | 附件 | `crate::attachments` | `attachment_save` |
 //! | 导出 | `crate::export` / `crate::site_export` | `export_write_html` / `export_site_plan` / `export_site_write_pages` / `export_site_copy_assets` |
 
 use crate::error::IpcError;
 
+pub mod config;
 pub mod graph;
 pub mod links;
 pub mod notes;

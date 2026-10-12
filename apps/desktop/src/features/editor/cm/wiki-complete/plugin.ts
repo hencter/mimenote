@@ -46,9 +46,9 @@ import {
 } from '@codemirror/view'
 
 import type { EntryMeta } from '@/ipc/types'
-import { useNoteStore } from '@/state/note-store'
 import { useVaultStore } from '@/state/vault-store'
 
+import { notePathOf } from '../note-path'
 import {
   buildWikilinkIndex,
   filterWikilinkCandidates,
@@ -274,7 +274,9 @@ class WikilinkComplete implements PluginValue {
 
     const index = wikilinkIndexFor(useVaultStore.getState().entries)
     const outcome = filterWikilinkCandidates(index, context.query, {
-      noteRelPath: useNoteStore.getState().doc?.relPath ?? null,
+      // 这一格自己的笔记路径（facet）：候选排序里"与本篇同目录优先"要用它。
+      // 用"当前文档"那一篇的话，分栏里非当前那格的候选顺序会按别人的目录排。
+      noteRelPath: notePathOf(this.view),
       embed: context.embed,
     })
     // 一条都没有（查询串已经排除了所有候选）：关掉，不要留一个空壳浮层挡住正文。

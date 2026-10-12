@@ -1658,6 +1658,15 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
    * 标签抽取都按它遍历 —— 把二进制塞进去等于让这些路径也开始处理图片。
    */
   const binaries = new Map<string, Uint8Array>()
+  /**
+   * Vault 配置文件（ADR-0055）的内容。
+   *
+   * Mock 没有真实文件系统，但"写一份配置再读回来"这条链路必须能被测到 ——
+   * 否则前端的分层（localStorage 迁移 → config.toml → 覆盖生效）在浏览器预览与
+   * UI 层测试里全是空转。初始 `null` = 还没有配置文件（首次打开 Vault 会迁移生成）。
+   */
+  let configContent: string | null = null
+  let configFormat: 'toml' | 'yaml' | 'json' | null = null
   const trashed: TrashRecord[] = []
   /**
    * 回收站里那些文件的**内容**（`id → text`）：Mock 没有真文件系统，
@@ -3111,6 +3120,49 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
             },
           }
           return payload as T
+        }
+        case 'config_read': {
+          // 没有配置文件 → 三个字段都是 null（正常状态，不是错误）
+          const payload = {
+            path:
+              configContent === null || configFormat === null
+                ? null
+                : `.mimenote/config.${configFormat}`,
+            format: configFormat,
+            content: configContent,
+          }
+          return payload as T
+        }
+        case 'config_write': {
+          const format = String(a.format ?? '')
+          if (format !== 'toml' && format !== 'yaml' && format !== 'json') {
+            fail('PATH_INVALID', `Mock 只认 toml / yaml / json，收到：${format}`)
+          }
+          const content = String(a.content ?? '')
+          if (content.length > 256 * 1024) {
+            fail('TOO_LARGE', `配置内容过大：${content.length} 字节`)
+          }
+          configContent = content
+          configFormat = format
+          const outcome = { path: `.mimenote/config.${format}` }
+          return outcome as T
+        }
+        case 'templates_list': {
+          const dirRel = String(a.dirRel ?? '.mimenote/templates').replace(/\/+$/, '')
+          const prefix = dirRel === '' ? '' : `${dirRel}/`
+          const templates = [...files.keys()]
+            .filter((rel) => {
+              if (!rel.startsWith(prefix)) return false
+              const rest = rel.slice(prefix.length)
+              return rest !== '' && !rest.includes('/') && rest.toLowerCase().endsWith('.md')
+            })
+            .sort()
+            .map((rel) => ({
+              name: rel.slice(prefix.length),
+              relPath: rel,
+              sizeBytes: new TextEncoder().encode(files.get(rel)?.text ?? '').length,
+            }))
+          return templates as T
         }
         case 'version_info': {
           const info = { app: '0.1.0', core: '0.1.0', tauri: 'mock' }

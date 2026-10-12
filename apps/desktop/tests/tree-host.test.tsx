@@ -37,7 +37,7 @@ import { useVaultStore } from '@/state/vault-store'
 let adapter: MockAdapter
 
 function resetStores(): void {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useTabsStore.setState({ tabs: [], active: null, restoredRoot: null })
   useConfirmStore.setState({ request: null, answer: null })
   useLayoutDrag.getState().end()

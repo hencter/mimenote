@@ -130,7 +130,7 @@ beforeEach(async () => {
   configurePreviewWorker({ minBytes: TEST_MIN_BYTES })
   setIpcAdapter(createMockAdapter({ notes: NOTES }))
   useUiStore.setState({ viewMode: 'read' })
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useLinksStore.getState().clear()
   useVaultStore.setState({
     status: 'idle',

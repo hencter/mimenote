@@ -66,7 +66,7 @@ beforeEach(async () => {
   })
 
   setIpcAdapter(createMockAdapter({ notes: NOTES }))
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useLinksStore.getState().clear()
   useVaultStore.setState({
     status: 'idle',

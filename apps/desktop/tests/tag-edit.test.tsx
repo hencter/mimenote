@@ -35,7 +35,7 @@ const BLOCK = '---\ntags:\n  - 甲\n  - 乙\n---\n正文\n'
 let adapter: MockAdapter
 
 function resetStores(): void {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useTagsStore.setState({
     open: false,
     relPath: null,
@@ -365,7 +365,7 @@ describe('顺序约束与失败降级', () => {
   })
 
   it('没有打开的笔记时明确拒绝（不往"当前文档"以外的地方写）', async () => {
-    useNoteStore.getState().close()
+    useNoteStore.getState().closeAll()
     const result = await editCurrentNoteTags({ add: ['乙'] })
     expect(result).toBeNull()
     expect(textOf('甲.md')).toBe(PLAIN)

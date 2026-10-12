@@ -55,7 +55,7 @@ function Harness() {
 let adapter: MockAdapter
 
 function resetStores(): void {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useTabsStore.setState({ tabs: [], active: null, restoredRoot: null })
   useConfirmStore.setState({ request: null, answer: null })
   // 布局树回到"只有空主叶"：四个模块由挂载时的对账补出来（与真实启动同一条路）

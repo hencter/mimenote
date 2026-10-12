@@ -149,7 +149,7 @@ function setVault(relPaths: readonly string[]): void {
 }
 
 beforeEach(() => {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useVaultStore.setState({ info: null, entries: [] })
   completeTesting.resetBuildCount()
 })

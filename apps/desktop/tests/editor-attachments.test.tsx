@@ -118,7 +118,7 @@ beforeEach(async () => {
 
   useToastStore.getState().clear()
   useSettingsStore.getState().setAttachmentDir('附件')
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useVaultStore.setState({
     status: 'idle',
     info: null,
@@ -138,7 +138,7 @@ afterEach(() => {
   for (const view of views.splice(0)) view.destroy()
   cleanup()
   document.body.innerHTML = ''
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useToastStore.getState().clear()
 })
 

@@ -7,7 +7,7 @@ import { useVaultStore } from '@/state/vault-store'
 
 export const PROPERTY_TYPES = { text: '文本', number: '数字', boolean: '复选框', single: '单选', date: '日期', datetime: '日期时间', tags: '标签', list: '列表', url: '链接', email: '邮箱', object: 'JSON 对象' } as const
 type PropertyType = keyof typeof PROPERTY_TYPES
-const ICONS: Record<PropertyType, IconName> = { text: 'type', number: 'hash', boolean: 'check', single: 'dot', date: 'calendar', datetime: 'clock', tags: 'tag', list: 'list', url: 'links', email: 'type', object: 'columns' }
+const ICONS: Record<PropertyType, IconName> = { text: 'type', number: 'hash', boolean: 'check', single: 'circleDot', date: 'calendar', datetime: 'clock', tags: 'tag', list: 'list', url: 'links', email: 'type', object: 'columns' }
 function infer(name: string, value: unknown): PropertyType {
   if (/^tags?$/i.test(name)) return 'tags'
   if (typeof value === 'boolean') return 'boolean'

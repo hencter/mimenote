@@ -33,7 +33,7 @@ const OTHER = '---\ntags: [别的]\n---\n\n#别的\n'
 let adapter: MockAdapter
 
 function resetStores(): void {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useTagsStore.setState({
     open: false,
     relPath: null,

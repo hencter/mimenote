@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 /**
- * 命令面板 / 快速切换（M2）。
+ * 命令面板 / 快速切换 / 全文搜索高亮（M2、ADR-0059）。
  *
  * 覆盖：打开/关闭、过滤与空态、键盘选择与执行、打开笔记、未打开 Vault 的降级、
- * 焦点归还、以及"Esc 不冒泡给全局快捷键""编辑器聚焦时 Ctrl+K 仍能打开"两条
- * 容易回归的约束。
+ * 焦点归还、"Esc 不冒泡给全局快捷键""编辑器聚焦时 Ctrl+Shift+P 仍能打开"两条
+ * 容易回归的约束，以及全文搜索**高亮**的两条口径（逐词展开、跟随 `settledQuery`）。
  *
  * 断言尽量落在**可观测的副作用**上（store 状态、DOM 结构），而不是实现细节：
  * 这里换实现（比如把匹配换成别的算法）不该让测试变红。
@@ -18,8 +18,14 @@ import { openNote } from '@/app/actions'
 import { registerBuiltinCommands } from '@/app/builtin-commands'
 import { commands } from '@/app/commands'
 import { isMarkdown } from '@/domain/paths'
-import { setIpcAdapter } from '@/ipc/client'
-import { createMockAdapter } from '@/ipc/mock-adapter'
+import {
+  MAX_PALETTE_RESULTS,
+  searchHighlightIndices,
+  searchHighlightTerms,
+} from '@/features/palette/match'
+import { setIpcAdapter, type IpcAdapter } from '@/ipc/client'
+import { createMockAdapter, type MockAdapter } from '@/ipc/mock-adapter'
+import type { SearchResult } from '@/ipc/types'
 import { useNoteStore } from '@/state/note-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
@@ -29,6 +35,16 @@ function pressMod(key: string, target: Document | Element | Window = document.bo
   fireEvent.keyDown(target, { key, ctrlKey: true })
 }
 
+/**
+ * 按下命令面板的呼出键（`Mod+Shift+P`）。
+ *
+ * ADR-0055 把命令面板从 `Mod+K` 挪到 `Mod+Shift+P`（`Mod+K` 归还给"插入链接"），
+ * 于是这个动作在所有用例里都要走同一个 helper —— 将来再改键位只改这一行。
+ */
+function pressPalette(target: Document | Element | Window = document.body): void {
+  fireEvent.keyDown(target, { key: 'p', ctrlKey: true, shiftKey: true })
+}
+
 /** 派发一个"真实"的 Esc（返回事件对象，便于断言 preventDefault / 是否冒泡）。 */
 function pressEscape(target: Element): KeyboardEvent {
   const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
@@ -36,6 +52,73 @@ function pressEscape(target: Element): KeyboardEvent {
     target.dispatchEvent(event)
   })
   return event
+}
+
+/** 派发 `Mod+Shift+<key>`（Windows/Linux = Ctrl）。`fireEvent` 自带 act 包裹。 */
+function pressModShift(key: string, target: Document | Element | Window = document.body): void {
+  fireEvent.keyDown(target, { key, ctrlKey: true, shiftKey: true })
+}
+
+/** 打开全文搜索面板（`Mod+Shift+F`）。 */
+async function openSearchPanel(): Promise<{ dialog: HTMLElement; input: HTMLInputElement }> {
+  pressModShift('f')
+  const dialog = await screen.findByRole('dialog', { name: '全文搜索' })
+  return { dialog, input: within(dialog).getByRole<HTMLInputElement>('textbox') }
+}
+
+/**
+ * 让 `search_query` 悬停不返回，直到测试显式 settle。
+ *
+ * 与 `search.test.tsx` 的同名助手同一形状（那边用它造竞态与取消）。这里要的是
+ * "请求在途、列表里还挂着上一次结果"这个窗口 —— 那是唯一能区分
+ * "用产生结果的那次查询高亮"与"用输入框当前串高亮"的时刻。
+ */
+function deferredSearch(base: MockAdapter): {
+  adapter: IpcAdapter
+  pending: Array<{ query: string; settle: (outcome: SearchResult) => void }>
+} {
+  const pending: Array<{ query: string; settle: (outcome: SearchResult) => void }> = []
+  const adapter: IpcAdapter = {
+    kind: 'test',
+    async invoke<T>(method: string, args?: Record<string, unknown>): Promise<T> {
+      if (method !== 'search_query') return base.invoke<T>(method, args)
+      return new Promise<T>((resolve) => {
+        pending.push({
+          query: String(args?.query ?? ''),
+          settle: (outcome) => resolve(outcome as unknown as T),
+        })
+      })
+    },
+  }
+  return { adapter, pending }
+}
+
+/**
+ * 把下标数组还原成**被高亮的文字段**（连续下标合并成一段）。
+ *
+ * 断言落在"哪几段文字被标了"上，而不是"下标数组长什么样"：后者是实现细节，
+ * 前者才是用户看得见的东西（也与 `CommandPalette` 的 `<Highlighted>` 同一套合并规则）。
+ */
+function markedRuns(text: string, indices: readonly number[]): string[] {
+  const runs: string[] = []
+  let start = -1
+  let end = -2
+  for (const index of indices) {
+    if (start === -1) {
+      start = index
+      end = index
+      continue
+    }
+    if (index === end + 1) {
+      end = index
+      continue
+    }
+    runs.push(text.slice(start, end + 1))
+    start = index
+    end = index
+  }
+  if (start !== -1) runs.push(text.slice(start, end + 1))
+  return runs
 }
 
 async function openVault(): Promise<void> {
@@ -48,7 +131,7 @@ beforeEach(() => {
   setIpcAdapter(createMockAdapter())
   registerBuiltinCommands()
   window.localStorage.clear()
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useUiStore.setState({ paletteMode: null, linksPanelVisible: false, viewMode: 'edit' })
   useVaultStore.setState({
     status: 'idle',
@@ -68,10 +151,10 @@ afterEach(() => {
 })
 
 describe('命令面板', () => {
-  it('Ctrl+K 打开、列出全部命令（名称 + 分组 + 快捷键）、Esc 关闭', async () => {
+  it('Ctrl+Shift+P 打开、列出全部命令（名称 + 分组 + 快捷键）、Esc 关闭', async () => {
     render(<App />)
 
-    pressMod('k')
+    pressPalette()
     const dialog = await screen.findByRole('dialog', { name: '命令面板' })
     const input = within(dialog).getByRole('textbox')
     expect(document.activeElement).toBe(input)
@@ -94,7 +177,7 @@ describe('命令面板', () => {
 
   it('输入即模糊过滤（子序列匹配，命中字符高亮），无匹配时显示空态', async () => {
     render(<App />)
-    pressMod('k')
+    pressPalette()
     const dialog = await screen.findByRole('dialog', { name: '命令面板' })
     const input = within(dialog).getByRole('textbox')
 
@@ -123,7 +206,7 @@ describe('命令面板', () => {
 
   it('↓ 选中下一条、Enter 执行并关闭面板（用视图状态变化验证真的执行了）', async () => {
     render(<App />)
-    pressMod('k')
+    pressPalette()
     const dialog = await screen.findByRole('dialog', { name: '命令面板' })
     const input = within(dialog).getByRole('textbox')
 
@@ -166,7 +249,7 @@ describe('命令面板', () => {
 
   it('鼠标点击也能执行命令', async () => {
     render(<App />)
-    pressMod('k')
+    pressPalette()
     const dialog = await screen.findByRole('dialog', { name: '命令面板' })
     const input = within(dialog).getByRole('textbox')
 
@@ -187,7 +270,7 @@ describe('命令面板', () => {
 
   it('置灰的命令点不动，也不关面板', async () => {
     render(<App />)
-    pressMod('k')
+    pressPalette()
     const dialog = await screen.findByRole('dialog', { name: '命令面板' })
 
     const rescan = dialog.querySelector('[data-palette-id="vault.rescan"]')
@@ -270,7 +353,7 @@ describe('焦点与键盘边界', () => {
     trigger?.focus()
     expect(document.activeElement).toBe(trigger)
 
-    pressMod('k')
+    pressPalette()
     const dialog = await screen.findByRole('dialog', { name: '命令面板' })
     const input = within(dialog).getByRole('textbox')
     await waitFor(() => {
@@ -295,7 +378,7 @@ describe('焦点与键盘边界', () => {
     })
     try {
       render(<App />)
-      pressMod('k')
+      pressPalette()
       const dialog = await screen.findByRole('dialog', { name: '命令面板' })
 
       // 派发到面板容器（而不是输入框）：全局快捷键只对"非输入元素"生效，
@@ -310,7 +393,7 @@ describe('焦点与键盘边界', () => {
     }
   })
 
-  it('编辑器聚焦时 Ctrl+K 仍能打开面板，且不触发 CodeMirror 的 Ctrl+K（删除到行尾）', async () => {
+  it('编辑器聚焦时 Ctrl+Shift+P 仍能打开面板，且不触发 CodeMirror 的同类按键', async () => {
     render(<App />)
     await openVault()
     await act(async () => {
@@ -327,8 +410,118 @@ describe('焦点与键盘边界', () => {
     // 关键是事件的目标节点在编辑器内部（CodeMirror 的快捷键监听就装在这个节点上）
     content.focus()
 
-    pressMod('k', content)
+    pressPalette(content)
     await screen.findByRole('dialog', { name: '命令面板' })
     expect(useNoteStore.getState().doc?.text).toBe(before)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 全文搜索高亮（ADR-0059）：纯函数口径 + 面板的 settledQuery 接线
+// ---------------------------------------------------------------------------
+
+describe('全文搜索高亮（纯函数口径）', () => {
+  it('多词查询逐词展开：`天气 代码` 在同一片段里标出两处', () => {
+    // 防的回归：旧实现把**整串**查询丢给 `indexOf`，而片段里几乎不可能出现连续的
+    // "天气 代码" → 多词查询一个 `<mark>` 都没有，看起来像"搜到了却不知道命中在哪"。
+    // 宿主的语义是逐词 AND（每个词各自匹配），高亮必须同口径。
+    const snippet = '今天的天气不错，顺便写点代码'
+    const indices = searchHighlightIndices(snippet, '天气 代码')
+
+    expect(markedRuns(snippet, indices)).toEqual(['天气', '代码'])
+    // `Highlighted` 靠"升序且不重复"才能把相邻下标合并成一个 mark：这里把它当契约钉住
+    expect([...indices]).toEqual([...indices].sort((a, b) => a - b))
+    expect(new Set(indices).size).toBe(indices.length)
+  })
+
+  it('大小写不敏感：`hello WORLD` 能标到 `Hello World` 的两处', () => {
+    // 宿主用 `unicode61` 做大小写折叠，前端高亮必须跟着折叠，否则英文查询等于没有高亮。
+    const snippet = 'Hello World'
+    expect(markedRuns(snippet, searchHighlightIndices(snippet, 'hello WORLD'))).toEqual([
+      'Hello',
+      'World',
+    ])
+  })
+
+  it('会改变长度的大小写折叠退回大小写敏感匹配，且下标永远不越界', () => {
+    // 防的回归：'İ'（U+0130）的 `toLowerCase()` 是 'i̇'（**两个**码元），小写串与原文
+    // 不再 1:1 对齐。如果照旧在小写串上算下标、再拿它去切原文，`<mark>` 会标在错误位置
+    // （甚至切到字符串外面）。这里的口径是"宁可不命中，也不标错位置"。
+    const text = 'İx'
+    expect(searchHighlightIndices(text, 'X')).toEqual([])
+
+    // 非 BMP 字符（代理对）必须整体对待：下标是码元下标，命中区间不能把代理对切一半，
+    // 否则渲染出来的 <mark> 里会是一个孤立的高位代理（显示成 �）
+    const emoji = '天气😀代码'
+    const indices = searchHighlightIndices(emoji, '代码')
+    expect(markedRuns(emoji, indices)).toEqual(['代码'])
+    for (const index of indices) {
+      expect(index).toBeGreaterThanOrEqual(0)
+      expect(index).toBeLessThan(emoji.length)
+    }
+  })
+
+  it('超过 16 个词只取前 16 个；标点 / emoji 这类不含字母数字的词被丢掉', () => {
+    // 与宿主的 `MAX_QUERY_TERMS`（16）同口径：宿主根本不会拿第 17 个词去匹配，
+    // 高亮器也不该为它多扫一遍片段（一次 `indexOf` 就是一趟 O(L)）。
+    const terms = searchHighlightTerms(Array.from({ length: 20 }, (_, i) => `w${i}`).join(' '))
+    expect(terms).toHaveLength(16)
+    expect(terms[0]).toBe('w0')
+    expect(terms[15]).toBe('w15')
+
+    // 空查询 / 纯标点 / 纯 emoji 在宿主那边也不查库（`build_match_query` 返回 None），
+    // 前端不该凭空造出高亮
+    expect(searchHighlightTerms('((( 😀 天气')).toEqual(['天气'])
+    expect(searchHighlightTerms('   ')).toEqual([])
+    expect(searchHighlightIndices('任意文本', '')).toEqual([])
+  })
+})
+
+describe('全文搜索高亮（面板接线）', () => {
+  it('在途查询期间，旧结果仍按产生它的那次查询（settledQuery）高亮', async () => {
+    // 防的回归：高亮曾经读的是输入框里的**当前**串。防抖 + 竞态丢弃保证旧结果不会被
+    // 新响应覆盖，但旧结果在新查询在途期间仍留在列表里 —— 用新词去标旧片段，轻则
+    // 一个 mark 都没有，重则把新词的偶发出现标在旧结果上。正确口径是 settledQuery。
+    const notes = [{ relPath: '日记/天气.md', text: '今天天气不错\n' }]
+    const base = createMockAdapter({ notes })
+    const { adapter, pending } = deferredSearch(base)
+    setIpcAdapter(adapter)
+    render(<App />)
+    await openVault()
+
+    const { dialog, input } = await openSearchPanel()
+    fireEvent.change(input, { target: { value: '天气' } })
+    await waitFor(() => {
+      expect(pending).toHaveLength(1)
+    })
+    await act(async () => {
+      pending[0]?.settle(
+        await base.invoke<SearchResult>('search_query', {
+          query: '天气',
+          limit: MAX_PALETTE_RESULTS,
+        }),
+      )
+    })
+    await waitFor(() => {
+      expect(within(dialog).getAllByRole('option')).toHaveLength(1)
+    })
+
+    const marked = (): string[] =>
+      Array.from(dialog.querySelectorAll('.mn-palette__hit')).map((node) => node.textContent ?? '')
+    expect(marked()).toEqual(['天气'])
+
+    // 输入下一个查询，但**不让它返回**：此时列表里挂着的仍是上一次的结果
+    fireEvent.change(input, { target: { value: '代码' } })
+    await waitFor(() => {
+      expect(pending).toHaveLength(2)
+    })
+    expect(within(dialog).getByText('搜索中…')).toBeTruthy()
+
+    // 用当前串（'代码'）去标：片段里没有它 → 一个 mark 都没有（这就是旧行为）。
+    // 用 settledQuery（'天气'）标：命中仍在，且标在正确的位置上。
+    expect(marked()).toEqual(['天气'])
+    for (const node of dialog.querySelectorAll('.mn-palette__hit')) {
+      expect(node.textContent).toBe('天气')
+    }
   })
 })

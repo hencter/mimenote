@@ -68,7 +68,7 @@ const WITHOUT_SUBTAGS = ['根笔记.md', '项目', '项目/设计.md']
 let adapter: MockAdapter
 
 function resetStores(): void {
-  useNoteStore.getState().close()
+  useNoteStore.getState().closeAll()
   useTagFilterStore.setState({
     keys: [],
     includeSubtags: true,

@@ -54,6 +54,7 @@ import { useUiStore } from '@/state/ui-store'
 import { Icon } from '@/components/Icon'
 import { outlineDepths, parseOutline, type OutlineHeading } from '@/domain/outline'
 import { jumpToLineInOpenNote } from '@/features/editor/line-jump'
+import { hideModule } from '@/features/layout/module-visibility'
 import { useCursorStore } from '@/state/cursor-store'
 import { useNoteStore } from '@/state/note-store'
 import { useVaultStore } from '@/state/vault-store'
@@ -220,6 +221,20 @@ export function OutlinePanel() {
           <Icon name="outline" size="xs" /> 大纲
         </span>
         <span className="mn-outline__count">{countLabel}</span>
+        {/*
+          「隐藏这一块」放在面板自己的头上（用户要求：功能面板的隐藏由功能面板进行）——
+          与标签面板 / 链接面板头部的关闭按钮同一约定。走 `hideModule` = 与 `Ctrl+Shift+O`
+          同一条开关，所以"隐藏 ≠ 移除"，位置留在布局树里。
+        */}
+        <button
+          type="button"
+          className="mn-icon-button mn-outline__hide"
+          aria-label="隐藏大纲面板"
+          title="隐藏大纲（Ctrl+Shift+O）"
+          onClick={() => hideModule('outline')}
+        >
+          <Icon name="x" size="xs" />
+        </button>
       </header>
 
       {/* 级别过滤条：没有打开笔记时不出现 —— 那时候连"要过滤什么"都还没有 */}

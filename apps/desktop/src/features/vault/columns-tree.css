@@ -1,0 +1,189 @@
+/*
+ * 分栏（Miller columns）文件树的外观。
+ *
+ * 为什么单独成文件：`styles/app.css` 里的 `.mn-tree*` 是**单栏**的常态样式
+ * （一个纵向滚动的虚拟列表 + 行）。分栏只借用了三种行状态（`.mn-tree-row*`：
+ * 选中 / 打开 / 拖拽落点）与虚拟窗口的两个壳（`.mn-tree__spacer` / `.mn-tree__window`），
+ * 其余（列、列头、每列自己的滚动区）全是新的。放在这里以后，
+ * 改分栏不会碰到单栏那条已经稳下来的渲染路径。
+ *
+ * 只用主题变量：颜色不许写死（见 `theme/tokens.ts`）。
+ *
+ * 几何（与 `docs/design/04-miller-columns.md` §3 一致）：
+ *   .mn-tree.mn-tree--columns  横向滚动容器（整块）
+ *     .mn-tree__columns        列的横排（`flex: none`，宽度由列撑开）
+ *       .mn-tree-column        一列 240px：列头 + 自己的纵向滚动区
+ */
+
+/*
+ * 分栏没有侧栏宽度可用（288px 装不下 240 的列），所以整块允许横向滚动。
+ *
+ * `contain: strict` 必须在这里还原成 `layout paint`：strict 会让元素**不产生滚动条**
+ * （它是"尺寸与滚动完全独立"的那个 containment），横向滚动条就不出来了。
+ * 内容仍然只有几十行（每列各自虚拟化），所以 container 性能收益在这里本来就很小。
+ *
+ * 结构上分成两行：上面是横向滚动的列区，下面是"当前在哪一层"的路径条
+ * （路径条不能跟着横向滚动跑掉，所以它在这层而不是列区里面）。
+ */
+.mn-tree.mn-tree--columns {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+  contain: layout paint;
+}
+
+/* 列的横向滚动区：它才是"滚动条所在的那一层" */
+.mn-tree--columns-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+}
+
+/* 列宽：固定值（可拖列宽要按"第几列"存一份偏好，收益只有几个像素 —— 见设计文档 §3） */
+.mn-tree__columns {
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  height: 100%;
+  min-width: 100%;
+}
+.mn-tree-column {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 240px;
+  width: 240px;
+  min-width: 0;
+  height: 100%;
+  border-right: 1px solid var(--mn-border);
+}
+
+/*
+ * 焦点列（`↑/↓` 作用在它上面）：整列一层极淡的选中底色 + 一条左边框。
+ *
+ * 为什么不是"只给一条左边框"：几列并排时，一条 2px 的线在浅色主题下很难一眼找到；
+ * 而 `color-mix` 掺出来的底色与行上的 `--selected`（`--mn-active`）是同一个色系，
+ * 用户能把"焦点列"与"选中行"读成同一件事的两级。
+ */
+.mn-tree-column--active {
+  background: color-mix(in srgb, var(--mn-active) 45%, var(--mn-bg));
+  box-shadow: inset 2px 0 0 var(--mn-accent);
+}
+
+/*
+ * 列头 = 这一列显示的目录名。行高 30px 与行对齐：列头与第一行之间不应出现
+ * 半个像素的错位（那是"看起来没对齐"最典型的来源）。
+ *
+ * `justify-content: flex-start` 是必须的：`<button>` 的默认是居中，
+ * 而列表里的每一项都从左边 8px 起排 —— 不写它列头会比下面每一行都"凹"进去一段。
+ * 点**焦点列**的列头 = 回退一列，所以只有它能点（`cursor: pointer`）；
+ * 其余列头与"根目录"保持 disabled 的样子。
+ */
+.mn-tree-column__header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex: 0 0 30px;
+  height: 30px;
+  margin: 0;
+  padding: 0 8px;
+  border: none;
+  border-bottom: 1px solid var(--mn-border);
+  background: var(--bg-subtle);
+  color: var(--mn-fg-muted);
+  font: inherit;
+  font-size: 0.85em;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
+.mn-tree-column__header:not(:disabled) {
+  cursor: pointer;
+}
+
+.mn-tree-column__header:not(:disabled):hover {
+  background: var(--mn-hover);
+}
+
+/* 每列自己的纵向滚动：虚拟窗口（`.mn-tree__spacer` / `__window`）挂在这一层里 */
+.mn-tree-column__scroll {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/*
+ * 一列里一行都没有（空目录 / 被过滤光）：占一行高度、用提示语说明，
+ * **不留白**。整列消失会让右边的列整体左移，用户按 `←` 时看到的位置与刚才不是同一个。
+ */
+.mn-tree-column__empty {
+  margin: 0;
+  padding: 0 8px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  color: var(--mn-fg-subtle);
+  font-size: 0.9em;
+}
+
+/*
+ * "还有项目被过滤挡住了"：绝对定位贴在列的底部，**不占**滚动区的高度
+ * —— 它要是参与布局，列的可见高度就会随它出现/消失变化，虚拟窗口跟着抖。
+ */
+.mn-tree-column__truncated {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 2px 8px;
+  background: var(--bg-subtle);
+  border-top: 1px solid var(--mn-border);
+  color: var(--mn-fg-subtle);
+  font-size: 0.8em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* 列里的空白处充当"这一列显示的目录"的落点时，整列给一圈描边（与单栏的空白落点同一套语言） */
+.mn-tree-column[data-drop-root='valid'] {
+  box-shadow: inset 0 0 0 1px var(--mn-accent);
+}
+
+.mn-tree-column[data-drop-root='invalid'] {
+  box-shadow: inset 0 0 0 1px var(--mn-warning);
+}
+
+/*
+ * 当前目录的完整路径，贴在整块的最底部。
+ *
+ * 为什么需要它：列宽固定 240px，深路径的列头只能用省略号，而"我现在在哪一层"是分栏里
+ * 最需要一眼看到的信息（浏览器的地址栏做的也是这件事）。
+ *
+ * 它不参与列的纵向空间分配（`flex: 0 0 auto`、在滚动区之外），列的可见高度因此恒定
+ * —— 否则虚拟窗口会随它出现/消失而抖。
+ */
+.mn-tree__columns-path {
+  flex: 0 0 auto;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-top: 1px solid var(--mn-border);
+  background: var(--bg-subtle);
+  color: var(--mn-fg-subtle);
+  font-size: 0.8em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}

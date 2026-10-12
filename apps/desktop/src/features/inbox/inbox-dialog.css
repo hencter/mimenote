@@ -1,0 +1,137 @@
+/*
+ * 收件箱视图的样式。
+ *
+ * 沿用全站的 `.mn-overlay` / `.mn-dialog` 语言（见 `trash-dialog.css`），
+ * 只加"一条笔记一行 + 行内归档表单"这个形状：左边是名字 / 相对路径 / 最后改动时间，
+ * 右边两个按钮，点「归档…」那一行会多出一行表单（与回收站的「恢复为…」同一套写法）。
+ * 颜色全部走主题令牌，不新增令牌。
+ */
+
+.mn-inbox {
+  width: min(720px, 92vw);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mn-inbox__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mn-inbox__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* 把「捕获」/「关闭」推到最右（同回收站的 __count 写法） */
+.mn-inbox__count {
+  color: var(--mn-fg-subtle);
+  font-size: 12px;
+  margin-right: auto;
+}
+
+.mn-inbox__hint {
+  margin: 0;
+  color: var(--mn-fg-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.mn-inbox__hint code {
+  background: var(--mn-code-bg);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
+.mn-inbox__empty {
+  margin: 8px 0;
+  color: var(--mn-fg-subtle);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.mn-inbox__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  min-height: 0;
+  border-top: 1px solid var(--mn-border);
+}
+
+.mn-inbox__row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--mn-border);
+}
+
+.mn-inbox__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* 名字本身是"打开"的按钮：整行只有一处可点，不会误触到别的动作 */
+.mn-inbox__name {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--mn-fg);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mn-inbox__name:hover {
+  color: var(--mn-accent);
+}
+
+.mn-inbox__path,
+.mn-inbox__time {
+  color: var(--mn-fg-subtle);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 路径从尾部截断更可读（目录层级比文件名次要），与回收站的 __path 同一手法 */
+.mn-inbox__path {
+  direction: rtl;
+  text-align: left;
+}
+
+.mn-inbox__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.mn-inbox__form {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mn-inbox__label {
+  color: var(--mn-fg-subtle);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.mn-inbox__input {
+  flex: 1 1 auto;
+  min-width: 0;
+}

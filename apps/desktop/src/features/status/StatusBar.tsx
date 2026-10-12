@@ -2,16 +2,30 @@
 
 import { useDeferredValue, useMemo } from 'react'
 
+import { formatChord } from '@/app/commands'
 import { Icon } from '@/components/Icon'
 import { formatBytes, formatClock, formatDuration } from '@/domain/format'
 import { computeStats } from '@/domain/stats'
+import { useInboxCount } from '@/features/inbox/use-inbox-entries'
 import { currentAdapterKind } from '@/ipc/client'
 import { displayPath } from '@/domain/paths'
+import { useInboxStore } from '@/state/inbox-store'
+import { currentChordsOf } from '@/state/keymap-store'
 import { useNoteStore } from '@/state/note-store'
 import { toggleSnippets } from '@/app/actions'
 import { useUiStore, type ViewMode } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 import { THEMES } from '@/theme/apply'
+
+/**
+ * 提示语里的键位：取**解析后的当前键位**（ADR-0055），而不是写死字符串。
+ *
+ * 写死的组合键在用户改键位 / 换档案之后会变成假话，而提示语正是用户依赖的入口 ——
+ * 让它们腐烂比"少写一个提示"糟得多。取不到时回落到调用方给的默认值（命令被卸载等）。
+ */
+function viewChords(commandId: string, fallback: string): string {
+  return currentChordsOf(commandId)[0] ?? fallback
+}
 
 const VIEW_MODES: ReadonlyArray<{ mode: ViewMode; label: string; icon: 'pencil' | 'eye' | 'links' }> = [
   { mode: 'edit', label: '编辑（所见即所得）', icon: 'pencil' },
@@ -29,6 +43,8 @@ const GRAPH_VIEW_MODE = VIEW_MODES.find((item) => item.mode === 'graph')!
 
 export function StatusBar() {
   const info = useVaultStore((state) => state.info)
+  /** 收件箱未整理条数（从条目表派生，随扫描/外部改动刷新；见 ADR-0057）。 */
+  const inboxCount = useInboxCount()
   const relPath = useNoteStore((state) => state.doc?.relPath ?? null)
   /*
    * "我在看什么"：打开着附件就是附件，否则是当前笔记。
@@ -162,11 +178,27 @@ export function StatusBar() {
         </button>
       </div>
 
+      {/* 收件箱：未整理计数（ADR-0057）。它是"还剩多少没归档"的常驻可见入口 ——
+          计数从条目表派生（不花一次 IPC），而**为 0 时整条不渲染**：
+          没有待处理的东西时，状态栏不该多一个恒为 0 的按钮。 */}
+      {inboxCount > 0 && (
+        <div className="mn-statusbar__group">
+          <button
+            type="button"
+            className="mn-statusbar__inbox"
+            title={`收件箱还有 ${inboxCount} 条未整理（${formatChord(viewChords('inbox.open', 'Mod+Alt+I'))} 打开）`}
+            onClick={() => useInboxStore.getState().openList()}
+          >
+            收件箱 {inboxCount}
+          </button>
+        </div>
+      )}
+
       <div className="mn-statusbar__group">
         <button
           type="button"
           className={`mn-icon-button${linksPanelVisible ? ' mn-icon-button--active' : ''}`}
-          title="链接面板：反向链接 / 出链（Ctrl+Shift+L）"
+          title={`链接面板：反向链接 / 出链（${formatChord(viewChords('view.toggleLinksPanel', 'Mod+Shift+L'))}）`}
           aria-label="链接面板"
           aria-pressed={linksPanelVisible}
           onClick={() => useUiStore.getState().toggleLinksPanel()}

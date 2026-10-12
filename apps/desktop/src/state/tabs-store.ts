@@ -49,7 +49,7 @@ import { openNote } from '@/app/actions'
 import type { Disposer } from '@/app/commands'
 import type { EntryMeta } from '@/ipc/types'
 import { useConfirmStore } from './confirm-store'
-import { useNoteStore } from './note-store'
+import { noteRepositoryGeneration, useNoteStore } from './note-store'
 import { loadJson, saveJson } from './persist'
 import { reconcileLayout } from '@/features/layout/layout-sync'
 import { useUiStore } from './ui-store'
@@ -292,6 +292,10 @@ function pruneMissing(entries: readonly EntryMeta[]): void {
   // 被剪掉的可能正是当前文档（例如它被删了）：激活项跟着失效，但不在这里删文档 ——
   // "删掉的那篇是否要退出编辑器"由调用方（deleteSelected）决定
   commit(next, active !== null && next.includes(active) ? active : null)
+  // ⚠️ 这里**不**收掉标签对应的文档：条目表在一次改名/移动流程里会先变，而文档要到
+  // `retarget`（原地换路径）或 `reload` 之后才收敛 —— 提前收掉会让"被移动的正是当前
+  // 文档"那条路直接把文档弄丢（`move-note` 的用例钉住）。真正需要收的场景有两条各自的
+  // 明确入口：用户关标签走 `closeTab`，删除走 `deleteSelected`。
 }
 
 /**
@@ -304,10 +308,11 @@ function handleVaultChange(rootPath: string | null, entries: readonly EntryMeta[
   switchingVault = true
   try {
     const note = useNoteStore.getState()
-    if (note.doc !== null) {
-      // 上一篇笔记的路径是相对旧根的：把它留在编辑器里，下一次自动保存就会写进新 Vault 的同名路径。
-      // 关掉它（取消防抖保存 + 清掉内存改动），比留着一个"属于另一个 Vault"的文档安全。
-      note.close()
+    if (note.doc !== null || Object.keys(note.docs).length > 0) {
+      // 上一篇（以及分栏里别的格子）的路径都是相对旧根的：留在编辑器里，下一次自动保存
+      // 就会写进新 Vault 的同名路径。**整仓**关掉（取消防抖保存 + 清掉内存改动），
+      // 比留着一堆"属于另一个 Vault"的文档安全。
+      note.closeAll()
     }
 
     if (rootPath === null || rootPath === '') {
@@ -328,9 +333,13 @@ function handleVaultChange(rootPath: string | null, entries: readonly EntryMeta[
     // 等一拍再打开：① 让 openVault 的 set 链先跑完（此刻还在它的订阅回调里）；
     // ② 若这一拍里用户（或测试）已经打开了别的笔记，就不去抢当前文档。
     const scheduledRoot = rootPath
+    // 这一拍里**整仓可能被清过**（换 Vault、或测试夹具复位）—— 那这次恢复就是过期意图，
+    // 不能再打开笔记（否则新会话里会凭空冒出一篇上一篇的笔记）。
+    const generation = noteRepositoryGeneration()
     setTimeout(() => {
       // 这一拍里换了 Vault：刚才那份列表已经不属于当前根，不能再打开它
       if (currentRoot() !== scheduledRoot) return
+      if (noteRepositoryGeneration() !== generation) return
       const current = useNoteStore.getState()
       if (current.doc !== null || current.status === 'loading') return
       void openNote(active)
@@ -356,7 +365,23 @@ export function installTabsSync(): Disposer {
   const syncLayout = (): void => {
     const ui = useUiStore.getState()
     const tabs = useTabsStore.getState()
-    ui.setLayout(reconcileLayout(ui.layout, { notes: tabs.tabs, activeNote: tabs.active }))
+    /*
+     * ⚠️ **名单还没装载时不许传空数组**。
+     *
+     * 挂载时的第一次对账发生在 `handleVaultChange` **之前**（那时 `tabs.tabs` 还是 `[]`），
+     * 而"空名单"在 `reconcileLayout` 里的含义是"一篇都没开，把树上的笔记标签全剪掉" ——
+     * 后果是**每次启动**都把用户拖到别的格子里的笔记搬回主叶（剪掉之后再由
+     * `syncFromNote` 挂回主叶末尾）。判据用 `restoredRoot`：它等于当前 Vault 根才说明
+     * "这个根的名单已经装载过了"；`undefined` 的语义是"别动树上的笔记"。
+     */
+    const root = useVaultStore.getState().info?.rootPath ?? null
+    const notesKnown = root !== null && tabs.restoredRoot === root
+    ui.setLayout(
+      reconcileLayout(ui.layout, {
+        ...(notesKnown ? { notes: tabs.tabs } : {}),
+        activeNote: tabs.active,
+      }),
+    )
   }
   syncLayout()
   const disposeLayout = useTabsStore.subscribe(syncLayout)
@@ -454,9 +479,9 @@ export const useTabsStore = create<TabsState>((_set, get) => ({
     //   这种时候不该让 `Mod+W` 变成按下去毫无反应。）
     if (index === -1 && !isActive) return
 
-    // 未保存内容只在**当前文档**上可能（note-store 只持有一份），因此这里只对
-    // 关闭当前标签的情况要确认 —— 与 `deleteSelected` 的写法一致（confirm-store）。
-    if (isActive && note.dirty) {
+    // 未保存内容**按这一篇**要确认：分栏之后"同时脏两篇"是常态，只问当前那篇会漏掉
+    // 别格里的修改（关掉它 = 静默丢内容）。
+    if (note.docOf(relPath)?.dirty === true) {
       const confirmed = await useConfirmStore.getState().ask({
         title: '关闭这个标签？',
         message: `「${relPath}」有未保存的修改，关闭后这些修改会丢失。想保留请先按 Ctrl+S 保存。`,
@@ -472,14 +497,13 @@ export const useTabsStore = create<TabsState>((_set, get) => ({
     const rest = tabs.filter((path) => path !== relPath)
     const nextActive = isActive ? null : get().active
 
-    if (isActive) {
-      // 关掉之前记一下光标位置：重新打开这篇时还能回到原处（标签关了，笔记本身没变）
-      caretMemory?.capture(relPath)
-      // 先关掉 note-store 的当前文档：`close()` 会取消待执行的自动保存，
-      // 于是随后 `activate(相邻标签)` 里的 `openNote` 不会把"用户刚刚确认要丢弃"的内容写回磁盘
-      // （note-store.open 的语义是"切走前先落盘"，这里必须让它的 `doc` 已经是空）。
-      useNoteStore.getState().close()
-    }
+    // 关掉之前记一下光标位置：重新打开这篇时还能回到原处（标签关了，笔记本身没变）
+    if (isActive) caretMemory?.capture(relPath)
+    // 先关掉这一篇的文档：`closeDoc` 会取消它待执行的自动保存，
+    // 于是随后 `activate(相邻标签)` 里的 `openNote` 不会把"用户刚刚确认要丢弃"的内容写回磁盘
+    // （`open` 的语义是"切走前先落盘"，这里必须让它的 `doc` 已经是空）。
+    // 用 `closeDoc` 而**不是** `close`：别的格子里还开着的那些文档一篇都不能动。
+    useNoteStore.getState().closeDoc(relPath)
     commit(rest, nextActive)
 
     if (!isActive) return

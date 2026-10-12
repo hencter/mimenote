@@ -133,7 +133,7 @@ describe('阅读视图正文顶部的属性块', () => {
 
   beforeEach(() => {
     setIpcAdapter(createMockAdapter({ notes: NOTES }))
-    useNoteStore.getState().close()
+    useNoteStore.getState().closeAll()
     useLinksStore.getState().clear()
     useVaultStore.setState({ status: 'idle', info: null, entries: [], tree: [], selected: null })
   })
