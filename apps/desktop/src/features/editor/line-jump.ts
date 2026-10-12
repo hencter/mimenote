@@ -72,7 +72,14 @@ function nextFrame(run: () => void): void {
 export function findEditorView(): EditorView | null {
   if (typeof document === 'undefined') return null
   try {
+    const editors = Array.from(document.querySelectorAll<HTMLElement>('.mn-editor[data-note-path]'))
+    if (editors.length > 0) {
+      const current = useNoteStore.getState().doc?.relPath
+      const matching = editors.find((element) => element.dataset['notePath'] === current)?.querySelector<HTMLElement>('.cm-editor')
+      return matching ? EditorView.findFromDOM(matching) : null
+    }
     const host =
+      document.querySelector<HTMLElement>('.mn-editor--active .cm-editor') ??
       document.querySelector<HTMLElement>('.mn-editor__surface .cm-editor') ??
       document.querySelector<HTMLElement>('.cm-editor')
     if (host === null) return null

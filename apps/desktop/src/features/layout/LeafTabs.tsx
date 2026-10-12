@@ -44,7 +44,7 @@ import type {
 import { REVEAL_ROW_EVENT } from '@/app/dom-events'
 import { ContextMenu, type ContextMenuItem } from '@/components/ContextMenu'
 import { Icon, type IconName } from '@/components/Icon'
-import { basename, displayName } from '@/domain/paths'
+import { basename, displayName, isMarkdown } from '@/domain/paths'
 import { WindowControls } from '@/features/window/WindowControls'
 import { useNoteStore } from '@/state/note-store'
 import { useTabsStore } from '@/state/tabs-store'
@@ -160,6 +160,11 @@ export function LeafTabs({ leaf, items, dropIndex, windowControls = false }: Lea
     (item: LayoutItemId): void => {
       const note = notePathOf(item)
       if (note !== null) {
+        if (!isMarkdown(note)) {
+          const ui = useUiStore.getState()
+          ui.setLayout(setActive(ui.layout, leaf.id, item))
+          return
+        }
         void activate(note)
         return
       }

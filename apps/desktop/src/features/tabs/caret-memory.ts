@@ -32,12 +32,14 @@ const MAX_SNAPSHOTS = 64
 const snapshots = new Map<string, CaretSnapshot>()
 
 /** 拿到当前编辑器实例；没有（未挂载/非编辑视图）时返回 `null`。 */
-function editorView(): EditorView | null {
+function editorView(relPath: string): EditorView | null {
   if (typeof document === 'undefined') return null
   try {
     // 优先按编辑器自己的容器找（`features/editor` 的 DOM 结构）；找不到再退到"页面里唯一的
     // CodeMirror"。两条都失败就只是"不恢复现场"，不影响切标签本身。
-    const host =
+    const matching = Array.from(document.querySelectorAll<HTMLElement>('.mn-editor[data-note-path]'))
+      .find((element) => element.dataset['notePath'] === relPath)
+    const host = matching?.querySelector<HTMLElement>('.cm-editor') ??
       document.querySelector<HTMLElement>('.mn-editor__surface .cm-editor') ??
       document.querySelector<HTMLElement>('.cm-editor')
     if (host === null) return null
@@ -70,7 +72,7 @@ function afterPaint(run: () => void): void {
 /** 记忆器实现：由 `TreeHost` 挂载时注册到 `tabs-store`。 */
 export const editorCaretMemory: CaretMemory = {
   capture: (relPath) => {
-    const view = editorView()
+    const view = editorView(relPath)
     if (view === null) return
     remember(relPath, {
       anchor: view.state.selection.main.anchor,
@@ -82,8 +84,9 @@ export const editorCaretMemory: CaretMemory = {
     const snapshot = snapshots.get(relPath)
     if (snapshot === undefined) return
     afterPaint(() => {
-      const view = editorView()
+      const view = editorView(relPath)
       if (view === null) return
+      if (view.hasFocus) return // 分栏直接点击已设好光标，不用旧快照覆盖。
       // 文档可能比记忆时短（例如外部改过、或者这根本不是同一篇）：夹到合法范围内
       const anchor = Math.min(snapshot.anchor, view.state.doc.length)
       if (view.state.selection.main.anchor !== anchor) {

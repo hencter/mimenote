@@ -46,6 +46,8 @@ import { commands } from '@/app/commands'
 import { REVEAL_ROW_EVENT } from '@/app/dom-events'
 import { ContextMenu, type ContextMenuItem } from '@/components/ContextMenu'
 import { Icon } from '@/components/Icon'
+import { useLayoutDrag } from '@/features/layout/layout-drag'
+import { noteItem } from '@/features/layout/tree-layout'
 import { copyText } from '@/domain/clipboard'
 import {
   canDrag,
@@ -187,6 +189,7 @@ export function FileTree() {
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null)
 
   const clearDrag = useCallback((): void => {
+    useLayoutDrag.getState().end()
     dragRef.current = null
     setDragPayload(null)
     setDropTarget(null)
@@ -200,10 +203,12 @@ export function FileTree() {
   const handleDragStart = useCallback(
     (row: FlatRow, event: React.DragEvent<HTMLDivElement>): void => {
       const entry = row.node.entry
+      if (!entry.isDir) useLayoutDrag.getState().begin(noteItem(entry.relPath), true)
       if (!canDrag(entry)) {
         // 附件（图片/`.txt`）不可拖动：移动它们要"顺带改写指向它的链接"，而索引里没有它们
         // 的条目 —— 拖了只会得到一次无提示的裸搬迁
-        event.preventDefault()
+        event.dataTransfer.effectAllowed = 'copyMove'
+        event.dataTransfer.setData('application/x-mimenote-layout', entry.relPath)
         return
       }
       const payload = dragPayloadOf(entry)
@@ -736,7 +741,7 @@ const FileTreeRow = memo(function FileTreeRow({
       : 'dot'
   // 笔记与**文件夹**都可以拖（附件不行：索引里没有它们的条目，见 `canDrag`）；
   // 目录行同样是**合法的落点**
-  const draggable = entry.isDir || markdown
+  const draggable = true
 
   return (
     <div

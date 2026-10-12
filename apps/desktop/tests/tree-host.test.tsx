@@ -40,7 +40,7 @@ function resetStores(): void {
   useNoteStore.getState().close()
   useTabsStore.setState({ tabs: [], active: null, restoredRoot: null })
   useConfirmStore.setState({ request: null, answer: null })
-  useLayoutDrag.setState({ dragging: null })
+  useLayoutDrag.getState().end()
   useUiStore.setState({
     layout: defaultLayout(),
     viewMode: 'edit',
@@ -212,7 +212,7 @@ describe('渲染：格子与内容分派', () => {
     })
   })
 
-  it('非当前笔记的格子显示**只读预览**；点它的标签把它变成当前文档（编辑器搬过去）', async () => {
+  it('分栏各自保留编辑器；点旧分栏的正文切换当前文档，不再退成预览', async () => {
     render(<Harness />)
     await openVault()
     await open('README.md')
@@ -227,29 +227,34 @@ describe('渲染：格子与内容分派', () => {
     const readmeLeaf = leafOfItem(layout(), noteItem('README.md'))!
     expect(readmeLeaf.id).not.toBe(DEFAULT_MAIN_LEAF_ID)
 
-    // 那一格渲染只读预览（StaticNotePreview：读盘 + 渲染），不是编辑器
+    // 两格都保留编辑器（非当前那格是只读的，见 `MarkdownEditor` 的 data-note-path）
     await waitFor(() => {
-      const preview = leafEl(readmeLeaf.id).querySelector('.mn-leaf__preview .mn-preview__body')
-      expect(preview).not.toBeNull()
+      expect(leafEl(readmeLeaf.id).querySelector('.cm-editor')).not.toBeNull()
     })
     await waitFor(() => {
       expect(leafEl(readmeLeaf.id).textContent).toContain('示例 Vault')
     })
-    expect(leafEl(readmeLeaf.id).querySelector('.cm-editor')).toBeNull()
+    expect(leafEl(readmeLeaf.id).querySelector('.mn-leaf__preview')).toBeNull()
     // 主叶里仍是当前文档的编辑器
     expect(leafEl(DEFAULT_MAIN_LEAF_ID).querySelector('.cm-editor')).not.toBeNull()
 
-    // 点 README 的标签 → 它成为当前文档，那一格变成编辑器
-    fireEvent.click(noteTab('README.md'))
+    /*
+      「把这一格变成当前」由**点正文**触发，而不是由编辑器的 focus 触发。
+      焦点不是可靠信号：搜索面板关闭会把焦点还给上一篇笔记的编辑器，
+      那一刻 React 还没把 `notePath` 换成新文档，旧路径会把自己重新激活
+      （`line-jump` 的接线用例钉的就是这个 100ms 后被打回的回归）。
+    */
+    fireEvent.pointerDown(leafEl(readmeLeaf.id).querySelector('.cm-content') as HTMLElement)
     await waitFor(() => {
       expect(useNoteStore.getState().doc?.relPath).toBe('README.md')
     })
     await waitFor(() => {
       expect(leafEl(readmeLeaf.id).querySelector('.cm-editor')).not.toBeNull()
     })
-    // 而原来的主叶现在显示「设计」的只读预览（单文档模型：一格可写、其余可读）
+    // 切换后另一格的编辑器实例仍然保留。
     await waitFor(() => {
-      expect(leafEl(DEFAULT_MAIN_LEAF_ID).querySelector('.mn-leaf__preview')).not.toBeNull()
+      expect(leafEl(DEFAULT_MAIN_LEAF_ID).querySelector('.cm-editor')).not.toBeNull()
+      expect(leafEl(DEFAULT_MAIN_LEAF_ID).querySelector('.mn-leaf__preview')).toBeNull()
     })
   })
 
@@ -448,6 +453,28 @@ describe('键盘与菜单', () => {
 })
 
 describe('分隔条', () => {
+  it('文件树笔记拖入编辑器时拦截正文 drop，打开新标签并分栏', async () => {
+    mockContentRects()
+    render(<Harness />)
+    await openVault()
+    await open('README.md')
+    const before = useNoteStore.getState().doc?.text
+    const main = leafEl(DEFAULT_MAIN_LEAF_ID)
+    const content = main.querySelector('.cm-content') as HTMLElement
+    const editorDrop = vi.fn()
+    content.addEventListener('drop', editorDrop)
+    const dataTransfer = fakeDataTransfer()
+    act(() => useLayoutDrag.getState().begin(noteItem('项目/设计.md'), true))
+    fireEvent(content, dragEvent('dragover', 390, 150, dataTransfer))
+    expect(main.querySelector('.mn-leaf__drop')).not.toBeNull()
+    fireEvent(content, dragEvent('drop', 390, 150, dataTransfer))
+    await waitFor(() => expect(useNoteStore.getState().doc?.relPath).toBe('项目/设计.md'))
+    await waitFor(() => expect(leafOfItem(layout(), noteItem('项目/设计.md'))?.id).not.toBe(DEFAULT_MAIN_LEAF_ID))
+    expect(editorDrop).not.toHaveBeenCalled()
+    expect(leafEl(DEFAULT_MAIN_LEAF_ID).querySelector('.cm-content')?.textContent).not.toContain('项目/设计.md')
+    expect(before).toBeTruthy()
+  })
+
   it('双击分隔条均分两半；键盘方向键微调比例', async () => {
     mockContentRects() // split 容器 800×600（键盘微调的分母需要真实尺寸）
     render(<Harness />)

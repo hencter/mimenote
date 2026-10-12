@@ -18,12 +18,14 @@ import type { LayoutItemId } from './tree-layout'
 interface LayoutDragState {
   /** 正在拖的标签；`null` = 没有拖动。 */
   dragging: LayoutItemId | null
-  begin: (item: LayoutItemId) => void
+  fromTree: boolean
+  begin: (item: LayoutItemId, fromTree?: boolean) => void
   end: () => void
 }
 
 export const useLayoutDrag = create<LayoutDragState>((set) => ({
   dragging: null,
-  begin: (item) => set({ dragging: item }),
-  end: () => set({ dragging: null }),
+  fromTree: false,
+  begin: (item, fromTree = false) => set({ dragging: item, fromTree }),
+  end: () => set({ dragging: null, fromTree: false }),
 }))

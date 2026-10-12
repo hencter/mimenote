@@ -113,6 +113,17 @@
   border-radius: var(--mn-radius);
   opacity: 0.6;
   z-index: 5;
+  transition: inset 160ms ease-out, background-color 160ms ease-out;
+  animation: mn-drop-appear 120ms ease-out;
+}
+
+@keyframes mn-drop-appear {
+  from { opacity: 0; }
+  to { opacity: 0.6; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mn-leaf__drop { transition: none; animation: none; }
 }
 
 .mn-leaf__drop--merge {
@@ -160,14 +171,23 @@
  * 文件树格子的**底部一行**：左边「最近打开的 Vault」（ADR-0027 的左下角），
  * 右下角是设置按钮（直达设置页；从前的汉堡菜单已退役，命令发现走 `Ctrl+K` 面板）。
  *
- * 用 flex + `align-items: flex-end` 而不是"绝对定位到右下角"：最近 Vault 列表展开时会变高，
- * 绝对定位的按钮会被压在上面（那正是它不该发生的事），而这一行会把它稳稳留在列表底下。
+ * 摘要与设置按钮垂直居中；最近 Vault 弹层通过 Portal 展开，不改变底行高度。
  */
 .mn-tree-bottom {
   flex: 0 0 auto;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: var(--space-1);
+  padding: 6px;
+  border-top: 1px solid var(--mn-border);
+  background: var(--mn-bg-elevated);
+}
+
+.mn-tree-bottom > .mn-icon-button {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
 }
 
 .mn-tree-bottom > .mn-recent-vaults {

@@ -44,6 +44,8 @@ import type { DragEvent as ReactDragEvent } from 'react'
 
 import { Splitter } from '@/components/Splitter'
 import { Icon } from '@/components/Icon'
+import { openNoteInNewTab } from '@/app/actions'
+import { isMarkdown } from '@/domain/paths'
 import { MarkdownEditor } from '@/features/editor/MarkdownEditor'
 import { GraphCanvas } from '@/features/graph/GraphCanvas'
 import { LinksPanel } from '@/features/links/LinksPanel'
@@ -57,7 +59,7 @@ import { RecentVaults } from '@/features/vault/RecentVaults'
 import { TreeToolbar } from '@/features/vault/TreeToolbar'
 import { FileViewer } from '@/features/viewer/FileViewer'
 import { useNoteStore } from '@/state/note-store'
-import { installTabsSync, setCaretMemory } from '@/state/tabs-store'
+import { installTabsSync, setCaretMemory, useTabsStore } from '@/state/tabs-store'
 import { useSettingsStore } from '@/state/settings-store'
 import { useUiStore } from '@/state/ui-store'
 
@@ -307,7 +309,9 @@ function LeafPane({ leaf, ctx }: { leaf: LeafNode; ctx: RenderContext }) {
   const handleDragOver = useCallback(
     (event: ReactDragEvent<HTMLElement>) => {
       if (useLayoutDrag.getState().dragging === null) return
+      if (useLayoutDrag.getState().fromTree && (event.target as Element).closest('.mn-tree')) return
       event.preventDefault()
+      event.stopPropagation()
       event.dataTransfer.dropEffect = 'move'
       const target = event.target
       if (!(target instanceof HTMLElement)) return
@@ -345,12 +349,27 @@ function LeafPane({ leaf, ctx }: { leaf: LeafNode; ctx: RenderContext }) {
   }, [])
 
   const handleDrop = useCallback(
-    (event: ReactDragEvent<HTMLElement>) => {
+    async (event: ReactDragEvent<HTMLElement>) => {
       const item = useLayoutDrag.getState().dragging
       if (item === null) return
+      if (useLayoutDrag.getState().fromTree && (event.target as Element).closest('.mn-tree')) return
       event.preventDefault()
-      const ui = useUiStore.getState()
+      event.stopPropagation()
       const current = hint
+      const fromTree = useLayoutDrag.getState().fromTree
+      useLayoutDrag.getState().end()
+      setHint(null)
+      if (fromTree) {
+        const path = notePathOf(item)
+        if (path === null || current === null) return
+        if (isMarkdown(path)) {
+          if (!(await openNoteInNewTab(path))) return
+        } else {
+          const tabs = useTabsStore.getState()
+          useTabsStore.setState({ tabs: tabs.tabs.includes(path) ? tabs.tabs : [...tabs.tabs, path], active: path })
+        }
+      }
+      const ui = useUiStore.getState()
 
       if (current !== null && current.kind === 'tab') {
         // 条内重排 / 从别的格子插到第几位。下标语义 = "移除自己之后"的数组下标
@@ -365,7 +384,7 @@ function LeafPane({ leaf, ctx }: { leaf: LeafNode; ctx: RenderContext }) {
       } else if (current !== null) {
         // 切一刀。拖到自己独占格子的边缘 = 无操作（ADR-0035：这条由拖拽层拦下）
         const source = leafOfItem(ui.layout, item)
-        const soloHere = source !== null && source.id === leaf.id && leaf.items.length === 1
+        const soloHere = source !== null && source.id === leaf.id && source.items.length === 1
         if (!soloHere) {
           // 模块被切出去独占一格时，新刀调成它的家尺寸比例（而不是 0.5）——
           // 量的是被切这一格此刻的像素
@@ -401,9 +420,9 @@ function LeafPane({ leaf, ctx }: { leaf: LeafNode; ctx: RenderContext }) {
       data-leaf-id={leaf.id}
       data-narrow={narrow ? '' : undefined}
       ref={rootRef}
-      onDragOver={handleDragOver}
+      onDragOverCapture={handleDragOver}
       onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      onDropCapture={handleDrop}
     >
       {/*
         右上叶**即使没有标签也渲染标签条**：三个窗口按钮住在它的右端（ADR-0038），
@@ -438,15 +457,43 @@ function LeafPane({ leaf, ctx }: { leaf: LeafNode; ctx: RenderContext }) {
 
 /** 叶子内容的分派（规则见文件头，就这一套）。 */
 function LeafContent({ shown, ctx }: { shown: LayoutItemId | null; ctx: RenderContext }) {
+  const viewMode = useUiStore((state) => state.viewMode)
   if (shown !== null && isViewModule(shown)) return <ModuleContent id={shown} />
 
   const note = shown === null ? null : notePathOf(shown)
-  if (note !== null && note !== ctx.currentDoc) {
-    // 非当前文档：只读预览（单文档模型：编辑器全局只有一份，点它的标签把它变成当前）
+  if (note !== null && !isMarkdown(note)) return <section className="mn-pane mn-pane--file"><FileViewer relPath={note} /></section>
+  /*
+    ⚠️ **当前文档那一格必须先交给 `MainViews`**，不能走下面的"每格一个编辑器"分支。
+    `MainViews` 负责的不只是编辑器：附件查看器（`openedFile`，ADR-0032）、阅读视图、图谱
+    都住在它里面。若当前文档在编辑视图下直接渲染 `MarkdownEditor`，那么"文件树里点一张图片/
+    一个 `.txt`"就再也不显示查看器了 —— 这正是 UI E2E 抓到的回归
+    （`e2e/ui.e2e.test.ts` 的"文件树里点一个 `.txt`"用例：先打开一篇笔记、再点附件）。
+
+    "一格一个编辑器"针对的是**非当前文档**那些格子（它们是只读的，见下面那个分支）。
+  */
+  if (note !== null && note === ctx.currentDoc) return <MainViews />
+  if (note !== null && viewMode === 'edit') {
+    /*
+      非当前文档在这一格里也有自己的编辑器（只读，见 `MarkdownEditor` 的 `data-note-path`），
+      因此"把这一格变成当前"由**点击内容**触发。
+      ⚠️ 不能挂在编辑器的 focus 上：搜索面板/浮层关闭会把焦点还给上一篇笔记的编辑器，
+      而那一刻 React 还没把 `notePath` 换成新文档 —— 旧路径于是把自己重新激活，
+      刚跳过去的笔记在 100ms 后被顶回去（实测过，`line-jump` 的接线用例钉住）。
+    */
+    return (
+      <section
+        className="mn-pane mn-pane--editor"
+        onPointerDownCapture={() => { void useTabsStore.getState().activate(note) }}
+      >
+        <MarkdownEditor notePath={note} />
+      </section>
+    )
+  }
+  if (note !== null) {
+    // 非当前文档、且当前是阅读/图谱视图：只读预览（与图谱浮窗同一条渲染链路）
     return <StaticNotePreview relPath={note} className="mn-leaf__preview" />
   }
-  // 当前文档、或空叶（`shown === null` 时这只可能是主叶 —— 不变式 2 保证空叶是整树最后一格）：
-  // 主视图/查看器都渲染在这里
+  // 空叶（`shown === null` 时这只可能是主叶 —— 不变式 2 保证空叶是整树最后一格）
   return <MainViews />
 }
 
