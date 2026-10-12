@@ -54,6 +54,8 @@ export const DTO_MANIFEST = [
   ['TrashRecord', `${CORE}/trash.rs`, 'TrashRecord'],
   ['TrashEntry', `${HOST}/commands/trash.rs`, 'TrashEntry'],
   ['RestoreSummary', `${HOST}/commands/trash.rs`, 'RestoreSummary'],
+  ['PurgeSummary', `${HOST}/commands/trash.rs`, 'PurgeSummary'],
+  ['PurgeFailure', `${HOST}/commands/trash.rs`, 'PurgeFailureDto'],
   ['TagFilterResult', `${HOST}/commands/tags.rs`, 'TagFilterResult'],
   ['SnippetFile', `${HOST}/commands/system.rs`, 'SnippetFile'],
   ['VersionInfo', `${HOST}/commands/system.rs`, 'VersionInfo'],
@@ -107,6 +109,7 @@ export const ENUM_MANIFEST = [
   ['TagSource', `${CORE}/tags.rs`, 'TagSource'],
   ['IndexPhase', `${HOST}/indexer.rs`, 'IndexPhase'],
   ['TagSkipReason', `${HOST}/commands/tags.rs`, 'TagSkipReason'],
+  ['PurgeSkipReason', `${HOST}/commands/trash.rs`, 'PurgeSkipReason'],
 ]
 
 /** TS 侧允许存在、但 Rust 永远不发的码（前端自己造的错误）。 */

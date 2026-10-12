@@ -27,6 +27,7 @@ import type {
   NoteLinks,
   NoteTags,
   NotesBatch,
+  PurgeSummary,
   RenameLinkUpdate,
   RenameOutcome,
   ResolvedLink,
@@ -1626,6 +1627,23 @@ function buildMockSitePlan(files: Map<string, MockNote>): MockSitePage[] {
 export interface MockAdapter extends IpcAdapter {
   /** 模拟外部程序修改文件（用于手工验证冲突横幅）。 */
   simulateExternalEdit(relPath: string, text: string): void
+  /**
+   * 模拟"用户在文件管理器里清掉了回收站里的这个文件"：台账记录留着，东西没了。
+   *
+   * 为什么 Mock 需要它：这正是界面上"文件已不在回收站"那一行（孤儿记录）的来路 ——
+   * 没有这个钩子，那条分支就只能靠测试临时搭一个桩适配器，Mock 与宿主的
+   * `present: false` 语义也就没人对着跑过。对**永久删除**尤其要紧：孤儿记录那一步
+   * 只清台账、**不释放空间**，Mock 必须能造出这种记录。
+   */
+  simulateTrashFileGone(id: string): void
+  /**
+   * 这一份适配器收到的**永久删除**调用（按发生顺序）。
+   *
+   * 为什么单独记一笔而不是让用例 `vi.spyOn(adapter, 'invoke')`：`confirm` 是不是真的被
+   * 当成"必填"传了 `true`，是这两条命令契约里最要紧的一件事（它是"界面忘了二次确认"的兜底），
+   * 而它只体现在入参上 —— 记账比在测试里翻 `invoke` 的参数更好读、也更容易在别处复用。
+   */
+  trashCalls: { method: 'trash_delete' | 'trash_empty'; id?: string; confirm: boolean }[]
   /** 当前快照（测试断言用）。 */
   dump(): MockNote[]
 }
@@ -1641,7 +1659,14 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
    */
   const binaries = new Map<string, Uint8Array>()
   const trashed: TrashRecord[] = []
-  /** 被删笔记的正文（`id → text`）：Mock 没有真文件系统，但"恢复后内容逐字回来"要成立。 */
+  /**
+   * 回收站里那些文件的**内容**（`id → text`）：Mock 没有真文件系统，
+   * 但"恢复后内容逐字回来"要成立。
+   *
+   * 它同时是"东西还在不在回收站里"的**唯一真相**（见 `presentInTrash`）：
+   * `trashed` 是台账，`removedTexts` 才是回收站里真躺着的文件。两者分开正是真实世界里
+   * 的状态（台账是 JSONL，文件在 `.mimenote/trash`），孤儿记录就是"台账有、这里没有"。
+   */
   const removedTexts = new Map<string, string>()
   /** 被删/被恢复时"曾经存在过的目录"：Mock 用了扁平的文件表，目录需要单独记一笔。 */
   const trashDirs = new Set<string>()
@@ -1653,9 +1678,13 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
    * 这个表只服务于测试与"契约保持完整"。
    */
   const siteFiles = new Map<string, string>()
-  /** 台账里的记录现在还算不算"东西还在"（模拟用户在文件管理器里清过回收站）。 */
-  const goneFromTrash = new Set<string>()
-  const presentInTrash = (record: TrashRecord): boolean => !goneFromTrash.has(record.id)
+  /**
+   * 台账里这条记录的东西**现在还在不在**回收站里（`simulateTrashFileGone` 之外的唯一真相
+   * 是 `removedTexts`）。
+   */
+  const presentInTrash = (record: TrashRecord): boolean => removedTexts.has(record.id)
+  /** 收到的永久删除调用（见 `MockAdapter.trashCalls`）。 */
+  const trashCalls: MockAdapter['trashCalls'] = []
   let clock = Date.now()
 
   const touch = (): number => {
@@ -1852,6 +1881,36 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
   }
 
   /**
+   * 永久删除回收站里的若干条（`trash_delete` 与 `trash_empty` 的**共用实现**）。
+   *
+   * 为什么抽出来：两条命令只差"处理哪些记录"，从"什么算释放了空间"到"结果怎么分三类"
+   * 这一段必须是同一份 —— 分成两份写，界面上那句"永久删除了 N 项、释放 X"就会在
+   * 单条删除与清空之间悄悄漂移。
+   *
+   * 索引按**从大到小**处理：`splice` 会把后面的下标往前挪，正序删会把还没处理的那些跳过去。
+   */
+  const purgeTrashEntries = (indices: number[]): PurgeSummary => {
+    const removed: string[] = []
+    const missing: string[] = []
+    let bytesFreed = 0
+    for (const index of [...indices].sort((left, right) => right - left)) {
+      const record = trashed[index]
+      if (record === undefined) continue
+      const text = removedTexts.get(record.id)
+      if (text === undefined) {
+        // 台账里有、回收站里没有（孤儿记录）：只清台账记录，**不释放空间**
+        missing.push(record.id)
+      } else {
+        bytesFreed += new TextEncoder().encode(text).length
+        removedTexts.delete(record.id)
+        removed.push(record.id)
+      }
+      trashed.splice(index, 1)
+    }
+    return { removed, missing, failed: [], bytesFreed }
+  }
+
+  /**
    * 全库标签改写的**共用实现**：`tag_rename` 与 `tag_move` 只差"目标键怎么算出来"
    * （前者直接用用户输入，后者由 `mockTagMoveTarget` 从父标签推），从"哪些笔记进了候选集"
    * 到"逐篇汇报了什么"这一段必须是**同一份** —— 分开写两份，结果界面就会在两处慢慢漂移。
@@ -1936,6 +1995,12 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
       files.set(relPath, { relPath, text })
       mtimes.set(relPath, touch())
     },
+    simulateTrashFileGone: (id) => {
+      // 只把"回收站里的那个文件"拿走（`removedTexts`），台账（`trashed`）原样留着 ——
+      // 这正是孤儿记录的定义，也是永久删除里 `missing` 那一路的来路
+      removedTexts.delete(id)
+    },
+    trashCalls,
     async invoke<T>(method: string, args?: Record<string, unknown>): Promise<T> {
       const a = args ?? {}
       switch (method) {
@@ -2087,6 +2152,31 @@ export function createMockAdapter(options: MockAdapterOptions = {}): MockAdapter
             .sort((left, right) => right.deletedAtMs - left.deletedAtMs)
             .map((record) => ({ ...record, present: presentInTrash(record) }))
           return entries as T
+        }
+        /**
+         * 永久删除/清空回收站（宿主两条命令共用这一份实现）。
+         *
+         * 与宿主**逐条对齐**的三点，任何一处漂移都会让 E2E 底座说假话：
+         *
+         * 1. 东西还在（`removedTexts` 里有）才算释放字节；台账里有、回收站里没有的那些
+         *    只清台账记录，进 `missing` 而**不计入** `bytesFreed`；
+         * 2. **没有**任何一条会进 `failed`：内存 Vault 里不存在"台账指向回收站之外"或
+         *    "文件被占用"这两种处境。刻意不编假的跳过项 —— 那条路径由宿主单测
+         *    （`purge_delete_rejects_a_tampered_ledger_entry`）与 UI 层用桩适配器写的用例覆盖；
+         * 3. 被清理的条目从 `trashed`（台账）与 `removedTexts`（回收站里的东西）里**一起**消失。
+         */
+        case 'trash_delete': {
+          trashCalls.push({ method: 'trash_delete', id: String(a.id ?? ''), confirm: a.confirm === true })
+          if (a.confirm !== true) fail('CONFIRMATION_REQUIRED', '永久删除需要显式确认')
+          const id = String(a.id ?? '')
+          const index = trashed.findIndex((record) => record.id === id)
+          if (index < 0) fail('NOT_FOUND', `回收站记录不存在：${id}`)
+          return purgeTrashEntries([index]) as T
+        }
+        case 'trash_empty': {
+          trashCalls.push({ method: 'trash_empty', confirm: a.confirm === true })
+          if (a.confirm !== true) fail('CONFIRMATION_REQUIRED', '清空回收站需要显式确认')
+          return purgeTrashEntries(trashed.map((_record, index) => index)) as T
         }
         case 'note_restore': {
           const id = String(a.id ?? '')

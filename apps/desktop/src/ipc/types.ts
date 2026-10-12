@@ -140,6 +140,45 @@ export interface RestoreSummary {
   needsRescan: boolean
 }
 
+/**
+ * 永久删除被跳过的**稳定原因**（`mimenote_lib::commands::PurgeSkipReason`）。
+ *
+ * 它不是 `ErrorCode`：一次"清空回收站"可能碰上几十条处境不同的台账记录 ——
+ * 用错误码表达等于把"哪几条没成"折叠成"整批失败"，界面也就无法如实说出
+ * "删了 12 项，1 条指向回收站之外所以没敢动"。
+ */
+export type PurgeSkipReason = 'path-invalid' | 'path-escape' | 'io'
+
+/** 一条**没有执行**永久删除的条目（`mimenote_lib::commands::PurgeFailureDto`）。 */
+export interface PurgeFailure {
+  /** 台账记录的 ID（界面据此认出列表里的哪一行 —— 那条记录还在列表里）。 */
+  id: string
+  /** 它当初被删的位置（界面按这个称呼它）。 */
+  originalRelPath: string
+  /** 稳定原因（界面按它给出一句人话）。 */
+  reason: PurgeSkipReason
+  /** 具体原因（宿主 / 文件系统的原话）。 */
+  message: string
+}
+
+/**
+ * 永久删除 / 清空回收站的结果（`mimenote_lib::commands::PurgeSummary`）。
+ *
+ * 刻意不是"成功 / 失败"两态：`removed` 与 `missing` 对用户是**两件事**
+ * （真删掉了东西 vs 只是清掉了一条早已没有文件的台账记录），而 `failed` 里每一条
+ * 都要能说清为什么没动它、而且台账记录**原样留着**（用户还能在列表里看见它）。
+ */
+export interface PurgeSummary {
+  /** 真的从磁盘上删掉的条目 ID（文件或整棵目录树）。 */
+  removed: string[]
+  /** 台账里有、`.mimenote/trash` 里已经没有的条目 ID（孤儿记录）—— 这一次只清掉了台账记录。 */
+  missing: string[]
+  /** **没有执行**的条目（校验不过或删不动），连同稳定原因与原话。 */
+  failed: PurgeFailure[]
+  /** 本次实际释放的字节数，只累计 `removed` 里那些条目的实测大小。 */
+  bytesFreed: number
+}
+
 /** `tag_filter` 的结果：含 any 里任意一个、不含 none 里任何一个的那些笔记。 */
 export interface TagFilterResult {
   /** 命中的笔记（Vault 相对路径，**字典序**）。 */

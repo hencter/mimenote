@@ -75,9 +75,13 @@ pub fn run() {
             // 组合过滤（含任意一个 / 不含任何一个，可带后代）：文件树的标签过滤走它，
             // 一次往返算完 —— 前端逐个标签问会变成 N 次 IPC
             commands::tags::tag_filter,
-            // —— 回收站领域：列出与恢复（恢复原语在 `mn-core`，见 ADR-0017）——
+            // —— 回收站领域：列出、恢复、永久删除（原语在 `mn-core`，见 ADR-0018）——
             commands::trash::trash_list,
             commands::trash::note_restore,
+            // 永久删除与清空：**不可逆**，因此两条命令都要 `confirm = true`，且每条台账记录
+            // 都重新过一遍 path_guard（台账是可手改的 JSONL，逐条校验的理由见 mn_core::trash）
+            commands::trash::trash_delete,
+            commands::trash::trash_empty,
             // —— 链接索引领域 ——
             commands::links::index_status,
             commands::links::note_links,

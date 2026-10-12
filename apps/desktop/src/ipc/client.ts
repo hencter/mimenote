@@ -22,6 +22,7 @@ import type {
   NoteLinks,
   NoteTags,
   NotesBatch,
+  PurgeSummary,
   RenameOutcome,
   RestoreSummary,
   SearchResult,
@@ -118,6 +119,28 @@ export const ipc = {
    */
   noteRestore: (id: string, targetRelPath?: string) =>
     call<RestoreSummary>('note_restore', { id, targetRelPath: targetRelPath ?? null }),
+  /**
+   * **永久删除回收站里的一条**：真的把 `.mimenote/trash` 里那个文件（或整棵目录树）删掉，
+   * 并从台账里去掉那条记录。**不可逆** —— 宿主侧 `confirm` 必填，界面必须先走二次确认
+   * （措辞要说清"不能恢复"，与"删除到回收站"那种可恢复的说法区分开）。
+   *
+   * 孤儿记录（台账里有、回收站里已经没有）也能删：那一步只清掉台账记录，
+   * 结果里进 `missing` 而**不计入** `bytesFreed` —— 界面要按这个区别说"清掉了一条记录"
+   * 而不是"删掉了东西"。
+   *
+   * 宿主**逐条重新校验**台账（`storedRelPath` 必须真的在 `.mimenote/trash` 之下，
+   * 且过 `path_guard`）：校验不过或删不动的那一条**拒绝执行**，进 `failed` 并带着原因，
+   * 它的台账记录也原样留着（用户还能在列表里看见）。
+   */
+  trashDelete: (id: string, confirm: boolean) =>
+    call<PurgeSummary>('trash_delete', { id, confirm }),
+  /**
+   * **清空回收站**：对当前台账里的**所有**条目执行与 {@link ipc.trashDelete} 同一套逐条逻辑。
+   *
+   * 不可逆，同样必须先二次确认（`confirm` 必填）。一条失败不中断整批，
+   * 每一条都在 `failed` 里如实说明。
+   */
+  trashEmpty: (confirm: boolean) => call<PurgeSummary>('trash_empty', { confirm }),
   noteStats: (relPath: string) => call<DocumentStats>('note_stats', { relPath }),
   /**
    * 重命名笔记（同目录改名）并改写全库指向它的链接。

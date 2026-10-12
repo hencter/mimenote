@@ -18,7 +18,7 @@
 //! | Vault | [`vault`] | `vault_open` / `vault_info` / `vault_snapshot` / `vault_close` / `startup_vault` |
 //! | 笔记 | [`notes`] | `note_read` / `notes_read_batch` / `note_write` / `note_create` / `note_rename` / `note_move` / `dir_rename` / `dir_move` / `note_delete` / `note_stats` |
 //! | 标签 | [`tags`] | `note_set_tags` / `note_tags` / `tags_list` / `tag_notes` / `tag_filter` / `tag_rename` / `tag_move` |
-//! | 回收站 | [`trash`] | `trash_list` / `note_restore` |
+//! | 回收站 | [`trash`] | `trash_list` / `note_restore` / `trash_delete` / `trash_empty` |
 //! | 链接索引 | [`links`] | `index_status` / `note_links` |
 //! | 知识图谱 | [`graph`] | `graph_data` / `graph_ego` |
 //! | 全文搜索 | [`search`] | `search_query` |
