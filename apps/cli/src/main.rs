@@ -112,15 +112,21 @@ fn read_markdown_files(root: &Path) -> Result<Vec<(String, String)>, String> {
             continue;
         }
         if entry.size_bytes > MAX_READ_BYTES {
-            continue;
+            return Err(format!(
+                "Markdown 文件超过 {} MiB 读取上限（{}）：{}",
+                MAX_READ_BYTES / 1024 / 1024,
+                entry.rel_path,
+                entry.size_bytes,
+            ));
         }
         let path = root.join(entry.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
         match std::fs::read_to_string(&path) {
             Ok(text) => files.push((entry.rel_path.clone(), text)),
             Err(error) => {
-                // 单个文件读失败不整轮失败：跳过并记一条（检查的是"包"，不是"这个文件必须可读"，
-                // 读失败本身由宿主的索引/预览路径负责报告）。
-                eprintln!("跳过读失败的文件（{}）：{error}", entry.rel_path);
+                return Err(format!(
+                    "Markdown 文件读取失败（{}）：{error}",
+                    entry.rel_path
+                ));
             }
         }
     }
@@ -206,6 +212,28 @@ mod tests {
             json: false,
         });
         assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn oversized_markdown_makes_the_check_fail_instead_of_passing_a_subset() {
+        let dir = write_vault(&[("index.md", "- [大文件](大文件.md)\n")]);
+        let oversized = dir.path().join("大文件.md");
+        let file = std::fs::File::create(oversized).unwrap();
+        file.set_len(MAX_READ_BYTES + 1).unwrap();
+
+        let error = read_markdown_files(dir.path()).unwrap_err();
+        assert!(error.contains("大文件.md"), "{error}");
+        assert!(error.contains("超过"), "{error}");
+    }
+
+    #[test]
+    fn non_utf8_markdown_makes_the_check_fail_instead_of_passing_a_subset() {
+        let dir = write_vault(&[("index.md", "- [坏文件](坏文件.md)\n")]);
+        std::fs::write(dir.path().join("坏文件.md"), [0xff, 0xfe]).unwrap();
+
+        let error = read_markdown_files(dir.path()).unwrap_err();
+        assert!(error.contains("坏文件.md"), "{error}");
+        assert!(error.contains("读取失败"), "{error}");
     }
 
     #[test]
