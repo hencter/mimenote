@@ -90,6 +90,7 @@ canvas 里没有"元素"可挂提示，悬停只能自己算：`edgeAt(painted, 
 | `text.mn-graph-phantom-label` 的文字 | `data-graph-edge-phantoms` |
 | 从 `d` 现算的"鼓出比"（张力那条 E2E） | `data-graph-edge-bulges` |
 | ——（SVG 版没有） | `data-graph-edge-hover` = 悬停到的那条边的 key |
+| ——（ADR-0052：同一对笔记的多条链接画几条平行带） | `data-graph-edge-bundled`（画成束的**边**数）/ `data-graph-edge-lines`（Σ 笔触数） |
 
 ## 代价与边界（如实记）
 
