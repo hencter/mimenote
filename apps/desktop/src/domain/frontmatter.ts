@@ -44,17 +44,22 @@ export function isFrontmatterEmpty(value: FrontmatterValue): boolean {
 /**
  * frontmatter 区块占用的行范围（**0 起、闭区间**）；没有合法区块时返回 `null`。
  *
- * 识别口径与 `mn_core::frontmatter::parse` 一致：允许 BOM；首行（去行尾空白）必须正好是 `---`；
- * 必须存在另一行 `---` 作为结束 —— **未闭合就不是 frontmatter**（普通 Markdown 里
- * `---` 常被当作分隔线，误判会把整篇正文吃掉）。这也是为什么预览要跳过它：
- * 它是"元数据"，该显示在属性面板里，而不是渲染成一条横线加几行文字。
+ * 识别口径与 `mn_core::frontmatter::parse` 一致：允许 BOM；首行（去行尾空白）必须正好是
+ * `---`（YAML）/ `+++`（TOML，Hugo/Zola）/ `;;;`（JSON）三者之一；必须存在另一行**同样的围栏**
+ * 作为结束 —— **未闭合就不是 frontmatter**（普通 Markdown 里 `---` 常被当作分隔线，
+ * 误判会把整篇正文吃掉）。这也是为什么预览要跳过它：它是"元数据"，
+ * 该显示在属性面板里，而不是渲染成一条横线加几行文字。
+ *
+ * ⚠️ 三种围栏的**解析**分两处：宿主（`std`/索引那一路）在 `mn-core::frontmatter::formats`，
+ * 编辑器里的属性编辑在 `domain/frontmatter-edit.ts`。这里只判"区块在哪"，
+ * 不解析内容 —— 多一份解析就多一个真相。
  */
 export function frontmatterRegion(text: string): { startLine: number; endLine: number } | null {
   const lines = text.split('\n')
   const first = (lines[0] ?? '').replace(/^\u{feff}/u, '').trimEnd()
-  if (first !== '---') return null
+  if (!['---', '+++', ';;;'].includes(first)) return null
   for (let index = 1; index < lines.length; index += 1) {
-    if ((lines[index] ?? '').trimEnd() === '---') return { startLine: 0, endLine: index }
+    if ((lines[index] ?? '').trimEnd() === first) return { startLine: 0, endLine: index }
   }
   return null
 }

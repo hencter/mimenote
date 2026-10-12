@@ -72,6 +72,8 @@
 //!
 //! 键名比较**大小写不敏感**（`Tags` 与 `tags` 等价），与 [`crate::tags`] 的抽取保持一致。
 
+mod formats;
+
 use std::collections::HashSet;
 
 use serde::Serialize;
@@ -174,6 +176,9 @@ impl Frontmatter {
 ///
 /// 返回 `None` 表示"这个文件没有 frontmatter"（包括**未闭合**的情况），**不是错误**。
 pub fn parse(text: &str) -> Option<Frontmatter> {
+    if formats::region(text).is_some() {
+        return formats::parse(text);
+    }
     let located = parse_located(text)?;
     Some(Frontmatter {
         raw: located.raw,
@@ -212,6 +217,15 @@ pub fn body(text: &str) -> &str {
 /// | 空值 `key:` | 新标签非空时在冒号后插入（1 个标签写成标量，否则写成 `[...]`）；新标签为空时**原样不动** |
 /// | 没有 tags 字段 | 在结束分隔行之前**追加**一行 `tags: [...]`；要设置空标签时原样返回 |
 pub fn set_tags(text: &str, tags: &[String]) -> Option<String> {
+    if formats::region(text).is_some() {
+        let current = parse(text)?;
+        let key = current
+            .field("tags")
+            .or_else(|| current.field("tag"))
+            .map(|f| f.key.as_str())
+            .unwrap_or("tags");
+        return formats::set(text, key, serde_json::json!(clean_tags(tags)));
+    }
     let located = parse_located(text)?;
     let wanted = clean_tags(tags);
 
@@ -350,6 +364,35 @@ pub fn rename_tag_fields(
     text: &str,
     map: impl Fn(&str) -> Option<String>,
 ) -> Option<TagFieldRewrite> {
+    if formats::region(text).is_some() {
+        let parsed = parse(text)?;
+        let mut output = text.to_string();
+        let mut edits = 0;
+        for field in parsed
+            .fields
+            .iter()
+            .filter(|f| f.key.eq_ignore_ascii_case("tags") || f.key.eq_ignore_ascii_case("tag"))
+        {
+            let old = formats::items(&field.value);
+            let next: Vec<String> = old
+                .iter()
+                .map(|tag| {
+                    let new = map(tag).unwrap_or_else(|| tag.clone());
+                    if new != *tag {
+                        edits += 1;
+                    }
+                    new
+                })
+                .collect();
+            if next != old {
+                output = formats::set(&output, &field.key, serde_json::json!(clean_tags(&next)))?;
+            }
+        }
+        return Some(TagFieldRewrite {
+            text: output,
+            edits,
+        });
+    }
     let located = parse_located(text)?;
 
     let mut replacements: Vec<(usize, usize, String)> = Vec::new();
@@ -419,6 +462,15 @@ pub fn rename_tag_fields(
 /// 请求也改了文件），而它自己又永远删不掉（写入目标从来不是 `tag`）。所以：
 /// **显示用合并，改写用本函数**。
 pub fn editable_tags(text: &str) -> Vec<String> {
+    if formats::region(text).is_some() {
+        return parse(text)
+            .and_then(|fm| {
+                fm.field("tags")
+                    .or_else(|| fm.field("tag"))
+                    .map(|f| formats::items(&f.value))
+            })
+            .unwrap_or_default();
+    }
     let Some(located) = parse_located(text) else {
         return Vec::new();
     };
@@ -489,6 +541,9 @@ pub fn set_tags_or_create(text: &str, tags: &[String]) -> String {
 /// 产出的 `2026-09-27T15:45:20Z`）：本函数原样写入，不做 `format_scalar` 那套转义。
 /// 需要引号/数组的值请走 [`set_tags`] 那条路。
 pub fn set_scalar_field(text: &str, key: &str, value: &str) -> Option<String> {
+    if formats::region(text).is_some() {
+        return formats::set(text, key, serde_json::json!(value));
+    }
     let located = parse_located(text)?;
     let field = located
         .fields
@@ -525,6 +580,9 @@ pub fn set_scalar_field(text: &str, key: &str, value: &str) -> Option<String> {
 ///
 /// `pub(crate)`：`crate::tags` 需要它来跳过 frontmatter 并换算绝对行号。
 pub(crate) fn region_end(text: &str) -> Option<usize> {
+    if let Some(region) = formats::region(text) {
+        return Some(region.end);
+    }
     locate(text).map(|located| located.content_start)
 }
 
@@ -533,6 +591,11 @@ pub(crate) fn region_end(text: &str) -> Option<usize> {
 /// `pub(crate)`：`crate::tags::extract_tags` 用它拿到带行号的 frontmatter 标签，
 /// 从而不必重复解析一遍区块。
 pub(crate) fn tag_occurrences(text: &str) -> Vec<(String, u32)> {
+    if formats::region(text).is_some() {
+        return parse(text)
+            .map(|fm| fm.tags.into_iter().map(|tag| (tag, 2)).collect())
+            .unwrap_or_default();
+    }
     match parse_located(text) {
         Some(located) => collect_tags(&located.fields),
         None => Vec::new(),
@@ -719,22 +782,27 @@ fn parse_located(text: &str) -> Option<Located> {
                     rest += 1;
                 }
                 let mode = fields[index].style;
-                // MapList 新项：`- k: v`（首项把字段从 Empty 切过来；行内流式 `{..}`
-                // 是一层之外的东西，永远不进；纯文本项在 MapList 里放不下，忽略但不断收集）
+                // MapList 新项：`- k: v` / `- {k: v}`（首项把字段从 Empty 切过来；
+                // 纯文本项在 MapList 里放不下，忽略但不断收集）
                 if mode == ValueStyle::Empty || mode == ValueStyle::MapList {
                     // 同级或更浅的 `- ` 在 MapList 里是新项；更深的是当前项区域内的嵌套列表，忽略
                     let is_new_item = mode == ValueStyle::Empty || indent_len <= map_item_indent;
                     if is_new_item {
-                        if let Some(sub) =
+                        let subs = if text.as_bytes().get(rest) == Some(&b'{') {
+                            parse_flow_map(text, rest, start + content.len(), line_no)
+                                .map(|(fields, _)| fields)
+                        } else {
                             parse_sub_line(text, rest, start + content.len(), line_no)
-                        {
+                                .map(|field| vec![field])
+                        };
+                        if let Some(subs) = subs {
                             if mode == ValueStyle::Empty {
                                 fields[index].style = ValueStyle::MapList;
-                                fields[index].value = FrontmatterValue::MapList(vec![vec![sub]]);
+                                fields[index].value = FrontmatterValue::MapList(vec![subs]);
                             } else if let FrontmatterValue::MapList(items) =
                                 &mut fields[index].value
                             {
-                                items.push(vec![sub]);
+                                items.push(subs);
                             }
                             map_item_indent = indent_len;
                             continue;
@@ -806,8 +874,7 @@ fn parse_located(text: &str) -> Option<Located> {
                             None
                         };
                         if let Some(sub) = sub {
-                            if let FrontmatterValue::MapList(items) = &mut fields[index].value
-                            {
+                            if let FrontmatterValue::MapList(items) = &mut fields[index].value {
                                 if let Some(last) = items.last_mut() {
                                     last.push(sub);
                                 }
@@ -1939,6 +2006,19 @@ mod tests {
             panic!("应该是 MapList");
         };
         assert_eq!(items.len(), 2);
+
+        // 行内流式映射也能作为映射列表项（公开契约声明支持 `- {k: v}`）
+        let fm = parse(
+            "---\nverified:\n  - {by: 甲, at: 2026-09-28}\n  - {by: 乙, at: 2026-09-29}\n---\n",
+        )
+        .unwrap();
+        let FrontmatterValue::MapList(items) = fm.get("verified").expect("verified") else {
+            panic!("流式映射列表应该是 MapList");
+        };
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0][0].key, "by");
+        assert_eq!(items[0][1].key, "at");
+        assert_eq!(items[1][0].value, FrontmatterValue::Scalar("乙".into()));
     }
 
     #[test]

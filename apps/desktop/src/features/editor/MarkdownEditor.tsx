@@ -9,16 +9,20 @@
  * 3. 整篇替换只发生在"切换文件 / 从磁盘重新加载"时（revision 变化）。
  */
 
-import { EditorState, type Extension } from '@codemirror/state'
+import { Compartment, EditorState, type Extension } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { useCallback, useEffect, useRef } from 'react'
 
 import { Icon } from '@/components/Icon'
+import { ipc } from '@/ipc/client'
+import { toast } from '@/state/toast-store'
 import { useCursorStore } from '@/state/cursor-store'
 import { useNoteStore } from '@/state/note-store'
 import { useSettingsStore } from '@/state/settings-store'
 import { useUiStore } from '@/state/ui-store'
 import { getTheme } from '@/theme/apply'
+import { FrontmatterEditor } from './FrontmatterEditor'
+import { metadataFold } from './cm/metadata-fold'
 import {
   createEditorExtensions,
   currentCursorLine,
@@ -28,8 +32,12 @@ import {
   setEditorTabSize,
 } from './cm/setup'
 
-export function MarkdownEditor() {
+export function MarkdownEditor({ notePath }: { notePath?: string } = {}) {
   const viewRef = useRef<EditorView | null>(null)
+  const pathRef = useRef(notePath)
+  pathRef.current = notePath
+  const editableRef = useRef(new Compartment())
+  const metadataRef = useRef(new Compartment())
   const isDarkRef = useRef(true)
   // 创建编辑器那一瞬间要用"当下"的 Tab 宽度：值放 ref 里，回调 ref 才能读到最新值
   // （回调 ref 的依赖是空的，不能把 tabWidth 当闭包变量捕获进去 —— 那会把它冻在首次渲染）
@@ -37,7 +45,8 @@ export function MarkdownEditor() {
   /** 同上：创建编辑器那一瞬间的行号开关。 */
   const lineNumbersRef = useRef(useSettingsStore.getState().editorLineNumbers)
 
-  const relPath = useNoteStore((state) => state.doc?.relPath ?? null)
+  const activePath = useNoteStore((state) => state.doc?.relPath ?? null)
+  const relPath = notePath ?? activePath
   const revision = useNoteStore((state) => state.doc?.revision ?? 0)
   const themeId = useUiStore((state) => state.themeId)
   // 只读订阅"Tab 宽度"：编辑器不改它，设置页改它，这里跟着重配置 Compartment
@@ -65,11 +74,14 @@ export function MarkdownEditor() {
       {
         onDocChanged: (text) => {
           // 只写内存，不触发任何 IO；保存由防抖流水线负责
-          useNoteStore.getState().setText(text)
+          const store = useNoteStore.getState()
+          if (pathRef.current === undefined || store.doc?.relPath === pathRef.current) store.setText(text)
         },
         // 光标行 → 大纲面板的"当前章节"。只在行号变化时回调（节流在装配层）。
         onCursorLineChanged: (line) => {
-          useCursorStore.getState().setLine(line)
+          if (pathRef.current === undefined || useNoteStore.getState().doc?.relPath === pathRef.current) {
+            useCursorStore.getState().setLine(line)
+          }
         },
       },
       isDarkRef.current,
@@ -77,16 +89,41 @@ export function MarkdownEditor() {
       lineNumbersRef.current,
     )
 
+    const doc = useNoteStore.getState().doc
+    const ownsDoc = pathRef.current === undefined || pathRef.current === doc?.relPath
+    extensions.push(editableRef.current.of(EditorState.readOnly.of(!ownsDoc)))
+    extensions.push(metadataRef.current.of(metadataFold))
     viewRef.current = new EditorView({
       parent: node,
       state: EditorState.create({
-        doc: useNoteStore.getState().doc?.text ?? '',
+        doc: ownsDoc ? doc?.text ?? '' : '',
         extensions,
       }),
     })
     // 装上就上报一次初值：否则"打开一篇笔记、什么都没点"时大纲里没有任何高亮
-    useCursorStore.getState().setLine(currentCursorLine(viewRef.current))
+    if (ownsDoc) useCursorStore.getState().setLine(currentCursorLine(viewRef.current))
   }, [])
+
+  // 每个分栏保留自己的编辑器实例；非当前文档首次挂载时读取正文。
+  // 获取编辑焦点走既有激活/保存流程，成功前只读，避免输入写进另一篇笔记。
+  useEffect(() => {
+    if (notePath === undefined || useNoteStore.getState().doc?.relPath === notePath) return
+    let disposed = false
+    void ipc.noteRead(notePath).then((content) => {
+      if (!disposed && viewRef.current !== null && useNoteStore.getState().doc?.relPath !== notePath) {
+        replaceEditorText(viewRef.current, content.text)
+      }
+    }).catch(() => {
+      if (!disposed) toast.error('无法读取分栏笔记', notePath)
+    })
+    return () => { disposed = true }
+  }, [notePath])
+
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: editableRef.current.reconfigure(
+      EditorState.readOnly.of(notePath !== undefined && activePath !== notePath),
+    ) })
+  }, [activePath, notePath])
 
   // 组件整体卸载时兜底销毁（回调 ref 传 null 通常已经处理，这里防御性再清一次）
   useEffect(
@@ -102,16 +139,16 @@ export function MarkdownEditor() {
     const view = viewRef.current
     if (view === null) return
     const doc = useNoteStore.getState().doc
-    if (doc === null) {
+    if (doc === null && notePath === undefined) {
       replaceEditorText(view, '')
       useCursorStore.getState().setLine(null)
       return
     }
-    if (doc.relPath !== relPath) return
-    replaceEditorText(view, doc.text)
+    if (doc === null || doc.relPath !== relPath) return
+    if (view.state.doc.toString() !== doc.text) replaceEditorText(view, doc.text)
     // 整篇替换后光标被夹到文档开头附近：同步一次，别让大纲停在上一个笔记的章节上
     useCursorStore.getState().setLine(currentCursorLine(view))
-  }, [relPath, revision])
+  }, [relPath, activePath, revision, notePath])
 
   // 主题明暗切换：重配置 Compartment，不重建编辑器
   useEffect(() => {
@@ -136,7 +173,19 @@ export function MarkdownEditor() {
   }, [showLineNumbers])
 
   return (
-    <div className="mn-editor">
+    <div className={`mn-editor${relPath === activePath ? ' mn-editor--active' : ''}`} data-note-path={relPath ?? undefined}>
+      {relPath !== null && relPath === activePath && <FrontmatterEditor key={relPath}
+        onSourceMode={(raw) => {
+          const view = viewRef.current
+          if (!view) return
+          view.dispatch({ effects: metadataRef.current.reconfigure(raw ? [] : metadataFold) })
+          if (raw) { view.dispatch({ selection: { anchor: 0 }, scrollIntoView: true }); view.focus() }
+        }}
+        read={() => viewRef.current?.state.doc.toString() ?? useNoteStore.getState().doc?.text ?? ''}
+        apply={(text) => {
+          const view = viewRef.current
+          if (view) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } })
+        }} />}
       {relPath === null ? (
         <div className="mn-editor__placeholder">
           <Icon name="file" size="lg" />

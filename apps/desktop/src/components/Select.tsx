@@ -15,7 +15,7 @@
 
 import { Select as BaseSelect } from '@base-ui/react/select'
 
-import { Icon } from './Icon'
+import { Icon, type IconName } from './Icon'
 import './ui-controls.css'
 
 /** 一个选项。 */
@@ -35,9 +35,11 @@ export interface SelectProps {
   label: string
   /** 禁用。 */
   disabled?: boolean
+  /** 紧凑属性类型入口：只展示图标，无障碍名称仍由 label 提供。 */
+  icon?: IconName
 }
 
-export function Select({ value, onChange, options, label, disabled = false }: SelectProps) {
+export function Select({ value, onChange, options, label, disabled = false, icon }: SelectProps) {
   return (
     <BaseSelect.Root
       items={options.map((option) => ({ label: option.label, value: option.value }))}
@@ -45,11 +47,11 @@ export function Select({ value, onChange, options, label, disabled = false }: Se
       onValueChange={(next) => onChange(next as string)}
       disabled={disabled}
     >
-      <BaseSelect.Trigger className="mn-select" aria-label={label}>
-        <BaseSelect.Value />
-        <BaseSelect.Icon className="mn-select__icon">
+      <BaseSelect.Trigger className={`mn-select${icon ? ' mn-select--icon' : ''}`} aria-label={label} title={label}>
+        {icon ? <Icon name={icon} size="sm" /> : <BaseSelect.Value />}
+        {!icon && <BaseSelect.Icon className="mn-select__icon">
           <Icon name="chevron" size="xs" />
-        </BaseSelect.Icon>
+        </BaseSelect.Icon>}
       </BaseSelect.Trigger>
       <BaseSelect.Portal>
         <BaseSelect.Positioner className="mn-select__positioner" sideOffset={4} alignItemWithTrigger={false}>

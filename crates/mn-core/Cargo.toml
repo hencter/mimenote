@@ -8,6 +8,13 @@ description = "Mimenote 文件层：路径防护、原子写、Vault 扫描、�
 
 [dependencies]
 serde = { workspace = true }
-serde_json = { workspace = true }
+# `preserve_order`（两个 crate 都要）：`Frontmatter::fields` 承诺**保持文档顺序**，
+# 而 serde 的映射默认按字典序排 —— 关掉它，`+++` / `;;;` 的属性表就会与正文里的
+# 写法对不上（YAML 那条路径是自己逐行解析的，不受影响）。
+# 特性是全局统一的：`mn-index` 的索引缓存同样按插入顺序序列化（内容不变，只是键序）。
+serde_json = { workspace = true, features = ["preserve_order"] }
+toml = { version = "1.1.6", features = ["preserve_order"] }
+# `toml_edit` 只用于**写回**：原地换一个键的值，把用户写在区块里的注释与排版留住。
+toml_edit = "0.25.15"
 tempfile = { workspace = true }
 thiserror = { workspace = true }

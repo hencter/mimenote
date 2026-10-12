@@ -18,7 +18,7 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "icon": "tauri icon app-icon.png"
+    "icon": "tauri icon public/brand/mimenote-app-icon.svg"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
@@ -35,6 +35,8 @@
     "markdown-it": "^15.0.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "smol-toml": "^1.9.0",
+    "yaml": "^2.9.1",
     "zustand": "^5.0.15"
   },
   "devDependencies": {

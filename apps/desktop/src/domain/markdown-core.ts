@@ -14,6 +14,7 @@
  */
 
 import MarkdownIt from 'markdown-it'
+import { inlineTagSpans } from './inline-tags'
 
 import { isImageAssetTarget, parseImageSize } from './assets'
 import { CALLOUT_TYPES, calloutTitle, parseCallout } from './callouts'
@@ -30,6 +31,38 @@ const md = new MarkdownIt({
   linkify: true,
   breaks: false,
   typographer: false,
+})
+
+md.core.ruler.push('mn_inline_tags', (state) => {
+  let heading = false
+  for (const block of state.tokens) {
+    if (block.type === 'heading_open') heading = true
+    if (block.type === 'heading_close') heading = false
+    if (heading || !block.children) continue
+    let linkDepth = 0
+    block.children = block.children.flatMap((token) => {
+      if (token.type === 'link_open') linkDepth++
+      if (token.type === 'link_close') linkDepth--
+      if (linkDepth || token.type !== 'text') return [token]
+      const spans = inlineTagSpans(token.content)
+      if (!spans.length) return [token]
+      const result = []
+      let offset = 0
+      for (const { from, to } of spans) {
+        const prefix = new state.Token('text', '', 0)
+        prefix.content = token.content.slice(offset, from)
+        const open = new state.Token('span_open', 'span', 1)
+        open.attrSet('class', 'mn-inline-tag')
+        const text = new state.Token('text', '', 0)
+        text.content = token.content.slice(from, to)
+        result.push(prefix, open, text, new state.Token('span_close', 'span', -1))
+        offset = to
+      }
+      const tail = new state.Token('text', '', 0)
+      tail.content = token.content.slice(offset)
+      return [...result, tail]
+    })
+  }
 })
 
 /**
