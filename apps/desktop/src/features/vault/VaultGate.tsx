@@ -49,11 +49,12 @@ export function VaultGate() {
     <div className="mn-gate">
       <div className="mn-gate__card">
         <div className="mn-gate__brand">
-          <Icon name="sparkle" size="xl" />
-          <div>
-            <h1>Mimenote</h1>
-            <p className="mn-gate__tagline">本地优先的 Markdown 知识库</p>
-          </div>
+          <img
+            className="mn-gate__logo"
+            src="/brand/mimenote-lockup.svg"
+            alt="Mimenote Logo"
+          />
+          <p className="mn-gate__tagline">本地优先的 Markdown 知识库</p>
         </div>
 
         <ul className="mn-gate__features">

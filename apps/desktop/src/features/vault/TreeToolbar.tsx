@@ -1,6 +1,9 @@
 /**
- * 文件树工具栏：过滤、展开/折叠、新建、重扫、切换 Vault，以及**导出**（ADR-0038：
- * 业务控件从标题栏下移到这里，不再和窗口按钮挤出一条独立的 chrome）。
+ * 文件树工具栏：过滤、展开/折叠、重扫、排序、切换 Vault 与**导出**。
+ *
+ * 文档操作组（新建 / 重命名 / 移动到文件夹）在 ADR-0051 的走查里撤出了这里 ——
+ * 它们的等价入口在文件树右键菜单、`Ctrl+N` / `F2` / `F6` 与命令面板里；
+ * **导出留下**：那是三选一对话框的唯一入口（理由见下方那处注释）。
  *
  * 第二行是**标签过滤控件**（`TagFilterControl`）：它同样属于文件树头部 ——
  * 两个入口并排放在一起，"文本收窄"与"标签收窄"在同一处可发现、可清除。
@@ -11,7 +14,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { FOCUS_FILTER_EVENT } from '@/app/dom-events'
-import { createNoteHere, moveSelected, openVaultInteractive, renameSelected, rescanVault } from '@/app/actions'
+import { openVaultInteractive, rescanVault } from '@/app/actions'
 import { Checkbox } from '@/components/Checkbox'
 import { Tooltip } from '@/components/Tooltip'
 import { Icon } from '@/components/Icon'
@@ -102,42 +105,6 @@ export function TreeToolbar() {
       </div>
 
       <div className="mn-tree-toolbar__actions">
-        {/* 文档操作：新建 / 改名 / 搬家（同一件事的三种动词，放一组） */}
-        <span className="mn-tree-toolbar__group" role="group" aria-label="文档操作">
-          <Tooltip label="新建笔记（Ctrl+N）">
-            <button
-              type="button"
-              className="mn-icon-button"
-              aria-label="新建笔记"
-              onClick={() => void createNoteHere()}
-            >
-              <Icon name="plus" />
-            </button>
-          </Tooltip>
-          <Tooltip label="重命名选中笔记（F2，会同时更新指向它的链接）">
-            <button
-              type="button"
-              className="mn-icon-button"
-              aria-label="重命名选中笔记"
-              onClick={() => renameSelected()}
-            >
-              <Icon name="pencil" />
-            </button>
-          </Tooltip>
-          <Tooltip label="移动到文件夹…（F6，也可以直接拖拽文件树里的笔记）">
-            <button
-              type="button"
-              className="mn-icon-button"
-              // 拖拽的键盘等价物（F6 同一条命令）：纯拖拽对键盘用户不可用，
-              // 而工具栏按钮是最容易被发现的那个入口
-              aria-label="移动到文件夹"
-              onClick={() => moveSelected()}
-            >
-              <Icon name="move" />
-            </button>
-          </Tooltip>
-        </span>
-        <span className="mn-tree-toolbar__divider" aria-hidden="true" />
         {/* 视图整理：展开 / 折叠只改变看到多少，不动任何文件 */}
         <span className="mn-tree-toolbar__group" role="group" aria-label="展开折叠">
           <Tooltip label="展开全部目录（Ctrl+Alt+E）">
@@ -147,7 +114,7 @@ export function TreeToolbar() {
               aria-label="展开全部目录"
               onClick={expandAll}
             >
-              <Icon name="panelLeft" />
+              <Icon name="expandAll" /><span>展开</span>
             </button>
           </Tooltip>
           <Tooltip label="折叠全部目录（Ctrl+Alt+W）">
@@ -157,11 +124,10 @@ export function TreeToolbar() {
               aria-label="折叠全部目录"
               onClick={collapseAll}
             >
-              <Icon name="columns" />
+              <Icon name="collapseAll" /><span>折叠</span>
             </button>
           </Tooltip>
         </span>
-        <span className="mn-tree-toolbar__divider" aria-hidden="true" />
         {/* 库操作：重扫 / 排序 / 换库（作用对象是整个 Vault，不是某篇笔记） */}
         <span className="mn-tree-toolbar__group" role="group" aria-label="库操作">
           <Tooltip label="重新扫描 Vault（Ctrl+Alt+R）">
@@ -171,7 +137,7 @@ export function TreeToolbar() {
               aria-label="重新扫描 Vault"
               onClick={() => void rescanVault()}
             >
-              <Icon name="refresh" />
+              <Icon name="refresh" /><span>刷新</span>
             </button>
           </Tooltip>
         <div className="mn-tree-sort" ref={sortRef}>
@@ -184,7 +150,7 @@ export function TreeToolbar() {
               aria-expanded={sortOpen}
               onClick={() => setSortOpen((open) => !open)}
             >
-              <Icon name="sort" />
+              <Icon name="sort" /><span>排序</span>
             </button>
           </Tooltip>
           {sortOpen && (
@@ -245,12 +211,18 @@ export function TreeToolbar() {
               aria-label="切换 Vault"
               onClick={() => void openVaultInteractive()}
             >
-              <Icon name="folderOpen" />
+              <Icon name="folderOpen" /><span>打开库</span>
             </button>
           </Tooltip>
         </span>
         <span className="mn-tree-toolbar__divider" aria-hidden="true" />
-        {/* 导出从标题栏下移到这里（ADR-0038）：与新建/重命名/移动同属"对文档的操作" */}
+        {/*
+          导出**留在这里**（ADR-0051 的走查结论）：它是"产物出口"，而且是**三选一对话框**
+          （单篇 HTML / 打印为 PDF / 整库静态站点）的唯一入口 —— 命令面板里那三条命令是
+          "直接执行"，不经过对话框。撤掉这个按钮会让那张对话框的说明（比如"链接索引还在构建"
+          为什么灰着）在任何地方都看不到。文档操作组（新建/重命名/移动）则确实撤了：
+          它们的等价入口在文件树右键菜单与快捷键里。
+        */}
         <ExportButton />
       </div>
 

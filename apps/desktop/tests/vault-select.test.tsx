@@ -5,7 +5,7 @@
  * 手写摘要按钮 + `ul` 浮层的时代没有键盘走位、Esc 与焦点管理 —— 现在行为层是
  * Base UI（与设置页的下拉同一套），外观走 `ui-controls.css` 的 `mn-select*`
  * （token 映射只有一份）。这里钉三件事：
- * 1. 两行选项（名 + 路径）与当前行禁用；
+ * 1. 两行选项（名 + 路径），当前库选中，单库也保留下拉；
  * 2. 点别行真的切换 Vault，点 × 只删除不切换；
  * 3. 空列表整块不渲染。
  */
@@ -65,7 +65,18 @@ describe('最近 Vault 下拉', () => {
     expect(container.innerHTML).toBe('')
   })
 
-  it('触发器显示当前 Vault 名；列表只显示名、路径悬停看；当前行禁用且打勾', async () => {
+  it('只有当前 Vault 时仍能展开 Select 并显示选中项', async () => {
+    setRecentVaults([VAULTS[0] as RecentVaultEntry], 'C:\\VaultA')
+    render(<RecentVaults />)
+
+    fireEvent.click(screen.getByRole('combobox', { name: /切换 Vault/ }))
+    const options = await screen.findAllByRole('option')
+    expect(options).toHaveLength(1)
+    expect(options[0]?.getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByText('C:\\VaultA')).toBeTruthy()
+  })
+
+  it('触发器显示当前 Vault；弹层包含全部库并标记当前选中项', async () => {
     setRecentVaults(VAULTS, 'C:\\VaultA')
     render(<RecentVaults />)
 
@@ -74,13 +85,10 @@ describe('最近 Vault 下拉', () => {
     fireEvent.click(screen.getByRole('combobox', { name: /切换 Vault/ }))
     const options = await screen.findAllByRole('option')
     expect(options).toHaveLength(2)
-    // 只显示名（路径只进 title，悬停才看 —— 同名 Vault 靠悬停区分）
-    expect(options[0]?.textContent).toContain('VaultA')
-    expect(options[0]?.textContent).not.toContain('C:\\')
-    expect(options[0]?.getAttribute('title')).toBe('C:\\VaultA')
-    // 当前行禁用（重开同一个只会白白重扫一次）且挂着选中勾
-    expect(options[0]?.getAttribute('aria-disabled')).toBe('true')
-    expect(options[0]?.querySelector('.mn-select__indicator svg')).not.toBeNull()
+    expect(options[0]?.getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByText('C:\\VaultA')).toBeTruthy()
+    expect(options[1]?.textContent).toContain('VaultB')
+    expect(options[1]?.textContent).toContain('C:\\VaultB')
   })
 
   it('点别行切换 Vault', async () => {
@@ -105,6 +113,15 @@ describe('最近 Vault 下拉', () => {
     })
     // 调了 openVault 且是点的那一条（Mock 不认路径，所以不断 store 状态）
     expect(opened).toEqual(['C:\\VaultB'])
+  })
+
+  it('当前库不在最近列表时，仍可选择所有最近的库', async () => {
+    setRecentVaults(VAULTS, 'C:\\OtherVault')
+    render(<RecentVaults />)
+
+    fireEvent.click(screen.getByRole('combobox', { name: /切换 Vault/ }))
+    expect(await screen.findAllByRole('option')).toHaveLength(2)
+    expect(screen.queryByText('当前 Vault')).toBeNull()
   })
 
   it('点 × 只删除不切换；删空后整块消失', async () => {

@@ -98,6 +98,14 @@ describe('外壳渲染', () => {
     expect(await screen.findByText('打开文件夹作为 Vault')).toBeTruthy()
   })
 
+  it('未打开 Vault 时显示正式 Mimenote Logo', async () => {
+    render(<App />)
+
+    const logo = await screen.findByRole('img', { name: 'Mimenote Logo' })
+    expect(logo.getAttribute('src')).toBe('/brand/mimenote-lockup.svg')
+    expect(document.querySelector('.mn-gate__brand .mn-icon')).toBeNull()
+  })
+
   it('打开 Vault 后各区域齐全，且文件树有可见行', async () => {
     render(<App />)
     await useVaultStore.getState().openVault('C:\\MockVault')
@@ -122,18 +130,20 @@ describe('外壳渲染', () => {
     })
   })
 
-  it('导出按钮在文件树工具栏（业务控件随标题栏一起下移，ADR-0038）', async () => {
-    /*
-      用户的要求（Issue #8）：统计/导出从标题栏下移，不再和窗口按钮挤出一条 chrome。
-      统计落到状态栏（那里本来就有一份）；导出落到文件树工具栏（与新建/重命名/移动同一行）。
-      这里钉**归属**：导出在 `.mn-tree-toolbar` 里，且界面里没有标题栏可放它。
-    */
+  it('文件树工具栏不再显示文档操作组，导出入口保留（ADR-0051）', async () => {
     render(<App />)
     await useVaultStore.getState().openVault('C:\\MockVault')
 
     await waitFor(() => {
       const toolbar = document.querySelector('.mn-tree-toolbar')
       expect(toolbar).not.toBeNull()
+      expect(toolbar?.querySelector('[aria-label="文档操作"]')).toBeNull()
+      for (const label of ['新建笔记', '重命名选中笔记', '移动到文件夹']) {
+        expect(toolbar?.querySelector(`[aria-label="${label}"]`)).toBeNull()
+      }
+      expect(toolbar?.querySelector('[aria-label="展开折叠"]')).not.toBeNull()
+      expect(toolbar?.querySelector('[aria-label="库操作"]')).not.toBeNull()
+      // 导出留着：它是三选一导出对话框的**唯一**入口（命令面板那三条是直接执行）
       expect(toolbar?.querySelector('.mn-export-launch')).not.toBeNull()
     })
     expect(document.querySelector('.mn-titlebar')).toBeNull()
@@ -208,8 +218,8 @@ describe('外壳渲染', () => {
       expect(document.querySelectorAll('.mn-tree-row').length).toBeGreaterThan(0)
     })
 
-    // 启动时没有文档：此时渲染的是占位符，承载编辑器的 div 还不存在
-    expect(document.querySelector('.mn-editor__surface')).toBeNull()
+    // 恢复的分栏可先展示非当前文档；此刻仍没有活动编辑器。
+    expect(document.querySelector('.mn-editor--active .mn-editor__surface')).toBeNull()
 
     await openNote('README.md')
 

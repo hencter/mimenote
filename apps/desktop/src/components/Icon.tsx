@@ -48,12 +48,16 @@ import LucideTag from '~icons/lucide/tag'
 import LucideTrash from '~icons/lucide/trash'
 import LucideType from '~icons/lucide/type'
 import LucideX from '~icons/lucide/x'
+import LucideExpandAll from '~icons/lucide/list-tree'
+import LucideCollapseAll from '~icons/lucide/list-collapse'
 
 /**
  * 名字 → lucide 字形。名字是本项目的稳定契约（调用点与测试只认它），
  * 右边是具体的画法：觉得某个画得不好，换右边的映射即可，不用动调用方。
  */
 const GLYPHS = {
+  expandAll: LucideExpandAll,
+  collapseAll: LucideCollapseAll,
   folder: LucideFolder,
   folderOpen: LucideFolderOpen,
   file: LucideFile,

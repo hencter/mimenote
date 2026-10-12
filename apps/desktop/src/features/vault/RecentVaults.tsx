@@ -10,7 +10,7 @@
  * 1. 选项是两行的（Vault 名 + 完整路径），通用版只渲染单行 label；
  * 2. 每行尾部有一个移除 ×（`removeRecentVault`，不碰磁盘、只影响这张列表）。
  *    × 是真正的 button（`stopPropagation` 拦住选中提交，键盘 Tab 可达、Enter 删除）；
- *    当前 Vault 那一行禁用（重开同一个只会白白重扫一次），同时挂着选中勾。
+ *    当前 Vault 保留在选项中并显示对勾；只有一个库时也保留 Select。
  *
  * 形态保持不变：一条记录都没有时整块不渲染（空区域比永远灰着的入口更诚实）；
  * 切换走 `openRecentVault`（先落盘未保存内容），目录已不在时 `openVault` 自己弹 toast。
@@ -35,6 +35,23 @@ export function RecentVaults() {
   if (recentVaults.length === 0) return null
 
   const current = recentVaults.find((item) => item.rootPath === currentRoot) ?? null
+  const removeButton = (item: (typeof recentVaults)[number]) => (
+    <button
+      type="button"
+      className="mn-select__remove"
+      aria-label={`从最近列表移除 ${item.name}`}
+      title="从最近列表移除（不会删除文件）"
+      onPointerDown={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation()
+        removeRecentVault(item.rootPath)
+        if (recentVaults.length <= 1) setOpen(false)
+      }}
+    >
+      <Icon name="x" size="xs" />
+    </button>
+  )
 
   return (
     <div className="mn-recent-vaults">
@@ -42,7 +59,7 @@ export function RecentVaults() {
         items={recentVaults.map((item) => ({ label: item.name, value: item.rootPath }))}
         value={current?.rootPath ?? null}
         onValueChange={(next) => {
-          if (typeof next === 'string' && next !== '') void openRecentVault(next)
+          if (typeof next === 'string' && next !== '' && next !== currentRoot) void openRecentVault(next)
         }}
         open={open}
         onOpenChange={(next) => setOpen(next)}
@@ -53,14 +70,7 @@ export function RecentVaults() {
           title={current !== null ? current.rootPath : '切换 Vault'}
         >
           <Icon name="folderOpen" size="xs" />
-          <BaseSelect.Value
-            className="mn-select__value"
-            placeholder="最近打开的 Vault"
-          >
-            {(value: string | null) =>
-              recentVaults.find((item) => item.rootPath === value)?.name ?? '最近打开的 Vault'
-            }
-          </BaseSelect.Value>
+          <span className="mn-select__value">{current?.name ?? '最近打开的 Vault'}</span>
           <BaseSelect.Icon className="mn-select__icon">
             <Icon name="chevron" size="xs" />
           </BaseSelect.Icon>
@@ -70,40 +80,25 @@ export function RecentVaults() {
             className="mn-select__positioner"
             side="top"
             sideOffset={6}
+            align="start"
             alignItemWithTrigger={false}
           >
-            <BaseSelect.Popup className="mn-select__popup" aria-label="最近打开的 Vault">
+            <BaseSelect.Popup className="mn-select__popup mn-vault-popup" aria-label="最近打开的 Vault">
               <BaseSelect.List className="mn-select__list">
                 {recentVaults.map((item) => {
-                  const isCurrent = item.rootPath === currentRoot
                   return (
                     <BaseSelect.Item
                       key={item.rootPath}
                       value={item.rootPath}
-                      disabled={isCurrent}
                       className="mn-select__item mn-select__item--vault"
                       title={item.rootPath}
                     >
-                      <BaseSelect.ItemIndicator className="mn-select__indicator">
-                        <Icon name="check" size="xs" />
+                      <Icon name="folder" size="sm" />
+                      <span className="mn-vault-copy"><BaseSelect.ItemText>{item.name}</BaseSelect.ItemText><small>{item.rootPath}</small></span>
+                      <BaseSelect.ItemIndicator className="mn-vault-check">
+                        <Icon name="check" size="sm" />
                       </BaseSelect.ItemIndicator>
-                      <SelectValueText className="mn-select__text" value={item.name} />
-                      <button
-                        type="button"
-                        className="mn-select__remove"
-                        aria-label={`从最近列表移除 ${item.name}`}
-                        title="从最近列表移除（不碰磁盘）"
-                        // 两道都要拦：pointerdown 拦 Base 的选中置位，click 拦选中提交 ——
-                        // 点 × 是"删除这一行"，绝不能顺手把 Vault 切过去
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          removeRecentVault(item.rootPath)
-                          if (recentVaults.length <= 1) setOpen(false)
-                        }}
-                      >
-                        <Icon name="x" size="xs" />
-                      </button>
+                      {removeButton(item)}
                     </BaseSelect.Item>
                   )
                 })}
@@ -114,14 +109,4 @@ export function RecentVaults() {
       </BaseSelect.Root>
     </div>
   )
-}
-
-/**
- * 行内文本（`ItemText` 的轻量替代）。
- *
- * 不用 `Select.ItemText` 是因为它只能有一个（单行 label），而这里一行里
- * 名字与路径是两个独立的截断单元 —— 各自 ellipsis，互不顶替。
- */
-function SelectValueText({ className, value }: { className?: string; value: string }) {
-  return <span className={className}>{value}</span>
 }

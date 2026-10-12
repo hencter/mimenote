@@ -6,9 +6,7 @@
  * 颜色 / 圆角 / 阴影全部走 `--mn-*` 令牌，因此换主题**不需要**改这里。
  */
 
-/* 占满窗口的模态：左侧分区导航 + 右侧内容。
-   遮罩沿用 `.mn-overlay`（居中 + 半透明），这里让它铺满窗口、只留一圈可点的边框 ——
-   "占满窗口"同时"点遮罩仍能关闭"这两条要求只有这样才能同时成立。 */
+/* 紧凑的居中设置窗口，内容独立滚动；小窗口不溢出视口。 */
 .mn-overlay--settings {
   padding: 20px;
 }
@@ -16,8 +14,9 @@
 .mn-settings {
   display: flex;
   flex-direction: column;
-  width: 100%;
-  height: 100%;
+  width: min(760px, 100%);
+  height: min(600px, 100%);
+  max-height: calc(100dvh - 40px);
   border: 1px solid var(--mn-border);
   border-radius: calc(var(--mn-radius) + 2px);
   background: var(--mn-bg-elevated);
@@ -60,7 +59,7 @@
 
 .mn-settings__nav {
   flex: 0 0 auto;
-  width: 190px;
+  width: 152px;
   padding: 8px;
   border-right: 1px solid var(--mn-border);
   background: var(--mn-bg-sidebar);
@@ -108,7 +107,7 @@
 .mn-settings__panel {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 16px 20px 24px;
+  padding: 14px 16px 18px;
   overflow: auto;
 }
 
@@ -116,10 +115,49 @@
   outline: none;
 }
 
+@media (max-width: 560px) {
+  .mn-overlay--settings { padding: 8px; }
+  .mn-settings { max-height: calc(100dvh - 16px); }
+  .mn-settings__body { flex-direction: column; }
+  .mn-settings__nav { width: 100%; border-right: 0; border-bottom: 1px solid var(--mn-border); }
+  .mn-settings__nav-list { flex-direction: row; }
+  .mn-settings__nav-item { white-space: nowrap; }
+}
+
 .mn-settings__section-title {
   margin: 0 0 2px;
   font-size: 15px;
   color: var(--mn-fg);
+}
+
+.mn-settings__brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.mn-settings__brand img {
+  display: block;
+  width: 72px;
+  height: 52px;
+  object-fit: contain;
+  border-radius: 10px;
+}
+
+.mn-settings__brand div {
+  display: grid;
+  gap: 2px;
+}
+
+.mn-settings__brand strong {
+  color: var(--mn-fg);
+  font-size: 18px;
+}
+
+.mn-settings__brand span {
+  color: var(--mn-fg-muted);
+  font-size: 13px;
 }
 
 .mn-settings__section-hint {

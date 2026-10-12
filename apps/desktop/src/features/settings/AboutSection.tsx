@@ -24,6 +24,13 @@ export function AboutSection() {
 
   return (
     <>
+      <div className="mn-settings__brand">
+        <img src="/brand/mimenote-mark.svg" alt="Mimenote 标志" />
+        <div>
+          <strong>Mimenote</strong>
+          <span>让知识安静地留在你手里</span>
+        </div>
+      </div>
       <h3 className="mn-settings__section-title">关于</h3>
       <p className="mn-settings__section-hint">
         Mimenote 是本地优先的 Markdown 知识库：默认离线，无遥测、无出站请求。
