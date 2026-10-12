@@ -188,6 +188,7 @@ describe('设置对话框', () => {
     expect(screen.getByText('12 / 12 篇')).toBeTruthy()
 
     fireEvent.click(tab('关于'))
+    expect(screen.getByRole('img', { name: 'Mimenote 标志' })).toBeTruthy()
     // 版本信息经 store 走 IPC（Mock 返回 app / mn-core / tauri 都是 0.1.0，因此可能多条）
     expect((await screen.findAllByText('0.1.0')).length).toBeGreaterThan(0)
     const info = useVaultStore.getState().info
@@ -215,7 +216,7 @@ describe('设置对话框', () => {
     expect(document.getElementById('mn-settings-font-overrides')?.textContent).toContain(
       '--mn-font-size-editor: 18px !important',
     )
-    expect(screen.getByText('18px')).toBeTruthy()
+    expect(screen.getAllByText('18px').length).toBeGreaterThan(0)
 
     // 2. 持久化：落到 localStorage 的 JSON
     const saved = JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY) ?? '{}') as {

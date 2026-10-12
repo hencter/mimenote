@@ -23,6 +23,7 @@ import { Decoration, type DecorationSet } from '@codemirror/view'
 
 import { isImageAssetTarget, parseImageSize, type ImageSize } from '@/domain/assets'
 import { frontmatterRegion } from '@/domain/frontmatter'
+import { inlineTagSpans } from '@/domain/inline-tags'
 import { normalizeLinkTarget, splitWikilink } from '@/domain/links'
 import type { ResolvedLink } from '@/ipc/types'
 
@@ -284,6 +285,21 @@ export function buildLivePreview(
   emitQuoteLines(build)
   emitWikilinks(build)
   for (const entry of inlines) emitInline(build, entry)
+  const taggedLines = new Set<number>()
+  for (const range of visible) {
+    for (let n = doc.lineAt(range.from).number; n <= doc.lineAt(Math.min(range.to, doc.length)).number; n++) {
+      if (taggedLines.has(n)) continue
+      taggedLines.add(n)
+      const line = doc.line(n)
+      if (inFrontmatter(build, line.from) || collapsedAt(build, line.from)) continue
+      for (const span of inlineTagSpans(line.text)) {
+        const from = line.from + span.from, to = line.from + span.to
+        if (overlaps(build.codeRanges, from, to) || build.collection.isClaimed(from, to)) continue
+        if (inlines.some((entry) => (entry.name === 'Link' || entry.name === 'Image') && entry.from < to && entry.to > from)) continue
+        build.collection.add(from, to, Decoration.mark({ class: 'mn-inline-tag' }))
+      }
+    }
+  }
   emitFrontmatterLines(build)
 
   return build.collection.build()
@@ -964,7 +980,7 @@ function emitWikilink(build: Build, match: WikiMatch): void {
 function frontmatterLines(state: EditorState): { first: number; last: number } | null {
   const doc = state.doc
   const head = doc.line(1).text.replace(/^\u{feff}/u, '').trimEnd()
-  if (head !== '---') return null
+  if (!['---', '+++', ';;;'].includes(head)) return null
 
   const limit = Math.min(doc.lines, FRONTMATTER_SCAN_LINES)
   const region = frontmatterRegion(doc.sliceString(0, doc.line(limit).to))

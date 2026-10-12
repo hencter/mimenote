@@ -631,6 +631,19 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     if ((await editButton.count()) > 0) await editButton.click()
   })
 
+  it('最小窗口下正式 Logo 与打开按钮都在门闸视口内', async () => {
+    await page.setViewportSize({ width: 760, height: 520 })
+
+    const logo = await page.locator('.mn-gate__logo').boundingBox()
+    const openButton = await page.getByText('打开文件夹作为 Vault').boundingBox()
+    expect(logo).not.toBeNull()
+    expect(openButton).not.toBeNull()
+    expect(logo?.y ?? -1).toBeGreaterThanOrEqual(0)
+    expect((openButton?.y ?? 521) + (openButton?.height ?? 0)).toBeLessThanOrEqual(520)
+
+    await page.setViewportSize({ width: 1280, height: 800 })
+  })
+
   it('门闸页 → 打开示例 Vault → 文件树出现', async () => {
     await page.getByText('打开文件夹作为 Vault').click()
     await page.waitForSelector('.mn-tree-row', { state: 'visible' })
@@ -1330,12 +1343,14 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
   it('工具栏图标悬停出现提示（Base Tooltip，真浏览器里才看得到内容）', async () => {
     // jsdom 里浮层内容挂不上（定位管线要真实布局），只钉到"开关态"；
     // 内容文本必须在真浏览器里看一次 —— 就是这一条。
+    // 用「重新扫描 Vault」这一条：ADR-0051 把工具栏收敛成"视图与库"之后，
+    // 新建/重命名/移动/导出都不在这里了，而展开/折叠/刷新/排序/打开库仍在。
     await ensureVaultOpen(page)
-    const button = page.locator('.mn-tree-toolbar__actions button[aria-label="新建笔记"]')
+    const button = page.locator('.mn-tree-toolbar__actions button[aria-label="重新扫描 Vault"]')
     await button.hover()
     const tip = page.locator('.mn-tooltip')
     await tip.waitFor({ state: 'visible', timeout: 5_000 })
-    expect(await tip.textContent()).toBe('新建笔记（Ctrl+N）')
+    expect(await tip.textContent()).toBe('重新扫描 Vault（Ctrl+Alt+R）')
     // 描述关系连好：读屏知道提示在哪
     expect(await button.getAttribute('aria-describedby')).not.toBeNull()
   })
@@ -2805,6 +2820,8 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     // 但浏览器里没有 `dialog:allow-open`，`pickDirectory` 返回 null —— 于是导出必须在**选目录**
     // 这一步就停下并说清原因。真实落盘由 `real-app.e2e.test.ts` 用真实二进制 + 真实磁盘覆盖。
     await openNoteInTree(page, '项目/设计.md')
+    // 入口是文件树工具栏的「导出」按钮（ADR-0051 之后它是**三选一对话框的唯一入口**；
+    // 命令面板里的 `export.html` / `export.pdf` / `export.site` 是直接执行，不经过这张对话框）
     await page.locator('.mn-export-launch').click()
     await page.waitForSelector('.mn-dialog--export', { state: 'visible' })
 

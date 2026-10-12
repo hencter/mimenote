@@ -9,8 +9,8 @@ export const mnEditorTheme = EditorView.theme({
   '&': {
     height: '100%',
     fontSize: 'var(--mn-font-size-editor)',
-    color: 'var(--mn-editor-fg)',
-    backgroundColor: 'var(--mn-editor-bg)',
+    color: 'var(--mn-fg)',
+    backgroundColor: 'var(--mn-bg)',
   },
   /*
    * 正文用**界面字体**（与预览面板 `.mn-preview__body` 同一套排版）。
@@ -27,6 +27,10 @@ export const mnEditorTheme = EditorView.theme({
   '.cm-content': {
     caretColor: 'var(--mn-accent)',
     padding: '14px 0',
+    maxWidth: '852px',
+    marginLeft: 'auto',
+    marginRight: 'auto',
+    flexGrow: '1',
   },
   '.cm-line': {
     padding: '0 16px',

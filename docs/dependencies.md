@@ -16,8 +16,10 @@
 | `dompurify` | 3.x | MPL-2.0 OR Apache-2.0 | HTML 二次净化 | XSS 的第二道防线；笔记内容属于不可信输入（别人分享的 Vault） |
 | `@base-ui/react` | 1.x | MIT | 无样式 UI 行为 primitives（Switch/Select 起步） | 只买"键盘/无障碍/开合逻辑"（roving 焦点、typeahead、Esc、焦点归还），**不买样式**：外观仍是手写 CSS + `--mn-*` 令牌，因此主题引擎、构建链、CSP 都不受影响；替代方案是继续手写（ContextMenu 已证明能写对，但每个新控件都要重写一遍焦点管理）。**不引入 Tailwind**：理由见"刻意没有引入"（主题由 JSON + 变量驱动）。按需导入子路径（`@base-ui/react/switch`），只打包用到的组件 |
 | `unplugin-icons` + `@iconify-json/lucide` + `@svgr/*` | 24.x / 1.x | MIT | 图标字形：构建期把 lucide 打包进产物（devOnly，见 ADR-0043） | 35 个手绘路径"能用不优雅"；运行时 CDN 与离线冲突，所以只能构建期。`IconName` 联合与刻度不变，调用方零改动；打包增量约 29 个图标 x 1KB |
-
+| `yaml` | 2.9.1 | ISC | frontmatter（`---`）的**文档模型**：原地改一个字段而保留注释、字段顺序与其它值的原始写法（ADR-0048） | 自己写一个"保注释的 YAML 改写器"等于重写解析器 + 打印器；正则替换一行会在值里有 `#`/引号/多行块时写坏用户文件。`parseDocument` + `toString` 正是这件事的成熟实现。体积约 240 KB（未压缩、含类型表） |
+| `smol-toml` | 1.9.0 | BSD-3-Clause | frontmatter（`+++`，Hugo/Zola）的解析与序列化（ADR-0048） | TOML 是本应用"笔记能直接搬去 SSG"的一部分；JSON 走平台自带的 `JSON`，TOML 没有 —— 选 `smol-toml` 是因为它零依赖、同时提供 `parse` 与 `stringify`。**注意它的序列化不带注释**，所以含注释的 TOML 我们**拒绝改写**并让用户去源码里改（这条纪律在 `domain/frontmatter-edit.ts`） |
 | Maple Mono CN（Regular/Bold woff2，约 10.7MB） | OFL-1.1 | 首要等宽字体（见 ADR-0046） | 用户指定；CN 版中西文 2:1；随产物发布（`public/fonts/` + OFL.txt）；Italic 不捆 |
+
 **刻意没有引入**：
 
 - 虚拟列表库（`react-window` / `@tanstack/react-virtual`）：本项目的行高固定、数据结构简单，自己实现约 40 行并有单测（`domain/virtual-list.ts`），比引入依赖更可控。
@@ -52,6 +54,8 @@
 | `libsqlite3-sys` 0.35（rusqlite 传递依赖） | MIT | rusqlite 的 FFI 与 `bundled` 构建脚本（编进 SQLite，FTS5 已启用） | 由 `bundled` 引入，不单独使用 |
 | `hashlink` 0.10 / `fallible-iterator` 0.3 / `fallible-streaming-iterator` 0.1 | MIT OR Apache-2.0 / MIT-Apache-2.0 | rusqlite 的语句缓存与行迭代 | 由 rusqlite 引入的传递依赖，无直接使用 |
 | `notify` 8.2（+ `notify-types` 2，传递依赖） | CC0-1.0 | 文件监听：把 Vault 的外部改动（资源管理器 / 别的编辑器 / 同步盘把别的设备的改动落下来）变成事件（ADR-0016） | 见下方说明 |
+| `toml` 1.1.6（`preserve_order`） | MIT OR Apache-2.0 | frontmatter（`+++`）在**宿主**一侧的解析（ADR-0047 的一层映射 + ADR-0048 的字段顺序） | 索引要读 TOML frontmatter 的字段与标签，而 `mn-core` 不能依赖前端。`preserve_order` 是**必须**开的：`Frontmatter::fields` 的契约是"保持文档顺序"（见 `mn-core/Cargo.toml` 上的注释与 `frontmatter_field_order_follows_the_document` 用例） |
+| `toml_edit` 0.25.15 | MIT OR Apache-2.0 | frontmatter（`+++`）在**宿主**一侧的**写回**：原地换一个键的值，注释与其它字段的排版逐字不动（ADR-0048） | 与 `toml` 分工明确：读用 `toml`（快、只取值），写用 `toml_edit`（保注释）。只用 `toml` 序列化会把用户写在区块里的 `# 备注` 全吃掉 |
 
 ### 为什么引入 `notify`，而不是轮询或自己写平台 FFI
 

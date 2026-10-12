@@ -388,6 +388,9 @@ kbd {
   display: inline-flex;
   align-items: center;
   gap: 2px;
+  flex-wrap: wrap;
+  min-width: 0;
+  row-gap: 6px;
 }
 
 .mn-tree-toolbar__divider {
@@ -401,7 +404,12 @@ kbd {
 /* 工具栏里的命中区放大到 28px（全局的 22px 是给 26px 高的状态栏的，
    这里行高没有那个限制；状态栏不受影响） */
 .mn-tree-toolbar__actions .mn-icon-button {
-  width: 28px;
+  width: auto;
+  flex: 0 0 auto;
+  padding: 0 7px;
+  gap: 5px;
+  font-size: 12px;
+  white-space: nowrap;
   height: 28px;
   border-radius: var(--mn-radius);
 }
@@ -517,6 +525,14 @@ kbd {
   min-height: 0;
 }
 
+/*
+  滚动**留在 CodeMirror 自己的 scroller 上**，不要改成"整个面板滚动 + 编辑器长到全文高"。
+  那条路看着更简单，实际会同时坏掉两件事：
+  1. `EditorView.scrollIntoView`（搜索命中/大纲跳转的"滚到视口正中"）作用在 `.cm-scroller` 上，
+     它一旦 `overflow: visible` 就无处可滚 —— 跳转落点在屏幕外，用户只看到"跳了但没滚"；
+  2. CM 的视口窗口化按 scroller 的**可视高度**算：高度等于全文时它会把所有行都渲染出来，
+     大文档的 DOM 量直接回到"整篇都在 DOM 里"（ADR-0020 那笔账）。
+*/
 .mn-editor__surface {
   flex: 1 1 auto;
   min-height: 0;
@@ -525,6 +541,11 @@ kbd {
 
 .mn-editor__surface .cm-editor {
   height: 100%;
+}
+/* CodeMirror 的 layer() 写入行内 z-index:-2，必须明确覆盖才能让选区位于块底色上方。 */
+.mn-editor__surface .cm-selectionLayer { z-index: 3 !important; pointer-events: none; }
+.mn-editor__surface .cm-selectionBackground {
+  background: color-mix(in srgb, var(--mn-accent) 38%, transparent) !important;
 }
 
 .mn-editor__placeholder {
@@ -620,6 +641,9 @@ kbd {
 .mn-preview__body h3 {
   font-size: 1.2em;
 }
+.mn-preview__body h4 { font-size: 1.1em; }
+.mn-preview__body h5 { font-size: 1.04em; }
+.mn-preview__body h6 { font-size: 1em; color: var(--mn-fg-muted); }
 
 .mn-preview__body a {
   color: var(--mn-link);
@@ -1190,19 +1214,21 @@ kbd {
 
 .mn-gate__brand {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  color: var(--mn-accent);
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
 }
 
-.mn-gate__brand h1 {
-  margin: 0;
-  font-size: 22px;
-  color: var(--mn-fg);
+.mn-gate__logo {
+  display: block;
+  width: min(360px, 76%);
+  height: 112px;
+  object-fit: cover;
+  object-position: center;
 }
 
 .mn-gate__tagline {
-  margin: 2px 0 0;
+  margin: 0;
   color: var(--mn-fg-muted);
 }
 
@@ -1637,4 +1663,12 @@ kbd {
 
 *::-webkit-scrollbar-corner {
   background: transparent;
+}
+.mn-inline-tag {
+  color: var(--mn-accent);
+  background: color-mix(in srgb, var(--mn-accent) 13%, transparent);
+  border-radius: 999px;
+  padding: 0.08em 0.38em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }

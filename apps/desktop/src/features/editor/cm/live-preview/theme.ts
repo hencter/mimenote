@@ -124,14 +124,14 @@ export const livePreviewThemeSpec: { [selector: string]: { [property: string]: s
      行与文本两层 `em` 会相乘（1.6em × 1.45em = 2.3em），级别越高越离谱。
      所以 `mnHighlightStyle` 只留颜色与字重，字号全部归这里。 */
   '.cm-line.mn-md-h1': {
-    fontSize: '1.62em',
+    fontSize: '1.7em',
     fontWeight: '700',
-    lineHeight: '1.35',
-    paddingBottom: '0.12em',
+    lineHeight: '1.3',
+    paddingBottom: '0.3em',
     borderBottom: '1px solid var(--mn-border)',
   },
-  '.cm-line.mn-md-h2': { fontSize: '1.4em', fontWeight: '700', lineHeight: '1.4' },
-  '.cm-line.mn-md-h3': { fontSize: '1.22em', fontWeight: '700', lineHeight: '1.45' },
+  '.cm-line.mn-md-h2': { fontSize: '1.4em', fontWeight: '700', lineHeight: '1.3' },
+  '.cm-line.mn-md-h3': { fontSize: '1.2em', fontWeight: '700', lineHeight: '1.3' },
   '.cm-line.mn-md-h4': { fontSize: '1.1em', fontWeight: '700' },
   '.cm-line.mn-md-h5': { fontSize: '1.04em', fontWeight: '700' },
   '.cm-line.mn-md-h6': { fontSize: '1em', fontWeight: '700', color: 'var(--mn-fg-muted)' },
@@ -288,8 +288,8 @@ export const livePreviewThemeSpec: { [selector: string]: { [property: string]: s
     fontFamily: 'var(--mn-font-mono)',
     background: 'var(--mn-code-bg)',
     borderRadius: '4px',
-    padding: '0.1em 0.34em',
-    fontSize: '0.92em',
+    padding: '0.16em 0.36em',
+    fontSize: '0.9em',
   },
   '.mn-md-link': {
     color: 'var(--mn-link)',
