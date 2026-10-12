@@ -51,6 +51,7 @@ import {
 } from './list-input'
 import { livePreviewExtensions } from './live-preview/plugin'
 import { wikiCompleteExtensions } from './wiki-complete/plugin'
+import { wikiHoverExtensions } from './wiki-hover/wiki-hover'
 
 /** 允许运行时替换的扩展槽（明暗模式）。 */
 export const appearanceCompartment = new Compartment()
@@ -192,6 +193,10 @@ export function createEditorExtensions(
     // `[[` 笔记补全（ADR-0009 之后的写作手感补齐）：弹层是 ViewPlugin，键位是 Prec.highest ——
     // 但**只在弹层开着时**才吃 Enter/Tab/↑↓/Esc，关闭时一律返回 false（详细分工见该模块文档）
     ...wikiCompleteExtensions(),
+    // `[[链接]]` 的悬停预览（ADR-0053）：装饰层已经在 `[[…]]` 上挂了 `data-mn-wikilink`，
+    // 这里只做"停够时间就把目标笔记的只读正文浮出来"。它什么都不吃掉（见该模块文档），
+    // 因此对选词、拖放、点击跳转这三条既有路径零影响
+    ...wikiHoverExtensions(),
     // 粘贴 / 拖入图片（ADR-0013）：走 `EditorView.domEventHandlers` —— 插件提供的处理器排在
     // CodeMirror 内置粘贴之前，返回 `true` 才吃掉事件，返回 `false` 时文本粘贴原样落到默认实现
     // （完整理由见 `image-input.ts` 的模块文档）
