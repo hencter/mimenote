@@ -25,6 +25,8 @@
  * 搬到别处（判据与安全审查在 `domain/site-frontmatter.ts`，这里只消费结果）。请特别注意
  * **被摘掉不是失败**：草稿与被拒绝的覆盖都进 `overrides` 而不是 `skipped`，
  * 结果界面才不会把"按你的要求跳过"说成"出了错"。
+ * 指向草稿的链接在渲染时改成不可点：索引不认识 `draft`，计划里的 href 仍指向那一页，
+ * 而那一页不会写出去 —— 贴上原 href 就是 404。这里不另写一份"谁是草稿"的判据。
  */
 
 import { frontmatterBody } from '@/domain/frontmatter'
@@ -213,6 +215,14 @@ function linkHrefsForPage(
   plan: {
     /** 计划里的**默认**输出路径 → 这一页最终的输出路径（没被覆盖的映射到它自己）。 */
     finalPathOf: ReadonlyMap<string, string>
+    /**
+     * 默认输出路径里、这一轮不会写出去的那些（目前只有 `draft: true`）。
+     *
+     * 索引算出的 href 在草稿上仍是非空的：它只知道"这篇笔记存在"。导出层已经决定不写那一页，
+     * 若仍贴上 href，站点里就是一条 404。改成 `null` 走既有的"不可点"渲染，
+     * 并且**不**把目标报成"还不存在的笔记"——草稿是作者要求跳过的，索引页另有一节。
+     */
+    unpublished: ReadonlySet<string>
   },
   page: SitePage,
 ): Map<string, string | null> {
@@ -222,6 +232,10 @@ function linkHrefsForPage(
     // 宿主给的 href 锚在**本页原来的目录**里，且是百分号编码的默认输出路径；
     // 解回站内路径之后才能去查"它最终落在哪"（覆盖表按最终路径组织）。
     const defaultPath = link.href === null ? null : outputPathOfHref(page.pagePath, link.href)
+    if (defaultPath !== null && plan.unpublished.has(defaultPath)) {
+      hrefs.set(key, null)
+      continue
+    }
     const target = defaultPath === null ? undefined : plan.finalPathOf.get(defaultPath)
     if (link.href === null || target === undefined) {
       hrefs.set(key, link.href)
@@ -395,9 +409,19 @@ export async function exportVaultSite(
 
     // 按笔记路径查页面（O(1)）：下面的每一步都在这张表上做，别再线性找
     const pageOfNote = new Map(plan.pages.map((page) => [page.relPath, page]))
+    const exportedNotes = new Set(path.pages.map((item) => item.relPath))
     const pages = path.pages.flatMap((item) => {
       const page = pageOfNote.get(item.relPath)
-      return page === undefined ? [] : [{ ...page, pagePath: item.pagePath }]
+      if (page === undefined) return []
+      // 反链名单来自索引，里面可以有草稿。草稿页不会写出去，留着就会在页脚链到一个不存在的 HTML
+      // （渲染侧查不到路径时会丢掉 `<li>`，但标题上的计数仍把它算进去）。
+      return [
+        {
+          ...page,
+          pagePath: item.pagePath,
+          backlinks: page.backlinks.filter((from) => exportedNotes.has(from)),
+        },
+      ]
     })
     prepareSiteRender(pages, path.overrides)
     const overrides: SiteExportOverrides = {
@@ -415,9 +439,14 @@ export async function exportVaultSite(
     }
     // 出链重算要的一张查表：计划里的**默认**输出路径 → 这一页**最终**的输出路径。
     // 在计划上贴一层覆盖就够（没被覆盖的映射到自己），只算一次 —— 它的内容与批次无关。
+    // `unpublished` 是草稿的默认输出路径：链接解析仍认它存在，但这一轮不会写那个文件。
+    const draftNotes = new Set(path.drafts)
     const rewire = {
       finalPathOf: new Map(
         plan.pages.map((page) => [page.pagePath, path.overrides.get(page.relPath) ?? page.pagePath]),
+      ),
+      unpublished: new Set(
+        plan.pages.filter((page) => draftNotes.has(page.relPath)).map((page) => page.pagePath),
       ),
     }
 

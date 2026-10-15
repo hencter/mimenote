@@ -26,6 +26,12 @@ pub const UNSUPPORTED_MEDIA: &str = "UNSUPPORTED_MEDIA";
 /// 必须同步加上这个字符串，否则它会被归到 `UNKNOWN`。
 pub const INDEX_NOT_READY: &str = "INDEX_NOT_READY";
 
+/// 扫描或构建开始之后 Vault 已经换过或关掉了，这轮结果不能提交。
+///
+/// 不借 `VAULT_NOT_SET`：那句话是"还没打开库"，而这里库往往已经换成另一个。
+/// 前端见到这个码应安静丢掉结果，不要当成重扫失败去弹错误。
+pub const STALE_SESSION: &str = "STALE_SESSION";
+
 /// 跨 IPC 的错误载荷。
 ///
 /// 前端 `src/ipc/types.ts` 的 `IpcError` 必须与本结构字段一致。
@@ -72,6 +78,15 @@ impl IpcError {
     ///
     /// `message` 要说清"再等一下就好"，因为前端会把它直接显示给用户 ——
     /// 这条错误唯一的出路就是重试，用户必须能读懂这一点。
+    pub fn stale_session() -> Self {
+        Self {
+            code: STALE_SESSION,
+            message: "这次扫描开始后 Vault 已经换过，结果已丢弃".to_string(),
+            detail: None,
+            current_mtime_ms: None,
+        }
+    }
+
     pub fn index_not_ready(message: impl Into<String>) -> Self {
         Self {
             code: INDEX_NOT_READY,

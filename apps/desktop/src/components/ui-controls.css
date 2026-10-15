@@ -159,10 +159,11 @@
 .mn-select__item {
   box-sizing: border-box;
   display: grid;
-  grid-template-columns: 16px 1fr;
+  /* 文字左列、对勾右列：左侧标签天然齐平（见 Select.tsx 头注） */
+  grid-template-columns: 1fr 16px;
   gap: 6px;
   align-items: center;
-  padding: 6px 8px 6px 6px;
+  padding: 6px 8px 6px 10px;
   border-radius: calc(var(--mn-radius) - 2px);
   color: var(--mn-fg);
   outline: none;
@@ -170,12 +171,14 @@
   user-select: none;
 }
 
-/* 选中勾只在选中行挂载：文本列固定第二列，各行文字才对得齐（见 Select.tsx 头注）。 */
-/* 对勾平时用强调色（在淡底上看得见），悬停行里跟随强调色（文字是正文色） */
+/* 右侧指示列常驻占位；对勾只在选中行出现。 */
 .mn-select__indicator {
   display: flex;
   align-items: center;
   justify-content: center;
+  grid-column: 2;
+  width: 16px;
+  height: 16px;
   color: var(--mn-accent);
 }
 
@@ -184,7 +187,10 @@
 }
 
 .mn-select__text {
-  grid-column: 2;
+  grid-column: 1;
+  min-width: 0;
+  text-align: left;
+  justify-self: start;
 }
 
 /* 悬停/键盘走位：淡染色胶囊（不是实色块）—— 实色块在纸墨这类暖主题上是一坨棕，
@@ -215,49 +221,41 @@
   min-width: 0;
 }
 
-/* 底行触发器吃满剩余宽度（旁边是固定的设置按钮），不再是 150px 最小宽 */
+/* 底行触发器吃满剩余宽度；高度与文件树行（30px）对齐，不再像一条加厚工具栏 */
 .mn-select--vault {
   flex: 1 1 auto;
   min-width: 0;
   width: 100%;
-  min-height: 40px;
+  height: 100%;
+  min-height: 0;
+  gap: 4px;
   border-color: transparent;
   background: transparent;
-  border-radius: 8px;
-  padding: 8px;
+  border-radius: var(--mn-radius);
+  padding: 0 6px;
+  font-size: inherit;
 }
 
 .mn-select__item--vault {
-  grid-template-columns: 16px minmax(0, 1fr) 16px 24px;
-  padding: 9px 8px;
-  gap: 10px;
+  grid-template-columns: 16px minmax(0, 1fr) 16px;
+  padding: 6px 8px;
+  gap: 8px;
+  align-items: center;
 }
 
 .mn-select__item--vault > * {
   grid-row: 1;
 }
 
+/* 只显示库名；完整路径走 Tooltip，不在列表里占第二行 */
 .mn-vault-copy {
-  display: flex;
-  flex-direction: column;
+  display: block;
   min-width: 0;
-  gap: 3px;
-  text-align: left;
-}
-
-.mn-vault-copy > * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.mn-vault-copy strong {
+  text-align: left;
   font-weight: 500;
-}
-
-.mn-vault-copy small {
-  font-size: 11px;
-  color: var(--mn-fg-muted);
 }
 
 .mn-vault-popup {
@@ -266,6 +264,20 @@
   max-height: var(--available-height);
   overflow-y: auto;
   border-radius: 12px;
+}
+
+.mn-vault-popup__sep {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--mn-border);
+}
+
+.mn-select__item--manage {
+  color: var(--mn-fg-muted);
+}
+
+.mn-select__item--manage[data-highlighted] {
+  color: var(--mn-fg);
 }
 
 .mn-vault-check {
@@ -459,15 +471,15 @@
  * 归位理由是 ADR-0060 §4 的一句话判据：这些块被 ≥2 个域使用 → 它们是通用控件。
  * 注意 `mn-icon-button` 仍是跨文件共享块（`features/layout/tree-host.css` 也写它）。
  * ------------------------------------------------------------------------- */
+/* 工具栏动作只留图标：固定 28×28，拖窄侧栏时以整条图标右缘为下限 */
 .mn-tree-toolbar__actions .mn-icon-button {
-  width: auto;
+  width: 28px;
   flex: 0 0 auto;
-  padding: 0 7px;
-  gap: 5px;
-  font-size: 12px;
-  white-space: nowrap;
+  padding: 0;
+  gap: 0;
   height: 28px;
   border-radius: var(--mn-radius);
+  justify-content: center;
 }
 
 /* ------------------------------------------------------- 按钮与控件 */

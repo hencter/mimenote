@@ -31,6 +31,8 @@ import {
   removeItem,
   setActive,
   setRatio,
+  leftEdgeLeafId,
+  rightEdgeLeafId,
   topRightLeafId,
   type LayoutItemId,
   type TreeLayout,
@@ -377,6 +379,12 @@ describe('clampRatioForExtent：像素下限（嵌套切割切不出废格）', 
     expect(clampRatioForExtent(0.02, Number.NaN)).toBeCloseTo(MIN_RATIO, 6)
     expect(clampRatioForExtent(0.02, Number.POSITIVE_INFINITY)).toBeCloseTo(MIN_RATIO, 6)
   })
+
+  it('两侧下限可不对称（文件树那侧抬到图标条宽度）', () => {
+    expect(clampRatioForExtent(0.05, 1000, { a: 168, b: 120 })).toBeCloseTo(0.168, 6)
+    // 0.95 先被比例上限夹到 MAX_RATIO(0.85)，再与像素上限 0.88 取更严 → 0.85
+    expect(clampRatioForExtent(0.95, 1000, { a: 168, b: 120 })).toBeCloseTo(MAX_RATIO, 6)
+  })
 })
 
 describe('右上叶：窗口按钮的宿主（ADR-0038）', () => {
@@ -456,5 +464,50 @@ describe('右上叶：窗口按钮的宿主（ADR-0038）', () => {
       active: 'links',
     }
     expect(topRightLeafId(allHidden, noneVisible)).toBeNull()
+  })
+})
+
+describe('左/右缘叶：侧栏折叠按钮的宿主', () => {
+  const allVisible = (): boolean => true
+
+  it('row[tree, main, links]：左缘 tree、右缘 links', () => {
+    const layout: TreeLayout = {
+      kind: 'split',
+      id: 's1',
+      axis: 'row',
+      ratio: 0.5,
+      a: { kind: 'leaf', id: 'tree', items: ['tree'], active: 'tree' },
+      b: {
+        kind: 'split',
+        id: 's2',
+        axis: 'row',
+        ratio: 0.5,
+        a: defaultLayout(),
+        b: { kind: 'leaf', id: 'links', items: ['links'], active: 'links' },
+      },
+    }
+    expect(leftEdgeLeafId(layout, allVisible)).toBe('tree')
+    expect(rightEdgeLeafId(layout, allVisible)).toBe('links')
+  })
+
+  it('隐藏右缘模块后右缘退回主叶；左缘仍是 tree', () => {
+    const layout: TreeLayout = {
+      kind: 'split',
+      id: 's1',
+      axis: 'row',
+      ratio: 0.5,
+      a: { kind: 'leaf', id: 'tree', items: ['tree'], active: 'tree' },
+      b: {
+        kind: 'split',
+        id: 's2',
+        axis: 'row',
+        ratio: 0.5,
+        a: defaultLayout(),
+        b: { kind: 'leaf', id: 'links', items: ['links'], active: 'links' },
+      },
+    }
+    const noLinks = (item: LayoutItemId): boolean => item !== 'links'
+    expect(leftEdgeLeafId(layout, noLinks)).toBe('tree')
+    expect(rightEdgeLeafId(layout, noLinks)).toBe(DEFAULT_MAIN_LEAF_ID)
   })
 })

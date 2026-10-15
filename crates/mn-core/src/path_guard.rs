@@ -246,8 +246,9 @@ pub(crate) fn ensure_no_escape(root: &Path, candidate: &Path) -> Result<()> {
     let rel = candidate
         .strip_prefix(root)
         .map_err(|_| Error::PathEscape(display_path(candidate)))?;
+    let components: Vec<_> = rel.components().collect();
     let mut cursor = root.to_path_buf();
-    for comp in rel.components() {
+    for (index, comp) in components.iter().enumerate() {
         cursor.push(comp.as_os_str());
         match std::fs::symlink_metadata(&cursor) {
             Ok(meta) => {
@@ -257,10 +258,17 @@ pub(crate) fn ensure_no_escape(root: &Path, candidate: &Path) -> Result<()> {
                         return Err(Error::PathEscape(display_path(&cursor)));
                     }
                     cursor = real;
+                } else if !meta.is_dir() && index + 1 < components.len() {
+                    // 中间一段是普通文件。macOS 上再往下 stat 会得到 ENOTDIR，若包成 IO，
+                    // 站点导出的稳定码 NOT_A_DIRECTORY 就只在 Windows 上出现。
+                    return Err(Error::NotADirectory(display_path(&cursor)));
                 }
             }
             // 后续路径尚不存在（新建文件）：无需继续检查。
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) if e.kind() == std::io::ErrorKind::NotADirectory => {
+                return Err(Error::NotADirectory(display_path(&cursor)));
+            }
             Err(e) => return Err(Error::io(&cursor, e)),
         }
     }
@@ -385,6 +393,18 @@ mod tests {
                 .unwrap_err()
                 .code(),
             ErrorCode::NotFound
+        );
+    }
+
+    #[test]
+    fn a_file_in_the_middle_of_a_path_is_not_a_directory() {
+        let (dir, root) = temp_vault();
+        fs::write(dir.path().join("assets"), "占位的同名文件").unwrap();
+        assert_eq!(
+            root.resolve_for_write("assets/site.css")
+                .unwrap_err()
+                .code(),
+            ErrorCode::NotADirectory
         );
     }
 

@@ -687,16 +687,14 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
   },
   {
     id: 'tree.toggleColumns',
-    title: '文件树：单栏 / 分栏（列视图）',
+    title: '文件树：单栏 / 分栏 / 堆叠卡片',
     category: '文件树',
     // ADR-0058 的入口。L3（`Mod+Alt+*`）的理由：这是"我怎么看文件"的次级开关，
-    // 一天切一两次，而且设置页里有同一个开关 —— 不该占用 L1/L2。
+    // 一天切一两次 —— 不该占用 L1/L2。三态循环在 `tree-layout-pref.toggleTreeLayout`。
     keybinding: 'Mod+Alt+C',
     when: hasVault,
     unavailableReason: '需要先打开 Vault',
     run: () => {
-      // 翻转逻辑只有一份实现（`tree-layout-pref.ts`）：工具栏那个按钮走的是同一个函数，
-      // 命令层再写一次 `=== 'columns' ? 'single' : 'columns'` 就是第二份判据
       toggleTreeLayout()
     },
   },

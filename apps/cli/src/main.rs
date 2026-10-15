@@ -169,7 +169,7 @@ fn print_text(vault: &Path, report: &mn_core::okf::OkfReport) {
 mod tests {
     use super::*;
 
-    fn write_vault(files: &[(&str, &str)]) -> tempfile::TempDir {
+    fn write_vault<const N: usize>(files: &[(&str, &str); N]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         for (rel, text) in files {
             let path = dir

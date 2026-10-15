@@ -258,7 +258,7 @@ describe('渲染：格子与内容分派', () => {
     })
   })
 
-  it('隐藏文件树（Ctrl+B 的那条开关）：格子收缩；再打开回到原位（树里什么都没变）', async () => {
+  it('隐藏文件树（Ctrl+B 的那条开关）：缩成左缘图标轨；再打开回到原位（树里什么都没变）', async () => {
     render(<Harness />)
     await openVault()
     const treeLeafId = leafOfItem(layout(), 'tree')!.id
@@ -268,7 +268,12 @@ describe('渲染：格子与内容分派', () => {
       useUiStore.getState().toggleSidebar()
     })
     await waitFor(() => {
-      expect(leafIds()).not.toContain(treeLeafId)
+      // 抽屉轨仍挂着同一 leaf id，折叠按钮还在
+      expect(document.querySelector(`[data-leaf-id="${treeLeafId}"][data-drawer-collapsed]`)).not.toBeNull()
+      expect(document.querySelector('[data-side-collapse="left"]')?.getAttribute('aria-label')).toBe(
+        '展开左侧栏',
+      )
+      expect(document.querySelector('.mn-tree')).toBeNull()
     })
     expect(leafOfItem(layout(), 'tree')?.id).toBe(treeLeafId) // 树里没动
 
@@ -276,8 +281,60 @@ describe('渲染：格子与内容分派', () => {
       useUiStore.getState().toggleSidebar()
     })
     await waitFor(() => {
-      expect(leafIds()).toContain(treeLeafId)
+      expect(document.querySelector(`[data-leaf-id="${treeLeafId}"][data-drawer-collapsed]`)).toBeNull()
+      expect(document.querySelector('.mn-tree')).not.toBeNull()
     })
+  })
+
+  it('左缘 panelLeft：点折叠后图标仍在；再点展开文件树', async () => {
+    render(<Harness />)
+    await openVault()
+    const treeLeafId = leafOfItem(layout(), 'tree')!.id
+    const btn = leafEl(treeLeafId).querySelector<HTMLButtonElement>('[data-side-collapse="left"]')
+    expect(btn).not.toBeNull()
+    expect(btn!.getAttribute('aria-label')).toBe('折叠左侧栏')
+    expect(btn!.querySelector('svg')).not.toBeNull()
+    expect(btn!.textContent?.trim()).toBe('')
+
+    fireEvent.click(btn!)
+    await waitFor(() => {
+      expect(useUiStore.getState().sidebarVisible).toBe(false)
+    })
+    const railBtn = document.querySelector<HTMLButtonElement>('[data-side-collapse="left"]')
+    expect(railBtn).not.toBeNull()
+    expect(railBtn!.getAttribute('aria-label')).toBe('展开左侧栏')
+    expect(document.querySelector(`[data-leaf-id="${treeLeafId}"][data-side-rail="left"]`)).not.toBeNull()
+
+    fireEvent.click(railBtn!)
+    await waitFor(() => {
+      expect(useUiStore.getState().sidebarVisible).toBe(true)
+      expect(document.querySelector('.mn-tree')).not.toBeNull()
+    })
+  })
+
+  it('右侧栏折叠按钮挂在主叶最右，不在右栏自己身上', async () => {
+    render(<Harness />)
+    await openVault()
+    act(() => {
+      useUiStore.getState().toggleOutlinePanel()
+    })
+    await waitFor(() => {
+      expect(leafOfItem(layout(), 'outline')).not.toBeNull()
+    })
+    const outlineLeafId = leafOfItem(layout(), 'outline')!.id
+    expect(outlineLeafId).not.toBe(DEFAULT_MAIN_LEAF_ID)
+
+    const onMain = leafEl(DEFAULT_MAIN_LEAF_ID).querySelector('[data-side-collapse="right"]')
+    const onRight = leafEl(outlineLeafId).querySelector('[data-side-collapse="right"]')
+    expect(onMain).not.toBeNull()
+    expect(onMain!.getAttribute('aria-label')).toBe('折叠右侧栏')
+    expect(onRight).toBeNull()
+
+    fireEvent.click(onMain!)
+    await waitFor(() => {
+      expect(useUiStore.getState().outlinePanelVisible).toBe(false)
+    })
+    expect(document.querySelector('[data-side-rail="right"]')).not.toBeNull()
   })
 })
 

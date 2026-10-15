@@ -748,6 +748,11 @@ export type ErrorCode =
    * "索引还在构建，等一下就好"。那句话比不说还糟：用户会去查磁盘。
    */
   | 'INDEX_NOT_READY'
+  /**
+   * 扫描开始之后 Vault 已经换过或关掉了。结果作废，不是失败。
+   * 重扫的调用方应安静返回，不要弹"重扫失败"。
+   */
+  | 'STALE_SESSION'
   /** 宿主内部错误（面板/painc/适配器未初始化等）。 */
   | 'INTERNAL'
   /** 用户取消（例如关闭了文件夹选择框）。 */
@@ -770,6 +775,7 @@ const KNOWN_CODES: ReadonlySet<string> = new Set<ErrorCode>([
   'NOT_UTF8',
   'UNSUPPORTED_MEDIA',
   'INDEX_NOT_READY',
+  'STALE_SESSION',
   'INTERNAL',
   'CANCELLED',
 ])
@@ -866,6 +872,8 @@ export function describeError(error: MimenoteError, context?: string): string {
       return `${prefix}只接受图片附件（png / jpg / jpeg / gif / webp / avif / bmp / svg / ico）：${error.message}`
     case 'CANCELLED':
       return `${prefix}已取消`
+    case 'STALE_SESSION':
+      return `${prefix}这次扫描开始后已经换了 Vault，结果已丢弃`
     case 'INDEX_NOT_READY':
       // 宿主已经在 message 里写清了进度（"索引正在构建 3000/4267"），这里只补一句"要做什么"
       return `${prefix}链接索引还在构建，稍等一下再试${error.message.trim() === '' ? '' : `：${error.message}`}`

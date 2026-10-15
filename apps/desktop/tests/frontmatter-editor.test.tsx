@@ -7,7 +7,7 @@ import { editMetadataField, metadataBlock, parseMetadata, replaceMetadata } from
 afterEach(cleanup)
 it('键名可直接修改，保留值和注释，拒绝覆盖已有键', () => {
   let text = '---\n# keep\ntitle: old\nstatus: draft\n---\nBody'
-  render(<FrontmatterEditor read={() => text} apply={(next) => { text = next }} onSourceMode={() => {}} />)
+  render(<FrontmatterEditor read={() => text} apply={(next) => { text = next }} />)
   fireEvent.change(screen.getByLabelText('title 的属性名'), { target: { value: 'name' } })
   fireEvent.blur(screen.getByLabelText('title 的属性名'))
   expect(parseMetadata(metadataBlock(text)!.source, 'yaml')).toEqual({ name: 'old', status: 'draft' })
@@ -19,7 +19,7 @@ it('键名可直接修改，保留值和注释，拒绝覆盖已有键', () => {
 })
 it('从属性图标拖拽排序后写回顺序并保留注释', () => {
   let text = '---\n# keep\ntitle: old\nstatus: draft\n---\nBody'
-  render(<FrontmatterEditor read={() => text} apply={(next) => { text = next }} onSourceMode={() => {}} />)
+  render(<FrontmatterEditor read={() => text} apply={(next) => { text = next }} />)
   const transfer = { setData: () => {}, getData: () => 'status', types: ['application/x-mimenote-property'] }
   fireEvent.dragStart(screen.getByRole('combobox', { name: 'status 的属性类型' }).parentElement!, { dataTransfer: transfer })
   fireEvent.dragOver(screen.getByLabelText('title').closest('.mn-metadata__row')!, { dataTransfer: transfer })
@@ -27,20 +27,31 @@ it('从属性图标拖拽排序后写回顺序并保留注释', () => {
   expect(Object.keys(parseMetadata(metadataBlock(text)!.source, 'yaml'))).toEqual(['status', 'title'])
   expect(text).toContain('# keep')
 })
-it('点击添加后出现空白行，填完自动写回而不需要确认', () => {
+it('点击添加后出现空白行，可先选类型，填完自动写回而不需要确认', () => {
   let text = '---\ntitle: old\n---\nBody'
-  render(<FrontmatterEditor read={() => text} apply={(next) => { text = next }} onSourceMode={() => {}} />)
+  render(<FrontmatterEditor read={() => text} apply={(next) => { text = next }} />)
   expect(screen.queryByLabelText('新属性名称')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: '添加笔记属性' }))
+  expect(screen.getByRole('combobox', { name: '新属性类型' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: '取消添加属性' }).querySelector('.mn-icon')).not.toBeNull()
   fireEvent.change(screen.getByLabelText('新属性名称'), { target: { value: 'status' } })
   fireEvent.blur(screen.getByLabelText('新属性名称'))
   fireEvent.change(screen.getByLabelText('status'), { target: { value: '草稿' } })
   fireEvent.blur(screen.getByLabelText('status'))
   expect(parseMetadata(metadataBlock(text)!.source, 'yaml').status).toBe('草稿')
 })
+it('创建草稿按类型把字符串落成值（coerceDraftValue）', async () => {
+  const { coerceDraftValue } = await import('@/features/editor/PropertyInput')
+  expect(coerceDraftValue('number', '42')).toBe(42)
+  expect(coerceDraftValue('boolean', 'true')).toBe(true)
+  expect(coerceDraftValue('tags', '甲')).toEqual(['甲'])
+  expect(coerceDraftValue('list', '')).toEqual([])
+  expect(coerceDraftValue('object', '{"a":1}')).toEqual({ a: 1 })
+  expect(coerceDraftValue('text', '草稿')).toBe('草稿')
+})
 it('带时区日期正确显示，失焦不改写时区或精度', () => {
   const change = vi.fn()
-  render(<PropertyInput name="datetime" value="2026-09-24T02:30:00+08:00" change={change} remove={() => {}} />)
+  render(<PropertyInput name="datetime" value="2026-09-24T02:30:00+08:00" change={change} />)
   const input = screen.getByLabelText('datetime') as HTMLInputElement
   expect(input.value).toBe('2026-09-24T02:30')
   fireEvent.blur(input)
@@ -49,19 +60,19 @@ it('带时区日期正确显示，失焦不改写时区或精度', () => {
   fireEvent.blur(input)
   expect(change).toHaveBeenCalledWith('2026-09-25T03:15+08:00')
 })
-it('属性字段直接写回并保留 YAML 注释；源码按钮切换原编辑器而非 textarea', () => {
+it('属性字段直接写回并保留 YAML 注释；工具栏无「编辑源码」', () => {
   let text = '---\n# keep\ntitle: old\n---\nBody'
-  const mode = vi.fn()
-  render(<FrontmatterEditor read={() => text} apply={(next) => { text = next }} onSourceMode={mode} />)
+  render(<FrontmatterEditor read={() => text} apply={(next) => { text = next }} />)
   fireEvent.change(screen.getByLabelText('title'), { target: { value: 'new' } })
   fireEvent.blur(screen.getByLabelText('title'))
   expect(text).toContain('title: new')
   expect(text).toContain('# keep')
   expect(text.endsWith('Body')).toBe(true)
-  fireEvent.click(screen.getByRole('button', { name: '编辑源码' }))
-  expect(mode).toHaveBeenCalledWith(true)
+  expect(screen.queryByRole('button', { name: '编辑源码' })).toBeNull()
+  expect(document.querySelector('.mn-metadata__toolbar')).not.toBeNull()
+  expect(screen.getByRole('button', { name: '笔记属性' })).toBeTruthy()
+  expect(screen.getByRole('combobox', { name: 'Frontmatter 格式' })).toBeTruthy()
   expect(document.querySelector('textarea')).toBeNull()
-  expect(screen.queryByText('应用属性')).toBeNull()
 })
 it('TOML 与 JSON 正确读写，保留 BOM、CRLF 和正文', () => {
   const text = '\uFEFF+++\r\ntitle = "old"\r\n+++\r\n正文\r\n'

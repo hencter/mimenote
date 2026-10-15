@@ -140,6 +140,9 @@ fn prepare_search(state: &AppState, root: &VaultRoot) -> Option<SearchIndex> {
 pub fn spawn_build(state: Arc<AppState>, app: AppHandle, root: VaultRoot, entries: Vec<EntryMeta>) {
     // 先取消上一轮（切换 Vault 时可能出现）；下一轮真正开工前还会在构建锁上等它退出
     cancel(&state);
+    // 必须在进后台之前记下代际。任务开头再读的话，中间一次换库会让旧构建
+    // 误以为自己属于新会话，然后把旧索引写进去。
+    let session = state.session();
 
     let cancel_flag = Arc::new(AtomicBool::new(false));
     state.set_index_cancel(Some(Arc::clone(&cancel_flag)));
@@ -167,6 +170,9 @@ pub fn spawn_build(state: Arc<AppState>, app: AppHandle, root: VaultRoot, entrie
             Some(&cancel_flag),
             search.as_ref(),
             |done, all| {
+                if !build_is_current(&state, session, &cancel_flag) {
+                    return;
+                }
                 // 进度节流：每 200 个文件推一次，避免刷爆前端
                 let previous = last_emitted.load(Ordering::Relaxed);
                 if done == all || done.saturating_sub(previous) >= 200 {
@@ -184,14 +190,11 @@ pub fn spawn_build(state: Arc<AppState>, app: AppHandle, root: VaultRoot, entrie
             },
         );
 
-        // 构建结果只在"仍然是同一个 Vault"时采纳（避免旧任务覆盖新 Vault 的索引）
-        let still_current = state
-            .vault_root()
-            .map(|current| current.path() == root.path())
-            .unwrap_or(false);
-
-        if !still_current {
-            log::debug!("索引构建完成但 Vault 已切换，丢弃结果");
+        // 同根的上一轮构建根路径也对得上，所以认代际和取消标记，不认路径。
+        // 写锁与 `set_vault` 同一把：提交和换库不会交错。
+        let _write = state.write_guard();
+        if !build_is_current(&state, session, &cancel_flag) {
+            log::debug!("索引构建结果已过期，丢弃");
             return;
         }
 
@@ -264,6 +267,11 @@ pub fn spawn_build(state: Arc<AppState>, app: AppHandle, root: VaultRoot, entrie
             }
         }
     });
+}
+
+/// 这轮构建还能不能写进当前会话。取消标记或代际变了都是过期。
+pub(crate) fn build_is_current(state: &AppState, session: u64, cancel: &AtomicBool) -> bool {
+    state.session() == session && !cancel.load(Ordering::Relaxed)
 }
 
 /// 保存/新建笔记后增量更新。
@@ -363,6 +371,27 @@ mod tests {
     use super::*;
 
     use mn_core::scanner::{scan, ScanOptions};
+
+    #[test]
+    fn a_cancelled_or_replaced_build_is_not_current() {
+        let state = AppState::default();
+        let session = state.session();
+        let flag = AtomicBool::new(false);
+        assert!(build_is_current(&state, session, &flag));
+        flag.store(true, Ordering::Relaxed);
+        assert!(!build_is_current(&state, session, &flag));
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = VaultRoot::open(dir.path()).unwrap();
+        let report = scan(root.path(), &ScanOptions::default()).unwrap();
+        state.set_vault(VaultCtx::new(root, ScanOptions::default(), report));
+        let fresh = AtomicBool::new(false);
+        assert!(
+            !build_is_current(&state, session, &fresh),
+            "换库之后旧代际不能再提交"
+        );
+        assert!(build_is_current(&state, state.session(), &fresh));
+    }
 
     use crate::state::VaultCtx;
 

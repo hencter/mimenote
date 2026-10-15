@@ -9,8 +9,9 @@
  *   （分栏之后几格可以同时脏几篇，`note-store` 按篇记账 —— 只标当前那篇会让别格里的
  *   未保存修改在界面上完全看不见）。
  * - **模块标签**：点击 → 这一格切到它；右键 / `Enter` 是位置菜单（搬到主叶左/右/下、
- *   条内前移/后移、隐藏这一块）；**没有 ×**（侧栏不需要关闭按钮，显隐走菜单与快捷键，
- *   见 `module-visibility.ts`）。
+ *   条内前移/后移、隐藏这一块）；标签上**没有 ×**。侧栏折叠图标见 `sideCollapse`：
+ *   左缘挂在**左栏标签条最左**（`panelLeft`），右缘挂在**主叶标签条最右**（`sidebarRight`），
+ *   显隐仍走 `module-visibility`。
  * - 键盘：`←/→/Home/End` 在条内移动焦点并顺手激活（roving tabindex，选中即切换 ——
  *   与旧标签栏同一模型）；`Alt+1/2/3` 搬到主叶左/右/下、`Alt+←/→` 条内换位置
  *   （判据只有 `tree-keys.ts` 一份，模块菜单的置灰也用它）。
@@ -45,6 +46,7 @@ import type {
 import { REVEAL_ROW_EVENT } from '@/app/dom-events'
 import { ContextMenu, type ContextMenuItem } from '@/components/ContextMenu'
 import { Icon, type IconName } from '@/components/Icon'
+import { Tooltip } from '@/components/Tooltip'
 import { basename, displayName, isMarkdown } from '@/domain/paths'
 import { WindowControls } from '@/features/window/WindowControls'
 import { useNoteStore } from '@/state/note-store'
@@ -53,13 +55,15 @@ import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 
 import { useLayoutDrag } from './layout-drag'
-import { hideModule, showModule } from './module-visibility'
+import { hideModule, moduleVisible, showModule } from './module-visibility'
 import { adjustNewSplitRatio } from './split-size'
 import { keyboardMoveItem, LAYOUT_KEYBOARD_HINT } from './tree-keys'
 import {
+  findLeaf,
   isViewModule,
   leafOfItem,
   notePathOf,
+  rightEdgeLeafId,
   setActive,
   VIEW_MODULES,
   type LayoutItemId,
@@ -107,9 +111,22 @@ export interface LeafTabsProps {
    * 主叶即使一个标签都没有也会渲染标签条 —— 否则窗口按钮会随"空态"一起消失。
    */
   windowControls?: boolean
+  /**
+   * 侧栏折叠图标：
+   * - `left` = 本条最左挂 `panelLeft`（左缘模块格），收起本格模块；
+   * - `right` = 本条最右挂 `sidebarRight`（主叶），收起**右缘叶**里的模块；
+   * - `null` = 不挂。
+   */
+  sideCollapse?: 'left' | 'right' | null
 }
 
-export function LeafTabs({ leaf, items, dropIndex, windowControls = false }: LeafTabsProps) {
+export function LeafTabs({
+  leaf,
+  items,
+  dropIndex,
+  windowControls = false,
+  sideCollapse = null,
+}: LeafTabsProps) {
   const activate = useTabsStore((state) => state.activate)
   const closeTab = useTabsStore((state) => state.closeTab)
 
@@ -307,6 +324,28 @@ export function LeafTabs({ leaf, items, dropIndex, windowControls = false }: Lea
     ]
   }
 
+  /**
+   * 左：收起本条可见模块。右：收起**右缘叶**里的模块（按钮挂在主叶上，目标不在本条）。
+   */
+  const collapseSide = (): void => {
+    if (sideCollapse === 'right') {
+      const layout = useUiStore.getState().layout
+      const isVisible = (item: LayoutItemId): boolean =>
+        isViewModule(item) ? moduleVisible(item) : true
+      const edgeId = rightEdgeLeafId(layout, isVisible)
+      if (edgeId === null || edgeId === leaf.id) return
+      const edge = findLeaf(layout, edgeId)
+      if (edge === null) return
+      for (const item of edge.items) {
+        if (isViewModule(item)) hideModule(item)
+      }
+      return
+    }
+    for (const item of items) {
+      if (isViewModule(item)) hideModule(item)
+    }
+  }
+
   // -------------------------------------------------------------------------
   // 渲染
   // -------------------------------------------------------------------------
@@ -320,6 +359,19 @@ export function LeafTabs({ leaf, items, dropIndex, windowControls = false }: Lea
       data-tauri-drag-region="deep"
       ref={stripRef}
     >
+      {sideCollapse === 'left' && (
+        <Tooltip label="折叠左侧栏（Ctrl+Shift+B）">
+          <button
+            type="button"
+            className="mn-tabs__side-collapse"
+            aria-label="折叠左侧栏"
+            data-side-collapse="left"
+            onClick={collapseSide}
+          >
+            <Icon name="panelLeft" size="md" />
+          </button>
+        </Tooltip>
+      )}
       {/*
         横向滚动区：标签与落点线住在这里。窗口按钮槽在外面，所以标签再多也挤不掉它。
         `role=tablist` 只包标签（不含窗口按钮），读屏的"这一格的标签"语义才准确。
@@ -433,7 +485,20 @@ export function LeafTabs({ leaf, items, dropIndex, windowControls = false }: Lea
         })}
         {dropIndex === items.length && <div className="mn-tabs__drop-line" data-drop-line="end" />}
       </div>
-      {/* 窗口按钮槽：只有主叶有；在滚动区之外，因此永远贴在窗口/格子右上角 */}
+      {sideCollapse === 'right' && (
+        <Tooltip label="折叠右侧栏">
+          <button
+            type="button"
+            className="mn-tabs__side-collapse"
+            aria-label="折叠右侧栏"
+            data-side-collapse="right"
+            onClick={collapseSide}
+          >
+            <Icon name="sidebarRight" size="md" />
+          </button>
+        </Tooltip>
+      )}
+      {/* 窗口按钮槽：只有右上叶有；在滚动区之外，因此永远贴在窗口/格子右上角 */}
       {windowControls && <WindowControls />}
       {menu !== null && (
         <ContextMenu

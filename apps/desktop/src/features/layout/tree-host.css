@@ -48,6 +48,92 @@
   overflow: hidden;
 }
 
+/*
+ * 纯模块侧栏抽屉：开合用宽度过渡（flex-basis / max-width），收起后留 36px 图标轨。
+ * 内容区 `overflow: hidden` 由半格自己裁切，看起来像抽屉推进推出。
+ */
+.mn-tree-split__pane--drawer {
+  transition:
+    flex-grow 220ms cubic-bezier(0.25, 0.8, 0.25, 1),
+    flex-basis 220ms cubic-bezier(0.25, 0.8, 0.25, 1),
+    min-width 220ms cubic-bezier(0.25, 0.8, 0.25, 1),
+    max-width 220ms cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.mn-tree-split__pane--drawer-collapsed {
+  flex: 0 0 36px !important;
+  min-width: 36px;
+  max-width: 36px;
+}
+
+.mn-side-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  padding-top: 4px;
+  background: var(--mn-bg-elevated);
+  border-inline-end: 1px solid var(--mn-border);
+  animation: mn-side-rail-in 220ms cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.mn-side-rail--right {
+  border-inline-end: none;
+  border-inline-start: 1px solid var(--mn-border);
+}
+
+.mn-tree-split__pane--drawer:not(.mn-tree-split__pane--drawer-collapsed) > .mn-leaf {
+  animation: mn-drawer-panel-in 220ms cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+@keyframes mn-side-rail-in {
+  from {
+    opacity: 0.5;
+    transform: scaleX(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes mn-drawer-panel-in {
+  from {
+    opacity: 0.55;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.mn-tree-split__pane[data-drawer='right']:not(.mn-tree-split__pane--drawer-collapsed) > .mn-leaf {
+  animation-name: mn-drawer-panel-in-right;
+}
+
+@keyframes mn-drawer-panel-in-right {
+  from {
+    opacity: 0.55;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mn-tree-split__pane--drawer,
+  .mn-side-rail,
+  .mn-tree-split__pane--drawer > .mn-leaf {
+    transition: none;
+    animation: none;
+  }
+}
+
 /* ------------------------------------------------------------------ 叶子 */
 
 .mn-leaf {
@@ -175,27 +261,30 @@
  * 文件树格子的**底部一行**：左边「最近打开的 Vault」（ADR-0027 的左下角），
  * 右下角是设置按钮（直达设置页；从前的汉堡菜单已退役，命令发现走 `Ctrl+K` 面板）。
  *
- * 摘要与设置按钮垂直居中；最近 Vault 弹层通过 Portal 展开，不改变底行高度。
+ * 行高与文件树行一致（`ROW_HEIGHT` = 30px）：底行再高一截会像多了一条工具栏。
+ * 最近 Vault 弹层通过 Portal 展开，不改变底行高度。
  */
 .mn-tree-bottom {
-  flex: 0 0 auto;
+  flex: 0 0 30px;
   display: flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: 6px;
+  gap: 2px;
+  height: 30px;
+  padding: 0 4px;
   border-top: 1px solid var(--mn-border);
   background: var(--mn-bg-elevated);
 }
 
 .mn-tree-bottom > .mn-icon-button {
-  flex: 0 0 32px;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--mn-radius);
 }
 
 .mn-tree-bottom > .mn-recent-vaults {
   flex: 1 1 auto;
   min-width: 0;
+  height: 100%;
 }
 }

@@ -1,13 +1,29 @@
 import { useId, useState } from 'react'
 import { PropertySelect } from './PropertySelect'
-import { type IconName } from '@/components/Icon'
+import { Icon, type IconName } from '@/components/Icon'
 import { Select } from '@/components/Select'
 import { loadJson, saveJson } from '@/state/persist'
 import { useVaultStore } from '@/state/vault-store'
 
 export const PROPERTY_TYPES = { text: '文本', number: '数字', boolean: '复选框', single: '单选', date: '日期', datetime: '日期时间', tags: '标签', list: '列表', url: '链接', email: '邮箱', object: 'JSON 对象' } as const
-type PropertyType = keyof typeof PROPERTY_TYPES
-const ICONS: Record<PropertyType, IconName> = { text: 'type', number: 'hash', boolean: 'check', single: 'circleDot', date: 'calendar', datetime: 'clock', tags: 'tag', list: 'list', url: 'links', email: 'type', object: 'columns' }
+export type PropertyType = keyof typeof PROPERTY_TYPES
+export const PROPERTY_ICONS: Record<PropertyType, IconName> = { text: 'type', number: 'hash', boolean: 'check', single: 'circleDot', date: 'calendar', datetime: 'clock', tags: 'tag', list: 'list', url: 'links', email: 'type', object: 'columns' }
+/** 创建属性时按所选类型把草稿字符串落成 frontmatter 值。 */
+export function coerceDraftValue(type: PropertyType, raw: string): unknown {
+  if (type === 'boolean') return raw === 'true' || raw === '1'
+  if (type === 'number') return raw.trim() === '' ? null : Number(raw)
+  if (type === 'tags' || type === 'list') return raw.trim() === '' ? [] : [raw.trim()]
+  if (type === 'object') {
+    if (raw.trim() === '') return {}
+    try {
+      return JSON.parse(raw) as unknown
+    } catch {
+      return raw
+    }
+  }
+  return raw
+}
+const ICONS = PROPERTY_ICONS
 function infer(name: string, value: unknown): PropertyType {
   if (/^tags?$/i.test(name)) return 'tags'
   if (typeof value === 'boolean') return 'boolean'
@@ -20,7 +36,7 @@ function infer(name: string, value: unknown): PropertyType {
   if (typeof value === 'string' && /^https?:\/\//.test(value)) return 'url'
   return 'text'
 }
-export function PropertyInput({ name, value, change, remove, reorder, rename }: { name: string; value: unknown; change: (value: unknown) => void; remove: () => void; reorder?: (from: string, before: string) => void; rename?: (name: string) => boolean }) {
+export function PropertyInput({ name, value, change, reorder, rename }: { name: string; value: unknown; change: (value: unknown) => void; reorder?: (from: string, before: string) => void; rename?: (name: string) => boolean }) {
   const id = useId()
   const root = useVaultStore((state) => state.info?.rootPath ?? '')
   const configKey = `mimenote.property.config.v1:${JSON.stringify([root, name])}`
@@ -65,7 +81,7 @@ export function PropertyInput({ name, value, change, remove, reorder, rename }: 
     <div className="mn-metadata__value">
       {type === 'single' ? <PropertySelect name={name} value={primitive} change={change} /> : type === 'boolean' ? <input id={id} type="checkbox" checked={value === true || value === 'true'} onChange={(e) => change(e.target.checked)} /> :
         type === 'tags' || type === 'list' ? <div className="mn-metadata__chips">
-          {items.map((item, i) => <span className="mn-metadata__chip" key={`${item}-${i}`}>{type === 'list' && <span className="mn-metadata__index" aria-label={`第 ${i + 1} 项`}>{i + 1}.</span>}{item}<button type="button" aria-label={`移除 ${name} 中的 ${item}`} onClick={() => change(items.filter((_, j) => j !== i))}>×</button></span>)}
+          {items.map((item, i) => <span className="mn-metadata__chip" key={`${item}-${i}`}>{item}<button type="button" className="mn-metadata__icon-btn" aria-label={`移除 ${name} 中的 ${item}`} onClick={() => change(items.filter((_, j) => j !== i))}><Icon name="x" size="xs" /></button></span>)}
           <input id={id} aria-label={`添加 ${name} 条目`} placeholder="输入后回车…" value={addition} onChange={(e) => setAddition(e.target.value)} onKeyDown={(e) => {
             if (e.nativeEvent.isComposing || e.keyCode === 229) return
             if (e.key === 'Backspace' && addition === '' && items.length > 0) {
@@ -86,6 +102,5 @@ export function PropertyInput({ name, value, change, remove, reorder, rename }: 
           }} />}
       {error && <small role="alert">{error}</small>}
     </div>
-    <button type="button" aria-label={`移除属性 ${name}`} onClick={remove}>×</button>
   </div>
 }

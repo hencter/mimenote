@@ -17,7 +17,7 @@
  *    （正是"我们想要的那一份"，但顺序不可控），这里改成自己装，顺序才看得见、说得清。
  */
 
-import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
+import { defaultKeymap, history, historyKeymap, redo } from '@codemirror/commands'
 import { markdown, markdownKeymap, markdownLanguage } from '@codemirror/lang-markdown'
 import {
   bracketMatching,
@@ -162,7 +162,14 @@ export function createEditorExtensions(
     highlightActiveLine(),
     highlightSelectionMatches(),
     search({ top: true }),
-    keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
+    keymap.of([
+      ...defaultKeymap,
+      ...historyKeymap,
+      // Windows 上 `@codemirror/commands` 的重做默认是 `Mod-y`，`Mod-Shift-z` 只挂在 mac /
+      // linux 专用键上 —— 而 VS Code / 浏览器 / 多数笔记软件在 Windows 也认 Ctrl+Shift+Z。
+      { key: 'Mod-Shift-z', run: redo, preventDefault: true },
+      ...searchKeymap,
+    ]),
     tabSizeCompartment.of(tabSizeExtensions(tabWidth)),
     // `addKeymap: false`：不装默认的那份 markdownKeymap，改由下面的 keymap 显式安排顺序
     markdown({ base: markdownLanguage, addKeymap: false }),

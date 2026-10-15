@@ -27,9 +27,9 @@ import { useTagFilterStore } from '@/state/tag-filter-store'
 import { useVaultStore } from '@/state/vault-store'
 
 /** 注入画法偏好（字段由 Lead 落地；这里按同一形状写，视图层读的就是它）。 */
-function setLayout(treeLayout: 'single' | 'columns'): void {
+function setLayout(treeLayout: 'single' | 'columns' | 'stack'): void {
   act(() => {
-    useSettingsStore.setState({ treeLayout } as never)
+    useSettingsStore.setState({ treeLayout })
   })
 }
 
@@ -113,18 +113,26 @@ describe('单栏 ⇄ 分栏的渲染分派', () => {
 })
 
 describe('工具栏的切换控件', () => {
-  it('按钮反映当前画法，点它切到分栏（`aria-pressed` 是那条判据的锚点）', async () => {
+  it('按钮三态循环：单栏 → 分栏 → 堆叠 → 单栏（`aria-pressed` = 非单栏）', async () => {
     await openVault()
     render(<TreeToolbar />)
-    const button = document.querySelector<HTMLElement>('button[aria-label="切换分栏视图"]')
+    const button = document.querySelector<HTMLElement>(
+      'button[aria-label^="切换文件树视图"]',
+    )
     expect(button).not.toBeNull()
     expect(button!.getAttribute('aria-pressed')).toBe('false')
 
     fireEvent.click(button!)
     expect(useSettingsStore.getState().treeLayout).toBe('columns')
+    expect(button!.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(button!)
+    expect(useSettingsStore.getState().treeLayout).toBe('stack')
+    expect(button!.getAttribute('aria-pressed')).toBe('true')
 
     fireEvent.click(button!)
     expect(useSettingsStore.getState().treeLayout).toBe('single')
+    expect(button!.getAttribute('aria-pressed')).toBe('false')
   })
 })
 
@@ -158,6 +166,33 @@ describe('列链：跟随选中项 vs 用户钻进去', () => {
     expect(columnPaths()).toEqual(['', '项目', '项目/子项目'])
     // Finder 的样子：被点的目录在左边那一列里仍然高亮，右边已经是它的内容
     expect(useVaultStore.getState().selected).toBe('项目/设计.md')
+  })
+
+  it('列链上的目录带路径高亮（末列选中文件后祖先列仍画出整条路径）', async () => {
+    await openVault()
+    setLayout('columns')
+    render(<FileTree />)
+    act(() => {
+      useVaultStore.getState().select('项目/子项目/细节.md')
+    })
+    expect(columnPaths()).toEqual(['', '项目', '项目/子项目'])
+
+    // 通向下一列的目录：根列 → 项目，项目列 → 子项目；末列文件是 selected
+    expect(document.querySelector('[data-rel-path="项目"]')?.hasAttribute('data-path-highlight')).toBe(
+      true,
+    )
+    expect(
+      document.querySelector('[data-rel-path="项目/子项目"]')?.hasAttribute('data-path-highlight'),
+    ).toBe(true)
+    expect(
+      document.querySelector('[data-rel-path="项目/子项目/细节.md"]')?.className,
+    ).toContain('mn-tree-row--selected')
+    // 底部路径条按段渲染，当前段加重
+    const pathBar = document.querySelector('[data-columns-path="项目/子项目"]')
+    expect(pathBar).not.toBeNull()
+    expect(pathBar!.querySelector('.mn-tree__columns-path__seg--current')?.textContent).toBe(
+      '子项目',
+    )
   })
 
   it('点目录不改 `expanded`（分栏不拿展开状态表达层级）', async () => {
@@ -299,5 +334,64 @@ describe('分栏的键盘', () => {
     expect(
       document.querySelector<HTMLButtonElement>('[data-column-header=""]')?.disabled,
     ).toBe(true)
+  })
+})
+
+describe('堆叠卡片画法', () => {
+  it('stack 布局挂上 mn-tree--stack，列仍按路径渲染', async () => {
+    await openVault()
+    setLayout('stack')
+    render(<FileTree />)
+
+    expect(document.querySelector('.mn-tree--stack')).not.toBeNull()
+    expect(document.querySelector('[data-tree-stack]')).not.toBeNull()
+    expect(document.querySelector('[data-column-path=""]')).not.toBeNull()
+  })
+
+  it('stack 下不放列宽拖动手柄', async () => {
+    await openVault()
+    setLayout('stack')
+    render(<FileTree />)
+
+    expect(document.querySelector('[data-column-resize]')).toBeNull()
+  })
+})
+
+describe('列宽可拖', () => {
+  it('每列右缘有分隔手柄；方向键改宽并落盘', async () => {
+    await openVault()
+    setLayout('columns')
+    render(<FileTree />)
+
+    const handle = document.querySelector<HTMLElement>('[data-column-resize=""]')
+    expect(handle).not.toBeNull()
+    expect(handle!.getAttribute('role')).toBe('separator')
+
+    const root = document.querySelector<HTMLElement>('[data-column-path=""]')
+    expect(root).not.toBeNull()
+    expect(root!.style.width).toBe('240px')
+
+    act(() => {
+      fireEvent.keyDown(handle!, { key: 'ArrowRight' })
+    })
+    expect(root!.style.width).toBe('256px')
+    expect(handle!.getAttribute('aria-valuenow')).toBe('256')
+  })
+
+  it('双击手柄恢复默认 240', async () => {
+    await openVault()
+    setLayout('columns')
+    render(<FileTree />)
+    const handle = document.querySelector<HTMLElement>('[data-column-resize=""]')!
+    act(() => {
+      fireEvent.keyDown(handle, { key: 'ArrowRight', shiftKey: true })
+    })
+    const root = document.querySelector<HTMLElement>('[data-column-path=""]')!
+    expect(root.style.width).toBe('288px')
+
+    act(() => {
+      fireEvent.doubleClick(handle)
+    })
+    expect(root.style.width).toBe('240px')
   })
 })

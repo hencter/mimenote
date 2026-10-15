@@ -1324,16 +1324,20 @@ describe.skipIf(!supported)('真实应用：标签面板增删标签（真实磁
     )
     // 编辑器里的文本必须与磁盘一致，否则下一次自动保存会把刚写的标签覆盖掉。
     // ⚠️ 不能直接读 `.cm-content`：ADR-0048 之后 frontmatter 在编辑器里**默认折叠**成装饰，
-    // 原始区块根本不在 DOM 里（这正是"属性面板在上方、正文不必重复显示元数据"那条决定）。
-    // 点一次「编辑源码」把折叠摘掉，读到的就是**编辑器文档本身**的文本。
-    await app.page.getByRole('button', { name: '编辑源码' }).click()
+    // 原始区块根本不在 DOM 里 —— 走表面节点上的 `__mnDocText` 钩子读文档状态。
     await waitUntil(
-      async () => ((await app.page.locator('.cm-content').textContent()) ?? '').includes('tags: [甲, 乙]'),
+      async () => {
+        const text = await app.page.evaluate(() => {
+          const surface = document.querySelector('.mn-editor--active .mn-editor__surface') as
+            | (HTMLElement & { __mnDocText?: () => string })
+            | null
+          return surface?.__mnDocText?.() ?? ''
+        })
+        return text.includes('tags: [甲, 乙]')
+      },
       25_000,
-      '编辑器文本与磁盘对齐（展开源码后可见）',
+      '编辑器文档与磁盘对齐',
     )
-    // 折回去，让后面的"从面板上删掉"仍在属性视图里操作
-    await app.page.getByRole('button', { name: '显示属性' }).click()
 
     // 再删掉：磁盘逐字节回到原样，面板上也消失
     await actUntil(

@@ -2,13 +2,25 @@
    未分层的用户片段（.mimenote/snippets/*.css）因此天然压过这里的普通声明 —— 扩展点变强，不必再写 !important。 */
 @layer mn.tokens, mn.base, mn.components, mn.features;
 @layer mn.features {
-.mn-metadata { flex:none; width:min(852px,100%); margin:0 auto; padding:10px 16px 8px; font:14px var(--mn-font-ui); }
+/* 左右内边距改由 `.mn-editor__column` 统一给：与正文左缘对齐，这里只留上下。 */
+.mn-metadata { flex:none; width:100%; padding:10px 0 8px; font:14px var(--mn-font-ui); }
 .mn-metadata button,.mn-metadata input,.mn-metadata select,.mn-metadata textarea { font:inherit; color:var(--mn-fg); background:var(--mn-bg-elevated); border:1px solid var(--mn-border); border-radius:5px; padding:5px 8px; }
 .mn-metadata button { cursor:pointer; }
-.mn-metadata .mn-metadata__toggle { border:0; background:transparent; color:var(--mn-fg); padding:6px 0; font-weight:600; }
+/* 标题与格式选择同一行：chevron 在「笔记属性」左侧；格式选择悬停才显 */
+.mn-metadata__toolbar { display:flex; align-items:center; gap:10px; min-height:28px; }
+.mn-metadata .mn-metadata__toggle { display:inline-flex; align-items:center; gap:4px; border:0; background:transparent; color:var(--mn-fg); padding:6px 0; font-weight:600; }
+.mn-metadata__chevron { transition:transform 120ms ease; transform:rotate(90deg); }
+.mn-metadata__chevron--open { transform:rotate(-90deg); }
+.mn-metadata__toolbar .mn-select { min-width:84px; font-size:12px; opacity:0; transition:opacity 120ms; }
+.mn-metadata__toolbar:hover .mn-select,
+.mn-metadata__toolbar:focus-within .mn-select { opacity:1; }
+@media (hover:none) { .mn-metadata__toolbar .mn-select { opacity:1; } }
 .mn-metadata__panel { padding:0 0 10px; }
-.mn-metadata__panel header,.mn-metadata__panel footer,.mn-metadata__add { display:flex; justify-content:space-between; gap:8px; align-items:center; margin:6px 0; }
-.mn-metadata__row { display:grid; grid-template-columns:24px minmax(80px,150px) minmax(80px,1fr) 26px; gap:8px; align-items:start; margin:3px 0; min-height:32px; }
+.mn-metadata__panel footer,.mn-metadata__add { display:flex; justify-content:space-between; gap:8px; align-items:center; margin:6px 0; }
+.mn-metadata__icon-btn { display:inline-grid; place-items:center; width:26px; height:28px; padding:0; border:0; background:transparent; color:var(--mn-fg-muted); }
+.mn-metadata__icon-btn:hover { color:var(--mn-fg); }
+.mn-metadata__row { display:grid; grid-template-columns:24px minmax(80px,150px) minmax(80px,1fr); gap:8px; align-items:start; margin:3px 0; min-height:32px; }
+.mn-metadata__draft { grid-template-columns:24px minmax(80px,150px) minmax(80px,1fr) 26px; }
 .mn-metadata__row label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .mn-metadata__row input { min-width:0; width:100%; }
 .mn-metadata__row input[type=checkbox] { width:auto; justify-self:start; }
@@ -34,14 +46,14 @@
 .mn-metadata .mn-metadata__chips input { flex:1 1 65px; min-width:40px; width:65px; border:0; outline:none; box-shadow:none; background:transparent; padding:3px 0; }
 .mn-metadata__chip { display:inline-flex; align-items:center; gap:4px; padding:2px 7px; border-radius:12px; color:var(--mn-accent); background:var(--mn-active); }
 .mn-metadata__chip button { border:0; background:transparent; padding:0; color:inherit; }
-.mn-metadata__row > button { opacity:0; border:0; background:transparent; }
-.mn-metadata__row:hover > button,.mn-metadata__row:focus-within > button { opacity:1; }
+.mn-metadata__row > .mn-metadata__icon-btn { opacity:0; }
+.mn-metadata__row:hover > .mn-metadata__icon-btn,.mn-metadata__row:focus-within > .mn-metadata__icon-btn { opacity:1; }
+.mn-metadata__draft > .mn-metadata__icon-btn { opacity:1; }
 .mn-metadata__radios { display:flex; flex-wrap:wrap; gap:6px 14px; }
 .mn-metadata__radios label { display:inline-flex; align-items:center; gap:5px; padding:4px 0; cursor:pointer; }
 .mn-metadata__radios input[type=radio] { width:auto; accent-color:var(--mn-accent); }
 .mn-metadata__options { display:grid; gap:6px; margin-top:8px; }
 .mn-metadata__options small { color:var(--mn-fg-muted); }
-.mn-metadata__panel header .mn-select { min-width:84px; font-size:12px; }
 .mn-property-options { z-index:1500; width:var(--anchor-width); border:1px solid var(--mn-border); border-radius:8px; background:var(--mn-bg-elevated); box-shadow:0 8px 24px #0002; overflow:hidden; }
 .mn-property-options [role=listbox] { max-height:240px; overflow:auto; padding:4px; }
 .mn-property-option { padding:6px 10px; border-radius:4px; color:var(--mn-fg); cursor:pointer; }

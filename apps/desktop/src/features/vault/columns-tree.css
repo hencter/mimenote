@@ -16,7 +16,9 @@
  * 几何（与 `docs/design/04-miller-columns.md` §3 一致）：
  *   .mn-tree.mn-tree--columns  横向滚动容器（整块）
  *     .mn-tree__columns        列的横排（`flex: none`，宽度由列撑开）
- *       .mn-tree-column        一列 240px：列头 + 自己的纵向滚动区
+ *       .mn-tree-column        一列（默认 240，可拖右缘改宽）：列头 + 滚动区 + 右缘手柄
+ *                              末列 `--last` 吃掉侧栏余量；偏好宽度按目录路径持久化
+ *   .mn-tree.mn-tree--stack    堆叠卡片：列 sticky 左侧露边；横向滚动把叠卡往右摊开
  */
 
 /*
@@ -48,7 +50,11 @@
   overscroll-behavior-x: contain;
 }
 
-/* 列宽：固定值（可拖列宽要按"第几列"存一份偏好，收益只有几个像素 —— 见设计文档 §3） */
+/*
+ * 列宽由内联 `style`（偏好像素）决定；默认 240，右缘手柄可拖（140–560）。
+ * `min-width: 100%` 让列行至少铺满滚动视口；末列 `--last` 再 `flex-grow` 吃余量。
+ * 列多装不下时仍横向滚动（非末列 shrink=0），不会被压成窄条。
+ */
 .mn-tree__columns {
   display: flex;
   flex: none;
@@ -60,11 +66,65 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  flex: 0 0 240px;
-  width: 240px;
-  min-width: 0;
   height: 100%;
   border-right: 1px solid var(--mn-border);
+}
+
+/*
+ * 堆叠卡片：列用 sticky + 递增 left 叠在左侧（露边 ≈ 28px，见 STACK_PEEK_PX）。
+ * 列仍按偏好宽度进 flex 行，所以总宽 > 视口 → 横向滚动把叠在上面的卡片往右摊开，
+ * 逐渐接近经典横排列。实心底色 + 轻阴影，避免下层文字透上来。
+ */
+.mn-tree--stack .mn-tree-column {
+  background: var(--mn-bg);
+  border-right: 1px solid var(--mn-border);
+  box-shadow: -4px 0 12px color-mix(in srgb, var(--mn-fg) 8%, transparent);
+  border-radius: 0 6px 6px 0;
+}
+.mn-tree--stack .mn-tree-column--active {
+  /* 焦点列底色叠在卡片底上，别让 sticky 叠层冲掉选中提示 */
+  background: color-mix(in srgb, var(--mn-active) 45%, var(--mn-bg));
+}
+.mn-tree--stack .mn-tree-column__header:not(:disabled) {
+  cursor: pointer;
+}
+
+/*
+ * 列右缘拖宽手柄：命中区 6px、视觉 1px（悬停/拖动时才显色），不抢列间边框的位置。
+ * `touch-action: none` 避免触控板把横向拖解读成页面平移。
+ */
+.mn-tree-column__resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  z-index: 2;
+  width: 6px;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+.mn-tree-column__resize::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+}
+.mn-tree-column__resize:hover::after,
+.mn-tree-column__resize:focus-visible::after,
+.mn-tree-column__resize--dragging::after {
+  background: var(--mn-accent);
+}
+.mn-tree-column__resize:focus-visible {
+  outline: none;
+}
+.mn-tree-column--resizing {
+  user-select: none;
 }
 
 /*
@@ -172,7 +232,7 @@
 /*
  * 当前目录的完整路径，贴在整块的最底部。
  *
- * 为什么需要它：列宽固定 240px，深路径的列头只能用省略号，而"我现在在哪一层"是分栏里
+ * 为什么需要它：列头在窄列里只能用省略号，而"我现在在哪一层"是分栏里
  * 最需要一眼看到的信息（浏览器的地址栏做的也是这件事）。
  *
  * 它不参与列的纵向空间分配（`flex: 0 0 auto`、在滚动区之外），列的可见高度因此恒定
@@ -180,6 +240,8 @@
  */
 .mn-tree__columns-path {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
   max-width: 100%;
   padding: 2px 8px;
   border-top: 1px solid var(--mn-border);
@@ -190,5 +252,28 @@
   overflow: hidden;
   text-overflow: ellipsis;
   pointer-events: none;
+}
+
+.mn-tree__columns-path__item {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.mn-tree__columns-path__sep {
+  flex: 0 0 auto;
+  margin: 0 4px;
+  color: var(--mn-fg-subtle);
+  opacity: 0.65;
+}
+
+.mn-tree__columns-path__seg {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mn-tree__columns-path__seg--current {
+  color: var(--mn-fg);
+  font-weight: 600;
 }
 }

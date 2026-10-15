@@ -24,16 +24,17 @@ export const mnEditorTheme = EditorView.theme({
     lineHeight: '1.78',
     overflow: 'auto',
   },
+  /*
+   * 左右内边距与最大宽度改由 `.mn-editor__column` 统一给（与属性区对齐）。
+   * 这里只留上下 padding；再写横向会把正文整体顶出属性图标左缘。
+   */
   '.cm-content': {
     caretColor: 'var(--mn-accent)',
     padding: '14px 0',
-    maxWidth: '852px',
-    marginLeft: 'auto',
-    marginRight: 'auto',
     flexGrow: '1',
   },
   '.cm-line': {
-    padding: '0 16px',
+    padding: '0',
   },
   '.cm-gutters': {
     backgroundColor: 'var(--mn-editor-gutter-bg)',

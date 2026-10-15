@@ -96,18 +96,29 @@ export const NARROW_LEAF_PIXELS = 72
 
 /**
  * 比例钳制的**像素加强版**：在 {@link MIN_RATIO}..{@link MAX_RATIO} 之上，再保证
- * 切完之后两边都不小于 {@link MIN_LEAF_PIXELS}（像素下限换算成这一刀的比例份额，
- * 与比例钳制取更严者）。
+ * 切完之后两边都不小于各自的像素下限（默认 {@link MIN_LEAF_PIXELS}；文件树那一侧
+ * 会抬到工具栏图标条宽度，见 `TREE_TOOLBAR_MIN_WIDTH_PX`）。
  *
- * 容器本身不足两个下限（窗口太小）时退回比例钳制 —— 下限是为了"不造出废格"，
+ * 容器本身不足两个下限之和（窗口太小）时退回比例钳制 —— 下限是为了"不造出废格"，
  * 不该在小窗口上制造"怎么夹都不合法"。`extentPx` 量不到（jsdom）时同样退回。
  */
-export function clampRatioForExtent(ratio: number, extentPx: number): number {
+export function clampRatioForExtent(
+  ratio: number,
+  extentPx: number,
+  mins?: { a?: number; b?: number },
+): number {
   const base = clampRatio(ratio)
   if (!Number.isFinite(extentPx) || extentPx <= 0) return base
-  const minShare = MIN_LEAF_PIXELS / extentPx
-  if (minShare * 2 >= 1) return base
-  return Math.min(1 - minShare, Math.max(minShare, base))
+  const minA = Math.max(0, mins?.a ?? MIN_LEAF_PIXELS)
+  const minB = Math.max(0, mins?.b ?? MIN_LEAF_PIXELS)
+  if (minA + minB >= extentPx) return base
+  return Math.min(1 - minB / extentPx, Math.max(minA / extentPx, base))
+}
+
+/** 某棵子树（一刀或一叶）里是否装着指定标签。 */
+export function nodeContainsItem(node: TreeLayout, item: LayoutItemId): boolean {
+  if (node.kind === 'leaf') return node.items.includes(item)
+  return nodeContainsItem(node.a, item) || nodeContainsItem(node.b, item)
 }
 
 /** 四种视图模块（顺序即默认左叶里的顺序）。 */
@@ -198,6 +209,29 @@ export function subtreeRenderable(
 ): boolean {
   if (node.kind === 'leaf') return node.items.length === 0 || node.items.some(isVisible)
   return subtreeRenderable(node.a, isVisible) || subtreeRenderable(node.b, isVisible)
+}
+
+/**
+ * 这一支是不是**纯模块侧栏**（没有笔记标签）。
+ * 左右抽屉折叠时只对这种半边保留窄轨：混了笔记的格子收起模块后仍可能要显示笔记。
+ */
+export function isModuleOnlySubtree(node: TreeLayout): boolean {
+  if (node.kind === 'leaf') {
+    return node.items.length > 0 && node.items.every((item) => isViewModule(item))
+  }
+  return isModuleOnlySubtree(node.a) && isModuleOnlySubtree(node.b)
+}
+
+/** 一支里出现过的全部视图模块（折叠轨点开时按这份名单 `showModule`）。 */
+export function viewModulesIn(node: TreeLayout): ViewModuleId[] {
+  const found: ViewModuleId[] = []
+  walk(node, (n) => {
+    if (n.kind !== 'leaf') return
+    for (const item of n.items) {
+      if (isViewModule(item) && !found.includes(item)) found.push(item)
+    }
+  })
+  return found
 }
 
 // ---------------------------------------------------------------------------
@@ -536,6 +570,38 @@ export function topRightLeafId(
   const a = topRightLeafId(layout.a, isVisible)
   const b = topRightLeafId(layout.b, isVisible)
   // 半边不可渲染就取另一半；都在时 row 取右（b）、column 取上（a）
+  if (a === null) return b
+  if (b === null) return a
+  return layout.axis === 'row' ? b : a
+}
+
+/**
+ * **左缘叶**：贴着窗口左边的那一格（左侧栏折叠按钮的宿主）。
+ * 走法与 {@link topRightLeafId} 对称：`row` 取左（`a`）、`column` 取上（`a`）。
+ */
+export function leftEdgeLeafId(
+  layout: TreeLayout,
+  isVisible: (item: LayoutItemId) => boolean,
+): string | null {
+  if (layout.kind === 'leaf') return subtreeRenderable(layout, isVisible) ? layout.id : null
+  const a = leftEdgeLeafId(layout.a, isVisible)
+  const b = leftEdgeLeafId(layout.b, isVisible)
+  if (a === null) return b
+  if (b === null) return a
+  return a
+}
+
+/**
+ * **右缘叶**：贴着窗口右边的那一格（右侧栏折叠按钮的宿主）。
+ * `row` 取右（`b`）、`column` 取上（`a`）—— 与 {@link topRightLeafId} 同一条右上优先。
+ */
+export function rightEdgeLeafId(
+  layout: TreeLayout,
+  isVisible: (item: LayoutItemId) => boolean,
+): string | null {
+  if (layout.kind === 'leaf') return subtreeRenderable(layout, isVisible) ? layout.id : null
+  const a = rightEdgeLeafId(layout.a, isVisible)
+  const b = rightEdgeLeafId(layout.b, isVisible)
   if (a === null) return b
   if (b === null) return a
   return layout.axis === 'row' ? b : a

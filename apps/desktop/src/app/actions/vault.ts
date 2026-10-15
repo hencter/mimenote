@@ -10,7 +10,7 @@ import { formatBytes } from '@/domain/format'
 import { displayPath } from '@/domain/paths'
 import { currentAdapterKind, ipc } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
-import { flushAutosave, hasUnsavedChanges, useNoteStore } from '@/state/note-store'
+import { flushAll, useNoteStore } from '@/state/note-store'
 import { toast } from '@/state/toast-store'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
@@ -50,7 +50,6 @@ export async function rescanVault(): Promise<void> {
  * 只是入口从系统目录选择框换成最近列表 —— 路径已经在列表里，不需要再选一次。
  */
 export async function openRecentVault(rootPath: string): Promise<void> {
-  flushAutosave()
   await useVaultStore.getState().openVault(rootPath)
 }
 
@@ -66,10 +65,20 @@ export async function openTrash(): Promise<void> {
   useUiStore.getState().setTrashDialogOpen(true)
 }
 
-/** 关闭当前 Vault（先把未保存内容落盘）。 */
+/** 关闭当前 Vault（先把未保存内容落盘）。冲突或保存失败时留在原地，不把正文清掉。 */
 export async function closeVault(): Promise<void> {
-  if (hasUnsavedChanges()) {
-    await useNoteStore.getState().saveNow()
+  const flushed = await flushAll()
+  if (flushed.blocked.length > 0 || flushed.failed.length > 0) {
+    toast.warn(
+      '还有笔记没保存，没有关闭 Vault',
+      [
+        flushed.blocked.length > 0 ? `${flushed.blocked.length} 篇有冲突` : '',
+        flushed.failed.length > 0 ? `${flushed.failed.length} 篇保存失败` : '',
+      ]
+        .filter((part) => part !== '')
+        .join('，'),
+    )
+    return
   }
   useNoteStore.getState().close()
   unloadSnippets()

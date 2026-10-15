@@ -177,7 +177,7 @@ dir = ".mimenote/templates"  # 模板目录（ADR-0056）
 | `view.cycleMode` | `Mod+E` | 编辑 ⇄ 阅读（**两态切换**；图谱有自己的键） |
 | `view.graph` | `Mod+G` | 知识图谱（与 Obsidian 一致） |
 | `view.toggleSidebar` | **`Mod+Shift+B`** | 文件树开关（原 `Mod+B` 让给加粗） |
-| `tree.toggleColumns` | **`Mod+Alt+C`** | **新增**：单栏 ⇄ 双栏（Miller）文件树 |
+| `tree.toggleColumns` | **`Mod+Alt+C`** | 单栏 → 分栏 → 堆叠卡片 → 单栏（Miller 族） |
 | `view.toggleLinksPanel` | `Mod+Shift+L` | 链接面板 |
 | `view.toggleTagsPanel` | `Mod+Shift+T` | 标签面板 |
 | `view.toggleOutlinePanel` | `Mod+Shift+O` | 大纲面板 |

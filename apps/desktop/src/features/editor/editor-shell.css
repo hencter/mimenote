@@ -31,6 +31,20 @@
 }
 
 /*
+ * 属性 + 正文共用列：最大宽度与左右内边距只在这里写一次。
+ * 属性图标与正文左缘因此落在同一条竖线上（用户要求「对齐」）。
+ */
+.mn-editor__column {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: min(852px, 100%);
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+/*
   滚动**留在 CodeMirror 自己的 scroller 上**，不要改成"整个面板滚动 + 编辑器长到全文高"。
   那条路看着更简单，实际会同时坏掉两件事：
   1. `EditorView.scrollIntoView`（搜索命中/大纲跳转的"滚到视口正中"）作用在 `.cm-scroller` 上，

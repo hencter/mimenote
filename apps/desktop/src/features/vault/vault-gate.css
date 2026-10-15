@@ -4,7 +4,7 @@
 @layer mn.features {
 
 /*
- * Vault 门闸（`.mn-gate`）：还没打开 Vault 时的首屏。
+ * Vault 门闸（`.mn-gate`）：还没打开 Vault 时的独立起始窗口。
  *
  * B1：从 `styles/app.css` 迁入 1210-1295（原"Vault 门闸"段）。
  */
@@ -25,7 +25,7 @@
 }
 
 .mn-gate__card {
-  width: min(620px, 100%);
+  width: min(560px, 100%);
   padding: 28px 30px;
   border: 1px solid var(--mn-border);
   border-radius: 12px;
@@ -35,38 +35,169 @@
 
 .mn-gate__brand {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  gap: 16px;
 }
 
 .mn-gate__logo {
   display: block;
-  width: min(360px, 76%);
-  height: 112px;
-  object-fit: cover;
-  object-position: center;
+  flex-shrink: 0;
+  width: 72px;
+  height: 52px;
+  color: var(--mn-accent);
+}
+
+.mn-gate__brand-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mn-gate__title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--mn-fg);
+  line-height: 1.2;
 }
 
 .mn-gate__tagline {
   margin: 0;
   color: var(--mn-fg-muted);
-}
-
-.mn-gate__features {
-  margin: 18px 0 22px;
-  padding-left: 20px;
-  color: var(--mn-fg-muted);
-}
-
-.mn-gate__features li {
-  margin: 4px 0;
+  font-size: 13px;
 }
 
 .mn-gate__actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  margin-top: 22px;
+}
+
+.mn-gate__manage {
+  margin-top: 22px;
+}
+
+.mn-gate__manage-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mn-fg);
+}
+
+.mn-gate__manage-empty {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px dashed var(--mn-border);
+  border-radius: var(--mn-radius);
+  color: var(--mn-fg-muted);
+  font-size: 13px;
+}
+
+.mn-gate__vault-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+  max-height: min(280px, 40vh);
+  overflow-y: auto;
+}
+
+.mn-gate__vault-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: stretch;
+  gap: 2px;
+  border-radius: var(--mn-radius);
+}
+
+.mn-gate__vault-open {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--mn-radius);
+  background: transparent;
+  color: var(--mn-fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mn-gate__vault-open:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--mn-accent) 10%, transparent);
+}
+
+.mn-gate__vault-open:focus-visible {
+  outline: 2px solid var(--mn-accent);
+  outline-offset: 1px;
+}
+
+.mn-gate__vault-open:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mn-gate__vault-copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.mn-gate__vault-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.mn-gate__vault-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--mn-fg-subtle);
+  font-size: 11px;
+  font-family: var(--mn-font-mono);
+}
+
+.mn-gate__vault-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 100%;
+  min-height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: var(--mn-radius);
+  background: transparent;
+  color: var(--mn-fg-subtle);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.mn-gate__vault-row:hover .mn-gate__vault-remove,
+.mn-gate__vault-row:focus-within .mn-gate__vault-remove,
+.mn-gate__vault-remove:focus-visible {
+  opacity: 1;
+}
+
+.mn-gate__vault-remove:hover:not(:disabled) {
+  color: var(--mn-danger);
+  background: color-mix(in srgb, var(--mn-danger) 10%, transparent);
+}
+
+.mn-gate__vault-remove:focus-visible {
+  outline: 2px solid var(--mn-accent);
+  outline-offset: 1px;
+}
+
+.mn-gate__vault-remove:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .mn-gate__error {

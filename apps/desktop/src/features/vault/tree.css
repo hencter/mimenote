@@ -59,29 +59,8 @@
   display: flex;
   align-items: center;
   gap: 2px;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
-  flex-wrap: wrap;
-  row-gap: 6px;
-}
-
-/* 同一组动词放一起（文档操作 / 展开折叠 / 库操作），组间一条细分隔：
-   九个图标排成一串是认不出来的，分组之后"找按钮"变成"先找组" */
-.mn-tree-toolbar__group {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  flex-wrap: wrap;
-  min-width: 0;
-  row-gap: 6px;
-}
-
-.mn-tree-toolbar__divider {
-  flex: none;
-  width: 1px;
-  height: 16px;
-  margin: 0 5px;
-  background: var(--mn-border);
 }
 
 /* 工具栏里的命中区放大到 28px（全局的 22px 是给 26px 高的状态栏的，
@@ -136,6 +115,19 @@
 
 .mn-tree-row--selected {
   background: var(--mn-active);
+}
+
+/*
+ * 分栏路径链：打开右侧下一列的那个目录（未必等于 `selected`）。
+ * 比选中态更淡，让整条路径一眼连得起来，又不抢末列选中项。
+ */
+.mn-tree-row--path {
+  background: color-mix(in srgb, var(--mn-accent) 10%, transparent);
+}
+
+.mn-tree-row--path .mn-tree-row__name {
+  color: var(--mn-fg);
+  font-weight: 600;
 }
 
 .mn-tree-row--open .mn-tree-row__name {

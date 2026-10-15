@@ -88,7 +88,7 @@ import { RenameDialog } from './RenameDialog'
 import { SingleColumnTree } from './SingleColumnTree'
 import type { RowRef } from './TreeRow'
 import { loadTreeFocus, saveTreeFocus } from './tree-focus'
-import { useTreeLayout } from './tree-layout-pref'
+import { isColumnsFamily, useTreeLayout } from './tree-layout-pref'
 import { useTreeDrag } from './use-tree-drag'
 import type { TreeViewHandle } from './tree-view'
 import { useTagFilterView } from './use-tag-filter-view'
@@ -161,7 +161,7 @@ export function FileTree() {
    * `domain/columns.ts` 负责（那边不复制排序、也不复制 `matchesFilter`）。
    */
   const rows = useMemo(() => {
-    if (layout === 'columns') return []
+    if (isColumnsFamily(layout)) return []
     const all = flattenTree(tree, { expanded: expandedForRows, filter: deferredFilter })
     return tagVisible === null
       ? all
@@ -225,7 +225,7 @@ export function FileTree() {
    */
   const columnsView = useMemo(
     () =>
-      layout === 'columns'
+      isColumnsFamily(layout)
         ? columnsFor({
             tree,
             selected,
@@ -244,7 +244,7 @@ export function FileTree() {
    * 只在 `focusAccepted` 为假时动手，因此正常的列链变化不会触发写盘。
    */
   useEffect(() => {
-    if (layout !== 'columns' || columnsView.focusAccepted || focusedDir === null) return
+    if (!isColumnsFamily(layout) || columnsView.focusAccepted || focusedDir === null) return
     const resolved = columnsView.directories[columnsView.directories.length - 1] ?? ''
     focusChanged(resolved)
   }, [columnsView, focusChanged, focusedDir, layout])
@@ -258,7 +258,7 @@ export function FileTree() {
 
   /** 没有任何行可看：单栏看行数，分栏看"所有列的行加总"。 */
   const empty =
-    layout === 'columns' ? columnRowCount(columnsView.columns) === 0 : rows.length === 0
+    isColumnsFamily(layout) ? columnRowCount(columnsView.columns) === 0 : rows.length === 0
 
   // -- 拖拽整理 -------------------------------------------------------------
   //
@@ -300,7 +300,7 @@ export function FileTree() {
   useEffect(() => {
     const reveal = (event: Event): void => {
       const relPath = (event as CustomEvent<string>).detail
-      const handle = layout === 'columns' ? columnsRef.current : singleRef.current
+      const handle = isColumnsFamily(layout) ? columnsRef.current : singleRef.current
       handle?.reveal(relPath)
     }
     window.addEventListener(REVEAL_ROW_EVENT, reveal)
@@ -482,7 +482,7 @@ export function FileTree() {
     (event: React.KeyboardEvent<HTMLDivElement>): void => {
       if (empty) return
 
-      if (layout === 'columns') {
+      if (isColumnsFamily(layout)) {
         handleColumnsKey(event)
         return
       }
@@ -606,7 +606,7 @@ export function FileTree() {
           disabled: !entry.isDir && !markdown,
           // 目录的"展开/折叠"只对单栏有视觉意义；分栏里目录的激活是"推进一列"，
           // 因此这里按当前模式分派（与点击一行走的是同一个函数）
-          onSelect: () => (layout === 'columns' ? activateRowInColumns(row) : activateRow(row)),
+          onSelect: () => (isColumnsFamily(layout) ? activateRowInColumns(row) : activateRow(row)),
         },
         { id: 'new', label: '在这里新建笔记', onSelect: run('note.new') },
         { id: 'rename', label: '重命名…', onSelect: run('note.rename'), separatorBefore: true },
@@ -717,7 +717,7 @@ export function FileTree() {
 
   return (
     <>
-      {layout === 'columns' ? (
+      {isColumnsFamily(layout) ? (
         <ColumnsTree
           viewRef={columnsRef}
           view={columnsView}
@@ -730,6 +730,12 @@ export function FileTree() {
           onContextMenu={openRowMenu}
           onKeyDown={handleKeyDown}
           onColumnBack={columnsBack}
+          onFocusColumn={(dirPath) => {
+            focusChanged(dirPath)
+            select(dirPath)
+          }}
+          vaultRoot={vaultRoot}
+          presentation={layout === 'stack' ? 'stack' : 'flat'}
         />
       ) : (
         <SingleColumnTree

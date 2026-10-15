@@ -21,7 +21,7 @@ import { useSettingsStore } from '@/state/settings-store'
 import { useUiStore } from '@/state/ui-store'
 import { getTheme } from '@/theme/apply'
 import { FrontmatterEditor } from './FrontmatterEditor'
-import { metadataFold } from './cm/metadata-fold'
+import { metadataFold, metadataFoldKeymap } from './cm/metadata-fold'
 import { notePathFacet } from './cm/note-path'
 import {
   createEditorExtensions,
@@ -101,6 +101,7 @@ export function MarkdownEditor({ notePath }: { notePath?: string } = {}) {
       viewRef.current.destroy()
       viewRef.current = null
     }
+    if (node !== null) delete (node as HTMLElement & { __mnDocText?: () => string }).__mnDocText
     if (node === null) return
 
     /** 这一格绑定的路径（`notePath` 没给时退回"当前文档"）。 */
@@ -134,7 +135,7 @@ export function MarkdownEditor({ notePath }: { notePath?: string } = {}) {
     const initialDoc = loaded === null ? undefined : useNoteStore.getState().docs[loaded]
     // 这一格**可写**（每格各有自己的文档）；正文还没读到之前先只读，见 `docLoaded` 的说明
     extensions.push(editableRef.current.of(EditorState.readOnly.of(initialDoc === undefined)))
-    extensions.push(metadataRef.current.of(metadataFold))
+    extensions.push(metadataRef.current.of(metadataFold), metadataFoldKeymap)
     // 这一格显示的是哪一篇：live-preview / wiki 补全 / 粘贴附件都按它解析相对路径
     extensions.push(notePathCompartment.current.of(notePathFacet.of(pathRef.current ?? '')))
     viewRef.current = new EditorView({
@@ -144,6 +145,9 @@ export function MarkdownEditor({ notePath }: { notePath?: string } = {}) {
         extensions,
       }),
     })
+    // e2e 读完整文档（含默认折叠的 frontmatter）：DOM `.cm-content` 看不到折叠段
+    ;(node as HTMLElement & { __mnDocText?: () => string }).__mnDocText = () =>
+      viewRef.current?.state.doc.toString() ?? ''
     // 装上就上报一次初值：否则"打开一篇笔记、什么都没点"时大纲里没有任何高亮
     if (loaded !== null && useNoteStore.getState().doc?.relPath === loaded) {
       useCursorStore.getState().setLine(currentCursorLine(viewRef.current))
@@ -228,34 +232,36 @@ export function MarkdownEditor({ notePath }: { notePath?: string } = {}) {
 
   return (
     <div className={`mn-editor${relPath === activePath ? ' mn-editor--active' : ''}`} data-note-path={relPath ?? undefined}>
-      {/*
-        属性面板**每一格都有**（用户要求：分栏两边同时看得到 frontmatter）。
-        从前这里是 `relPath === activePath` —— 非当前那格连"看"都看不到（frontmatter 在编辑器里
-        默认折叠成装饰，而唤出它的入口只长在这个面板里）。
-        `docLoaded` 之前不渲染：那一刻正文还没到，先渲染会闪一下"折叠态"。
-      */}
-      {relPath !== null && docLoaded && <FrontmatterEditor key={relPath}
-        seed={metadataSeed}
-        onSourceMode={(raw) => {
-          const view = viewRef.current
-          if (!view) return
-          view.dispatch({ effects: metadataRef.current.reconfigure(raw ? [] : metadataFold) })
-          if (raw) { view.dispatch({ selection: { anchor: 0 }, scrollIntoView: true }); view.focus() }
-        }}
-        read={() => viewRef.current?.state.doc.toString() ?? openNoteText(relPath) ?? ''}
-        apply={(text) => {
-          const view = viewRef.current
-          if (view) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } })
-        }} />}
       {relPath === null ? (
         <div className="mn-editor__placeholder">
           <Icon name="file" size="lg" />
           <p>从左侧选择一篇笔记，或按 <kbd>Ctrl</kbd>+<kbd>N</kbd> 新建</p>
         </div>
       ) : (
-        // 这里曾经还有一行「当前路径」的工具栏（26px）。它搬到了标题栏中区（ADR-0029）：
-        // 那一行只横跨中间一列、只在编辑视图里存在，打开/关闭笔记时会让下面所有内容上下跳 26px。
-        <div className="mn-editor__surface" ref={attachSurface} />
+        /*
+          属性与正文共用同一列（`.mn-editor__column`）：左右内边距与最大宽度只在这一层写一次，
+          属性图标左缘与标题/callout 左缘天然对齐，不必两套 `852 + 16` 各自居中再碰运气。
+        */
+        <div className="mn-editor__column">
+          {/*
+            属性面板**每一格都有**（用户要求：分栏两边同时看得到 frontmatter）。
+            `docLoaded` 之前不渲染：那一刻正文还没到，先渲染会闪一下"折叠态"。
+          */}
+          {docLoaded && (
+            <FrontmatterEditor
+              key={relPath}
+              seed={metadataSeed}
+              read={() => viewRef.current?.state.doc.toString() ?? openNoteText(relPath) ?? ''}
+              apply={(text) => {
+                const view = viewRef.current
+                if (view) {
+                  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } })
+                }
+              }}
+            />
+          )}
+          <div className="mn-editor__surface" ref={attachSurface} />
+        </div>
       )}
     </div>
   )

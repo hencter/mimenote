@@ -185,12 +185,38 @@ function cancelAutosaveFor(relPath: string): void {
  *
  * 分栏之后"同时脏两篇"是常态，所以这里不能只看当前那一篇 —— 漏掉一篇就是丢一份内容。
  */
-export function flushAutosave(): void {
-  for (const [relPath, doc] of Object.entries(useNoteStore.getState().docs)) {
-    if (!doc.dirty || doc.conflict !== null) continue
+export interface FlushResult {
+  saved: string[]
+  failed: string[]
+  /** 冲突态的脏文档：没有用户选择就不能写，也不能当成已经保存。 */
+  blocked: string[]
+}
+
+/**
+ * 等所有脏文档落盘。一篇一篇写，因为宿主只有一把写锁；
+ * `save()` 在锁被占用时会立刻返回 `false`，那只表示"排上了"，不是"写完了"。
+ */
+export async function flushAll(): Promise<FlushResult> {
+  const saved: string[] = []
+  const failed: string[] = []
+  const blocked: string[] = []
+  const docs = useNoteStore.getState().docs
+  for (const [relPath, doc] of Object.entries(docs)) {
+    if (!doc.dirty) continue
+    if (doc.conflict !== null) {
+      blocked.push(relPath)
+      continue
+    }
     cancelAutosaveFor(relPath)
-    void useNoteStore.getState().saveNowFor(relPath)
+    const ok = await useNoteStore.getState().saveNowFor(relPath)
+    if (ok) saved.push(relPath)
+    else failed.push(relPath)
   }
+  return { saved, failed, blocked }
+}
+
+export function flushAutosave(): void {
+  void flushAll()
 }
 
 function scheduleAutosaveFor(relPath: string): void {
@@ -331,7 +357,9 @@ export const useNoteStore = create<NoteState>((set, get) => {
   const patch = (relPath: string, mutate: (doc: NoteDoc) => NoteDoc | null): void => {
     commit((docs, activePath) => {
       const current = docs[relPath]
-      if (current === undefined) return null
+      // 这篇已经不在仓库里（关掉了，或根本没打开）。`null` 会清空当前文档，
+      // 迟到的保存回调就会把正在看的另一篇一起清掉。
+      if (current === undefined) return undefined
       const next = mutate(current)
       if (next === null) delete docs[relPath]
       else docs[relPath] = next
