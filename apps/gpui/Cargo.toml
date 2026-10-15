@@ -1,0 +1,24 @@
+[package]
+name = "mimenote-gpui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Mimenote 原生桌面客户端（GPUI Kit）"
+
+[lib]
+name = "mimenote_gpui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mimenote-gpui"
+path = "src/main.rs"
+
+[dependencies]
+mn-core = { workspace = true }
+mn-index = { workspace = true }
+gpui-kit = { version = "0.7.3", features = ["tree-sitter-markdown"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+gpui-kit = { version = "0.7.3", features = ["tree-sitter-markdown", "test-support"] }

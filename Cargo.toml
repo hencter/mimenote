@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/mn-core", "crates/mn-index", "apps/cli", "apps/desktop/src-tauri"]
+members = [
+    "crates/mn-core",
+    "crates/mn-index",
+    "apps/cli",
+    "apps/desktop/src-tauri",
+    "apps/gpui",
+]
 
 [workspace.package]
 version = "0.3.0"
