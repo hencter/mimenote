@@ -14,7 +14,7 @@ jobs:
     name: 质量门禁（typecheck / vitest / cargo test / clippy / fmt）
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 启用 pnpm
         uses: pnpm/action-setup@v4
@@ -65,7 +65,7 @@ jobs:
     name: 跨平台核心（macOS：测试 / cargo / 构建 + UI smoke）
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 启用 pnpm
         uses: pnpm/action-setup@v4
@@ -125,7 +125,7 @@ jobs:
       contents: read
       checks: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 启用 pnpm
         uses: pnpm/action-setup@v4
@@ -154,7 +154,7 @@ jobs:
     name: UI E2E（PR = smoke / main 与定时 = 完整）
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 启用 pnpm
         uses: pnpm/action-setup@v4
