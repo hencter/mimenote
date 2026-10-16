@@ -1,8 +1,12 @@
 /**
- * 文件树工具栏：搜索 + 五个视图图标（展开 / 折叠 / 分栏画法 / 刷新 / 排序）。
+ * 文件树工具栏：搜索 + 五个视图图标（展开 / 折叠 / 分栏画法 / 刷新 / 排序）
+ * + 导出按钮 + 标签过滤控件。
  *
- * 打开库、导出、隐藏面板、标签过滤等从这里撤走 —— 等价入口在命令面板、快捷键、
- * 右键菜单与 VaultGate；这一条只负责"找笔记"和"怎么看这一棵树"。
+ * 打开库与隐藏面板从这里撤走了（等价入口在 VaultGate 与 `Ctrl+B`，那条判断成立）；
+ * 但**导出**与**标签过滤**撤不得 —— 前者是三选一导出对话框（单篇 HTML / 打印 / 整库站点）
+ * 的**唯一入口**（ADR-0051），命令面板里那三条 `export.*` 是直达、不经过对话框；后者
+ * 根本不存在第二入口（没有命令、快捷键或右键菜单能打开它）。这两件曾随「桌面 UI 收口」
+ * 一起被摘掉，靠 UI E2E 与 ADR-0051 的对照才发现（见 `TreeToolbar` 渲染处那条注释）。
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -13,8 +17,10 @@ import { Checkbox } from '@/components/Checkbox'
 import { Tooltip } from '@/components/Tooltip'
 import { Icon } from '@/components/Icon'
 import type { TreeSort } from '@/domain/tree'
+import { ExportButton } from '@/features/export/ExportButton'
 import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
+import { TagFilterControl } from './TagFilterControl'
 import {
   isColumnsFamily,
   toggleTreeLayout,
@@ -88,7 +94,7 @@ export function TreeToolbar() {
   }, [sortOpen])
 
   return (
-    <div className="mn-tree-toolbar">
+    <div className="mn-tree-toolbar mn-tree-toolbar--with-tags">
       <div className="mn-search-field">
         <Icon name="search" size="sm" />
         <input
@@ -226,6 +232,15 @@ export function TreeToolbar() {
           )}
         </div>
       </div>
+
+      {/*
+        这两件挂在工具栏下、**不塞进上面那条图标行**：那条行的 `aria-label` 是"视图整理"，
+        而它们属于"对产物 / 内容动手"；而且 `ExportButton` 是带文字的按钮，会撑宽图标行，
+        而侧栏最小宽度 `TREE_TOOLBAR_MIN_WIDTH_PX` 是按 5 个图标算出来的（`TreeHost` 用它
+        定 row 轴叶子的下限），塞进去就得跟着改那个算式。
+      */}
+      <ExportButton />
+      <TagFilterControl />
     </div>
   )
 }

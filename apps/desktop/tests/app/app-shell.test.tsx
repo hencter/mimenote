@@ -150,7 +150,7 @@ describe('外壳渲染', () => {
     })
   })
 
-  it('文件树工具栏只保留搜索与视图整理图标（打开库/导出已撤到门闸与命令）', async () => {
+  it('文件树工具栏收在搜索、视图整理与两个产物入口上（新建/重命名/移动已撤到右键菜单与命令）', async () => {
     render(<App />)
     await useVaultStore.getState().openVault('C:\\MockVault')
 
@@ -164,7 +164,12 @@ describe('外壳渲染', () => {
       expect(toolbar?.querySelector('[aria-label="过滤文件树"]')).not.toBeNull()
       expect(toolbar?.querySelector('[aria-label="视图整理"]')).not.toBeNull()
       expect(toolbar?.querySelector('[aria-label="展开全部目录"]')).not.toBeNull()
-      expect(toolbar?.querySelector('.mn-export-launch')).toBeNull()
+      // 这两件**必须留在这里**，与上面撤走的那几个不是一类：
+      // `ExportButton` 是三选一导出对话框的唯一入口（命令面板那三条 `export.*` 走
+      // `requestExportKind` 直达，只有它走 `requestExport` 弹对话框），见 ADR-0051；
+      // 标签过滤则根本没有第二入口（没有命令、快捷键或右键菜单能打开它）。
+      expect(toolbar?.querySelector('.mn-export-launch')).not.toBeNull()
+      expect(toolbar?.querySelector('[data-tag-filter-toggle]')).not.toBeNull()
     })
     expect(document.querySelector('.mn-titlebar')).toBeNull()
   })
