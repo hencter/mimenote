@@ -228,11 +228,18 @@ async function renderDecorations(view: EditorView): Promise<void> {
  * 为什么必须显式逼：`geometryChanged` 是**这次测量结果与上一次不同**才置位的，而 jsdom 不会
  * 自己触发测量 —— 只改我们的假布局（stub）而不派发任何事件时，CodeMirror 根本不知道要重量。
  * 真实浏览器里滚动/窗口变化会自己走这一趟，测试里得手动代替它。
+ *
+ * 为什么等的是 `requestAnimationFrame` 而不是 `settle()`：CM 把测量排在 rAF 上，所以"等测量"
+ * 就等于"等一个 rAF 周期"。`settle()` 是 `setTimeout(0)`，它的**实际延迟取决于平台的定时器
+ * 粒度**：Windows 约 15.6ms（两次 settle 恰好跨过一个 16ms 的 rAF 周期，于是这条用例在本机
+ * **蒙对**），macOS / Linux 约 1ms（两次加起来还不到一个 rAF 周期，测量压根没跑，
+ * `geometryChanged` 不置位 ⇒ 卡片不收起）。2026-10-16 的 CI 上这条在 macOS 稳定红；
+ * 把 `settle` 换成立即执行的宏任务后，本机可以逐字复现同一个失败。
  */
 async function remeasure(view: EditorView): Promise<void> {
   await act(async () => {
     view.requestMeasure()
-    await settle()
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)))
     await settle()
   })
 }
