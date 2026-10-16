@@ -15,7 +15,7 @@ afterEach(() => {
 it('单选直接输入创建，不需要配置选项', () => {
   localStorage.setItem('mimenote.property.config.v1:["","status"]', JSON.stringify({ type: 'single', options: ['草稿', '发布'] }))
   const change = vi.fn()
-  render(<PropertyInput name="status" value="草稿" change={change} remove={() => {}} />)
+  render(<PropertyInput name="status" value="草稿" change={change}  />)
   expect(screen.queryByText('配置选项')).toBeNull()
   const input = screen.getByRole('combobox', { name: 'status' })
   fireEvent.change(input, { target: { value: '待终审' } })
@@ -60,7 +60,7 @@ it('打开单选属性的面板不打任何 IPC（候选只来自记忆值）', 
     ],
   })
 
-  render(<PropertyInput name="status" value="草稿" change={() => {}} remove={() => {}} />)
+  render(<PropertyInput name="status" value="草稿" change={() => {}}  />)
 
   const input = screen.getByRole('combobox', { name: 'status' })
   fireEvent.focus(input)

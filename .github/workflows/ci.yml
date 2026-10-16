@@ -42,7 +42,7 @@ jobs:
       - name: IPC 契约一致性检查（命令 / 错误码 / DTO / 枚举）
         run: pnpm check:ipc
 
-      - name: 类型检查（tsc --noEmit 严格模式）
+      - name: 类型检查（tsc-rs --noEmit 严格模式）
         run: pnpm typecheck
 
       - name: 前端测试（vitest）
@@ -88,7 +88,7 @@ jobs:
       - name: 版本与 IPC 契约一致性检查
         run: pnpm check:version && pnpm check:ipc
 
-      - name: 类型检查（tsc --noEmit 严格模式）
+      - name: 类型检查（tsc-rs --noEmit 严格模式）
         run: pnpm typecheck
 
       - name: 前端测试（vitest）

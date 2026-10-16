@@ -1,5 +1,8 @@
 /**
- * Vault 门闸：未打开 Vault 时的首屏（也是浏览器预览模式的说明页）。
+ * Vault 门闸：未打开 Vault 时的独立起始窗口（也是浏览器预览模式的说明页）。
+ *
+ * 「管理 Vault」入口（侧栏最近列表底部）走 `closeVault` 回到这里。
+ * 本页负责：主题色品牌、打开新库、最近库列表（打开 / 从列表移除）。
  *
  * 底部的"运行环境"一行会真实发起一次 IPC（`version_info`），因此它同时是
  * **人眼可见的连通性指示**：显示出版本号 = WebView 渲染成功 + 前端 JS 执行成功 + IPC 通道可用。
@@ -8,7 +11,9 @@
 import { useEffect, useState } from 'react'
 
 import { openVaultInteractive } from '@/app/actions'
+import { BrandMark } from '@/components/BrandMark'
 import { Icon } from '@/components/Icon'
+import { Tooltip } from '@/components/Tooltip'
 import { shortenPath } from '@/domain/paths'
 import { currentAdapterKind, ipc } from '@/ipc/client'
 import { MimenoteError } from '@/ipc/types'
@@ -17,8 +22,9 @@ import { useVaultStore } from '@/state/vault-store'
 export function VaultGate() {
   const status = useVaultStore((state) => state.status)
   const error = useVaultStore((state) => state.error)
-  const lastRoot = useVaultStore((state) => state.lastRoot)
+  const recentVaults = useVaultStore((state) => state.recentVaults)
   const openVault = useVaultStore((state) => state.openVault)
+  const removeRecentVault = useVaultStore((state) => state.removeRecentVault)
   const [adapter, setAdapter] = useState<string>('')
   const [runtime, setRuntime] = useState<string>('正在检测运行环境…')
 
@@ -45,48 +51,70 @@ export function VaultGate() {
     }
   }, [])
 
+  const busy = status === 'loading'
+
   return (
     <div className="mn-gate">
       <div className="mn-gate__card">
         <div className="mn-gate__brand">
-          <img
-            className="mn-gate__logo"
-            src="/brand/mimenote-lockup.svg"
-            alt="Mimenote Logo"
-          />
-          <p className="mn-gate__tagline">本地优先的 Markdown 知识库</p>
+          <BrandMark className="mn-gate__logo" label="Mimenote Logo" />
+          <div className="mn-gate__brand-copy">
+            <h1 className="mn-gate__title">Mimenote</h1>
+            <p className="mn-gate__tagline">本地优先的 Markdown 知识库</p>
+          </div>
         </div>
-
-        <ul className="mn-gate__features">
-          <li>你的笔记就是普通文件夹里的普通 Markdown 文件</li>
-          <li>可被 Git 管理，可被任何编辑器打开，随时可以搬走</li>
-          <li>默认离线：无遥测、无自动上传、运行时不发起任何网络请求</li>
-          <li>写入原子替换、外部修改检测、删除进回收站</li>
-        </ul>
 
         <div className="mn-gate__actions">
           <button
             type="button"
             className="mn-button mn-button--primary"
-            disabled={status === 'loading'}
+            disabled={busy}
             onClick={() => void openVaultInteractive()}
           >
             <Icon name="folderOpen" size="md" />
-            {status === 'loading' ? '正在打开…' : '打开文件夹作为 Vault'}
+            {busy ? '正在打开…' : '打开文件夹作为 Vault'}
           </button>
-
-          {lastRoot !== null && lastRoot !== '' && (
-            <button
-              type="button"
-              className="mn-button"
-              disabled={status === 'loading'}
-              title={lastRoot}
-              onClick={() => void openVault(lastRoot)}
-            >
-              上次打开：{shortenPath(lastRoot, 40)}
-            </button>
-          )}
         </div>
+
+        <section className="mn-gate__manage" aria-labelledby="mn-gate-manage-title">
+          <h2 className="mn-gate__manage-title" id="mn-gate-manage-title">
+            管理 Vault
+          </h2>
+          {recentVaults.length === 0 ? (
+            <p className="mn-gate__manage-empty">还没有最近打开的库。用上方按钮选择一个文件夹。</p>
+          ) : (
+            <ul className="mn-gate__vault-list">
+              {recentVaults.map((item) => (
+                <li key={item.rootPath} className="mn-gate__vault-row">
+                  <button
+                    type="button"
+                    className="mn-gate__vault-open"
+                    disabled={busy}
+                    title={item.rootPath}
+                    onClick={() => void openVault(item.rootPath)}
+                  >
+                    <Icon name="folder" size="sm" />
+                    <span className="mn-gate__vault-copy">
+                      <span className="mn-gate__vault-name">{item.name}</span>
+                      <span className="mn-gate__vault-path">{shortenPath(item.rootPath, 48)}</span>
+                    </span>
+                  </button>
+                  <Tooltip label={`从最近列表移除「${item.name}」`}>
+                    <button
+                      type="button"
+                      className="mn-gate__vault-remove"
+                      aria-label={`从最近列表移除 ${item.name}`}
+                      disabled={busy}
+                      onClick={() => removeRecentVault(item.rootPath)}
+                    >
+                      <Icon name="x" size="xs" />
+                    </button>
+                  </Tooltip>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
 
         {error !== null && (
           <div className="mn-gate__error">

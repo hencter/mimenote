@@ -231,7 +231,9 @@ mod tests {
     #[test]
     fn missing_template_dir_is_empty_not_error() {
         let (_dir, root) = setup();
-        assert!(list_templates(&root, DEFAULT_TEMPLATE_DIR).unwrap().is_empty());
+        assert!(list_templates(&root, DEFAULT_TEMPLATE_DIR)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

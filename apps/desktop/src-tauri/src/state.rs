@@ -9,7 +9,7 @@
 //! * 所有锁都是 `std::sync` 的短临界区锁，**不跨 await 持有**。
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockWriteGuard, Weak};
 
 use mn_core::scanner::{EntryMeta, ScanOptions, ScanReport};
@@ -178,6 +178,9 @@ fn is_note(entry: &EntryMeta, options: &ScanOptions) -> bool {
 #[derive(Default)]
 pub struct AppState {
     vault: RwLock<Option<VaultCtx>>,
+    /// 每次打开、重扫提交或关闭都加一。在途的写和索引构建带着打开时的值，
+    /// 提交前对不上就丢掉 —— 根路径相同不能区分"同库的上一轮"。
+    session: AtomicU64,
     write_lock: Mutex<()>,
     /// 命令行指定的 Vault（`mimenote.exe <目录>`），供前端启动时自动打开。
     startup_vault: Option<String>,
@@ -276,20 +279,55 @@ impl AppState {
             .is_some()
     }
 
+    /// 当前 Vault 会话代。还没打开过是 0；每次 [`set_vault`] / [`clear_vault`] 成功替换后加一。
+    pub fn session(&self) -> u64 {
+        self.session.load(Ordering::Acquire)
+    }
+
+    fn bump_session(&self) {
+        self.session.fetch_add(1, Ordering::AcqRel);
+    }
+
     /// 替换当前 Vault。
     ///
     /// **watcher 的生命周期挂在这里**：这是"当前 Vault 换了一个"的唯一入口
     /// （打开新 Vault 与重扫都会走到它），换根 = 停旧监听 + 起新监听；
     /// 同一个根（重扫）则原样保留 —— 重启监听会留下一个"事件无人接收"的窗口。
+    ///
+    /// 写锁包住"代际 + 上下文"：在途的保存拿着同一把锁做索引更新，两边不会交错。
+    /// watcher 的 join 仍在锁外，否则去抖线程读 `vault` 时会和这里互等。
     pub fn set_vault(&self, ctx: VaultCtx) {
         let root = ctx.root.clone();
         {
+            let _write = self.write_guard();
+            self.bump_session();
             let mut guard = self.vault.write().unwrap_or_else(|e| e.into_inner());
             *guard = Some(ctx);
-            // ⚠️ 必须先放锁再同步 watcher：`sync_watcher` 可能 join 去抖线程，
-            // 而那个线程会去读 `vault`（`is_news`），持着写锁 join 就是自锁死。
         }
         self.sync_watcher(&root);
+    }
+
+    /// 重扫结果只有在扫描开始时的会话还在时才提交。
+    ///
+    /// 返回 `false` 表示期间已经换过库或关过库：调用方必须丢掉这次扫描，
+    /// 不能把旧根写回当前会话。
+    pub fn replace_vault_if_session(&self, session: u64, ctx: VaultCtx) -> bool {
+        let root = ctx.root.clone();
+        let applied = {
+            let _write = self.write_guard();
+            if self.session() != session {
+                false
+            } else {
+                self.bump_session();
+                let mut guard = self.vault.write().unwrap_or_else(|e| e.into_inner());
+                *guard = Some(ctx);
+                true
+            }
+        };
+        if applied {
+            self.sync_watcher(&root);
+        }
+        applied
     }
 
     /// 增量更新当前 Vault。
@@ -302,8 +340,11 @@ impl AppState {
 
     /// 关闭 Vault。
     pub fn clear_vault(&self) {
-        // 先停监听（它读的是"当前 Vault"的条目表），再清上下文
+        // 先停监听（它读的是"当前 Vault"的条目表），再清上下文。
+        // join 在写锁外：监听线程不拿写锁，但拿着写锁 join 仍会拖住所有保存。
         self.stop_watcher();
+        let _write = self.write_guard();
+        self.bump_session();
         let mut guard = self.vault.write().unwrap_or_else(|e| e.into_inner());
         *guard = None;
     }

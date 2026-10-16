@@ -9,8 +9,8 @@
  * 1. `alignItemWithTrigger={false}`：弹出层永远是 trigger 下方的普通下拉，而不是
  *    Base UI 默认的"选中项与 trigger 值对齐"模式 —— 后者在设置页这种窄行里飘忽，
  *    而普通下拉的行为用户已经从别处学会了；
- * 2. 文本列固定在第二列（`.mn-select__text { grid-column: 2 }`）：选中勾只在选中行挂载，
- *    不固定列的话每行的文字会对不齐。
+ * 2. **对勾在右、文字在左**（`1fr 16px`）：文字永远落在第一列左对齐；对勾只在选中行
+ *    出现，未选中行右侧留空。勾放左边时，Base UI 不渲染未选中的 Indicator，文字会错位。
  */
 
 import { Select as BaseSelect } from '@base-ui/react/select'
@@ -59,10 +59,12 @@ export function Select({ value, onChange, options, label, disabled = false, icon
             <BaseSelect.List className="mn-select__list">
               {options.map((option) => (
                 <BaseSelect.Item key={option.value} value={option.value} className="mn-select__item">
-                  <BaseSelect.ItemIndicator className="mn-select__indicator">
-                    <Icon name="check" size="xs" />
-                  </BaseSelect.ItemIndicator>
                   <BaseSelect.ItemText className="mn-select__text">{option.label}</BaseSelect.ItemText>
+                  <span className="mn-select__indicator" aria-hidden="true">
+                    <BaseSelect.ItemIndicator>
+                      <Icon name="check" size="xs" />
+                    </BaseSelect.ItemIndicator>
+                  </span>
                 </BaseSelect.Item>
               ))}
             </BaseSelect.List>

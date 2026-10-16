@@ -1,5 +1,6 @@
 /** 设置页 · 关于分区：版本、当前 Vault 统计、日志文件位置。 */
 
+import { BrandMark } from '@/components/BrandMark'
 import { Icon } from '@/components/Icon'
 import { formatDuration } from '@/domain/format'
 import { currentAdapterKind } from '@/ipc/client'
@@ -25,7 +26,7 @@ export function AboutSection() {
   return (
     <>
       <div className="mn-settings__brand">
-        <img src="/brand/mimenote-mark.svg" alt="Mimenote 标志" />
+        <BrandMark className="mn-settings__logo" />
         <div>
           <strong>Mimenote</strong>
           <span>让知识安静地留在你手里</span>

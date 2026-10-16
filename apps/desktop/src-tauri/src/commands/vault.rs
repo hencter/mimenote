@@ -131,16 +131,16 @@ pub async fn vault_snapshot(
     state: State<'_, Arc<AppState>>,
     app: AppHandle,
 ) -> Result<VaultSnapshot, IpcError> {
+    let session = state.session();
     let root = state.vault_root()?;
     let options = state.with_vault(|ctx| Ok(ctx.options.clone()))?;
     let scan_options = options.clone();
     let scan_root = root.clone();
     let report = run_blocking(move || scan(scan_root.path(), &scan_options)).await?;
 
-    let snapshot = snapshot_from(&root, &report);
     let entries_for_index = report.entries.clone();
     let root_for_index = root.clone();
-    state.set_vault(VaultCtx::new(root, options, report));
+    let snapshot = publish_rescan(&state, session, root, options, report)?;
     // 文件可能在外部被大量改动，索引整轮重建（同样在后台）
     indexer::reset(&state);
     indexer::spawn_build(
@@ -175,6 +175,23 @@ pub fn startup_vault(state: State<'_, Arc<AppState>>) -> Option<String> {
     state.startup_vault().map(|path| path.to_string())
 }
 
+fn publish_rescan(
+    state: &AppState,
+    session: u64,
+    root: VaultRoot,
+    options: ScanOptions,
+    report: mn_core::scanner::ScanReport,
+) -> Result<VaultSnapshot, IpcError> {
+    if !state.replace_vault_if_session(
+        session,
+        VaultCtx::new(root.clone(), options, report.clone()),
+    ) {
+        log::info!("重扫完成时 Vault 已切换，丢弃这轮结果");
+        return Err(IpcError::stale_session());
+    }
+    Ok(snapshot_from(&root, &report))
+}
+
 fn snapshot_from(root: &VaultRoot, report: &mn_core::scanner::ScanReport) -> VaultSnapshot {
     VaultSnapshot {
         root_path: root.display(),
@@ -186,5 +203,43 @@ fn snapshot_from(root: &VaultRoot, report: &mn_core::scanner::ScanReport) -> Vau
         skipped: report.skipped,
         scan_ms: report.scan_ms,
         generated_at_ms: mn_core::atomic::now_ms(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::STALE_SESSION;
+    use mn_core::scanner::{scan, ScanOptions};
+
+    #[test]
+    fn a_finished_rescan_does_not_replace_a_vault_opened_later() {
+        let dir_a = tempfile::tempdir().unwrap();
+        std::fs::write(dir_a.path().join("甲.md"), "甲\n").unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        std::fs::write(dir_b.path().join("乙.md"), "乙\n").unwrap();
+        let options = ScanOptions::default();
+        let root_a = mn_core::VaultRoot::open(dir_a.path()).unwrap();
+        let report_a = scan(root_a.path(), &options).unwrap();
+        let state = AppState::default();
+        state.set_vault(VaultCtx::new(
+            root_a.clone(),
+            options.clone(),
+            report_a.clone(),
+        ));
+        let session = state.session();
+
+        let root_b = mn_core::VaultRoot::open(dir_b.path()).unwrap();
+        let report_b = scan(root_b.path(), &options).unwrap();
+        state.set_vault(VaultCtx::new(root_b, options.clone(), report_b));
+
+        let error = publish_rescan(&state, session, root_a, options, report_a).unwrap_err();
+        assert_eq!(error.code, STALE_SESSION);
+        let still_b = state
+            .with_vault(|ctx| {
+                Ok(ctx.entries.contains_key("乙.md") && !ctx.entries.contains_key("甲.md"))
+            })
+            .unwrap();
+        assert!(still_b, "过期重扫不能把当前库换回旧的那一个");
     }
 }

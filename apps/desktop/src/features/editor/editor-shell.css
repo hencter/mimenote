@@ -31,12 +31,29 @@
 }
 
 /*
+ * 属性 + 正文共用列：最大宽度与左右内边距只在这里写一次。
+ * 属性图标与正文左缘因此落在同一条竖线上（用户要求「对齐」）。
+ */
+.mn-editor__column {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: min(852px, 100%);
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+/*
   滚动**留在 CodeMirror 自己的 scroller 上**，不要改成"整个面板滚动 + 编辑器长到全文高"。
   那条路看着更简单，实际会同时坏掉两件事：
   1. `EditorView.scrollIntoView`（搜索命中/大纲跳转的"滚到视口正中"）作用在 `.cm-scroller` 上，
      它一旦 `overflow: visible` 就无处可滚 —— 跳转落点在屏幕外，用户只看到"跳了但没滚"；
   2. CM 的视口窗口化按 scroller 的**可视高度**算：高度等于全文时它会把所有行都渲染出来，
      大文档的 DOM 量直接回到"整篇都在 DOM 里"（ADR-0020 那笔账）。
+
+  属性区通过 portal 挂进 `.cm-scroller`（`.mn-editor__meta-mount`），与正文共用这一条滚动条，
+  而不是钉在 scroller 外面单独占一层 —— 否则属性钉死、正文自己滚，看起来像"中间一块独立滚动"。
 */
 .mn-editor__surface {
   flex: 1 1 auto;
@@ -46,6 +63,13 @@
 
 .mn-editor__surface .cm-editor {
   height: 100%;
+}
+
+/* scroller 的 flex-wrap 在 `cm/theme.ts`；这里只规定属性挂载点如何独占第一行 */
+.mn-editor__meta-mount {
+  flex: 1 0 100%;
+  width: 100%;
+  box-sizing: border-box;
 }
 /* CodeMirror 的 layer() 写入行内 z-index:-2，必须明确覆盖才能让选区位于块底色上方。 */
 .mn-editor__surface .cm-selectionLayer { z-index: 3 !important; pointer-events: none; }

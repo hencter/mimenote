@@ -19,7 +19,7 @@ import { extensionOf, parentOf } from '@/domain/paths'
 import { ipc } from '@/ipc/client'
 import { MimenoteError, describeError } from '@/ipc/types'
 import type { EntryMeta, NoteContent, RenameOutcome, TrashRecord, VaultInfo, VaultSnapshot } from '@/ipc/types'
-import { useNoteStore } from './note-store'
+import { flushAll, useNoteStore } from './note-store'
 import { loadJson, loadString, saveJson, saveString } from './persist'
 import { useSettingsStore } from './settings-store'
 import { toast } from './toast-store'
@@ -233,6 +233,19 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   recentVaults: loadRecentVaults(),
 
   openVault: async (path) => {
+    const flushed = await flushAll()
+    if (flushed.blocked.length > 0 || flushed.failed.length > 0) {
+      toast.warn(
+        '还有笔记没保存，没有切换 Vault',
+        [
+          flushed.blocked.length > 0 ? `${flushed.blocked.length} 篇有冲突` : '',
+          flushed.failed.length > 0 ? `${flushed.failed.length} 篇保存失败` : '',
+        ]
+          .filter((part) => part !== '')
+          .join('，'),
+      )
+      return false
+    }
     set({ status: 'loading', error: null })
     try {
       const snapshot = await ipc.vaultOpen(path)
@@ -308,7 +321,9 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     if (get().info === null) return
     const started = nowMs()
     try {
+      const root = get().info?.rootPath ?? null
       const snapshot = await ipc.vaultSnapshot()
+      if (get().info?.rootPath !== root || snapshot.rootPath !== root) return
       set(snapshotPatch(snapshot, get().selected))
       toast.success(
         `已重扫：${snapshot.entries.length} 条目`,
@@ -316,6 +331,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       )
     } catch (cause) {
       const error = MimenoteError.from(cause)
+      if (error.code === 'STALE_SESSION') return
       set({ error })
       toast.error(describeError(error, '重扫失败'))
     }
@@ -344,8 +360,10 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     const started = nowMs()
     try {
       // 走宿主既有的重扫命令：条目表刷新 + **后台**重建索引（可取消，不阻塞 UI）
+      const root = get().info?.rootPath ?? null
       const snapshot = await ipc.vaultSnapshot()
       if (seq !== externalSeq) return // 已被更新的一轮取代
+      if (get().info?.rootPath !== root || snapshot.rootPath !== root) return
       set(snapshotPatch(snapshot, get().selected))
       console.info(
         `[vault] 外部改动：${payload.changes} 条事件路径${
@@ -356,9 +374,10 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       )
       await followDiskForOpenNote(snapshot.entries)
     } catch (cause) {
+      const error = MimenoteError.from(cause)
+      if (error.code === 'STALE_SESSION') return
       // 外部改动触发的重扫失败（最常见：Vault 目录被搬走/删掉）。不打断编辑，
       // 但也不能装作没发生 —— 给一条提示，用户至少知道"界面现在可能不是磁盘的样子"
-      const error = MimenoteError.from(cause)
       console.warn('[vault] 外部改动后重扫失败：', error)
       toast.warn('外部改动后重扫失败', describeError(error, 'Vault 可能已被移动或删除'))
     }
@@ -379,11 +398,14 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     if (get().info === null || get().status === 'loading') return
     const seq = ++externalSeq
     try {
+      const root = get().info?.rootPath ?? null
       const snapshot = await ipc.vaultSnapshot()
       if (seq !== externalSeq) return
+      if (get().info?.rootPath !== root || snapshot.rootPath !== root) return
       set(snapshotPatch(snapshot, get().selected))
     } catch (cause) {
       const error = MimenoteError.from(cause)
+      if (error.code === 'STALE_SESSION') return
       console.warn('[vault] 恢复后刷新条目表失败：', error)
       toast.warn('恢复后刷新失败', describeError(error, '请按 Ctrl+Alt+R 手工重扫一次'))
     }

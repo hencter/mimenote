@@ -54,6 +54,11 @@ export async function noteWrite(host: MockHost, a: Record<string, unknown>): Pro
           void a.stampTimes
           validate(relPath)
           await sleep()
+          // 带了基线令牌就是在更新一篇已有笔记。文件已经不在时不能写回去 ——
+          // 否则和宿主一样，会把外部删掉的路径重新建出来。`force` 只覆盖 mtime 冲突。
+          if (baseMtimeMs !== null && !files.has(relPath)) {
+            host.fail('NOT_FOUND', `文件不存在：${relPath}`)
+          }
           const current = mtimeOf(relPath)
           if (!force && baseMtimeMs !== null && baseMtimeMs !== current) {
             throw new MimenoteError({

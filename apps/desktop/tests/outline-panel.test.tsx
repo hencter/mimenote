@@ -98,9 +98,16 @@ let scrollCalls: string[] = []
 
 beforeEach(() => {
   scrollCalls = []
-  // jsdom 没有布局，`scrollIntoView` 是未实现的空壳：这里替身记录"滚了哪个元素"
-  HTMLElement.prototype.scrollIntoView = function scrollIntoView(this: HTMLElement): void {
+  // jsdom 没有布局，`scrollIntoView` 是未实现的空壳：这里替身记录"滚了哪个元素"与选项
+  HTMLElement.prototype.scrollIntoView = function scrollIntoView(
+    this: HTMLElement,
+    options?: boolean | ScrollIntoViewOptions,
+  ): void {
     scrollCalls.push(this.textContent ?? '')
+    if (options !== undefined && typeof options === 'object') {
+      expect(options.behavior === 'smooth' || options.behavior === 'auto').toBe(true)
+      expect(options.block).toBe('start')
+    }
   } as unknown as typeof HTMLElement.prototype.scrollIntoView
 
   setIpcAdapter(createMockAdapter({ notes: NOTES }))

@@ -455,6 +455,35 @@ describe('frontmatter 覆盖：草稿与 slug / url', () => {
     expect(warned?.detail).toContain('草稿')
   })
 
+  it('指向草稿的链接不可点，草稿也不会出现在反向链接里', async () => {
+    const spy = await setup({
+      notes: [
+        { relPath: '笔记/甲.md', text: '见 [[草稿]]。\n' },
+        { relPath: '笔记/草稿.md', text: '---\ndraft: true\n---\n\n回链 [[甲]]。\n' },
+        { relPath: '笔记/乙.md', text: '乙也提到 [[甲]]。\n' },
+      ],
+    })
+    const result = await exportVaultSite()
+    const files = writtenFiles(spy)
+
+    expect(files.has('笔记/草稿.html')).toBe(false)
+    const jia = files.get('笔记/甲.html') ?? ''
+    // 索引仍给出指向草稿页的 href；导出层必须把它收成不可点，否则站点里是 404
+    expect(jia).toContain('class="mn-wikilink mn-wikilink--dangling"')
+    expect(jia).toContain('data-target="草稿"')
+    expect(jia).not.toContain('href="%E8%8D%89%E7%A8%BF.html"')
+    // 乙写出去了，所以反链还在；草稿没写，不能链过去，计数也不把它算上
+    expect(jia).toContain('反向链接（1）')
+    expect(jia).toContain('href="%E4%B9%99.html"')
+    // 草稿不是"还不存在的笔记"：悬空清单为空，索引页只在草稿那一节点名
+    expect(result?.dangling).toEqual([])
+    expect(result?.overrides.drafts).toEqual(['笔记/草稿.md'])
+    const index = files.get('index.html') ?? ''
+    expect(index).toContain('笔记/草稿.md')
+    expect(index).toContain('0 条指向还不存在的笔记')
+    expect(index).not.toContain('<li>草稿</li>')
+  })
+
   it('`draft: false` / 没有 draft 的照常导出（只认严格 true）', async () => {
     const spy = await setup({ notes: 改名 })
     const result = await exportVaultSite()

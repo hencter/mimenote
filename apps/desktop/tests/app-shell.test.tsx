@@ -116,12 +116,14 @@ describe('外壳渲染', () => {
     expect(await screen.findByText('打开文件夹作为 Vault')).toBeTruthy()
   })
 
-  it('未打开 Vault 时显示正式 Mimenote Logo', async () => {
+  it('未打开 Vault 时显示主题色品牌 mark，并提供管理 Vault 区', async () => {
     render(<App />)
 
     const logo = await screen.findByRole('img', { name: 'Mimenote Logo' })
-    expect(logo.getAttribute('src')).toBe('/brand/mimenote-lockup.svg')
+    expect(logo.tagName).toBe('svg')
+    expect(logo.classList.contains('mn-gate__logo')).toBe(true)
     expect(document.querySelector('.mn-gate__brand .mn-icon')).toBeNull()
+    expect(screen.getByRole('heading', { name: '管理 Vault' })).toBeTruthy()
   })
 
   it('打开 Vault 后各区域齐全，且文件树有可见行', async () => {
@@ -148,7 +150,7 @@ describe('外壳渲染', () => {
     })
   })
 
-  it('文件树工具栏不再显示文档操作组，导出入口保留（ADR-0051）', async () => {
+  it('文件树工具栏只保留搜索与视图整理图标（打开库/导出已撤到门闸与命令）', async () => {
     render(<App />)
     await useVaultStore.getState().openVault('C:\\MockVault')
 
@@ -159,10 +161,10 @@ describe('外壳渲染', () => {
       for (const label of ['新建笔记', '重命名选中笔记', '移动到文件夹']) {
         expect(toolbar?.querySelector(`[aria-label="${label}"]`)).toBeNull()
       }
-      expect(toolbar?.querySelector('[aria-label="展开折叠"]')).not.toBeNull()
-      expect(toolbar?.querySelector('[aria-label="库操作"]')).not.toBeNull()
-      // 导出留着：它是三选一导出对话框的**唯一**入口（命令面板那三条是直接执行）
-      expect(toolbar?.querySelector('.mn-export-launch')).not.toBeNull()
+      expect(toolbar?.querySelector('[aria-label="过滤文件树"]')).not.toBeNull()
+      expect(toolbar?.querySelector('[aria-label="视图整理"]')).not.toBeNull()
+      expect(toolbar?.querySelector('[aria-label="展开全部目录"]')).not.toBeNull()
+      expect(toolbar?.querySelector('.mn-export-launch')).toBeNull()
     })
     expect(document.querySelector('.mn-titlebar')).toBeNull()
   })

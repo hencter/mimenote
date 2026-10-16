@@ -99,13 +99,17 @@ export const AUTOSAVE_DELAY_OPTIONS: readonly number[] = [200, 400, 600, 1000, 2
 /** Tab 宽度的可选档位（字符数）。默认 4，与 CodeMirror 的 `EditorState.tabSize` 默认一致。 */
 export const TAB_WIDTH_OPTIONS: readonly number[] = [2, 4, 8]
 
-/** 文件树形态（ADR-0058）。 */
-export type TreeLayout = 'single' | 'columns'
+/** 文件树形态（ADR-0058；`stack` = 分栏的堆叠卡片画法）。 */
+export type TreeLayout = 'single' | 'columns' | 'stack'
 
 /** 文件树形态的展示元信息（设置页与命令共用一个判据）。 */
 export const TREE_LAYOUT_META: Readonly<Record<TreeLayout, { label: string; description: string }>> = {
   single: { label: '单栏', description: '一棵可展开的树（现状）。窄侧栏里信息密度最高。' },
   columns: { label: '分栏（列视图）', description: '苹果 Finder 式逐列推进；不用展开/折叠，一路点到底。' },
+  stack: {
+    label: '堆叠卡片',
+    description: '分栏列叠成卡片堆，左侧露边；横向滚动把叠在上面的卡片往右摊开。',
+  },
 }
 
 /** 模板目录的默认值（ADR-0056）。 */
@@ -279,7 +283,7 @@ function isSection(value: unknown): value is SettingsSection {
 }
 
 function isTreeLayout(value: unknown): value is TreeLayout {
-  return value === 'single' || value === 'columns'
+  return value === 'single' || value === 'columns' || value === 'stack'
 }
 
 function isKeymapProfileId(value: unknown): value is KeymapProfileId {
@@ -495,7 +499,9 @@ export function applyConfigDocument(raw: Record<string, unknown>): AppliedConfig
 
   const tree = groupOf(raw, 'tree')
   if (isTreeLayout(tree['layout'])) values.treeLayout = tree['layout']
-  else if (tree['layout'] !== undefined) issues.push(`tree.layout 只能是 single / columns，收到 ${JSON.stringify(tree['layout'])}。`)
+  else if (tree['layout'] !== undefined) {
+    issues.push(`tree.layout 只能是 single / columns / stack，收到 ${JSON.stringify(tree['layout'])}。`)
+  }
 
   const vault = groupOf(raw, 'vault')
   values.attachmentDir = readString(vault, 'attachmentDir', values.attachmentDir, issues, 'vault.attachmentDir', (value) =>

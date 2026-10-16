@@ -7,7 +7,7 @@ import { PropertyInput } from '@/features/editor/PropertyInput'
 afterEach(cleanup)
 function Tags() {
   const [value, setValue] = useState<unknown>(['技术', '观点'])
-  return <PropertyInput name="tags" value={value} change={setValue} remove={() => {}} />
+  return <PropertyInput name="tags" value={value} change={setValue} />
 }
 it('空输入框退格依次删除前一个标签，保留输入焦点', () => {
   render(<Tags />)

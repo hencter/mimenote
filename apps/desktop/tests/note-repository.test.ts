@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter, type MockAdapter } from '@/ipc/mock-adapter'
-import { hasUnsavedChanges, useNoteStore } from '@/state/note-store'
+import { flushAll, hasUnsavedChanges, useNoteStore } from '@/state/note-store'
 
 let adapter: MockAdapter
 
@@ -144,5 +144,41 @@ describe('文档仓库：切当前时的重读口径', () => {
     // 内存里的编辑原样保留（下一次保存会以冲突/覆盖的形式让用户决定，绝不静默丢）
     expect(state.docOf('b.md')?.text).toBe('# B 我正在写\n')
     expect(state.docOf('b.md')?.dirty).toBe(true)
+  })
+
+  it('flushAll 把两篇脏文档都写完', async () => {
+    await useNoteStore.getState().open('a.md')
+    await useNoteStore.getState().openDoc('b.md')
+    useNoteStore.getState().setTextFor('a.md', '# A 落盘\n')
+    useNoteStore.getState().setTextFor('b.md', '# B 落盘\n')
+
+    const flushed = await flushAll()
+    expect(flushed.failed).toEqual([])
+    expect(flushed.blocked).toEqual([])
+    expect([...flushed.saved].sort()).toEqual(['a.md', 'b.md'])
+    expect(textOnDisk('a.md')).toBe('# A 落盘\n')
+    expect(textOnDisk('b.md')).toBe('# B 落盘\n')
+  })
+
+  it('关掉 A 之后迟到的保存不会清掉正在看的 B', async () => {
+    const slow = createMockAdapter({
+      notes: [
+        { relPath: 'a.md', text: '# A\n' },
+        { relPath: 'b.md', text: '# B\n' },
+      ],
+      writeLatencyMs: 40,
+    })
+    setIpcAdapter(slow)
+    useNoteStore.getState().closeAll()
+    await useNoteStore.getState().open('a.md')
+    useNoteStore.getState().setTextFor('a.md', '# A 改\n')
+
+    const pending = useNoteStore.getState().saveNowFor('a.md')
+    await useNoteStore.getState().open('b.md')
+    useNoteStore.getState().closeDoc('a.md')
+    await pending
+
+    expect(useNoteStore.getState().activePath).toBe('b.md')
+    expect(useNoteStore.getState().doc?.relPath).toBe('b.md')
   })
 })

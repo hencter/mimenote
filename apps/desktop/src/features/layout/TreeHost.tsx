@@ -13,10 +13,10 @@
  *
  * ## 隐藏 ≠ 移除（收缩规则）
  *
- * 面板可见性仍归各自的开关（`Ctrl+B` 等）。叶子里**有标签但全被隐藏**时整格收缩
- * （split 的另一边吃满、分隔条不画），树里什么都不变 ⇒ 再打开就回原位。
- * **空叶永远渲染**（它是占位空态，不是被隐藏的面板）—— 判据是 `tree-layout.ts` 的
- * `subtreeRenderable`（就一份，别在组件里再写）。
+ * 面板可见性仍归各自的开关（`Ctrl+B` 等）。半边不可渲染时另一边吃满、分隔条不画。
+ * **纯模块侧栏**收起后整栏卸掉（不另开边缘窄轨）；折叠/展开按钮固定在**内容叶标签条**
+ * 左右两端，收起后同一颗按钮原地变「展开」。**空叶永远渲染**—— 判据是
+ * `tree-layout.ts` 的 `subtreeRenderable`。
  *
  * ## 顶部空间（ADR-0038）
  *
@@ -44,6 +44,7 @@ import type { DragEvent as ReactDragEvent } from 'react'
 
 import { Splitter } from '@/components/Splitter'
 import { Icon } from '@/components/Icon'
+import { Tooltip } from '@/components/Tooltip'
 import { openNoteInNewTab } from '@/app/actions'
 import { isMarkdown } from '@/domain/paths'
 import { MarkdownEditor } from '@/features/editor/MarkdownEditor'
@@ -65,21 +66,27 @@ import { useUiStore } from '@/state/ui-store'
 
 import { contentDropAt, tabIndexAt, type DropEdge } from './drop-target'
 import { useLayoutDrag } from './layout-drag'
-import { LeafTabs } from './LeafTabs'
+import { LeafTabs, type SideToggle } from './LeafTabs'
 import { useModuleVisibility } from './module-visibility'
 import { adjustNewSplitRatio } from './split-size'
+import { TREE_TOOLBAR_MIN_WIDTH_PX } from '@/features/vault/TreeToolbar'
 import {
   clampRatioForExtent,
   evenSplit,
   isViewModule,
   leafOfItem,
+  leftDrawerModules,
+  MIN_LEAF_PIXELS,
   moveItem,
   NARROW_LEAF_PIXELS,
+  nodeContainsItem,
   noteItem,
   notePathOf,
+  rightDrawerModules,
   setActive,
   setRatio,
   subtreeRenderable,
+  contentLeafId as resolveContentLeafId,
   topRightLeafId,
   type LayoutItemId,
   type LeafNode,
@@ -113,8 +120,28 @@ interface RenderContext {
    * 三个窗口按钮挂在它的标签条右端（ADR-0038）。
    */
   windowControlsLeafId: string | null
+  /**
+   * 内容主叶：左右侧栏折叠/展开按钮都挂在它的标签条上（左在标签左侧、右在滚动区右侧）。
+   */
+  contentLeafId: string | null
+  /** 内容叶左侧折叠控件（`null` = 没有独立左栏）。 */
+  leftSide: SideToggle | null
+  /** 内容叶右侧折叠控件（`null` = 没有独立右栏）。 */
+  rightSide: SideToggle | null
   /** 当前文档的相对路径（`null` = 没有打开）。 */
   currentDoc: string | null
+}
+
+/** 侧栏模块名单 → 折叠/展开控件；任一模块可见则「折叠」，否则「展开」。 */
+function sideToggleFor(
+  modules: ViewModuleId[] | null,
+  visibility: Record<ViewModuleId, boolean>,
+): SideToggle | null {
+  if (modules === null || modules.length === 0) return null
+  return {
+    mode: modules.some((id) => visibility[id]) ? 'collapse' : 'expand',
+    modules,
+  }
 }
 
 export function TreeHost() {
@@ -162,8 +189,25 @@ export function TreeHost() {
     () => topRightLeafId(layout, isVisibleItem),
     [layout, isVisibleItem],
   )
+  const contentId = useMemo(() => resolveContentLeafId(layout), [layout])
+  // 侧栏开/关会改 visibility，但不改 layout 树 —— 依赖 visibility 才能在折叠后切成「展开」
+  const leftSide = useMemo(
+    () => sideToggleFor(leftDrawerModules(layout), visibility),
+    [layout, visibility],
+  )
+  const rightSide = useMemo(
+    () => sideToggleFor(rightDrawerModules(layout), visibility),
+    [layout, visibility],
+  )
 
-  const ctx: RenderContext = { isVisibleItem, windowControlsLeafId, currentDoc }
+  const ctx: RenderContext = {
+    isVisibleItem,
+    windowControlsLeafId,
+    contentLeafId: contentId,
+    leftSide,
+    rightSide,
+    currentDoc,
+  }
 
   return (
     <div className="mn-tree-host">
@@ -196,10 +240,19 @@ function NodeView({ node, ctx }: { node: TreeLayout; ctx: RenderContext }) {
   const aOk = subtreeRenderable(node.a, ctx.isVisibleItem)
   const bOk = subtreeRenderable(node.b, ctx.isVisibleItem)
   if (!aOk && !bOk) return null
-  // 一边整棵收缩：另一边吃满、分隔条不画（树里什么都没变，见文件头「隐藏 ≠ 移除」）
+  // 半边不可渲染（含纯模块侧栏收起）→ 另一边吃满；折叠按钮在内容叶标签条上，不另开窄轨
   if (!aOk) return <NodeView node={node.b} ctx={ctx} />
   if (!bOk) return <NodeView node={node.a} ctx={ctx} />
   return <SplitView node={node} ctx={ctx} />
+}
+
+/** 左右（或上下）两侧各自的像素下限：装着文件树的那侧抬到工具栏图标条宽度。 */
+function splitMins(node: SplitNode): { a: number; b: number } {
+  const treeMin = node.axis === 'row' ? TREE_TOOLBAR_MIN_WIDTH_PX : MIN_LEAF_PIXELS
+  return {
+    a: nodeContainsItem(node.a, 'tree') ? treeMin : MIN_LEAF_PIXELS,
+    b: nodeContainsItem(node.b, 'tree') ? treeMin : MIN_LEAF_PIXELS,
+  }
 }
 
 /** 一刀 split：两个半格 + 中间一条分隔条（拖它改比例、双击均分）。 */
@@ -234,13 +287,13 @@ function SplitView({ node, ctx }: { node: SplitNode; ctx: RenderContext }) {
         onDrag={(event) => {
           const ratio = ratioFrom(event)
           if (ratio === null) return
-          // 像素下限与比例钳制取更严者：嵌套切割时 0.15 连乘仍能切出几十像素的
-          // 废格（用户真实踩到），这一刀拦住它（`clampRatioForExtent` 的注释）
           const el = ref.current
           const rect = el?.getBoundingClientRect()
           const extent = node.axis === 'row' ? (rect?.width ?? 0) : (rect?.height ?? 0)
           const ui = useUiStore.getState()
-          ui.setLayout(setRatio(ui.layout, node.id, clampRatioForExtent(ratio, extent)))
+          ui.setLayout(
+            setRatio(ui.layout, node.id, clampRatioForExtent(ratio, extent, splitMins(node))),
+          )
         }}
         onNudge={(delta) => {
           const el = ref.current
@@ -250,7 +303,11 @@ function SplitView({ node, ctx }: { node: SplitNode; ctx: RenderContext }) {
           if (size <= 0) return
           const ui = useUiStore.getState()
           ui.setLayout(
-            setRatio(ui.layout, node.id, clampRatioForExtent(node.ratio + delta / size, size)),
+            setRatio(
+              ui.layout,
+              node.id,
+              clampRatioForExtent(node.ratio + delta / size, size, splitMins(node)),
+            ),
           )
         }}
         onEven={() => {
@@ -414,6 +471,16 @@ function LeafPane({ leaf, ctx }: { leaf: LeafNode; ctx: RenderContext }) {
       ? leaf.active
       : (visibleItems[0] ?? null)
 
+  // 左右折叠都只挂在内容叶：左在标签左侧、右在滚动区右侧（收起后原地变「展开」）。
+  const isContentLeaf = leaf.id === ctx.contentLeafId
+  const leftSide = isContentLeaf ? ctx.leftSide : null
+  const rightSide = isContentLeaf ? ctx.rightSide : null
+  const showTabs =
+    visibleItems.length > 0 ||
+    hostsWindowControls ||
+    leftSide !== null ||
+    rightSide !== null
+
   return (
     <section
       className={`mn-leaf${shown !== null && isViewModule(shown) ? ' mn-leaf--module' : ''}${narrow ? ' mn-leaf--narrow' : ''}`}
@@ -427,14 +494,16 @@ function LeafPane({ leaf, ctx }: { leaf: LeafNode; ctx: RenderContext }) {
       {/*
         右上叶**即使没有标签也渲染标签条**：三个窗口按钮住在它的右端（ADR-0038），
         空态下不能让它们消失；顺带它也是整窗唯一保证存在的拖动区。
-        其余格子沿用"有标签才有条"（空模块格不占一行）。
+        内容叶在只有折叠按钮、尚无笔记标签时也要有条。
       */}
-      {(visibleItems.length > 0 || hostsWindowControls) && (
+      {showTabs && (
         <LeafTabs
           leaf={leaf}
           items={visibleItems}
           dropIndex={dragging !== null && hint?.kind === 'tab' ? hint.index : null}
           windowControls={hostsWindowControls}
+          leftSide={leftSide}
+          rightSide={rightSide}
         />
       )}
       <div className="mn-leaf__content">
@@ -578,15 +647,16 @@ function ModuleContent({ id }: { id: ViewModuleId }) {
           */}
           <div className="mn-tree-bottom">
             <RecentVaults />
-            <button
-              type="button"
-              className="mn-icon-button"
-              aria-label="设置"
-              title="设置（Ctrl+,）"
-              onClick={() => useSettingsStore.getState().openSettings()}
-            >
-              <Icon name="settings" size="md" />
-            </button>
+            <Tooltip label="设置（Ctrl+,）">
+              <button
+                type="button"
+                className="mn-icon-button"
+                aria-label="设置"
+                onClick={() => useSettingsStore.getState().openSettings()}
+              >
+                <Icon name="settings" size="md" />
+              </button>
+            </Tooltip>
           </div>
         </>
       )

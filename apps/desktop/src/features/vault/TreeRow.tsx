@@ -67,6 +67,11 @@ export interface TreeRowProps {
    * 见 `FileTree` 里 `autoExpanded` 的注释。
    */
   autoExpanded: boolean
+  /**
+   * 分栏路径链上的这一项（打开右侧下一列的那个目录）。
+   * 与 `--selected` 分开：选中项可能已是末列的文件，但祖先列仍要画出整条路径。
+   */
+  pathHighlight?: boolean
 }
 
 /** 行的 DOM id（`aria-activedescendant` 用）。 */
@@ -85,6 +90,7 @@ export const TreeRow = memo(function TreeRow({
   dragging,
   dropState,
   autoExpanded,
+  pathHighlight = false,
 }: TreeRowProps) {
   const entry = row.node.entry
   const relPath = entry.relPath
@@ -95,9 +101,11 @@ export const TreeRow = memo(function TreeRow({
   /** 视觉上这一行的子项在不在下面（过滤时子项由过滤条件强制展开，与 store 无关）。 */
   const showsChildren = isExpanded || (entry.isDir && autoExpanded)
   const depth = row.depth ?? 0
+  // 路径链上的目录在分栏里视为"已打开"：用开着的文件夹图标，和 Finder 一致
+  const pathOpen = pathHighlight && entry.isDir
 
   const iconName = entry.isDir
-    ? showsChildren
+    ? showsChildren || pathOpen
       ? 'folderOpen'
       : 'folder'
     : markdown
@@ -112,9 +120,11 @@ export const TreeRow = memo(function TreeRow({
       id={treeRowId(relPath)}
       data-rel-path={relPath}
       data-drop-state={dropState === 'none' ? undefined : dropState}
+      data-path-highlight={pathHighlight ? '' : undefined}
       className={[
         'mn-tree-row',
         isSelected ? 'mn-tree-row--selected' : '',
+        pathHighlight && !isSelected ? 'mn-tree-row--path' : '',
         isOpen ? 'mn-tree-row--open' : '',
         dragging ? 'mn-tree-row--dragging' : '',
         dropState === 'valid' ? 'mn-tree-row--drop-valid' : '',
@@ -123,7 +133,7 @@ export const TreeRow = memo(function TreeRow({
         .filter((name) => name !== '')
         .join(' ')}
       role="treeitem"
-      aria-selected={isSelected}
+      aria-selected={isSelected || pathHighlight}
       aria-expanded={entry.isDir ? showsChildren : undefined}
       aria-level={depth + 1}
       style={{ paddingLeft: `${6 + depth * 14}px`, height }}

@@ -4,9 +4,9 @@
  *
  * 手写摘要按钮 + `ul` 浮层的时代没有键盘走位、Esc 与焦点管理 —— 现在行为层是
  * Base UI（与设置页的下拉同一套），外观走 `ui-controls.css` 的 `mn-select*`
- * （token 映射只有一份）。这里钉三件事：
- * 1. 两行选项（名 + 路径），当前库选中，单库也保留下拉；
- * 2. 点别行真的切换 Vault，点 × 只删除不切换；
+ * （token 映射只有一份）。这里钉：
+ * 1. 选项只显示库名（完整路径走 Tooltip），当前库选中；固定「管理 Vault」在底部；
+ * 2. 点别行真的切换 Vault；点「管理 Vault」关闭当前库回门闸；
  * 3. 空列表整块不渲染。
  */
 
@@ -65,18 +65,21 @@ describe('最近 Vault 下拉', () => {
     expect(container.innerHTML).toBe('')
   })
 
-  it('只有当前 Vault 时仍能展开 Select 并显示选中项', async () => {
+  it('只有当前 Vault 时仍能展开 Select，并带固定管理项', async () => {
     setRecentVaults([VAULTS[0] as RecentVaultEntry], 'C:\\VaultA')
     render(<RecentVaults />)
 
     fireEvent.click(screen.getByRole('combobox', { name: /切换 Vault/ }))
     const options = await screen.findAllByRole('option')
-    expect(options).toHaveLength(1)
+    expect(options).toHaveLength(2)
     expect(options[0]?.getAttribute('aria-selected')).toBe('true')
-    expect(screen.getByText('C:\\VaultA')).toBeTruthy()
+    expect(options[0]?.textContent).toContain('VaultA')
+    // 完整路径不进列表正文（悬停 Tooltip 才有）
+    expect(options[0]?.textContent).not.toContain('C:\\VaultA')
+    expect(options[1]?.textContent).toContain('管理 Vault')
   })
 
-  it('触发器显示当前 Vault；弹层包含全部库并标记当前选中项', async () => {
+  it('触发器显示当前 Vault；弹层包含全部库、管理项，并标记当前选中项', async () => {
     setRecentVaults(VAULTS, 'C:\\VaultA')
     render(<RecentVaults />)
 
@@ -84,11 +87,13 @@ describe('最近 Vault 下拉', () => {
 
     fireEvent.click(screen.getByRole('combobox', { name: /切换 Vault/ }))
     const options = await screen.findAllByRole('option')
-    expect(options).toHaveLength(2)
+    expect(options).toHaveLength(3)
     expect(options[0]?.getAttribute('aria-selected')).toBe('true')
-    expect(screen.getByText('C:\\VaultA')).toBeTruthy()
+    expect(options[0]?.textContent).toContain('VaultA')
+    expect(options[0]?.textContent).not.toContain('C:\\VaultA')
     expect(options[1]?.textContent).toContain('VaultB')
-    expect(options[1]?.textContent).toContain('C:\\VaultB')
+    expect(options[1]?.textContent).not.toContain('C:\\VaultB')
+    expect(options[2]?.textContent).toContain('管理 Vault')
   })
 
   it('点别行切换 Vault', async () => {
@@ -115,29 +120,49 @@ describe('最近 Vault 下拉', () => {
     expect(opened).toEqual(['C:\\VaultB'])
   })
 
-  it('当前库不在最近列表时，仍可选择所有最近的库', async () => {
+  it('点「管理 Vault」关闭当前库（回门闸起始页）', async () => {
+    const closed: string[] = []
+    const base = createMockAdapter()
+    setIpcAdapter({
+      kind: 'test',
+      async invoke<T>(method: string, args?: Record<string, unknown>): Promise<T> {
+        if (method === 'vault_close') closed.push('ok')
+        return base.invoke<T>(method, args)
+      },
+    })
+    setRecentVaults(VAULTS, 'C:\\VaultA')
+    render(<RecentVaults />)
+
+    fireEvent.click(screen.getByRole('combobox', { name: /切换 Vault/ }))
+    const options = await screen.findAllByRole('option')
+    const manage = options.find((el) => el.textContent?.includes('管理 Vault'))
+    expect(manage).toBeTruthy()
+    clickOption(manage as HTMLElement)
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(closed).toEqual(['ok'])
+    expect(useVaultStore.getState().info).toBeNull()
+  })
+
+  it('当前库不在最近列表时，仍可选择所有最近的库与管理项', async () => {
     setRecentVaults(VAULTS, 'C:\\OtherVault')
     render(<RecentVaults />)
 
     fireEvent.click(screen.getByRole('combobox', { name: /切换 Vault/ }))
-    expect(await screen.findAllByRole('option')).toHaveLength(2)
+    expect(await screen.findAllByRole('option')).toHaveLength(3)
     expect(screen.queryByText('当前 Vault')).toBeNull()
+    expect(screen.getByRole('option', { name: /管理 Vault/ })).toBeTruthy()
   })
 
-  it('点 × 只删除不切换；删空后整块消失', async () => {
+  it('弹层不提供行内移除按钮', async () => {
     setRecentVaults(VAULTS, 'C:\\VaultA')
     render(<RecentVaults />)
 
     fireEvent.click(screen.getByRole('combobox', { name: /切换 Vault/ }))
     await screen.findAllByRole('option')
-
-    // 删掉非当前那一条：当前 Vault 不动，列表少一条
-    fireEvent.click(screen.getByRole('button', { name: '从最近列表移除 VaultB' }))
-    expect(useVaultStore.getState().info?.rootPath).toBe('C:\\VaultA')
-    expect(useVaultStore.getState().recentVaults.map((item) => item.name)).toEqual(['VaultA'])
-
-    // 删掉最后一条：整块消失（空区域比灰入口诚实）
-    fireEvent.click(screen.getByRole('button', { name: '从最近列表移除 VaultA' }))
-    expect(document.querySelector('.mn-recent-vaults')).toBeNull()
+    expect(screen.queryByRole('button', { name: /从最近列表移除/ })).toBeNull()
   })
 })

@@ -98,6 +98,14 @@ export function subscribeVisibleHeading(onOrdinal: (ordinal: number) => void): (
   }
 }
 
+/** 系统要求少动效时退回瞬时滚动（目录跳转的平滑动画）。 */
+function scrollBehavior(): ScrollBehavior {
+  if (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    return 'auto'
+  }
+  return 'smooth'
+}
+
 /**
  * 滚到预览里的第 `ordinal` 个标题（0 起算）。
  *
@@ -111,8 +119,8 @@ export function scrollPreviewToHeading(ordinal: number): boolean {
   const target = headings[ordinal]
   if (target === undefined) return false
 
-  // `block: 'start'`：让标题贴在视口顶部（阅读时"从这一节开始读"才是直觉）
-  target.scrollIntoView({ block: 'start' })
+  // `block: 'start'`：标题贴视口顶部（"从这一节开始读"）；`behavior: smooth` 目录跳转要平滑
+  target.scrollIntoView({ block: 'start', behavior: scrollBehavior() })
 
   // 先摘掉上一次的高亮：同一个元素连续点两次时，不摘会因类名没变化而不重放动画
   target.classList.remove(OUTLINE_FLASH_CLASS)

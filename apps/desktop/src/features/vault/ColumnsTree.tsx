@@ -52,6 +52,16 @@ import {
 import type { DropTarget } from '@/domain/drag'
 import { computeWindow, scrollTopToReveal } from '@/domain/virtual-list'
 import { TreeRow } from './TreeRow'
+import {
+  COLUMN_WIDTH_DEFAULT,
+  COLUMN_WIDTH_MAX,
+  COLUMN_WIDTH_MIN,
+  columnWidthOf,
+  loadColumnWidths,
+  saveColumnWidths,
+  type ColumnWidths,
+  clampColumnWidth,
+} from './tree-column-widths'
 import { dropStateOf, FALLBACK_VIEWPORT_HEIGHT, OVERSCAN, ROW_HEIGHT } from './tree-metrics'
 import type { TreeDragHandlers } from './use-tree-drag'
 import type { TreeViewHandle, TreeViewProps } from './tree-view'
@@ -60,6 +70,12 @@ import './columns-tree.css'
 
 /** 空目录 / 被过滤光的列里的提示（与单栏空态同一口径：说清为什么空）。 */
 const EMPTY_COLUMN_TEXT = '（没有匹配的项）'
+
+/** 堆叠卡片静止态：每层祖先露边宽度（px）。 */
+export const STACK_PEEK_PX = 28
+
+/** 分栏画法：横排列 / 堆叠卡片（滚动摊开）。 */
+export type ColumnsPresentation = 'flat' | 'stack'
 
 export interface ColumnsTreeProps extends TreeViewProps {
   view: ColumnsView
@@ -73,6 +89,15 @@ export interface ColumnsTreeProps extends TreeViewProps {
    * 最顺手的一个动作）。根那一列的列头点了没有任何反应 —— 根没有上一级。
    */
   onColumnBack: () => void
+  /**
+   * 堆叠模式下点**非焦点列**的列头 / 露边 = 把焦点目录设成那一层
+   * （列链收到该层为止，相当于连按多次 `←`）。
+   */
+  onFocusColumn: (dirPath: string) => void
+  /** Vault 根：列宽偏好按它分桶（见 `tree-column-widths.ts`）。 */
+  vaultRoot: string
+  /** 默认 `flat`（经典 Miller）；`stack` = 左侧露边叠卡 + 横向滚动摊开。 */
+  presentation?: ColumnsPresentation
 }
 
 export function ColumnsTree({
@@ -87,6 +112,9 @@ export function ColumnsTree({
   onContextMenu,
   onKeyDown,
   onColumnBack,
+  onFocusColumn,
+  vaultRoot,
+  presentation = 'flat',
 }: ColumnsTreeProps) {
   /**
    * 每一列的滚动容器（`dirPath` → 元素）。
@@ -99,6 +127,33 @@ export function ColumnsTree({
   const [metrics, setMetrics] = useState<Record<string, { scrollTop: number; height: number }>>({})
   const pending = useRef(new Map<string, number>())
   const frames = useRef(new Map<string, number>())
+  const [widths, setWidths] = useState<ColumnWidths>(() => loadColumnWidths(vaultRoot))
+  const widthsRef = useRef(widths)
+  widthsRef.current = widths
+
+  // 换 Vault：读那一桶的列宽（与 `FileTree` 换焦点目录同一时机）。
+  useEffect(() => {
+    setWidths(loadColumnWidths(vaultRoot))
+  }, [vaultRoot])
+
+  const setColumnWidth = useCallback(
+    (path: string, px: number, persist: boolean): void => {
+      const nextWidth = clampColumnWidth(px)
+      setWidths((current) => {
+        if (columnWidthOf(current, path) === nextWidth) return current
+        const next = { ...current, [path]: nextWidth }
+        if (nextWidth === COLUMN_WIDTH_DEFAULT) delete next[path]
+        if (persist) saveColumnWidths(vaultRoot, next)
+        return next
+      })
+    },
+    [vaultRoot],
+  )
+
+  /** 拖动手松开时落盘（拖动中只改内存，避免每像素写 localStorage）。 */
+  const commitColumnWidths = useCallback((): void => {
+    saveColumnWidths(vaultRoot, widthsRef.current)
+  }, [vaultRoot])
 
   const measureColumn = useCallback((dirPath: string, element: HTMLDivElement) => {
     setMetrics((current) => {
@@ -219,10 +274,13 @@ export function ColumnsTree({
   /** 末列就是焦点目录（`columnsFor` 已经保证了这一点：不合法时它会回退）。 */
   const focusPath = view.directories[view.directories.length - 1] ?? ''
 
+  const stacked = presentation === 'stack'
+
   return (
     <div
-      className="mn-tree mn-tree--columns"
+      className={`mn-tree mn-tree--columns${stacked ? ' mn-tree--stack' : ''}`}
       data-tree-columns=""
+      data-tree-stack={stacked ? '' : undefined}
       role="tree"
       aria-label="文件树"
       tabIndex={0}
@@ -238,7 +296,12 @@ export function ColumnsTree({
               key={column.path}
               column={column}
               active={index === view.activeIndex}
+              last={index === view.columns.length - 1}
+              width={columnWidthOf(widths, column.path)}
+              stackIndex={stacked ? index : null}
               selected={selected}
+              /* 这一列里通向下一列的目录 = 列链上下一项（Finder 路径高亮） */
+              pathItem={view.directories[index + 1] ?? null}
               autoExpanded={autoExpanded}
               draggingPath={draggingPath}
               dropTarget={dropTarget}
@@ -249,17 +312,44 @@ export function ColumnsTree({
               onScroll={handleScroll}
               attach={attachColumn}
               onColumnBack={onColumnBack}
+              onFocusColumn={onFocusColumn}
+              onResizeWidth={(px) => setColumnWidth(column.path, px, false)}
+              onResizeCommit={commitColumnWidths}
+              onResizeReset={() => setColumnWidth(column.path, COLUMN_WIDTH_DEFAULT, true)}
             />
           ))}
         </div>
       </div>
       {/*
-        当前目录的完整路径贴在整块的底部：列宽固定 240px，深路径的列头只能用省略号，
+        当前目录的完整路径贴在整块的底部：列头在窄列里只能用省略号，
         而"我现在到底在哪一层"是分栏里最需要一眼看到的信息（浏览器的地址栏做的也是这件事）。
-        它放在横向滚动区**之外**（见 `columns-tree.css`），所以列的可见高度恒定。
+        分段画成面包屑，与列内 `--path` 高亮是同一条路径的两种读法。
       */}
-      <div className="mn-tree__columns-path" title={focusPath}>
-        {focusPath === '' ? 'Vault 根目录' : focusPath}
+      <div
+        className="mn-tree__columns-path"
+        title={focusPath === '' ? 'Vault 根目录' : focusPath}
+        data-columns-path={focusPath}
+      >
+        {focusPath === '' ? (
+          <span className="mn-tree__columns-path__seg">Vault 根目录</span>
+        ) : (
+          focusPath.split('/').map((segment, index, parts) => (
+            <span key={`${index}-${segment}`} className="mn-tree__columns-path__item">
+              {index > 0 && (
+                <span className="mn-tree__columns-path__sep" aria-hidden="true">
+                  /
+                </span>
+              )}
+              <span
+                className={`mn-tree__columns-path__seg${
+                  index === parts.length - 1 ? ' mn-tree__columns-path__seg--current' : ''
+                }`}
+              >
+                {segment}
+              </span>
+            </span>
+          ))
+        )}
       </div>
     </div>
   )
@@ -269,7 +359,14 @@ interface TreeColumnProps {
   column: ColumnView
   /** 焦点列（`↑/↓` 作用在它上面）。 */
   active: boolean
+  /** 末列：吃掉侧栏余量（`flex-grow`），偏好宽度只作下限。 */
+  last: boolean
+  width: number
+  /** 堆叠模式下的列序（`null` = 横排列，不用 sticky）。 */
+  stackIndex: number | null
   selected: string | null
+  /** 通向下一列的目录相对路径；末列没有下一项时为 `null`。 */
+  pathItem: string | null
   autoExpanded: boolean
   draggingPath: string | null
   dropTarget: DropTarget | null
@@ -281,11 +378,19 @@ interface TreeColumnProps {
   attach: (dirPath: string, element: HTMLDivElement | null) => ResizeObserver | null
   /** 点列头 = 回退一列（只对焦点列有意义）。 */
   onColumnBack: () => void
+  onFocusColumn: (dirPath: string) => void
+  onResizeWidth: (px: number) => void
+  onResizeCommit: () => void
+  onResizeReset: () => void
 }
 
 function TreeColumn({
   column,
   active,
+  last,
+  width,
+  stackIndex,
+  pathItem,
   autoExpanded,
   draggingPath,
   dropTarget,
@@ -296,9 +401,16 @@ function TreeColumn({
   onScroll,
   attach,
   onColumnBack,
+  onFocusColumn,
+  onResizeWidth,
+  onResizeCommit,
+  onResizeReset,
 }: TreeColumnProps) {
   /** 这一列的观察者：ref 回调每次挂/卸都要换一个，挂在 ref 里最省事。 */
   const observer = useRef<ResizeObserver | null>(null)
+  const columnEl = useRef<HTMLDivElement | null>(null)
+  const dragStart = useRef<{ x: number; width: number } | null>(null)
+  const [resizing, setResizing] = useState(false)
   const scrollTop = metrics?.scrollTop ?? 0
   const height = metrics?.height ?? 0
 
@@ -312,12 +424,82 @@ function TreeColumn({
   })
   const visibleRows = column.rows.slice(range.start, range.end)
   const empty = column.rows.length === 0
+  const label = column.path === '' ? '根目录' : (column.path.split('/').pop() ?? column.path)
+
+  const handleResizePointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    // 末列可能被 flex-grow 撑得比偏好更宽：下一次拖动以**可见宽度**为起点，避免"一拖就跳"。
+    const visual = columnEl.current?.getBoundingClientRect().width ?? width
+    dragStart.current = { x: event.clientX, width: visual }
+    setResizing(true)
+    if (typeof event.currentTarget.setPointerCapture === 'function') {
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId)
+      } catch {
+        // jsdom / 部分 WebView 没有指针捕获：拖动仍可用，只是移出手柄会丢事件
+      }
+    }
+  }
+
+  const handleResizePointerMove = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const start = dragStart.current
+    if (start === null) return
+    event.preventDefault()
+    onResizeWidth(start.width + (event.clientX - start.x))
+  }
+
+  const endResize = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (dragStart.current === null) return
+    dragStart.current = null
+    setResizing(false)
+    onResizeCommit()
+    if (typeof event.currentTarget.releasePointerCapture === 'function') {
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId)
+      } catch {
+        // 已经释放
+      }
+    }
+  }
+
+  const handleResizeKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    const step = event.shiftKey ? 48 : 16
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault()
+      onResizeWidth(width - step)
+      onResizeCommit()
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault()
+      onResizeWidth(width + step)
+      onResizeCommit()
+    } else if (event.key === 'Home') {
+      event.preventDefault()
+      onResizeReset()
+    }
+  }
+
+  const stacked = stackIndex !== null
 
   return (
     <div
-      className={`mn-tree-column${active ? ' mn-tree-column--active' : ''}`}
+      ref={columnEl}
+      className={`mn-tree-column${active ? ' mn-tree-column--active' : ''}${last ? ' mn-tree-column--last' : ''}${resizing ? ' mn-tree-column--resizing' : ''}`}
       data-column-path={column.path}
       data-column-active={active ? '' : undefined}
+      style={{
+        flex: last ? `1 0 ${width}px` : `0 0 ${width}px`,
+        width,
+        minWidth: width,
+        ...(stacked
+          ? {
+              position: 'sticky' as const,
+              left: stackIndex * STACK_PEEK_PX,
+              zIndex: stackIndex + 1,
+            }
+          : {}),
+      }}
       // 列的空白 = 这一列显示的目录（行自己会 stopPropagation）
       data-drop-root={
         dropTarget !== null && dropTarget.hostRelPath === column.path
@@ -326,22 +508,30 @@ function TreeColumn({
       }
     >
       {/*
-        列头是**导航**用的（点焦点列的列头回退一列），所以它不接管拖拽
-        —— 否则"拖到标题上"会落到一个用户根本没想放东西的地方。
-        完整路径放 `title`：列宽固定 240px，深路径必然被省略号截断（设计文档 §3）。
+        列头是**导航**用的：
+        - 横排列：只有焦点列可点（回退一列）；
+        - 堆叠：非焦点列也可点，把焦点收到那一层（露边回退）。
+        完整路径放 `title`：窄列必然被省略号截断（设计文档 §3）。
       */}
       <button
         type="button"
         className="mn-tree-column__header"
         title={column.path === '' ? 'Vault 根目录' : column.path}
         data-column-header={column.path}
-        // 只有焦点列可点（点别的列 = 回退到那一层，与"点它的空白处"语义冲突且不直观）
-        disabled={!active || column.path === ''}
+        disabled={
+          stacked
+            ? active && column.path === ''
+            : !active || column.path === ''
+        }
         onClick={() => {
-          if (active && column.path !== '') onColumnBack()
+          if (active) {
+            if (column.path !== '') onColumnBack()
+            return
+          }
+          if (stacked) onFocusColumn(column.path)
         }}
       >
-        {column.path === '' ? '根目录' : (column.path.split('/').pop() ?? column.path)}
+        {label}
       </button>
       <div
         className="mn-tree-column__scroll"
@@ -373,6 +563,7 @@ function TreeColumn({
                   onDrop={drag.handleDrop}
                   dragging={draggingPath === node.entry.relPath}
                   autoExpanded={autoExpanded}
+                  pathHighlight={pathItem !== null && pathItem === node.entry.relPath}
                   dropState={dropStateOf(dropTarget, node.entry.relPath)}
                 />
               ))}
@@ -387,6 +578,33 @@ function TreeColumn({
       */}
       {column.truncated && !empty && (
         <div className="mn-tree-column__truncated">还有项目被过滤挡住了</div>
+      )}
+      {/*
+        列右缘拖宽：命中区比可见线宽，避免点不中。双击 / Home = 恢复默认 240。
+        堆叠（露边叠卡）下不放手柄：列被 sticky 压成窄条时拖宽没有意义，
+        切回横排列再调。不复用布局树的 `.mn-splitter`。
+      */}
+      {stackIndex === null && (
+        <div
+          className={`mn-tree-column__resize${resizing ? ' mn-tree-column__resize--dragging' : ''}`}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={`调整「${label}」列宽`}
+          aria-valuenow={width}
+          aria-valuemin={COLUMN_WIDTH_MIN}
+          aria-valuemax={COLUMN_WIDTH_MAX}
+          tabIndex={0}
+          data-column-resize={column.path}
+          onPointerDown={handleResizePointerDown}
+          onPointerMove={handleResizePointerMove}
+          onPointerUp={endResize}
+          onPointerCancel={endResize}
+          onDoubleClick={(event) => {
+            event.preventDefault()
+            onResizeReset()
+          }}
+          onKeyDown={handleResizeKeyDown}
+        />
       )}
     </div>
   )

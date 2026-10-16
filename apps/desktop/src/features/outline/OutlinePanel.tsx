@@ -201,7 +201,7 @@ export function OutlinePanel() {
       if (viewMode !== 'edit') setViewMode('edit')
       // 切到编辑视图后编辑器要等到下一次提交才存在，因此排到下一帧再跳
       requestAnimationFrame(() => {
-        jumpToLineInOpenNote(heading.line)
+        jumpToLineInOpenNote(heading.line, { smooth: true })
       })
     },
     [viewMode, setViewMode],

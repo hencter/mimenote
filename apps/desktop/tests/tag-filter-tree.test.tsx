@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { openNote } from '@/app/actions'
 import { FileTree } from '@/features/vault/FileTree'
+import { TagFilterControl } from '@/features/vault/TagFilterControl'
 import { TreeToolbar } from '@/features/vault/TreeToolbar'
 import { ipc, setIpcAdapter } from '@/ipc/client'
 import { createMockAdapter, type MockAdapter } from '@/ipc/mock-adapter'
@@ -93,11 +94,12 @@ function resetStores(): void {
   })
 }
 
-/** 渲染"侧栏"的两半：工具栏（含标签过滤控件）+ 文件树。 */
+/** 渲染"侧栏"：工具栏 + 标签过滤（已从工具栏拆出，测试里单独挂）+ 文件树。 */
 function renderSidebar(): HTMLElement {
   const { container } = render(
     <>
       <TreeToolbar />
+      <TagFilterControl />
       <FileTree />
     </>,
   )

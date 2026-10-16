@@ -251,66 +251,26 @@ pub async fn note_write(
     force: bool,
     stamp_times: Option<bool>,
 ) -> Result<WriteOutcome, IpcError> {
+    // 代际和根一起在进后台之前记下。写的是这个根上的文件；索引和条目表只在
+    // 代际没变时更新，否则会把 A 的保存写进已经打开的 B。
+    let opened_session = state.session();
     let root = state.vault_root()?;
     let app = Arc::clone(state.inner());
     let rel = rel_path.clone();
 
     let (size_bytes, mtime_ms, written_in_ms) = run_blocking(move || {
-        // 写锁：把「读取当前 mtime → 比对 → 原子写」变成临界区，
-        // 避免两次并发保存互相覆盖（见 ADR-0004）。
-        let _write_guard = app.write_guard();
-
-        let path = root.resolve_for_write(&rel)?;
-        if path.is_dir() {
-            return Err(Error::IsDirectory(rel));
-        }
-        if let Some(base) = base_mtime_ms {
-            let current = mn_core::atomic::path_mtime_ms(&path)?;
-            if !force {
-                if let Some(cur) = current {
-                    if cur != base {
-                        return Err(Error::Conflict {
-                            current_mtime_ms: cur,
-                        });
-                    }
-                }
-            }
-        }
-
-        let started = Instant::now();
-        // 时间挂钩在令牌校验**之后**、写盘**之前**：冲突时不写盘，也就不该碰时间；
-        // 挂钩只改 frontmatter 两行，冲突判据（mtime）不受影响
-        let text = if stamp_times == Some(true) {
-            stamp_save_timestamps(&text, &path)
-        } else {
-            text
-        };
-        write_atomic(&path, text.as_bytes())?;
-        let written = started.elapsed().as_millis() as u64;
-
-        // 链接索引增量更新：与写在同一个后台任务里完成，避免为索引再复制一份正文
-        indexer::update_note(&app, &rel, &text);
-
-        let meta = std::fs::metadata(&path).map_err(|e| Error::io(&path, e))?;
-        Ok((
-            meta.len(),
-            mn_core::atomic::mtime_ms(&meta).unwrap_or(0),
-            written,
-        ))
+        write_note_in(
+            &app,
+            &root,
+            &rel,
+            text,
+            base_mtime_ms,
+            force,
+            stamp_times,
+            opened_session,
+        )
     })
     .await?;
-
-    state.update_vault(|ctx| {
-        ctx.upsert(EntryMeta {
-            rel_path: rel_path.clone(),
-            name: file_name_of(&rel_path),
-            is_dir: false,
-            size_bytes,
-            mtime_ms: Some(mtime_ms),
-            ext: ext_of(&rel_path),
-        })
-    });
-    // 链接索引在写入后台任务里已增量更新（见上面的 indexer::update_note）
 
     log::debug!("保存 {rel_path}（{size_bytes} 字节，写入 {written_in_ms}ms）");
     Ok(WriteOutcome {
@@ -319,6 +279,76 @@ pub async fn note_write(
         size_bytes,
         written_in_ms,
     })
+}
+
+/// 保存的临界区：令牌校验 → 原子写 → 增量更新索引。
+///
+/// 带了基线令牌就表示"更新这一篇已经存在的笔记"。磁盘上已经没有它时必须返回
+/// [`Error::NotFound`]，不能走 `write_atomic` —— 那会在旧路径把文件重建出来
+/// （外部删除或移走之后，自动保存等于把笔记复活）。没有令牌的写入仍可创建，
+/// 那是显式的无版本写入；`force` 只覆盖"文件还在、但 mtime 变了"，不覆盖"文件没了"。
+#[allow(clippy::too_many_arguments)] // 这些参数都是这一次保存的输入，拆结构体不会少一次传递
+fn write_note_in(
+    app: &AppState,
+    root: &VaultRoot,
+    rel: &str,
+    text: String,
+    base_mtime_ms: Option<u64>,
+    force: bool,
+    stamp_times: Option<bool>,
+    opened_session: u64,
+) -> mn_core::Result<(u64, u64, u64)> {
+    // 写锁：把「读取当前 mtime → 比对 → 原子写」变成临界区，
+    // 避免两次并发保存互相覆盖（见 ADR-0004）。
+    let _write_guard = app.write_guard();
+
+    let path = root.resolve_for_write(rel)?;
+    if path.is_dir() {
+        return Err(Error::IsDirectory(rel.to_string()));
+    }
+    if let Some(base) = base_mtime_ms {
+        match mn_core::atomic::path_mtime_ms(&path)? {
+            None => return Err(Error::NotFound(rel.to_string())),
+            Some(cur) if !force && cur != base => {
+                return Err(Error::Conflict {
+                    current_mtime_ms: cur,
+                });
+            }
+            Some(_) => {}
+        }
+    }
+
+    let started = Instant::now();
+    // 时间挂钩在令牌校验**之后**、写盘**之前**：冲突时不写盘，也就不该碰时间；
+    // 挂钩只改 frontmatter 两行，冲突判据（mtime）不受影响
+    let text = if stamp_times == Some(true) {
+        stamp_save_timestamps(&text, &path)
+    } else {
+        text
+    };
+    write_atomic(&path, text.as_bytes())?;
+    let written = started.elapsed().as_millis() as u64;
+
+    let meta = std::fs::metadata(&path).map_err(|e| Error::io(&path, e))?;
+    let size_bytes = meta.len();
+    let mtime_ms = mn_core::atomic::mtime_ms(&meta).unwrap_or(0);
+    // 仍拿着写锁：换库也要这把锁，所以这里看到的代际不会在更新半截时被换掉。
+    if app.session() == opened_session {
+        indexer::update_note(app, rel, &text);
+        app.update_vault(|ctx| {
+            ctx.upsert(EntryMeta {
+                rel_path: rel.to_string(),
+                name: file_name_of(rel),
+                is_dir: false,
+                size_bytes,
+                mtime_ms: Some(mtime_ms),
+                ext: ext_of(rel),
+            })
+        });
+    } else {
+        log::debug!("保存完成但 Vault 会话已切换，不更新当前索引与条目表：{rel}");
+    }
+    Ok((size_bytes, mtime_ms, written))
 }
 
 /// 新建笔记：唯一命名，写入初始标题。
@@ -332,12 +362,14 @@ pub async fn note_create(
     title: String,
     stamp_times: Option<bool>,
 ) -> Result<NoteContent, IpcError> {
+    let opened_session = state.session();
     let root = state.vault_root()?;
     let stamp = stamp_times == Some(true);
-    let (entry, note) =
-        run_blocking(move || create_note(&root, &parent_rel, &title, stamp)).await?;
-    state.update_vault(|ctx| ctx.upsert(entry));
-    indexer::update_note(&state, &note.rel_path, &note.text);
+    let app = Arc::clone(state.inner());
+    let note = run_blocking(move || {
+        create_note_locked(&app, &root, &parent_rel, &title, stamp, opened_session)
+    })
+    .await?;
     log::info!("新建笔记：{}", note.rel_path);
     Ok(note)
 }
@@ -626,7 +658,6 @@ fn create_note(
     }
 
     let stem = sanitize_file_stem(title);
-    let (rel, path) = unique_note_path(root, &parent, &stem)?;
 
     // 有标题就写入一行 H1 作为初始内容；标题为空（或全是空白）时留空文件
     let trimmed = title.trim();
@@ -653,8 +684,23 @@ fn create_note(
         body
     };
 
-    write_atomic(&path, body.as_bytes())?;
-    let meta = std::fs::metadata(&path).map_err(|e| Error::io(&path, e))?;
+    // 名字选择和 create_new 必须在同一把写锁里（见 create_note_locked）。
+    // 锁外的进程仍可能抢先占住路径，所以落盘用 create_new，撞上了就换下一个名字。
+    let mut created = None;
+    for _ in 0..1000 {
+        let (rel, path) = unique_note_path(root, &parent, &stem)?;
+        match write_new(&path, body.as_bytes()) {
+            Ok(()) => {
+                let meta = std::fs::metadata(&path).map_err(|e| Error::io(&path, e))?;
+                created = Some((rel, meta));
+                break;
+            }
+            Err(Error::AlreadyExists(_)) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let (rel, meta) =
+        created.ok_or_else(|| Error::AlreadyExists(format!("{stem}.md 的重名尝试超过 1000 次")))?;
     let mtime_ms = mn_core::atomic::mtime_ms(&meta).unwrap_or(0);
 
     let entry = EntryMeta {
@@ -672,6 +718,43 @@ fn create_note(
         mtime_ms,
     };
     Ok((entry, note))
+}
+
+/// 只创建、不覆盖。`AlreadyExists` 表示路径在 `exists` 检查之后被别人占住了。
+fn write_new(path: &std::path::Path, bytes: &[u8]) -> mn_core::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                Error::AlreadyExists(path.display().to_string())
+            } else {
+                Error::io(path, error)
+            }
+        })?;
+    std::io::Write::write_all(&mut file, bytes).map_err(|error| Error::io(path, error))?;
+    file.sync_all().map_err(|error| Error::io(path, error))?;
+    Ok(())
+}
+
+/// 新建的临界区：写锁包住选名和 create_new。会话变了仍把文件写进捕获到的那个库，
+/// 但不更新当前会话的索引和条目表。
+fn create_note_locked(
+    app: &AppState,
+    root: &VaultRoot,
+    parent_rel: &str,
+    title: &str,
+    stamp_times: bool,
+    opened_session: u64,
+) -> mn_core::Result<NoteContent> {
+    let _write_guard = app.write_guard();
+    let (entry, note) = create_note(root, parent_rel, title, stamp_times)?;
+    if app.session() == opened_session {
+        indexer::update_note(app, &note.rel_path, &note.text);
+        app.update_vault(|ctx| ctx.upsert(entry));
+    }
+    Ok(note)
 }
 
 /// 在 `parent` 下为 `stem` 找一个不冲突的 `.md` 路径。
@@ -1002,6 +1085,122 @@ mod tests {
                 .code(),
             mn_core::ErrorCode::NotADirectory
         );
+    }
+
+    #[test]
+    fn save_with_a_baseline_does_not_recreate_a_deleted_note() {
+        let (dir, state) = state_with(&[("甲.md", "原文\n")]);
+        let token = token_of(dir.path(), "甲.md");
+        std::fs::remove_file(dir.path().join("甲.md")).unwrap();
+        let root = state.vault_root().unwrap();
+
+        for force in [false, true] {
+            let err = write_note_in(
+                &state,
+                &root,
+                "甲.md",
+                "新内容\n".to_string(),
+                Some(token),
+                force,
+                None,
+                state.session(),
+            )
+            .unwrap_err();
+            assert_eq!(err.code(), mn_core::ErrorCode::NotFound);
+            assert!(
+                !dir.path().join("甲.md").exists(),
+                "force={force} 时也不能在旧路径把已删除的笔记写回来"
+            );
+        }
+    }
+
+    #[test]
+    fn save_with_a_matching_baseline_still_overwrites() {
+        let (dir, state) = state_with(&[("甲.md", "原文\n")]);
+        let token = token_of(dir.path(), "甲.md");
+        let root = state.vault_root().unwrap();
+        write_note_in(
+            &state,
+            &root,
+            "甲.md",
+            "改过\n".to_string(),
+            Some(token),
+            false,
+            None,
+            state.session(),
+        )
+        .unwrap();
+        assert_eq!(read_file(dir.path(), "甲.md"), "改过\n");
+    }
+
+    #[test]
+    fn a_save_started_on_the_old_vault_does_not_land_in_the_new_one() {
+        let (dir_a, state) = state_with(&[("甲.md", "原文\n")]);
+        let opened = state.session();
+        let root_a = state.vault_root().unwrap();
+        let token = token_of(dir_a.path(), "甲.md");
+
+        let dir_b = tempfile::tempdir().unwrap();
+        std::fs::write(dir_b.path().join("乙.md"), "乙\n").unwrap();
+        let root_b = mn_core::VaultRoot::open(dir_b.path()).unwrap();
+        let report =
+            mn_core::scanner::scan(root_b.path(), &mn_core::scanner::ScanOptions::default())
+                .unwrap();
+        state.set_vault(crate::state::VaultCtx::new(
+            root_b,
+            mn_core::scanner::ScanOptions::default(),
+            report,
+        ));
+        indexer::reset(&state);
+
+        write_note_in(
+            &state,
+            &root_a,
+            "甲.md",
+            "改了\n".to_string(),
+            Some(token),
+            false,
+            None,
+            opened,
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir_a.path().join("甲.md")).unwrap(),
+            "改了\n"
+        );
+        let polluted = state
+            .with_vault(|ctx| Ok(ctx.entries.contains_key("甲.md")))
+            .unwrap();
+        assert!(!polluted, "旧库的保存不能出现在新库的条目表里");
+    }
+
+    #[test]
+    fn concurrent_creates_keep_every_note() {
+        let (dir, state) = state_with(&[]);
+        let state = std::sync::Arc::new(state);
+        let root = state.vault_root().unwrap();
+        let opened = state.session();
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let state = std::sync::Arc::clone(&state);
+            let root = root.clone();
+            handles.push(std::thread::spawn(move || {
+                create_note_locked(&state, &root, "", "同名", false, opened).unwrap()
+            }));
+        }
+        let mut paths = Vec::new();
+        for handle in handles {
+            let note = handle.join().unwrap();
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join(&note.rel_path)).unwrap(),
+                note.text
+            );
+            paths.push(note.rel_path);
+        }
+        paths.sort();
+        paths.dedup();
+        assert_eq!(paths.len(), 8, "并发新建不能互相覆盖：{paths:?}");
     }
 
     #[test]

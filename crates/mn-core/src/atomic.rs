@@ -105,9 +105,15 @@ fn is_cross_device(error: &std::io::Error) -> bool {
 ///
 /// 用 `read_dir` 的 `file_type()` 而不是逐路径 `symlink_metadata`：后者在 Windows 上每个
 /// 文件都要重新打开句柄（1 万文件实测 14 倍代价，见 architecture.md §6）。符号链接按**链接本身**
-/// 复制而不跟随 —— 跟随会把 Vault 之外的内容也搬进来，且可能成环。
+/// 复制而不跟随 —— `fs::copy` 会解引用，把链接目标的内容写进 Vault；指向外部的链接就会把
+/// 外面的文件搬进来，随后源目录被删，原链接也没了。保留不了链接时直接失败，源目录不动。
+///
+/// 复制中途失败时撤掉这次创建的目标树。留下半棵树的话，重试会因为目标已存在而失败，
+/// 用户也分不清那是不是一次成功的移动。
 fn copy_dir_then_remove(from: &Path, to: &Path) -> Result<MoveMethod> {
-    copy_dir(from, to)?;
+    if let Err(error) = copy_dir(from, to) {
+        return Err(rollback_copied_tree(to, error));
+    }
     if let Err(error) = fs::remove_dir_all(from) {
         if let Err(cleanup) = fs::remove_dir_all(to) {
             return Err(Error::Io {
@@ -131,13 +137,62 @@ fn copy_dir(from: &Path, to: &Path) -> Result<()> {
         let source = entry.path();
         let target = to.join(entry.file_name());
         let file_type = entry.file_type().map_err(|e| Error::io(&source, e))?;
-        if file_type.is_dir() {
+        // 先看链接：指向目录的符号链接 `is_dir()` 为假（不跟随），但若漏判，
+        // 下一支会把它当普通文件交给 `fs::copy`，那一步会把目标内容复制进来。
+        if file_type.is_symlink() {
+            copy_symlink(&source, &target)?;
+        } else if file_type.is_dir() {
             copy_dir(&source, &target)?;
         } else {
             fs::copy(&source, &target).map_err(|e| Error::io(&target, e))?;
         }
     }
     Ok(())
+}
+
+/// 复制失败后删掉目标树。删不掉时把残留路径写进错误：源还在，但目标上可能有半份内容。
+fn rollback_copied_tree(to: &Path, error: Error) -> Error {
+    if !to.exists() {
+        return error;
+    }
+    match fs::remove_dir_all(to) {
+        Ok(()) => error,
+        Err(cleanup) => Error::Io {
+            path: to.to_string_lossy().into_owned(),
+            source: std::io::Error::new(
+                cleanup.kind(),
+                format!("复制目录失败（{error}），且无法删除残留目标（{cleanup}）"),
+            ),
+        },
+    }
+}
+
+/// 按链接本身复制：新链接的目标字符串与原来逐字相同（相对路径不改写成绝对路径）。
+fn copy_symlink(from: &Path, to: &Path) -> Result<()> {
+    let original = fs::read_link(from).map_err(|e| Error::io(from, e))?;
+    create_symlink(from, &original, to).map_err(|error| Error::Io {
+        path: to.to_string_lossy().into_owned(),
+        source: std::io::Error::new(
+            error.kind(),
+            format!("无法保留符号链接，已拒绝跟随目标复制：{error}"),
+        ),
+    })
+}
+
+#[cfg(unix)]
+fn create_symlink(_source: &Path, original: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(original, link)
+}
+
+#[cfg(windows)]
+fn create_symlink(source: &Path, original: &Path, link: &Path) -> std::io::Result<()> {
+    // 只为了在 Windows 上挑选 `symlink_dir` / `symlink_file`。写进新链接的仍是
+    // `read_link` 拿到的原始目标。目标不存在时按文件链接处理（目录链接的目标一般还在）。
+    if fs::metadata(source).is_ok_and(|meta| meta.is_dir()) {
+        std::os::windows::fs::symlink_dir(original, link)
+    } else {
+        std::os::windows::fs::symlink_file(original, link)
+    }
 }
 
 /// 复制 + 删源（回退路径）。成功返回 [`MoveMethod::CopyAndDelete`]。
@@ -406,6 +461,81 @@ mod tests {
         assert!(!from.exists());
         assert_eq!(fs::read_to_string(to.join("甲.md")).unwrap(), "# 甲\n");
         assert_eq!(fs::read_to_string(to.join("子/乙.md")).unwrap(), "# 乙\n");
+    }
+
+    #[test]
+    fn copy_dir_fallback_keeps_a_file_symlink_instead_of_copying_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("项目");
+        fs::create_dir_all(&from).unwrap();
+        fs::write(from.join("真身.md"), "链接指向的内容\n").unwrap();
+        let link = from.join("链接.md");
+        #[cfg(windows)]
+        let created = std::os::windows::fs::symlink_file("真身.md", &link).is_ok();
+        #[cfg(unix)]
+        let created = std::os::unix::fs::symlink("真身.md", &link).is_ok();
+        if !created {
+            eprintln!("跳过：当前环境不允许创建符号链接（需要开发者模式/管理员）");
+            return;
+        }
+
+        let to = dir.path().join("归档");
+        copy_dir(&from, &to).unwrap();
+
+        let copied = to.join("链接.md");
+        assert!(
+            fs::symlink_metadata(&copied)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "回退路径必须留下链接本身，不能把目标文件的内容复制成普通文件"
+        );
+        assert_eq!(fs::read_link(&copied).unwrap(), PathBuf::from("真身.md"));
+        assert_eq!(
+            fs::read_to_string(&copied).unwrap(),
+            "链接指向的内容\n",
+            "相对链接在新目录里仍然指向一起复制过去的那个文件"
+        );
+        assert!(from.exists(), "只调用 copy_dir 时源目录还在");
+    }
+
+    #[test]
+    fn copy_dir_fallback_removes_the_partial_target_when_a_copy_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("项目");
+        fs::create_dir_all(&from).unwrap();
+        fs::write(from.join("甲.md"), "# 甲\n").unwrap();
+        // 目标位置已经是目录：`fs::copy` 写不进去。复制会先建好 `归档/`，失败后必须拆掉。
+        let to = dir.path().join("归档");
+        fs::create_dir_all(&to).unwrap();
+        fs::create_dir_all(to.join("甲.md")).unwrap();
+
+        assert!(copy_dir_then_remove(&from, &to).is_err());
+        assert_eq!(fs::read_to_string(from.join("甲.md")).unwrap(), "# 甲\n");
+        assert!(
+            !to.exists(),
+            "复制失败后不能留下半棵目标树，否则重试会撞上已存在的目录"
+        );
+    }
+
+    #[test]
+    fn copy_dir_fallback_names_the_leftover_when_the_target_cannot_be_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("项目");
+        fs::create_dir_all(&from).unwrap();
+        fs::write(from.join("甲.md"), "# 甲\n").unwrap();
+        // `归档` 是普通文件：建目录失败，随后 `remove_dir_all` 也删不掉它。
+        let to = dir.path().join("归档");
+        fs::write(&to, "占位").unwrap();
+
+        let err = copy_dir_then_remove(&from, &to).unwrap_err();
+        assert_eq!(fs::read_to_string(from.join("甲.md")).unwrap(), "# 甲\n");
+        assert_eq!(fs::read_to_string(&to).unwrap(), "占位");
+        let message = err.to_string();
+        assert!(
+            message.contains("残留目标"),
+            "清不掉目标时必须点名残留：{message}"
+        );
     }
 
     #[test]
