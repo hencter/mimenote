@@ -219,7 +219,7 @@ ADR-0021 把图谱做成了"以当前笔记为圆心的关系图 + canvas 卡片
 而**加热不会留下永久重叠的终态**：再 `settle()` 一次仍然零重叠（有测试钉住这两条）。
 宿主的 `data-graph-overlaps` 是"当前这一帧"的数字，读数随拖动变化是正常的。
 
-### 5. 测试（`tests/graph-drag.test.tsx` 5 条 + `tests/graph-force.test.ts` 的 `heat` 组 5 条）
+### 5. 测试（`tests/features/graph/graph-drag.test.tsx` 5 条 + `tests/features/graph/graph-force.test.ts` 的 `heat` 组 5 条）
 
 新用例全部落在**用户看得见的量**上：拖动时圆心卡片的世界矩形跟着光标走（含 ±0.5px 的量化容差）、
 按"画出来的标题位置"点下去抓住的必须是那一张（标题 → 路径逐字断言）、拖到另一张上时对方让开且

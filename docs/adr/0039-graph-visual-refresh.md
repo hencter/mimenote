@@ -68,9 +68,9 @@
 
 ## 验证
 
-- `tests/graph-paint.test.ts`：点阵在正常缩放画出、缩得太小时整层跳过；
+- `tests/features/graph/graph-paint.test.ts`：点阵在正常缩放画出、缩得太小时整层跳过；
   光晕的三种状态（root 0.16 / focused 0.35 / 普通卡片没有）与线宽；
   既有的绘制顺序、确定性与调色板契约不变（33 条）；
-- `tests/graph.test.tsx` / `e2e/ui.e2e.test.ts`：HUD 的 DOM 与 `data-*` 抓手不变，
+- `tests/features/graph/graph.test.tsx` / `e2e/ui.e2e.test.ts`：HUD 的 DOM 与 `data-*` 抓手不变，
   图谱交互链路（模式切换、深度、张力、预设、定位、卡片菜单）全绿；
 - 全量：`pnpm test` 95 文件 / 1712 条、UI E2E 65 条。

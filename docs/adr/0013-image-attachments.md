@@ -67,7 +67,7 @@ CodeMirror 6 的 DOM 事件分发是：**插件提供的处理器排在它内置
 - **其余**（纯文本粘贴、编辑器内部文本拖动）→ 返回 `false`，行为与加这个功能之前**逐字一致**。
 
 这就是"为什么不自己在 `contentDOM` 上 `addEventListener`"：那样两个处理器会**同时**跑，
-一次粘贴被处理两遍。这条规则有专门的测试（`tests/editor-attachments.test.tsx` 里
+一次粘贴被处理两遍。这条规则有专门的测试（`tests/features/editor/editor-attachments.test.tsx` 里
 "粘贴文本不触发附件链路"那一条）。
 
 ### 4. 命名与去重规则（纯函数，可单测）

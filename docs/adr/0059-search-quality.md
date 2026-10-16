@@ -29,7 +29,7 @@
 `budget = clamp(limit × 8, limit, 1024)` 行，再在内存里按 `rel_path` 计数、
 每篇只保留前 `HITS_PER_NOTE = 5` 条，截到 `limit` 条。
 
-- **为什么是 5**：前端 Mock 的 `MOCK_HITS_PER_NOTE = 5` 与 `apps/desktop/tests/search.test.tsx`
+- **为什么是 5**：前端 Mock 的 `MOCK_HITS_PER_NOTE = 5` 与 `apps/desktop/tests/features/palette/search.test.tsx`
   的用例已经把"每篇 5 条"写进了前端可见行为。这不是新造的排序口径，而是**修 Mock/真机不一致** ——
   真机现在比 Mock 差（一篇吃掉 50 条），修完之后两边一致。
 - **为什么多取而不是在 SQL 里做**：实测搬运行数不要钱 —— `LIMIT 50 / 250 / 1000` 分别是

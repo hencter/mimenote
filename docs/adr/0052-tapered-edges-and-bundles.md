@@ -59,9 +59,9 @@ ADR-0036 把连线搬进 canvas 之后留了三件事："渐细笔触取代箭�
 ## 代价与已知边界
 
 1. **实线边不再 `stroke`**（只有一个 `fill`）：任何"数描边"的自动化都要改成"数填充的多边形"。
-   本轮把 `tests/graph.test.tsx` 的记录型画布扩了 `fill` 记录，并加了 `centerlineOfRibbon()`
+   本轮把 `tests/features/graph/graph.test.tsx` 的记录型画布扩了 `fill` 记录，并加了 `centerlineOfRibbon()`
    （从带子的多边形还原中心线）—— 悬停落点、张力对照那几条用例因此仍然精确落在中心线上。
-   `tests/graph-paint.test.ts` 里"连线先画"那条也从"数 stroke"改成"描边或填充，且颜色是连线色"。
+   `tests/features/graph/graph-paint.test.ts` 里"连线先画"那条也从"数 stroke"改成"描边或填充，且颜色是连线色"。
 2. 带子是**采样折线**的近似（每条曲线段 16 个点）：与 SVG 版的贝塞尔描边有亚像素差异。
    **命中判据不受影响** —— `edgeAt` 读的仍是几何层给的精确 `commands`。
 3. 束内**主笔触之外**的那几条不在命中判据里（`commands` 只回主笔触）：它们离主笔触

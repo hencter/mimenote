@@ -129,7 +129,7 @@ total=120，返回 50 条，其中不同笔记 1 篇；返回的前 5 条 = floo
 const MOCK_HITS_PER_NOTE = 5
 ```
 
-`apps/desktop/tests/search.test.tsx` 里还有一条用例专门钉"每篇最多 5 条命中，但 total 是全部命中数"。
+`apps/desktop/tests/features/palette/search.test.tsx` 里还有一条用例专门钉"每篇最多 5 条命中，但 total 是全部命中数"。
 所以现状是 **Mock 比真机好**：真机实现从来没有这一层（`QUERY_MATCH` 直接 `LIMIT ?2`）。
 这是本轮最该修的一条。
 

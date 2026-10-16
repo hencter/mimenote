@@ -107,7 +107,7 @@ canvas 里没有"元素"可挂提示，悬停只能自己算：`edgeAt(painted, 
 
 ## 测试与判据的家
 
-新增 `tests/graph-edge-paint.test.ts`（31 条）钉住"画笔按什么规则画"：路径串的语法（含隐式重复、
+新增 `tests/features/graph/graph-edge-paint.test.ts`（31 条）钉住"画笔按什么规则画"：路径串的语法（含隐式重复、
 写错要抛错）、弧展开后采样点真的落在弧上、采样与命中距离、终点切向、样式四档、
 两层的绘制内容（线宽/图案/箭头三角形/虚影圆与目标名）、记录的字段、`save`/`restore` 配平、
 确定性，以及**两段首尾逐坐标相接**（ADR-0023 的硬纪律，现在直接读记录）。
@@ -116,12 +116,12 @@ canvas 里没有"元素"可挂提示，悬停只能自己算：`edgeAt(painted, 
 
 | 判据 | 家 |
 | --- | --- |
-| 画笔按什么规则画（样式、两层内容、几何） | `tests/graph-edge-paint.test.ts`（新） |
-| 三段绘制顺序（引线在卡片之后） | `tests/graph-paint.test.ts` |
-| 组件把哪些边交给画笔（提亮/淡化/色相/弧/引线/悬空名/鼓出比） | `tests/graph.test.tsx` 的 `data-graph-edge-*` 断言 |
+| 画笔按什么规则画（样式、两层内容、几何） | `tests/features/graph/graph-edge-paint.test.ts`（新） |
+| 三段绘制顺序（引线在卡片之后） | `tests/features/graph/graph-paint.test.ts` |
+| 组件把哪些边交给画笔（提亮/淡化/色相/弧/引线/悬空名/鼓出比） | `tests/features/graph/graph.test.tsx` 的 `data-graph-edge-*` 断言 |
 | 张力旋钮真的改变几何（相对量 = `tension ÷ 4`） | `e2e/ui.e2e.test.ts`（读 `data-graph-edge-bulges`） |
 | 悬空边标出目标名、选中卡片后两种边都在 | `e2e/real-app.e2e.test.ts` 与 `e2e/ui.e2e.test.ts` |
-| 连线形状（弧 / 径向切线 / 张力）本身 | `tests/edge-routing.test.ts`、`tests/graph-link-edge.test.ts`（未动） |
+| 连线形状（弧 / 径向切线 / 张力）本身 | `tests/features/graph/edge-routing.test.ts`、`tests/features/graph/graph-link-edge.test.ts`（未动） |
 
 顺带修掉一条**已知抖动**：`graph.test.tsx` 的「仅标题」用例原来是"清空记录 → 点开关 → 立刻断言
 没有正文"，而清空之后到断言之间可能插进一帧**切换前**的重绘（漂浮/力场落定都会推帧）。

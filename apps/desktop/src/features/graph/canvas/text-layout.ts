@@ -12,7 +12,7 @@
  * ## 为什么测量要注入，而不是在这里 `ctx.measureText`
  *
  * 1. **可测**：换行算法是整个"画布排版"里最容易出错的一段（CJK 逐字、超长词硬断、行内代码换字体），
- *    它必须能在 vitest 里用假测量逐字断言（见 `tests/graph-text-layout.test.ts`）。
+ *    它必须能在 vitest 里用假测量逐字断言（见 `tests/features/graph/graph-text-layout.test.ts`）。
  *    在 node 环境里 `canvas.measureText` 根本不存在，一旦写死就没法测。
  * 2. **不持有画布**：持有 `CanvasRenderingContext2D` 会顺带持有"字号是从哪个元素上读的"这类状态，
  *    而知识图谱是 1 万个节点规模的数据 —— 清单必须能脱离画布算出来（也才能在将来丢进 Worker）。

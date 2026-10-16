@@ -7,7 +7,7 @@
  *
  * 行为层是 Base UI 的无样式组件（它只负责键盘、无障碍属性与开合逻辑，
  * 不注入任何样式 —— 因此 CSP 与主题引擎都不受影响）；这里只写"长什么样"，
- * 且**只读 `--mn-*` 令牌**（新主题一个字都不用改，单测见 `tests/design-tokens.test.ts`
+ * 且**只读 `--mn-*` 令牌**（新主题一个字都不用改，单测见 `tests/theme/design-tokens.test.ts`
  * 的"不许写死颜色"纪律）。
  *
  * 状态全部走 Base UI 的 `data-*` 属性（`data-checked` / `data-highlighted` /

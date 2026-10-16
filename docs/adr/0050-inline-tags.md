@@ -46,7 +46,7 @@
   并在 `heading_open..heading_close` 之间与链接内部跳过 —— 代码块/行内代码在
   更早的 token 化里就已经是 `code_inline` / `fence`，天然不是 `text`。
 
-两处都有各自的"该跳过什么"用例（`tests/inline-tag-style.test.ts`）。
+两处都有各自的"该跳过什么"用例（`tests/features/editor/inline-tag-style.test.ts`）。
 
 ## 代价与已知边界
 

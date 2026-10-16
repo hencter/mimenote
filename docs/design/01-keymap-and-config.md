@@ -272,7 +272,7 @@ config_write(format, content)     -> { path: string }
 5. 全新 Vault 首次打开：自动生成 `config.toml`（**不写注释**，改为在设置页展示当前生效路径与 schema 版本）。
 6. `Mod+B` / `Mod+I` 在编辑器里对**选中文字**生效、无选区时插入成对标记、且**一次撤销**回退。
 7. 旧 localStorage 偏好迁移一次，且迁移后改配置文件不再被 localStorage 覆盖。
-8. **整张默认表没有"结构性重叠"**（`tests/keymap-defaults.test.tsx`）：判据不看 `when()` ——
+8. **整张默认表没有"结构性重叠"**（`tests/app/keymap-defaults.test.tsx`）：判据不看 `when()` ——
    只看"同一 chord 的所有者里有没有非 `graph.*` 的命令"。
    > 这条是从一个**真实缺陷**里长出来的：本设计把命令面板放在 `Mod+Shift+P`，而 `export.pdf`
    > 原来也是 `Mod+Shift+P`。`findChordConflicts` 的 `real` 判据要调 `when()`，在没有打开任何笔记的

@@ -89,7 +89,7 @@ Tauri 注入的脚本照旧自动跳过窗口按钮与菜单按钮。这条纪�
 
 ## 验证
 
-- 单测 `tests/app-shell.test.tsx`：三区都存在、路径渲染在**中区**、编辑器里那一行确实没了、
+- 单测 `tests/app/app-shell.test.tsx`：三区都存在、路径渲染在**中区**、编辑器里那一行确实没了、
   以及 CSS 契约（`display: grid` + `1fr/2fr/1fr`、中区 `justify-content: center`、
   右区 `justify-content: flex-end`、标题栏纵向不写 `align-items`）；
 - E2E `e2e/ui.e2e.test.ts`「标题栏分三区：当前笔记路径落在窗口正中，三种视图里都在」：

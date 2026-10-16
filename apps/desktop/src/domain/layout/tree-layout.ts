@@ -37,7 +37,7 @@
  *    不参与"谁在哪"。
  *
  * 本模块是**纯函数**：不 import React / store / IPC，所有操作返回新树（旧树不动），
- * 因此可以被单测逐条钉住，也可以被随机的操作序列反复捶（见 `tests/tree-layout.test.ts`）。
+ * 因此可以被单测逐条钉住，也可以被随机的操作序列反复捶（见 `tests/features/vault/tree-layout.test.ts`）。
  */
 
 /** 切割方向。`row` = 一刀竖着切（左右并排）；`column` = 一刀横着切（上下相叠）。 */

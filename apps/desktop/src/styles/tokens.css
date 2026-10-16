@@ -21,7 +21,7 @@
  *
  * B1：本文件承接 `styles/app.css` 的 1-42 行（@font-face + `:root` 兜底）与 60-138 行
  * （VI 别名层）。`--icon-*` 与 `components/Icon.tsx` 的 `ICON_SIZES` 逐字一致，由
- * `tests/icon.test.tsx` 把守；别名层仍由 `tests/design-tokens.test.ts` 管。
+ * `tests/components/icon.test.tsx` 把守；别名层仍由 `tests/theme/design-tokens.test.ts` 管。
  */
 
 
@@ -68,7 +68,7 @@
  *    写的东西，一律不动（三套内置主题与既有片段因此一个字都不用改）；
  * 2. VI 规范名（`--bg-base` / `--text-primary` / `--brand-primary` / `--radius-md` / `--space-4` …）
  *    是**公开的书写面**：插件、用户样式片段、新写的组件都用它，语义更清楚；
- * 3. 值一律是 `var(--mn-…)`，**不许写死颜色** —— 单测（`tests/design-tokens.test.ts`）会拦住；
+ * 3. 值一律是 `var(--mn-…)`，**不许写死颜色** —— 单测（`tests/theme/design-tokens.test.ts`）会拦住；
  * 4. 主题作者**可以**定义的可选项走"可选令牌 + 兜底"（`var(--mn-xxx, 兜底)`，与 ADR-0028 的
  *    `--mn-edge-out` 同一个套路）：不给也能跑，给了就生效，因此**不进 `REQUIRED_TOKENS`**，
  *    否则所有既有主题会在启动时报缺令牌。

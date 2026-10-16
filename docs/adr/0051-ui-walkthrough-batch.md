@@ -60,7 +60,7 @@
    配一份 ADR"的纪律相反；
 2. 它留下 20 个孤儿模块与 2 份孤儿样式表（`force.ts` / `layout-ego.ts` /
    `edge-*` / `paint.ts` / `force-panel.css` / `graph.css`），
-   `tests/stylesheets.test.ts`（"没有孤儿样式表"）本就会失败告警；
+   `tests/integration/stylesheets.test.ts`（"没有孤儿样式表"）本就会失败告警；
 3. 命令面板里"浮窗 / 力度 / 沿环走线"那批命令会变成永远无效的按钮。
 
 **结论**：图谱继续是 canvas 卡片（ADR-0021 起的那一套）。真要简化成节点网络，

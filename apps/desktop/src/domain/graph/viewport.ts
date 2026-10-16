@@ -5,7 +5,7 @@
  * 卡片画在 canvas 上（屏幕空间，坐标系自己算），连线与文件夹标题还留在 DOM 里
  * （走 `transform: translate(x,y) scale(z)`，`transform-origin: 0 0`）。两套坐标只要差一点，
  * 表现就是"点卡片点不中""线跟方框错位"，而且只在某些缩放下出现。
- * 把换算钉成纯函数，`tests/graph-viewport.test.ts` 就能把"屏幕点 → 世界点 → 屏幕点"
+ * 把换算钉成纯函数，`tests/features/graph/graph-viewport.test.ts` 就能把"屏幕点 → 世界点 → 屏幕点"
  * 这类不变量直接断言出来，不必开真浏览器。
  *
  * 换算关系（与 `layout.ts` 的 `worldViewport` / `zoomAround`、`graph.css` 的

@@ -101,14 +101,14 @@ Tauri 2.11 的 `drag.js` 会沿 composed path 自动跳过可点击元素
 
 ## 验证
 
-- `tests/tree-layout.test.ts`：`topRightLeafId` 的判据（row 往右 / column 往上、
+- `tests/features/vault/tree-layout.test.ts`：`topRightLeafId` 的判据（row 往右 / column 往上、
   隐藏的半边跳过、全不可渲染时 `null`）；
-- `tests/app-shell.test.tsx`：没有 `.mn-titlebar*`；右上叶空态标签条存在且带
+- `tests/app/app-shell.test.tsx`：没有 `.mn-titlebar*`；右上叶空态标签条存在且带
   `data-tauri-drag-region="deep"`；`app.css` 里标题栏规则整组退役、窗口按钮槽的
   `flex: 0 0 auto` 契约；导出按钮在文件树工具栏；
-- `tests/tabs.test.tsx`：没有笔记时右上叶（默认布局里就是主叶）标签条**仍在**（零条标签）、
+- `tests/features/tabs/tabs.test.tsx`：没有笔记时右上叶（默认布局里就是主叶）标签条**仍在**（零条标签）、
   关闭全部之后同样；
-- `tests/tree-host.test.tsx` / `tests/window-controls.test.tsx`：标签条结构与窗口按钮行为不变；
+- `tests/features/vault/tree-host.test.tsx` / `tests/features/window/window-controls.test.tsx`：标签条结构与窗口按钮行为不变；
 - `e2e/ui.e2e.test.ts`：主体 = 窗口 − 状态栏（不再减标题栏）、右上叶标签条 top = 0、
   36px 且是拖动区；
 - `e2e/real-app.e2e.test.ts`：真实 Tauri 窗口里没有 `.mn-titlebar`，右上叶标签条是拖动区，

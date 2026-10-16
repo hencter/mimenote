@@ -5,7 +5,7 @@
  * "敲 `[[` 之后列什么、按什么顺序列"是这一整块功能里唯一有算法含量的部分，
  * 而它完全由 `vault-store` 的条目表决定（条目表**已经在内存里**，不需要新 IPC）。
  * 拆成纯函数之后，"1 万条时每次按键的代价"可以在 vitest 里直接量（见
- * `tests/editor-wikilink-complete-perf.test.ts`），排序口径也能逐条钉死。
+ * `tests/features/editor/editor-wikilink-complete-perf.test.ts`），排序口径也能逐条钉死。
  *
  * ## 三条性能纪律（architecture.md §6 的"输入延迟 ≤ 16ms"）
  * 1. **索引只在条目表换新数组时重建**（{@link buildWikilinkIndex}），按键路径上只做

@@ -1,7 +1,7 @@
 /**
  * 文件树：扁平条目表 → 树 → 可见行。
  *
- * 纯函数、无 React 依赖，便于单测（见 `tests/tree.test.ts`）。
+ * 纯函数、无 React 依赖，便于单测（见 `tests/features/vault/tree.test.ts`）。
  * 10k 条目的构建与展开是 O(n)，并由调用方 memo 化；隐藏行不渲染（虚拟列表）。
  */
 

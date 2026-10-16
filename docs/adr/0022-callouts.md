@@ -152,7 +152,7 @@ canvas 那边跟同一条语义：一行上只能有一条左边框，显示的�
    `only`（同一行同时带 `--first` 与 `--last`，CSS 里一边管顶一边管底，不需要新样式）。
 
 **判据的落法**：内边距的"统一"不是两边各抄一串数字，而是**加法关系** ——
-`tests/live-preview-callout.test.ts` 直接从 `app.css` 里读出那三个数，断言编辑器的三处 padding
+`tests/features/editor/live-preview-callout.test.ts` 直接从 `app.css` 里读出那三个数，断言编辑器的三处 padding
 等于它们的和；UI E2E 再在真实浏览器里量"框边缘 → 框内图标"的距离。
 
 **两处已知的小偏差**（刻意的，写在 E2E 的注释里）：编辑器左侧多约 4px —— `> ` 的 `>` 被隐藏后

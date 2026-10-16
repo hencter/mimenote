@@ -74,7 +74,7 @@ import { useLinksStore } from '@/state/links-store'
 import { WikiHoverCard, WIKI_HOVER_CLASS } from './WikiHoverCard'
 // 卡片样式与卡片属于同一件事：类名写在 WikiHoverCard.tsx 里，规则写在这里，
 // 两处成对维护（CSS 无法 import 常量，只能靠注释互相指认）。
-// 这条 import 也是 `tests/stylesheets.test.ts` 的"没有孤儿样式表"门禁要的那条链接。
+// 这条 import 也是 `tests/integration/stylesheets.test.ts` 的"没有孤儿样式表"门禁要的那条链接。
 import './wiki-hover.css'
 
 /** wikilink 的目标属性（装饰层写的；命中判据的唯一来源，见模块文档）。 */
@@ -102,7 +102,7 @@ export const CLOSE_GRACE_MS = 120
  *
  * 为什么要在 JS 里也写一份：夹取位置要按卡片的尺寸算（下/右放不下就翻到另一侧），
  * 而 `offsetWidth` 在卡片刚挂上去的那一帧还不可靠（样式表可能还没应用、浏览器也没排版），
- * 拿它夹取会在第一帧闪一下。两份数字的同步由 `tests/wiki-hover.test.tsx` 的样式契约用例把守
+ * 拿它夹取会在第一帧闪一下。两份数字的同步由 `tests/features/editor/wiki-hover.test.tsx` 的样式契约用例把守
  * ——那是本仓库对"类名 ↔ CSS 规则"这类隐藏契约的通行做法（见 `theme.ts` 的 `livePreviewThemeSpec`）。
  */
 export const CARD_WIDTH_PX = 380

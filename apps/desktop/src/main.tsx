@@ -9,7 +9,7 @@ import { bootstrap } from '@/app/bootstrap'
  * 样式清单（ADR-0060 §4；B1 把 `styles/app.css` 拆到了这些文件里）。
  *
  * ── 为什么由组合根逐个 import，而不是让 `styles/index.css` 用 `@import` 汇总 ──
- * `scripts/check-architecture.mjs` 的"死样式"判据与 `tests/stylesheets.test.ts` 的"孤儿样式表"判据
+ * `scripts/check-architecture.mjs` 的"死样式"判据与 `tests/integration/stylesheets.test.ts` 的"孤儿样式表"判据
  * 都只看 `.ts/.tsx` 里的**路径字面量** —— CSS 内部的 `@import` 不算"有人导入"，汇总文件会把每一份
  * 被汇总的表都变成孤儿。清单写在组合根，还让"这个界面到底加载了哪些表"一眼可见。
  *
@@ -26,7 +26,7 @@ import { bootstrap } from '@/app/bootstrap'
  * 已冗余的声明删掉 —— 也就是它没有被忽略，而是被用完之后消掉了。两道保险互不依赖，任一道单独成立
  * 就够；都在，是为了"层序不靠巧合"。
  *
- * 行尾注释写的是该表拥有的 BEM 块 —— `tests/stylesheets.test.ts` 的"导入方真的在用它的类名"
+ * 行尾注释写的是该表拥有的 BEM 块 —— `tests/integration/stylesheets.test.ts` 的"导入方真的在用它的类名"
  * 判据靠它建立链接。由组件自己 import 的表（如 `components/ui-controls.css`）不在这里重复列。
  */
 import './styles/tokens.css' // 令牌与 VI 别名层（只有变量与 @font-face，没有 .mn-* 规则）

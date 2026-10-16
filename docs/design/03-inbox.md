@@ -254,7 +254,7 @@ dailyNote = false        # 捕获时是否落到 Inbox/YYYY-MM-DD.md
 | --- | --- |
 | `docs/design/03-inbox.md`（本文） | Lead（已定稿） |
 | `docs/adr/0057-inbox.md` | `inbox` |
-| `domain/inbox.ts`（唯一判据 + 纯函数）、`tests/inbox.test.ts`（纯函数）、`tests/inbox-store.test.ts`（捕获链路） | `inbox` |
+| `domain/inbox.ts`（唯一判据 + 纯函数）、`tests/features/inbox/inbox.test.ts`（纯函数）、`tests/features/inbox/inbox-store.test.ts`（捕获链路） | `inbox` |
 | `state/inbox-store.ts`（面板开关、捕获、归档、计数派生） | `inbox` |
 | `features/inbox/**`（`InboxHost` / `CaptureDialog` / `InboxDialog` / 两份 CSS） | `inbox` |
 | `App.tsx` 里挂一个 `<InboxHost />`（在 `<TrashDialog />` 旁） | **Lead** |
@@ -266,8 +266,9 @@ dailyNote = false        # 捕获时是否落到 Inbox/YYYY-MM-DD.md
 本轮**不新增宿主命令**：上面全部落在既有的 `note_create` / `note_read` / `note_write` /
 `note_move` 上。若将来觉得"创建带正文的笔记"值得一条命令，那是宿主的事，另开一个 ADR。
 
-测试一律放 `apps/desktop/tests/`：`vite.config.ts` 的 vitest `include` 是
-`tests/**/*.test.ts(x)`，写在源码目录里的用例**不会被执行**（放在那里等于没写）。
+测试一律放 `apps/desktop/tests/`（子目录镜像 `src/`，见 `docs/architecture.md` §8.1）：
+`vite.config.ts` 的 vitest `include` 是 `tests/**/*.test.ts(x)`，写在源码目录里的用例**不会被执行**
+（放在那里等于没写）。
 
 ## 10. 验收（进入测试阶段的判据）
 

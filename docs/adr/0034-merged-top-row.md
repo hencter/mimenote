@@ -79,7 +79,7 @@ UI E2E 里那条契约算式原来是
 | `barHeight === 34` | `=== 36` | 行高为了标签抬了 2px |
 | `.mn-titlebar__center { justify-content: center }` | `flex-start` | 中区从"居中放路径"变成"左对齐放标签" |
 
-`tests/tabs.test.tsx` 里那个复刻 `App.tsx` 结构的 `Shell` 测试壳也跟着改了 ——
+`tests/features/tabs/tabs.test.tsx` 里那个复刻 `App.tsx` 结构的 `Shell` 测试壳也跟着改了 ——
 它本来就是"接线说明书"，结构一变它必须跟着变，否则它测的就不是真实应用的结构。
 
 ## 代价与已知边界

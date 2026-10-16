@@ -51,7 +51,7 @@
 
 **键位表的净变化（`Mod+B` 归还给"加粗"）**：命令面板 `Mod+K` → `Mod+Shift+P`；插入链接占 `Mod+K`；
 打开 Vault `Mod+O` → `Mod+Alt+O`；侧栏 `Mod+B` → `Mod+Shift+B`；导出 PDF `Mod+Shift+P` → `Mod+Alt+P`
-（它与新命令面板撞了 —— 是 `tests/keymap-defaults.test.tsx` 的**结构性**冲突判据抓出来的）；
+（它与新命令面板撞了 —— 是 `tests/app/keymap-defaults.test.tsx` 的**结构性**冲突判据抓出来的）；
 新增 `Mod+Shift+N` 从模板新建、`Mod+Shift+I` 捕获、`Mod+Alt+I` 收件箱、`Mod+Alt+C` 单栏/分栏、`Mod+Alt+N` 行号。
 
 **本轮收尾时的实测数字**：
@@ -153,7 +153,7 @@ pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— �
 1. **图谱被降级又被撤销**：工作树里曾有一版自研 SVG 节点网络（`GraphCanvas.tsx` 2704 → 112 行），
    把力场/卡片/HUD/连线/浮窗一并删掉，还删了 `graph.test.tsx` 的近 2100 行。它与
    ADR-0021/0023/0025/0028/0035/0036 六份已交付决策冲突、留下 20 个孤儿模块与 2 份孤儿样式表
-   （`tests/stylesheets.test.ts` 的纪律本来就会红）。**已 `git checkout HEAD` 恢复**，
+   （`tests/integration/stylesheets.test.ts` 的纪律本来就会红）。**已 `git checkout HEAD` 恢复**，
    删除 `network-layout.ts` / `network.css`。→ ADR-0051 附节。
 2. **字号耦合**：`setEditorFontSize` 顺手把 `readingFontSize` 也写了（反向同理），且
    `.mn-preview__body` 的 `font-size` 从 `var(--mn-font-size-reading, …)` 改成只用编辑器字号 ——
@@ -204,7 +204,7 @@ pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— �
 12. **悬停预览的子代理一度被判死、实际还活着**：它交付 486 行实现 + 700 余行用例的过程很长
     （中途我自己跑它的用例看到 **7 条红**，其中两条是真的缺口：滚动/重排不重新定位、
     `mouseleave(relatedTarget = 卡片)` 那条宽限路径没实现），于是我**整批删掉过一次**
-    （`features/editor/cm/wiki-hover/**`、`tests/wiki-hover.test.tsx`、`cm/setup.ts` 回 HEAD）。
+    （`features/editor/cm/wiki-hover/**`、`tests/features/editor/wiki-hover.test.tsx`、`cm/setup.ts` 回 HEAD）。
     它随后把文件又写了回来并收敛到 **21/22**；最后一条（"停在链接上不动：延迟一到就弹"）
     的真实原因是**测试自己在用固定 sleep**（`waitForCard()` 原来是"睡 370ms"），
     单独跑全绿、整文件跑必红 —— 改成**轮询到出现**、并给负例单独一个 `waitPastDelay()`
@@ -286,9 +286,9 @@ pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— �
   [data-force-preset] / [data-force-action]`；切割树的 `data-leaf-id / data-leaf-tabs / data-tab-path /
   data-module-tab / data-split-id / data-axis / data-drop-hint / data-main-path`（状态栏最左）；
   **编辑器实例的身份是 `data-note-path`**（ADR-0049 起多编辑器同屏，别再假设"页面里只有一个 `.cm-editor`"）。
-- 测试骨架可以抄现成的：`tests/graph-edge-paint.test.ts`（记录型假上下文 + 手算期望值）、
-  `tests/graph.test.tsx`（画布 + 记录型画布 + 指针派发）、`tests/tree-host.test.tsx`（树渲染 +
-  假 DataTransfer + 矩形 mock）、`tests/frontmatter-edit.test.ts`（保真类断言全用整段 `toBe`）。
+- 测试骨架可以抄现成的：`tests/features/graph/graph-edge-paint.test.ts`（记录型假上下文 + 手算期望值）、
+  `tests/features/graph/graph.test.tsx`（画布 + 记录型画布 + 指针派发）、`tests/features/vault/tree-host.test.tsx`（树渲染 +
+  假 DataTransfer + 矩形 mock）、`tests/domain/frontmatter-edit.test.ts`（保真类断言全用整段 `toBe`）。
 - **jsdom 的 DragEvent 不带 clientX/clientY**：落点几何的测试要改用
   `new MouseEvent('dragover', { clientX, clientY })` + `Object.defineProperty(event, 'dataTransfer', …)`。
 
@@ -310,7 +310,7 @@ pnpm test:e2e:app              ✓ 34 条（release 二进制已重建 —— �
 - `apps/desktop/e2e/properties-layout.e2e.test.ts`（属性区排版：图标对齐 / 悬浮显隐 /
   切回自动展开 / 面板自带隐藏入口）与 `apps/desktop/e2e/split-panes.e2e.test.ts`
   （分栏两格各自可写、互不串、脏标记与落盘）；
-- `apps/desktop/tests/note-repository.test.ts`：仓库模型的单测（含"干净要重读 / 脏了不重读"）。
+- `apps/desktop/tests/state/note-repository.test.ts`：仓库模型的单测（含"干净要重读 / 脏了不重读"）。
 
 **上一轮（ADR-0047 ~ 0051）**：
 

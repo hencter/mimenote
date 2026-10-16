@@ -84,7 +84,7 @@
 - 新增 `apps/desktop/src/features/window/{WindowControls.tsx,window-actions.ts}`，
   `App.tsx` 的标题栏挂上 `<WindowControls />` 与 `data-tauri-drag-region="deep"`，
   `styles/app.css` 加三条窗口按钮样式（只用既有主题令牌）；
-- 测试：`tests/window-controls.test.tsx`（5 条：无 API 时不渲染、三个按钮可访问、
+- 测试：`tests/features/window/window-controls.test.tsx`（5 条：无 API 时不渲染、三个按钮可访问、
   点击分别调用最小化/关闭、点最大化后图标变"还原"、**窗口从外部被最大化后图标要跟上**）+
   应用层 E2E 一条（真实 Tauri 窗口：标题栏是可拖动区、三个按钮可见、
   点最大化后按钮变"还原"且 `aria-pressed=true`、再点可还原）；

@@ -218,7 +218,7 @@ export function createEditorExtensions(
     // 它做的正是这件事，而且比手写版更稳：会先确认选区在 Markdown 正文里（不在行内代码/链接/
     // 图片等节点中、也不跨越节点边界），`www.` 前缀会自动补成 `https://`，还认 `mailto:`/`xmpp:`。
     // 这里刻意不再加第二个处理器：两份实现会互相抢先（上游那个先跑），行为反而说不清。
-    // 回归测试见 `tests/paste-url-link.test.tsx`。
+    // 回归测试见 `tests/features/editor/paste-url-link.test.tsx`。
     // "跳到第 N 行"的短暂高亮（搜索结果 / 反向链接的落点）：同样是纯装饰，不改文档
     ...flashLineExtensions(),
     EditorView.updateListener.of((update) => {

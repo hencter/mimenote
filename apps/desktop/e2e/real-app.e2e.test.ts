@@ -761,7 +761,7 @@ describe.skipIf(!supported)('真实应用：本地图片（asset 协议逐文件
   it('文件树里点一张图片：只读查看器真的把图解码出来（用户报的"图片选择后无法预览"）', async () => {
     /*
       这一条只能在**应用层**验：图片走 `asset:` 协议逐文件授权（ADR-0007），浏览器预览与 jsdom
-      都拿不到它（那两层断言的是"如实说明"那条路，见 `tests/viewer.test.tsx`）。
+      都拿不到它（那两层断言的是"如实说明"那条路，见 `tests/features/viewer/viewer.test.tsx`）。
       判据是 `naturalWidth > 0` —— 占位元素没有这个属性，裂图是 0。
     */
     await ensureTreeRow(app.page, '附件/图.png')
@@ -815,7 +815,7 @@ describe.skipIf(!supported)('真实应用：本地图片（asset 协议逐文件
 /**
  * 标签与属性面板（M2）：真实 IPC（`note_tags` / `tags_list` / `tag_notes`）+ 真实磁盘。
  *
- * Mock 层的抽取规则由 `tests/tags.test.tsx` 覆盖，这里验证"合起来在真实二进制里成立"：
+ * Mock 层的抽取规则由 `tests/features/tags/tags.test.tsx` 覆盖，这里验证"合起来在真实二进制里成立"：
  * 标签索引是否真的在保存/打开后建立、点标签能否列出笔记、以及**预览不再渲染 frontmatter**。
  */
 describe.skipIf(!supported)('真实应用：标签与属性面板（真实 IPC）', () => {

@@ -16,7 +16,7 @@
 ### 1. 整篇渲染搬进 Worker 是**不可能**的：DOMPurify 在无 `window` 环境下不可用
 
 `domain/markdown.ts` 的渲染是两步：`markdown-it`（纯 JS）产出 HTML，再交给 DOMPurify 净化
-（ADR-0002：笔记里的 HTML 必须过两道防线，`tests/markdown.test.ts` 正是钉这件事的）。
+（ADR-0002：笔记里的 HTML 必须过两道防线，`tests/domain/markdown.test.ts` 正是钉这件事的）。
 
 DOMPurify 的 ESM 入口在**没有 `window`** 的环境里走的是"不支持"分支：`isSupported === false`，
 而且 `DOMPurify.sanitize` 根本没有被定义。实测（`apps/desktop` 下）：
@@ -80,7 +80,7 @@ Worker 退到一个**窄角色**：只承担能搬走的那一段解析（决策
   "已经有 Worker 了，所以大文档不卡了"。
 * 为了让 Worker 里**不可能**误用净化器，渲染被拆成两层：`domain/markdown-core.ts`（markdown-it 实例
   与我们的全部规则，**不 import DOMPurify**）与 `domain/markdown.ts`（`sanitizeHtml` + `renderMarkdown`）。
-  拆分是**纯搬运**：既有 `tests/markdown.test.ts` 的断言一条都不改，行为逐字节不变。
+  拆分是**纯搬运**：既有 `tests/domain/markdown.test.ts` 的断言一条都不改，行为逐字节不变。
 * **门槛**（`PREVIEW_WORKER_MIN_BYTES = 1 MiB`）：低于它直接走同步路径 —— 小文档下 Worker 的构造与
   消息往返比解析本身还贵。这个门槛与 `features/export/export-note.ts` 的 `LARGE_EXPORT_BYTES = 5 MiB`
   **不是同一把尺子**（那个是"要不要先告诉用户等几秒"，这里是"要不要分流"）。
@@ -129,8 +129,8 @@ Worker 退到一个**窄角色**：只承担能搬走的那一段解析（决策
 - `domain/markdown-core.ts`（新，纯 JS、无 DOMPurify）与 `domain/markdown.ts`（净化 + 三个 env 钩子）；
 - `features/preview/render.worker.ts`（新）+ 主线程侧的协议与降级逻辑；
 - `MarkdownPreview`：就地补图、链接补类名线性化、`data-mn-render` 诊断属性、effect 依赖收紧；
-- 测试：`tests/preview-render-hydration.test.tsx`（4 条）、`tests/preview-link-annotation.test.tsx`（2 条）、
-  `tests/preview-worker.test.ts`（8 条）、`tests/preview-render-cost.test.ts`（3 条，把上表的比值钉住，
+- 测试：`tests/features/preview/preview-render-hydration.test.tsx`（4 条）、`tests/features/preview/preview-link-annotation.test.tsx`（2 条）、
+  `tests/features/preview/preview-worker.test.ts`（8 条）、`tests/features/preview/preview-render-cost.test.ts`（3 条，把上表的比值钉住，
   断言是**比较式**而不是绝对阈值）；既有 `markdown.test.ts` / `preview-images.test.tsx` /
   `live-preview-table.test.tsx` 的断言一条不改；E2E 两层各一条：UI 层断言门槛以下 `data-mn-render="sync"`，
   **真实应用层**往临时 Vault 写一篇 >1 MiB 的笔记，断言 `data-mn-render="worker"` **且 CDP 看得到 worker 实例**

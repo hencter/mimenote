@@ -111,7 +111,7 @@ const MAX_TERM_CHARS: usize = 64;
 /// ## 为什么是 5
 ///
 /// 这个数字**不是这里拍的**：前端 Mock（`apps/desktop/src/ipc/mock-adapter.ts` 的
-/// `MOCK_HITS_PER_NOTE`）从 IPC 契约诞生起就是每篇 5 条，`apps/desktop/tests/search.test.tsx`
+/// `MOCK_HITS_PER_NOTE`）从 IPC 契约诞生起就是每篇 5 条，`apps/desktop/tests/features/palette/search.test.tsx`
 /// 还有一条用例钉着"每篇最多 5 条命中，但 total 是全部命中数"。真机实现此前没有这一层，
 /// 于是**Mock 比真机好**；取 5 是把真机对齐到已经写进前端行为的那个数。
 ///

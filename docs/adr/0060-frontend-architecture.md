@@ -169,7 +169,7 @@ store 之间用 zustand 的 `getState()` 交叉读（现状已经是这样），
 
 - **`styles/app.css` 的拆法是机械的**（按它现有的段注释区间搬，逐段见 `architecture-review.md` §6）：
   拆成 `styles/tokens.css`（1-196 行里的 `@font-face` + `:root` + VI 别名层，由 ADR-0031 的
-  `tests/design-tokens.test.ts` 继续管）+ `styles/base.css` + 剩下的搬到各自的
+  `tests/theme/design-tokens.test.ts` 继续管）+ `styles/base.css` + 剩下的搬到各自的
   `components/*.css` 与 `features/<域>/*.css`，然后**删除** `app.css`。门禁给它的是
   "行数预算只许下降"（1693 → 0）。
 - **`!important` 预算**：现状 9 处（`app.css` 4 处、`features/export/export.css` 5 处），冻结为按文件预算，

@@ -37,7 +37,7 @@ links
 Base UI 的 `Select.Item` 靠 `pointerdown` 置位才提交 `click`
 （防"打开瞬间光标下的选项被误点"）：测试里只发 `click` 会被合法地忽略，
 必须 `pointerdown + click`（真实鼠标本来就是这个顺序）。见
-`tests/ui-controls.test.tsx` 的 `clickOption` 注释 —— 以后每个 Base UI 控件测试
+`tests/components/ui-controls.test.tsx` 的 `clickOption` 注释 —— 以后每个 Base UI 控件测试
 都要先确认"真实事件序列是什么"，而不是假设 `click` 万能。
 
 ## 代价与后续

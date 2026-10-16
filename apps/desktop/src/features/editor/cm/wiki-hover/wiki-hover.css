@@ -13,7 +13,7 @@
  * 2. **尺寸的真相在 `wiki-hover.tsx`**：宽度/最大高度是**布局决策**（要按面板剩余空间
  *    夹取、放不下就翻到另一侧），由 JS 写进行内样式，因为夹取要先知道尺寸、而
  *    `offsetWidth` 在卡片刚挂上去的那一帧不可靠。这里的 `min-height` 是那条 JS 下限的
- *    对偶（`MIN_CARD_HEIGHT_PX`），`tests/wiki-hover.test.tsx` 会把两份数字钉在一起；
+ *    对偶（`MIN_CARD_HEIGHT_PX`），`tests/features/editor/wiki-hover.test.tsx` 会把两份数字钉在一起；
  * 3. **这里不写 `left` / `top`**：位置完全由 JS 算（见 `placement()`），CSS 只管"长什么样"。
  *
  * ## 为什么显式写 `pointer-events: auto`

@@ -1,6 +1,6 @@
 /**
  * 分栏（Miller columns）文件树的**列模型**：纯函数、无 React/DOM 依赖，便于单测
- * （见 `tests/columns.test.ts`）。
+ * （见 `tests/domain/columns.test.ts`）。
  *
  * ## 列链 = 焦点目录的祖先链
  *

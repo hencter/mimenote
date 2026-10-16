@@ -360,7 +360,7 @@ export const BUILTIN_COMMANDS: readonly Command[] = [
      *
      * 这条冲突还顺带暴露了一个门禁缺陷：`findChordConflicts` 的 `real` 判据依赖 `when()`，
      * 在"没有打开任何笔记"的环境里 `Mod+Shift+P` 会被判成互斥而不报 —— 因此 keymap-defaults
-     * 用例改成**与环境无关的结构性判据**（见 tests/keymap-defaults.test.tsx）。
+     * 用例改成**与环境无关的结构性判据**（见 tests/app/keymap-defaults.test.tsx）。
      */
     keybinding: 'Mod+Alt+P',
     when: hasDocument,

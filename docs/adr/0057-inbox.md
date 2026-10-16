@@ -124,7 +124,7 @@
 ## 影响
 
 **新增**：`domain/inbox.ts`、`state/inbox-store.ts`、`features/inbox/**`、
-`docs/design/03-inbox.md`、本 ADR、`tests/inbox.test.ts`。
+`docs/design/03-inbox.md`、本 ADR、`tests/features/inbox/inbox.test.ts`。
 
 **Lead 接线**：`App.tsx` 挂 `<InboxHost />`；`app/builtin-commands.ts` 登记
 `inbox.capture`（`Mod+Shift+I`）与 `inbox.open`（`Mod+Alt+I`）并给 `when`。

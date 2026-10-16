@@ -584,7 +584,7 @@ async function setGraphTension(page: Page, tension: number): Promise<void> {
  * - 曲线的"鼓出比"（张力那个连续量旋钮唯一能逐字断言的量） → `data-graph-edge-bulges`。
  *
  * 这些数字都由画笔**这一帧真画出来的那张记录表**算出来（见 `canvas/edge-paint.ts`），
- * 与从前读 SVG 属性时逐条对应；量出来的东西在 `tests/graph-edge-paint.test.ts` 里逐档钉住
+ * 与从前读 SVG 属性时逐条对应；量出来的东西在 `tests/features/graph/graph-edge-paint.test.ts` 里逐档钉住
  * （那里能直接读到画笔的调用序列）。
  */
 
@@ -928,7 +928,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       判据是"**框的边缘**到框内第一段内容（图标）的距离"，两侧语义对等、可以直接比：
       编辑器那边量的是行盒（`.cm-line`），阅读视图那边量的是块（`.mn-callout`）。
       为什么不比框的总高度：一个按"行"排、一个按"块"排，行高与块间距本来就不一样 ——
-      能统一、也应该统一的正是内边距。（框**底**那一侧由 `tests/live-preview-callout.test.ts`
+      能统一、也应该统一的正是内边距。（框**底**那一侧由 `tests/features/editor/live-preview-callout.test.ts`
       的跨文件契约用例钉着：编辑器的末行 padding = app.css 里 `.mn-callout` 的下内边距
       + 末块的 margin-bottom。）
     */
@@ -1120,7 +1120,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     await page.locator('button[aria-label="文件树排序"]').click()
     // ⚠️ 用**方向**而不是"修改时间"来证明重排：Mock Vault 里所有条目的 `mtimeMs` 相同
     // （按修改时间排等于没排），拿它当证据会得到一条永远超时的用例。
-    // 判据本身（各 by/direction 组合）由 `tests/tree.test.ts` / `tests/dock*` 钉着，
+    // 判据本身（各 by/direction 组合）由 `tests/features/vault/tree.test.ts` / `tests/dock*` 钉着，
     // 这里只需要证明"偏好 → 数据层重排 → DOM 顺序"整条链路通。
     await page.getByRole('menuitemradio', { name: '降序' }).click()
 
@@ -2144,7 +2144,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     //
     // ADR-0036 之后连线也画在同一张 canvas 上，于是"两段各自画出来了没有"改从宿主属性读
     // （`data-graph-edge-leads` / `data-graph-edges`）；引线自己的几何（起点在正文里、
-    // 终点逐坐标等于卡外那段起点、相位收在卡边界）由 `tests/graph-edge-paint.test.ts` 钉住 ——
+    // 终点逐坐标等于卡外那段起点、相位收在卡边界）由 `tests/features/graph/graph-edge-paint.test.ts` 钉住 ——
     // 这一层要证明的是"真实排版之后它真的出现了"。
     await ensureVaultOpen(page)
     // 设计.md 的正文里正好有两处：`参考 [[路线图]] 与 [[细节]]`
@@ -2177,7 +2177,7 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
       2. 悬停到**卡外那段**上时给出的提示会说明它是从正文里哪段 `[[链接]]` 引出的 ——
          这是 canvas 版新补上的能力（SVG 版那层 `<title>` 因为 `pointer-events: none` 从来没生效过）。
       提示文案的分支（有锚点 / 正文里没找到 → 从卡片边缘出发）在
-      `tests/graph.test.tsx` 里逐字断言（那里的落点可以从记录下来的路径上算，稳定可重复）。
+      `tests/features/graph/graph.test.tsx` 里逐字断言（那里的落点可以从记录下来的路径上算，稳定可重复）。
     */
     const spanBefore = await graphNumber(page, 'data-graph-edges')
     await page.locator('[data-graph-action="toggle-edge-from-link"]').click()

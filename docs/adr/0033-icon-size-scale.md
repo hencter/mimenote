@@ -61,7 +61,7 @@ export type IconSize = keyof typeof ICON_SIZES
 设计令牌别名层里加 `--icon-xs…--icon-xl`（12/14/16/20/24），给"用 CSS 给某个 svg 定尺寸"
 的场合用。它与 `ICON_SIZES` 由单测**钉在一起**（两处数字不一致时红）。
 
-## 两道闸（`tests/icon.test.tsx`）
+## 两道闸（`tests/components/icon.test.tsx`）
 
 1. **源码扫描**：`src/` 下 `<Icon ... size={<数字>}>` 必须是 **0 处** ——
    类型系统拦得住"新的裸数字"，但拦不住"有人把 prop 类型放宽"，所以扫描这道闸留着；

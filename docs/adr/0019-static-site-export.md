@@ -243,7 +243,7 @@ Mock 适配器直接复用它（因此"Mock 里的 href"与"真机里的 href"�
   命令 `export.site`（`Mod+Alt+S`）+ 运行期可取消、`app/dialogs.ts` 的目录选择测试注入点、
   `domain/markdown.ts` 的三个 env 钩子（`resolveWikilink` / `headingIds` / 图片相对地址白名单）、
   `theme/snippets.ts` 的 `collectSnippetCss`；
-- 测试：`tests/site-paths.test.ts`（14 条，纯函数）、`tests/site-export.test.tsx`（17 条，
+- 测试：`tests/domain/site-paths.test.ts`（14 条，纯函数）、`tests/features/export/site-export.test.tsx`（17 条，
   整条链路 + 确定性 + 取消 + 拒绝）、宿主 `site_export.rs` 的单元测试（真实临时目录：落盘契约、
   输出目录在 Vault 内被拒、非空且无标记被拒、**不许写到输出目录之外**、原子写无残留、
   createdDirs、图片白名单与跳过清单、DTO 的 JSON 键名）、UI 层 E2E（浏览器预览模式无法写盘时如实说明）。

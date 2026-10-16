@@ -75,7 +75,7 @@ let buildCount = 0
  * `live-preview/plugin.ts` 缓存 `createAssetResolver` 的同一套做法。
  *
  * 首建是**惰性**的（第一次真的有人敲 `[[` 时才算）：整场都不写双链的用户不该为它付钱。
- * 1 万条时的构建耗时见 `tests/editor-wikilink-complete-perf.test.ts`。
+ * 1 万条时的构建耗时见 `tests/features/editor/editor-wikilink-complete-perf.test.ts`。
  */
 export function wikilinkIndexFor(entries: readonly EntryMeta[]): WikilinkIndex {
   if (cachedEntries !== entries || cachedIndex === null) {

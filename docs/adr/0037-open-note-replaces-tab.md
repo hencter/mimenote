@@ -58,7 +58,7 @@
 （`if (current.dirty && current.conflict === null) await saveNow()`），所以普通的未保存内容在切换时
 会被保存下来、什么都不丢 —— 在那里弹一个"会丢修改"的确认是**假话**，而且会把确认框训练成噪音
 （边打字边点文件树都要弹一次）。冲突态才是**唯一**不落盘的分支（磁盘上的改动必须由用户决定
-"覆盖还是重新加载"）。这条由 `tests/tabs.test.tsx` 的两条用例分别钉住（弹 / 不弹）。
+"覆盖还是重新加载"）。这条由 `tests/features/tabs/tabs.test.tsx` 的两条用例分别钉住（弹 / 不弹）。
 
 ### 5. 被顶掉的那条：光标位置照记
 
@@ -81,10 +81,10 @@
 
 ## 测试
 
-- `tests/tabs.test.tsx`：打开第二篇 ⇒ 列表只有一篇（顶掉了）；`openNoteInNewTab` ⇒ 追加；
+- `tests/features/tabs/tabs.test.tsx`：打开第二篇 ⇒ 列表只有一篇（顶掉了）；`openNoteInNewTab` ⇒ 追加；
   打开已在标签里的 ⇒ 切换；冲突态 ⇒ 先问、拒绝则整体取消、确认则换过去；有未保存修改（非冲突）
   ⇒ 不弹确认**且那次编辑真的落在盘上**。
-- 原先"要多于一条标签"的用例（`tests/tabs.test.tsx` / `tests/tree-host.test.tsx` /
-  `tests/move-note.test.tsx` / `tests/dir-move.test.tsx`）改为显式走 `openNoteInNewTab` ——
+- 原先"要多于一条标签"的用例（`tests/features/tabs/tabs.test.tsx` / `tests/features/vault/tree-host.test.tsx` /
+  `tests/features/vault/move-note.test.tsx` / `tests/features/vault/dir-move.test.tsx`）改为显式走 `openNoteInNewTab` ——
   它们测的是多标签机制本身，而机制没有被删掉，只是默认不再堆积。
 - `e2e/ui.e2e.test.ts` 的「多标签页」用例改走 `Ctrl + 点击`（真实按键），顺带端到端钉住那条路。

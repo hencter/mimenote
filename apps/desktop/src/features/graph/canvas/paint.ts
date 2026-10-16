@@ -5,7 +5,7 @@
  * 不折行不量宽（`text-layout.ts` 负责）、不算卡片位置（`layout-ego.ts` / `layout.ts` 负责）。
  * 它的输入是一份**已经定好坐标与行**的清单，输出是 canvas 的绘制调用序列 ——
  * 因此它是可测的：喂一个记录调用的假上下文，就能把"先画边后画卡片""代码行补省略号"
- * 这类**顺序与状态**的契约钉死（见 `tests/graph-paint.test.ts`）。
+ * 这类**顺序与状态**的契约钉死（见 `tests/features/graph/graph-paint.test.ts`）。
  *
  * ## 坐标系：屏幕空间，且不碰 `setTransform`
  *

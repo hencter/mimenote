@@ -15,8 +15,8 @@
  * 本文件只管第一步：把 token 变成**一份能被测量的清单**。它不决定字号、不决定行高、不决定缩进多少像素 ——
  * 那些全在 `canvas/text-layout.ts` 的 `LayoutMetrics` 里（几何参数只有一份，画笔与排版共用）。
  * 这样切开的好处是"Markdown 的**语义**"与"像素几何"可以各自被钉死测试：
- * 本文件用 `tests/graph-blocks.test.ts` 断言"哪些字是粗体、列表从第几号开始"，
- * 而"多宽换行、多高"在 `tests/graph-text-layout.test.ts` 里断言，两边互不干扰。
+ * 本文件用 `tests/features/graph/graph-blocks.test.ts` 断言"哪些字是粗体、列表从第几号开始"，
+ * 而"多宽换行、多高"在 `tests/features/graph/graph-text-layout.test.ts` 里断言，两边互不干扰。
  *
  * ## 为什么解析必须复用 `parseMarkdownTokens`
  *
@@ -820,7 +820,7 @@ export function sameRunStyle(left: InlineRun, right: InlineRun): boolean {
  * ```
  *
  * 属性值里不可能出现裸 `>`：一切都过 `escapeHtml`（`>` → `&gt;`），所以 `[^>]*` 是安全的。
- * **将来那条规则改了形状，这里必须跟着改** —— `tests/graph-blocks.test.ts` 里钉着这三种形状，
+ * **将来那条规则改了形状，这里必须跟着改** —— `tests/features/graph/graph-blocks.test.ts` 里钉着这三种形状，
  * 形状一变测试立刻红，而不是等用户发现"卡片上的双链少了一段字"。
  */
 function parseWikilink(html: string): { text: string; target: string | null } | null {
@@ -868,7 +868,7 @@ function unescapeHtml(input: string): string {
  * 引用块上有 `mn-callout--<type>`，标题栏那一段的段落上有 `mn-callout__title`。
  *
  * ⚠️ 与渲染层 HTML 的**第二处刻意耦合**（第一处是 `parseWikilink`）。同一条纪律：
- * 形状变了测试立刻红（`tests/graph-blocks.test.ts` 的"提示框"一组），而不是等用户发现
+ * 形状变了测试立刻红（`tests/features/graph/graph-blocks.test.ts` 的"提示框"一组），而不是等用户发现
  * "画布上的提示框没颜色/少一段字"。要改形状的人应当同时改这里。
  */
 const CALLOUT_CLASS_PREFIX = 'mn-callout--'

@@ -4,7 +4,7 @@
  * 为什么前端也要有一份：状态栏的字数**每次按键都要刷新**，
  * 走 IPC 往返（哪怕 1ms）也会把输入路径变成异步依赖。
  * 磁盘真实值由宿主 `note_stats` 提供（`mn_core::text_stats`），两者互为校验。
- * 规则必须与 Rust 实现保持一致，`tests/stats.test.ts` 锁定行为。
+ * 规则必须与 Rust 实现保持一致，`tests/domain/stats.test.ts` 锁定行为。
  */
 
 export interface TextStats {

@@ -16,7 +16,7 @@
  * ## 观感的口径：`graph.css` 是样式表，几何层是权重
  *
  * 每一档的粗细 / 不透明度 / 颜色都对着 `graph.css` 里那几条规则逐字复刻
- * （`tests/graph-edge-paint.test.ts` 会**读样式表**把它们钉住，改 CSS 忘了改这里会红）。
+ * （`tests/features/graph/graph-edge-paint.test.ts` 会**读样式表**把它们钉住，改 CSS 忘了改这里会红）。
  * 唯一的例外是 `EdgeStyle.width` / `.opacity`：
  *
  * 在 SVG 那一版里，这两个字段是写在 path 上的**表现属性**，而任何 CSS 规则都能盖过表现属性

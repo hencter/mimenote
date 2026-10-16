@@ -93,7 +93,7 @@
 - 前端：`state/trash-store.ts`、`features/trash/TrashDialog.tsx`（+ 自己的 css）、
   `state/vault-store.ts` 的 `syncAfterRestore`、命令 `vault.trash`、
   `ui-store` 的 `trashDialogOpen`（瞬时状态，不进持久化白名单）；
-- 测试：`tests/trash-dialog.test.tsx`（9 条）+ 应用层 E2E 2 条（真实磁盘：恢复后内容逐字回来、
+- 测试：`tests/features/trash/trash-dialog.test.tsx`（9 条）+ 应用层 E2E 2 条（真实磁盘：恢复后内容逐字回来、
   树里重新出现、台账不再列它；原位置被占用时拒绝且磁盘一个字节不变）；
 - 文档：README 的「删除保护」能力行、已知限制第 5 条、手工验收第 31 条补全。
 
@@ -199,6 +199,6 @@ Mock 的 `trash_delete` / `trash_empty` 与宿主**逐条对齐**（包括 `conf
   记账 + `simulateTrashFileGone`）、`state/trash-store.ts`（`purge` / `emptyTrash` / `purgingId`）、
   `features/trash/TrashDialog.tsx`（两颗按钮 + 两段确认文案 + `reportPurge`）；
 - 门禁：`scripts/check-ipc.mjs` 的 `DTO_MANIFEST`（+2）与 `ENUM_MANIFEST`（+1）；
-- 测试：`tests/trash-dialog.test.tsx` 9 → **17 条**；
+- 测试：`tests/features/trash/trash-dialog.test.tsx` 9 → **17 条**；
 - 文档：本节的后续修订、README 的能力行与已知限制第 5 条。
 

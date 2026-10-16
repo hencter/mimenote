@@ -5,7 +5,7 @@
  * （以及缩放/平移/适应窗口的视口换算、手工拖动的坐标覆盖）。
  *
  * 为什么独立成一层：画布上"卡片在哪、容器多大"全部是可以用数字说清楚的问题，
- * 它们必须在 vitest 里能直接断言（见 `tests/graph.test.tsx`），而不是只能靠人眼看像素。
+ * 它们必须在 vitest 里能直接断言（见 `tests/features/graph/graph.test.tsx`），而不是只能靠人眼看像素。
  * 组件层只负责把这里算出来的盒子渲染出来、把交互换算成输入。
  *
  * 布局的三条取舍（对应需求「不需要人为处理」）：
@@ -522,7 +522,7 @@ export function pruneManualPositions(
  * 视口换算到世界坐标（含 overscan）。
  *
  * 单独一个纯函数是为了让"只渲染相交项"这件事可测：给定视口与同一份布局，
- * 无论走索引还是线性扫描，结果必须一致（`tests/graph.test.tsx` 里就钉住了这一点）。
+ * 无论走索引还是线性扫描，结果必须一致（`tests/features/graph/graph.test.tsx` 里就钉住了这一点）。
  */
 export function worldViewport(
   view: GraphView,
