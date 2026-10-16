@@ -24,7 +24,14 @@ use super::theme::LivePreviewTokens;
 
 actions!(
     wysiwyg,
-    [ToggleBold, ToggleItalic, ToggleCode, ToggleStrike, ToggleLink, ToggleReadMode]
+    [
+        ToggleBold,
+        ToggleItalic,
+        ToggleCode,
+        ToggleStrike,
+        ToggleLink,
+        ToggleReadMode
+    ]
 );
 
 const KEY_CONTEXT: &str = "WysiwygEditor";
@@ -64,7 +71,11 @@ impl WysiwygEditor {
                 .folding(false)
                 .placeholder("开始写笔记…")
         });
-        let preview = cx.new(|cx| TextViewState::markdown("", cx).selectable(true).scrollable(true));
+        let preview = cx.new(|cx| {
+            TextViewState::markdown("", cx)
+                .selectable(true)
+                .scrollable(true)
+        });
 
         let (text_decorations, range_decorations) = editor.update(cx, |state, cx| {
             (
@@ -74,7 +85,10 @@ impl WysiwygEditor {
         });
 
         let editor_sub = cx.subscribe_in(&editor, window, |this, _, event, window, cx| {
-            if matches!(event, InputEvent::Change | InputEvent::Focus | InputEvent::Blur) {
+            if matches!(
+                event,
+                InputEvent::Change | InputEvent::Focus | InputEvent::Blur
+            ) {
                 this.refresh_decorations(window, cx);
                 if matches!(event, InputEvent::Change) {
                     this.sync_preview(cx);
@@ -123,7 +137,12 @@ impl WysiwygEditor {
         self.editor.read(cx).value().to_string()
     }
 
-    pub fn set_value(&mut self, text: impl Into<String>, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn set_value(
+        &mut self,
+        text: impl Into<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let text = text.into();
         self.empty = text.is_empty();
         self.editor.update(cx, |state, cx| {
@@ -303,12 +322,7 @@ impl WysiwygEditor {
         self.apply_link(window, cx);
     }
 
-    fn on_toggle_read_mode(
-        &mut self,
-        _: &ToggleReadMode,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_toggle_read_mode(&mut self, _: &ToggleReadMode, _: &mut Window, cx: &mut Context<Self>) {
         let next = match self.mode {
             WysiwygMode::Edit => WysiwygMode::Read,
             WysiwygMode::Read => WysiwygMode::Edit,
@@ -378,7 +392,6 @@ impl WysiwygEditor {
                     })),
             )
     }
-
 }
 
 impl EventEmitter<WysiwygEvent> for WysiwygEditor {}
@@ -407,9 +420,7 @@ impl Render for WysiwygEditor {
                         .child(SharedString::from("这篇笔记还没有内容"))
                         .into_any_element()
                 } else {
-                    TextView::new(&self.preview)
-                        .p_4()
-                        .into_any_element()
+                    TextView::new(&self.preview).p_4().into_any_element()
                 };
                 div()
                     .id("wysiwyg-read")

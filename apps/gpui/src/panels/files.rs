@@ -2,7 +2,7 @@
 
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_kit::component::list::ListItem;
-use gpui_kit::component::tree::{TreeItem, TreeState, tree};
+use gpui_kit::component::tree::{tree, TreeItem, TreeState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, IconName};
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -35,9 +35,10 @@ impl FilesPanel {
                 this.suppress_open = false;
                 return;
             }
-            let selected = tree.read(cx).selected_item().map(|item| {
-                (item.id.to_string(), item.is_folder())
-            });
+            let selected = tree
+                .read(cx)
+                .selected_item()
+                .map(|item| (item.id.to_string(), item.is_folder()));
             let Some((rel, is_folder)) = selected else {
                 return;
             };
@@ -129,34 +130,30 @@ impl Focusable for FilesPanel {
 
 impl Render for FilesPanel {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .id("files-panel")
+        v_flex().id("files-panel").size_full().min_h_0().child(
+            tree(&self.tree, |_, entry, _, _, cx| {
+                let icon = if !entry.is_folder() {
+                    IconName::File
+                } else if entry.is_expanded() {
+                    IconName::FolderOpen
+                } else {
+                    IconName::Folder
+                };
+                ListItem::new(entry.item().id.clone())
+                    .w_full()
+                    .rounded(cx.theme().radius)
+                    .px_3()
+                    .pl(gpui_kit::rems(0.75 + entry.depth() as f32))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(icon)
+                            .child(entry.item().label.clone()),
+                    )
+            })
             .size_full()
-            .min_h_0()
-            .child(
-                tree(&self.tree, |_, entry, _, _, cx| {
-                    let icon = if !entry.is_folder() {
-                        IconName::File
-                    } else if entry.is_expanded() {
-                        IconName::FolderOpen
-                    } else {
-                        IconName::Folder
-                    };
-                    ListItem::new(entry.item().id.clone())
-                        .w_full()
-                        .rounded(cx.theme().radius)
-                        .px_3()
-                        .pl(gpui_kit::rems(0.75 + entry.depth() as f32))
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .child(icon)
-                                .child(entry.item().label.clone()),
-                        )
-                })
-                .size_full()
-                .flex_1()
-                .min_h_0(),
-            )
+            .flex_1()
+            .min_h_0(),
+        )
     }
 }

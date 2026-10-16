@@ -10,7 +10,8 @@ use mn_core::frontmatter::FrontmatterValue;
 use mn_core::scanner::{scan, EntryMeta, ScanOptions};
 use mn_core::trash::{list_trash, move_to_trash, restore_from_trash, TrashRecord};
 use mn_core::{
-    frontmatter_body, parse_frontmatter, text_stats, Error, Result, VaultRoot, DEFAULT_MAX_READ_BYTES,
+    frontmatter_body, parse_frontmatter, text_stats, Error, Result, VaultRoot,
+    DEFAULT_MAX_READ_BYTES,
 };
 use mn_index::rename::{rename_note, RenameReport};
 use mn_index::search::{SearchIndex, SearchOutcome};
@@ -91,7 +92,10 @@ impl VaultSession {
 
     /// 扫描到的 Markdown 笔记（含 `.md` / `.markdown`），顺序与扫描一致。
     pub fn notes(&self) -> Vec<&EntryMeta> {
-        self.entries.iter().filter(|entry| is_markdown(entry)).collect()
+        self.entries
+            .iter()
+            .filter(|entry| is_markdown(entry))
+            .collect()
     }
 
     /// 读一篇笔记的原文和当前 mtime 令牌。
@@ -260,7 +264,9 @@ impl VaultSession {
         if !outcome.record.is_dir {
             if let Ok(document) = self.read(&rel) {
                 self.links.upsert(&document.rel_path, &document.text);
-                let _ = self.search_index.upsert_note(&document.rel_path, &document.text);
+                let _ = self
+                    .search_index
+                    .upsert_note(&document.rel_path, &document.text);
             }
         }
         self.refresh_entries()?;
@@ -285,8 +291,7 @@ pub fn display_name(name: &str) -> String {
 }
 
 pub(crate) fn is_markdown(entry: &EntryMeta) -> bool {
-    !entry.is_dir
-        && matches!(entry.ext.as_deref(), Some("md" | "markdown"))
+    !entry.is_dir && matches!(entry.ext.as_deref(), Some("md" | "markdown"))
 }
 
 fn normalize_rel(rel: &str) -> String {

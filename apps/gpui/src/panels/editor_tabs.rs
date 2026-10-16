@@ -72,10 +72,13 @@ impl EditorTabs {
     }
 
     pub fn active_rel(&self) -> Option<&str> {
-        self.tabs.get(self.active_tab).map(|tab| tab.rel_path.as_str())
+        self.tabs
+            .get(self.active_tab)
+            .map(|tab| tab.rel_path.as_str())
     }
 
     /// 打开笔记。`keep == false` 时走预览标签（替换已有预览）；`keep` 或编辑后固定。
+    #[allow(clippy::too_many_arguments)] // 这些参数都是这一次打开的输入，拆结构体不会少一次传递
     pub fn open(
         &mut self,
         rel: &str,
@@ -109,6 +112,7 @@ impl EditorTabs {
         cx.notify();
     }
 
+    #[allow(clippy::too_many_arguments)] // 同上：都是这一次建标签的输入
     fn make_tab(
         &mut self,
         rel: &str,
@@ -255,7 +259,13 @@ impl EditorTabs {
         }
     }
 
-    pub fn rename_active(&mut self, new_rel: String, title: SharedString, mtime: u64, cx: &mut Context<Self>) {
+    pub fn rename_active(
+        &mut self,
+        new_rel: String,
+        title: SharedString,
+        mtime: u64,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
             tab.rel_path = new_rel;
             tab.title = title;
@@ -446,17 +456,16 @@ impl Render for EditorTabs {
                             .xsmall()
                             .icon(IconName::Close)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                let Some(ix) =
-                                    this.tabs.iter().position(|tab| tab.rel_path == rel)
+                                let Some(ix) = this.tabs.iter().position(|tab| tab.rel_path == rel)
                                 else {
                                     return;
                                 };
                                 let Some((closed_rel, text)) = this.close_at(ix, cx) else {
                                     return;
                                 };
-                                let next = this.active_rel().map(|next_rel| {
-                                    (next_rel.to_string(), this.text(cx))
-                                });
+                                let next = this
+                                    .active_rel()
+                                    .map(|next_rel| (next_rel.to_string(), this.text(cx)));
                                 let workspace = this.workspace.clone();
                                 cx.defer(move |cx| {
                                     let _ = workspace.update(cx, |workspace, cx| {

@@ -30,14 +30,12 @@ impl SearchPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("搜索笔记"));
-        let query_sub = cx.subscribe_in(&query, window, |this, input, event, _, cx| {
-            match event {
-                InputEvent::Change | InputEvent::PressEnter { .. } => {
-                    let value = input.read(cx).value().to_string();
-                    this.run_search(&value, cx);
-                }
-                _ => {}
+        let query_sub = cx.subscribe_in(&query, window, |this, input, event, _, cx| match event {
+            InputEvent::Change | InputEvent::PressEnter { .. } => {
+                let value = input.read(cx).value().to_string();
+                this.run_search(&value, cx);
             }
+            _ => {}
         });
 
         Self {

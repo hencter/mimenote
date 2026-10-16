@@ -28,7 +28,7 @@ fn root_view_shows_fixture_note(cx: &mut TestAppContext) {
         .expect("打开测试窗口")
     });
 
-    cx.update_window(window.into(), |_, window, cx| {
+    cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         let row = window.within("entries").find(0usize);
         let note = window.find("笔记.md");
@@ -39,14 +39,24 @@ fn root_view_shows_fixture_note(cx: &mut TestAppContext) {
             editor.label(),
             editor.value()
         );
-        assert_eq!(row.label(), Some("笔记"), "文件树里应该显示不带扩展名的笔记名");
+        assert_eq!(
+            row.label(),
+            Some("笔记"),
+            "文件树里应该显示不带扩展名的笔记名"
+        );
         assert!(note.visible(), "笔记.md 应该出现在文件树里");
         assert_eq!(editor.label(), Some("笔记正文"));
         assert_eq!(editor.value(), Some(body));
         assert!(window.find("fmt-bold").visible(), "应有加粗工具");
         assert!(window.find("fmt-link").visible(), "链接按钮应带 kit Icon");
-        assert!(window.find("toggle-left-dock").visible(), "状态栏应有 PanelLeft 切换");
-        assert!(window.find("settings").visible(), "工具栏应有 Settings 图标入口");
+        assert!(
+            window.find("toggle-left-dock").visible(),
+            "状态栏应有 PanelLeft 切换"
+        );
+        assert!(
+            window.find("settings").visible(),
+            "工具栏应有 Settings 图标入口"
+        );
         assert!(
             window.find(("close-note-tab", 0u64)).visible(),
             "笔记 Dynamic Tab 应有关闭按钮",
@@ -86,7 +96,7 @@ fn center_shows_note_properties_block(cx: &mut TestAppContext) {
         .expect("打开测试窗口")
     });
 
-    cx.update_window(window.into(), |_, window, cx| {
+    cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         let panel = workspace.read(cx).panel_data().clone();
         assert!(
@@ -133,7 +143,7 @@ fn edit_property_updates_frontmatter(cx: &mut TestAppContext) {
         .expect("打开测试窗口")
     });
 
-    cx.update_window(window.into(), |_, window, cx| {
+    cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         workspace.update(cx, |this, cx| {
             this.set_active_property("title", "新标题", window, cx);
@@ -181,7 +191,7 @@ fn open_second_note_switches_editor(cx: &mut TestAppContext) {
         .expect("打开测试窗口")
     });
 
-    cx.update_window(window.into(), |_, window, cx| {
+    cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         workspace.update(cx, |this, cx| {
             this.open_note("乙.md", window, cx);
@@ -190,7 +200,7 @@ fn open_second_note_switches_editor(cx: &mut TestAppContext) {
     .expect("打开乙");
     cx.run_until_parked();
 
-    cx.update_window(window.into(), |_, window, cx| {
+    cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(workspace.read(cx).editor_text(cx), "乙正文\n");
         assert!(workspace.read(cx).is_active_note("乙.md"));
@@ -201,7 +211,7 @@ fn open_second_note_switches_editor(cx: &mut TestAppContext) {
     .expect("打开甲");
     cx.run_until_parked();
 
-    cx.update_window(window.into(), |_, window, cx| {
+    cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(workspace.read(cx).editor_text(cx), "甲正文\n");
         assert!(workspace.read(cx).is_active_note("甲.md"));

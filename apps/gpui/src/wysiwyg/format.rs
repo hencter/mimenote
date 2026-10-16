@@ -19,7 +19,6 @@ impl InlineMark {
             Self::Strike => "~~",
         }
     }
-
 }
 
 /// 对选区切换行内标记后的文档与新选区。

@@ -17,7 +17,7 @@ use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::dialog::{DialogAction, DialogClose, DialogFooter};
 use gpui_kit::component::dock::{
-    DockArea, DockLayout, DockPlacement, DockSkin, PanelId, PanelStyle, panel_handle,
+    panel_handle, DockArea, DockLayout, DockPlacement, DockSkin, PanelId, PanelStyle,
 };
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
@@ -179,7 +179,12 @@ impl Workspace {
         self.editor_tabs.read(cx).editor_element_id(cx)
     }
 
-    pub(crate) fn jump_to_offset(&mut self, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn jump_to_offset(
+        &mut self,
+        offset: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.editor_tabs.update(cx, |tabs, cx| {
             tabs.jump_to_offset(offset, window, cx);
         });
@@ -240,10 +245,9 @@ impl Workspace {
     ) {
         if self.active_rel() == Some(rel) {
             if keep {
-                self.editor_tabs
-                    .update(cx, |tabs, cx| {
-                        let _ = tabs.pin_rel(rel, cx);
-                    });
+                self.editor_tabs.update(cx, |tabs, cx| {
+                    let _ = tabs.pin_rel(rel, cx);
+                });
             }
             return;
         }
@@ -580,28 +584,31 @@ impl Workspace {
         window.open_dialog(cx, move |dialog, _, _| {
             let path_input = path_input.clone();
             let view = view.clone();
-            dialog.title("打开库").child(Input::new(&path_input)).footer(
-                DialogFooter::new()
-                    .gap_2()
-                    .child(
-                        DialogClose::new()
-                            .child(Button::new("cancel-open").label("取消").outline()),
-                    )
-                    .child(
-                        DialogAction::new().child(
-                            Button::new("confirm-open")
-                                .primary()
-                                .label("打开")
-                                .on_click(move |_, window, cx| {
-                                    let path = path_input.read(cx).value().to_string();
-                                    view.update(cx, |this, cx| {
-                                        this.reopen(PathBuf::from(path), window, cx);
-                                    });
-                                    window.close_dialog(cx);
-                                }),
+            dialog
+                .title("打开库")
+                .child(Input::new(&path_input))
+                .footer(
+                    DialogFooter::new()
+                        .gap_2()
+                        .child(
+                            DialogClose::new()
+                                .child(Button::new("cancel-open").label("取消").outline()),
+                        )
+                        .child(
+                            DialogAction::new().child(
+                                Button::new("confirm-open")
+                                    .primary()
+                                    .label("打开")
+                                    .on_click(move |_, window, cx| {
+                                        let path = path_input.read(cx).value().to_string();
+                                        view.update(cx, |this, cx| {
+                                            this.reopen(PathBuf::from(path), window, cx);
+                                        });
+                                        window.close_dialog(cx);
+                                    }),
+                            ),
                         ),
-                    ),
-            )
+                )
         });
     }
 
@@ -622,7 +629,8 @@ impl Workspace {
                 self.session = Some(session);
                 self.drafts.clear();
                 self.clear_editor_tabs(cx);
-                self.files.update(cx, |files, cx| files.set_items(items, cx));
+                self.files
+                    .update(cx, |files, cx| files.set_items(items, cx));
                 if let Some(rel) = first {
                     self.open_note_keep(&rel, window, cx);
                 } else {
@@ -709,28 +717,31 @@ impl Workspace {
         window.open_dialog(cx, move |dialog, _, _| {
             let name_input = name_input.clone();
             let view = view.clone();
-            dialog.title("重命名").child(Input::new(&name_input)).footer(
-                DialogFooter::new()
-                    .gap_2()
-                    .child(
-                        DialogClose::new()
-                            .child(Button::new("cancel-rename").label("取消").outline()),
-                    )
-                    .child(
-                        DialogAction::new().child(
-                            Button::new("confirm-rename")
-                                .primary()
-                                .label("重命名")
-                                .on_click(move |_, window, cx| {
-                                    let title = name_input.read(cx).value().to_string();
-                                    view.update(cx, |this, cx| {
-                                        this.rename_active(&title, window, cx)
-                                    });
-                                    window.close_dialog(cx);
-                                }),
+            dialog
+                .title("重命名")
+                .child(Input::new(&name_input))
+                .footer(
+                    DialogFooter::new()
+                        .gap_2()
+                        .child(
+                            DialogClose::new()
+                                .child(Button::new("cancel-rename").label("取消").outline()),
+                        )
+                        .child(
+                            DialogAction::new().child(
+                                Button::new("confirm-rename")
+                                    .primary()
+                                    .label("重命名")
+                                    .on_click(move |_, window, cx| {
+                                        let title = name_input.read(cx).value().to_string();
+                                        view.update(cx, |this, cx| {
+                                            this.rename_active(&title, window, cx)
+                                        });
+                                        window.close_dialog(cx);
+                                    }),
+                            ),
                         ),
-                    ),
-            )
+                )
         });
     }
 
@@ -854,11 +865,12 @@ impl Workspace {
                         }),
                 );
             }
-            dialog.title("回收站").child(body).footer(
-                DialogFooter::new().child(
+            dialog
+                .title("回收站")
+                .child(body)
+                .footer(DialogFooter::new().child(
                     DialogClose::new().child(Button::new("close-trash").label("关闭").outline()),
-                ),
-            )
+                ))
         });
     }
 
@@ -886,7 +898,8 @@ impl Workspace {
             .as_ref()
             .map(|session| note_tree(session.entries()))
             .unwrap_or_default();
-        self.files.update(cx, |files, cx| files.set_items(items, cx));
+        self.files
+            .update(cx, |files, cx| files.set_items(items, cx));
     }
 }
 
@@ -923,14 +936,18 @@ impl Workspace {
                     .ghost()
                     .icon(IconName::FolderOpen)
                     .label("打开库…")
-                    .on_click(cx.listener(|this, _, window, cx| this.prompt_open_vault(window, cx))),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.prompt_open_vault(window, cx)),
+                    ),
             )
             .child(
                 Button::new("save-note")
                     .primary()
                     .icon(IconName::Check)
                     .label("保存")
-                    .on_click(cx.listener(|this, _, window, cx| this.save_active(false, window, cx))),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.save_active(false, window, cx)),
+                    ),
             )
             .child(
                 Button::new("note-actions")
@@ -939,12 +956,16 @@ impl Workspace {
                     .label("笔记")
                     .dropdown_menu(move |menu, _, _| {
                         let view = view.clone();
-                        menu.item(PopupMenuItem::new("新建笔记…").icon(IconName::Plus).on_click({
-                            let view = view.clone();
-                            move |_, window, cx| {
-                                view.update(cx, |this, cx| this.prompt_create(window, cx));
-                            }
-                        }))
+                        menu.item(
+                            PopupMenuItem::new("新建笔记…")
+                                .icon(IconName::Plus)
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_, window, cx| {
+                                        view.update(cx, |this, cx| this.prompt_create(window, cx));
+                                    }
+                                }),
+                        )
                         .item(PopupMenuItem::new("重命名…").on_click({
                             let view = view.clone();
                             move |_, window, cx| {

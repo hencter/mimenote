@@ -32,7 +32,7 @@ pub fn build_decorations(
             | SpanKind::HorizontalRule
             | SpanKind::FenceLine
             | SpanKind::CodeBody
-            |             SpanKind::Frontmatter
+            | SpanKind::Frontmatter
             | SpanKind::ListMark { .. }
             | SpanKind::CalloutMarker { .. }
             | SpanKind::CalloutBody { .. } => cursor_on_line(&selection, &span.reveal),

@@ -20,7 +20,8 @@ use gpui_kit::AppContext as _;
 
 /// 打开原生窗口。`vault` 为空时使用当前工作目录。
 pub fn run(vault: Option<PathBuf>) {
-    let vault = vault.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let vault =
+        vault.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
@@ -29,11 +30,9 @@ pub fn run(vault: Option<PathBuf>) {
             // 默认深色：对齐参考图笔记软件观感；可在设置里切回浅色。
             Theme::change(ThemeMode::Dark, None, cx);
             let vault = vault.clone();
-            gpui_kit::open_window(
-                gpui_kit::WindowOptions::default(),
-                cx,
-                move |window, cx| cx.new(|cx| Workspace::new(vault.clone(), window, cx)),
-            )
+            gpui_kit::open_window(gpui_kit::WindowOptions::default(), cx, move |window, cx| {
+                cx.new(|cx| Workspace::new(vault.clone(), window, cx))
+            })
             .expect("打开窗口失败");
         });
 }

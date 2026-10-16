@@ -112,15 +112,13 @@ fn atx_heading(trimmed: &str) -> Option<(u8, &str)> {
 }
 
 fn display_text(raw: &str) -> String {
-    let mut s = raw.trim_end_matches(|c| c == '#' || c == ' ' || c == '\t').to_string();
+    let mut s = raw.trim_end_matches(['#', ' ', '\t']).to_string();
     // 粗略剥行内标记，只服务大纲显示。
     for _ in 0..4 {
         let next = s
             .replace("**", "")
             .replace("__", "")
-            .replace('*', "")
-            .replace('_', "")
-            .replace('`', "")
+            .replace(['*', '_', '`'], "")
             .replace("~~", "");
         if next == s {
             break;

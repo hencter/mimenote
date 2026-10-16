@@ -82,7 +82,10 @@ impl Focusable for InspectorPanel {
 impl Render for InspectorPanel {
     fn render(&mut self, _: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let Some(view) = self.workspace.upgrade() else {
-            return v_flex().id("inspector-panel").size_full().into_any_element();
+            return v_flex()
+                .id("inspector-panel")
+                .size_full()
+                .into_any_element();
         };
         let panel = self.cached_panel.clone();
 

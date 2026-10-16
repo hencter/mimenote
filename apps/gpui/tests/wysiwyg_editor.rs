@@ -1,7 +1,5 @@
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{
-    px, size, AppContext as _, Bounds, TestAppContext, WindowBounds, WindowOptions,
-};
+use gpui_kit::{px, size, AppContext as _, Bounds, TestAppContext, WindowBounds, WindowOptions};
 
 use mimenote_gpui::{WysiwygEditor, WysiwygMode};
 
@@ -27,7 +25,7 @@ fn bold_wraps_selection_as_markdown(cx: &mut TestAppContext) {
         .expect("打开测试窗口")
     });
 
-    cx.update_window(window.into(), |_, window, cx| {
+    cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         editor.update(cx, |this, cx| {
             this.set_value("重点", window, cx);
@@ -64,7 +62,7 @@ fn live_preview_writes_decorations_into_editor(cx: &mut TestAppContext) {
         .expect("打开测试窗口")
     });
 
-    cx.update_window(window.into(), |_, window, cx| {
+    cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         editor.update(cx, |this, cx| {
             this.set_value("# 标题\n**粗体** 与 `代码`\n", window, cx);
@@ -100,7 +98,7 @@ fn read_mode_toggle_switches_surface(cx: &mut TestAppContext) {
         .expect("打开测试窗口")
     });
 
-    cx.update_window(window.into(), |_, window, cx| {
+    cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(editor.read(cx).mode(), WysiwygMode::Edit);
         // Segmented Tabs 的项 id 是 Integer(0/1)；TabBar 容器 id 对 find 不是叶子节点。

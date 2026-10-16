@@ -16,12 +16,7 @@ const BASE_FONT_PX: f32 = 16.0;
 ///
 /// `zoom` 必须由调用方传入：若从 `Workspace` 的 `defer_in` / click listener 进入，
 /// 此时仍持有 Workspace lease，不能再 `workspace.read`。
-pub fn open_settings(
-    workspace: Entity<Workspace>,
-    zoom: f32,
-    window: &mut Window,
-    cx: &mut App,
-) {
+pub fn open_settings(workspace: Entity<Workspace>, zoom: f32, window: &mut Window, cx: &mut App) {
     let dark = cx.theme().mode.is_dark();
     let zoom_state = cx.new(|_| {
         SliderState::new()
@@ -34,51 +29,49 @@ pub fn open_settings(
     let zoom_for_sub = zoom_state.clone();
     let workspace_for_sub = workspace.clone();
     window
-        .subscribe(&zoom_for_sub, cx, move |_, event: &SliderEvent, window, cx| {
-            let percent = match event {
-                SliderEvent::Change(value) | SliderEvent::Release(value) => value.start(),
-            };
-            let _ = workspace_for_sub.update(cx, |this, cx| {
-                this.set_zoom_percent(percent, window, cx);
-            });
-        })
+        .subscribe(
+            &zoom_for_sub,
+            cx,
+            move |_, event: &SliderEvent, window, cx| {
+                let percent = match event {
+                    SliderEvent::Change(value) | SliderEvent::Release(value) => value.start(),
+                };
+                workspace_for_sub.update(cx, |this, cx| {
+                    this.set_zoom_percent(percent, window, cx);
+                });
+            },
+        )
         .detach();
 
     let zoom_label = format!("{}%", zoom as i32);
     window.open_sheet(cx, move |sheet, _, _cx| {
         let zoom_state = zoom_state.clone();
-        sheet
-            .title("设置")
-            .size(px(360.))
-            .child(
-                v_flex()
-                    .gap_4()
-                    .p_1()
-                    .child(
-                        v_flex()
-                            .gap_2()
-                            .child(Label::new("外观"))
-                            .child(
-                                Switch::new("theme-dark")
-                                    .label("深色模式")
-                                    .checked(dark)
-                                    .on_change(move |checked, _, cx| {
-                                        let mode = if *checked {
-                                            ThemeMode::Dark
-                                        } else {
-                                            ThemeMode::Light
-                                        };
-                                        Theme::change(mode, None, cx);
-                                    }),
-                            ),
-                    )
-                    .child(
-                        v_flex()
-                            .gap_2()
-                            .child(Label::new(format!("编辑器缩放（{zoom_label}）")))
-                            .child(Slider::new(&zoom_state).w_full()),
+        sheet.title("设置").size(px(360.)).child(
+            v_flex()
+                .gap_4()
+                .p_1()
+                .child(
+                    v_flex().gap_2().child(Label::new("外观")).child(
+                        Switch::new("theme-dark")
+                            .label("深色模式")
+                            .checked(dark)
+                            .on_change(move |checked, _, cx| {
+                                let mode = if *checked {
+                                    ThemeMode::Dark
+                                } else {
+                                    ThemeMode::Light
+                                };
+                                Theme::change(mode, None, cx);
+                            }),
                     ),
-            )
+                )
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(Label::new(format!("编辑器缩放（{zoom_label}）")))
+                        .child(Slider::new(&zoom_state).w_full()),
+                ),
+        )
     });
 }
 

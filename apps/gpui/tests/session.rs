@@ -1,7 +1,7 @@
 use std::fs;
 
-use mn_core::ErrorCode;
 use mimenote_gpui::VaultSession;
+use mn_core::ErrorCode;
 
 /// 直接调用发布的 [`VaultSession`]：扫描、读取、原子保存、过期令牌、全文搜索、双链。
 #[test]
@@ -38,9 +38,10 @@ fn session_scans_reads_saves_searches_and_links() {
 
     let outbound = session.note_links("source.md");
     assert!(
-        outbound.outbound.iter().any(|link| {
-            link.resolved_rel_path.as_deref() == Some("日记/target.md")
-        }),
+        outbound
+            .outbound
+            .iter()
+            .any(|link| { link.resolved_rel_path.as_deref() == Some("日记/target.md") }),
         "{:?}",
         outbound.outbound
     );
@@ -96,9 +97,16 @@ fn session_creates_renames_trashes_and_reads_panel() {
     );
 
     let panel = session.panel("b.md", &session.read("b.md").expect("读 b").text);
-    assert!(panel.tags.iter().any(|tag| tag == "主题"), "{:?}", panel.tags);
     assert!(
-        panel.properties.iter().any(|(key, value)| key == "title" && value == "目标"),
+        panel.tags.iter().any(|tag| tag == "主题"),
+        "{:?}",
+        panel.tags
+    );
+    assert!(
+        panel
+            .properties
+            .iter()
+            .any(|(key, value)| key == "title" && value == "目标"),
         "{:?}",
         panel.properties
     );
@@ -111,13 +119,18 @@ fn session_creates_renames_trashes_and_reads_panel() {
 
     let report = session.rename_note("b.md", "c").expect("改名");
     assert_eq!(report.new_rel_path, "c.md");
-    let rewritten = String::from_utf8(fs::read(dir.path().join("a.md")).expect("读来源")).expect("utf8");
+    let rewritten =
+        String::from_utf8(fs::read(dir.path().join("a.md")).expect("读来源")).expect("utf8");
     assert!(rewritten.contains("[[c]]"), "{rewritten}");
     assert!(!dir.path().join("b.md").exists());
 
     let record = session.trash_note("c.md").expect("回收");
     assert!(!dir.path().join("c.md").exists());
-    assert!(session.trash().expect("台账").iter().any(|item| item.id == record.id));
+    assert!(session
+        .trash()
+        .expect("台账")
+        .iter()
+        .any(|item| item.id == record.id));
 
     let restored = session.restore_note(&record.id).expect("恢复");
     assert_eq!(restored, "c.md");

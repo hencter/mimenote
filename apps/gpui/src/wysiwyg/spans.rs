@@ -17,6 +17,15 @@ pub struct LiveSpan {
     pub markers: Vec<Range<usize>>,
 }
 
+/// 只放一段标记时用这个包一层。
+///
+/// 直接写 `vec![a..b]` 会被 clippy 的 `single_range_in_vec_init` 判成
+/// 「本该是 `(a..b).collect()`」的笔误 —— 而这里向量里的元素**就是**区间
+/// （同一个字段也有两段的用法，见 `marker_pair`），所以给它一个名字挡住那句误报。
+fn single_marker(range: Range<usize>) -> Vec<Range<usize>> {
+    vec![range]
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpanKind {
     Strong,
@@ -25,11 +34,15 @@ pub enum SpanKind {
     InlineCode,
     Link,
     Wikilink,
-    Heading { level: u8 },
+    Heading {
+        level: u8,
+    },
     Blockquote,
     HorizontalRule,
     /// 列表标记保留可见（GPUI 尚无 widget 替换成 `•`/`1.`），只做淡色。
-    ListMark { ordered: bool },
+    ListMark {
+        ordered: bool,
+    },
     /// 围栏 ``` 行：光标不在时整行软隐藏。
     FenceLine,
     /// 围栏内部行：等宽底色。
@@ -37,9 +50,13 @@ pub enum SpanKind {
     /// frontmatter：淡色等宽，不做语法渲染。
     Frontmatter,
     /// callout 标记行（`> [!note] 标题`）：软隐藏 `>` 与 `[!type]`，标题保留真文字。
-    CalloutMarker { callout_type: CalloutType },
+    CalloutMarker {
+        callout_type: CalloutType,
+    },
     /// callout 正文行（引用续行）：染色块 + 软隐藏行首 `>`。
-    CalloutBody { callout_type: CalloutType },
+    CalloutBody {
+        callout_type: CalloutType,
+    },
 }
 
 /// Obsidian 核心 callout 类型（与 `domain/callouts.ts` 对齐）。
@@ -170,7 +187,7 @@ pub fn collect_spans(text: &str) -> Vec<LiveSpan> {
                         kind: SpanKind::FenceLine,
                         reveal: line_range.clone(),
                         content: *line_start..*line_start + content.len(),
-                        markers: vec![*line_start..*line_start + content.len()],
+                        markers: single_marker(*line_start..*line_start + content.len()),
                     });
                 }
                 FenceRole::Body => {
@@ -271,7 +288,9 @@ fn fence_line_role(start: usize, end: usize, fences: &[FenceRegion]) -> Option<F
 fn frontmatter_region(text: &str) -> Option<Range<usize>> {
     let mut lines = text.split_inclusive('\n');
     let first = lines.next()?;
-    let head = first.trim_end_matches(['\r', '\n']).trim_start_matches('\u{feff}');
+    let head = first
+        .trim_end_matches(['\r', '\n'])
+        .trim_start_matches('\u{feff}');
     if !matches!(head, "---" | "+++" | ";;;") {
         return None;
     }
@@ -302,12 +321,10 @@ fn heading_span(line: &str, base: usize, reveal: Range<usize>) -> Option<LiveSpa
     }
     let marker_end = level + 1;
     Some(LiveSpan {
-        kind: SpanKind::Heading {
-            level: level as u8,
-        },
+        kind: SpanKind::Heading { level: level as u8 },
         reveal,
         content: base + marker_end..base + line.len(),
-        markers: vec![base..base + marker_end],
+        markers: single_marker(base..base + marker_end),
     })
 }
 
@@ -321,7 +338,7 @@ fn hr_span(line: &str, base: usize, reveal: Range<usize>) -> Option<LiveSpan> {
             kind: SpanKind::HorizontalRule,
             reveal,
             content: base..base + line.len(),
-            markers: vec![base..base + line.len()],
+            markers: single_marker(base..base + line.len()),
         })
     } else {
         None
@@ -403,9 +420,7 @@ struct CalloutMarkerInfo {
 
 /// 一行引用内容里切出 callout 标记（对齐桌面 `readCallout` 的位置算术）。
 fn read_callout_marker(content: &str) -> Option<CalloutMarkerInfo> {
-    if parse_callout(content).is_none() {
-        return None;
-    }
+    parse_callout(content)?;
     let close = content.find(']')?;
     let mut marker_len = close + 1;
     if marker_len < content.len()
@@ -439,7 +454,7 @@ fn list_mark_span(line: &str, base: usize, reveal: Range<usize>) -> Option<LiveS
             kind: SpanKind::ListMark { ordered: false },
             reveal,
             content: base + mark_end..base + line.len(),
-            markers: vec![base + indent..base + mark_end],
+            markers: single_marker(base + indent..base + mark_end),
         });
     }
 
@@ -454,7 +469,7 @@ fn list_mark_span(line: &str, base: usize, reveal: Range<usize>) -> Option<LiveS
             kind: SpanKind::ListMark { ordered: true },
             reveal,
             content: base + mark_end..base + line.len(),
-            markers: vec![base + indent..base + mark_end],
+            markers: single_marker(base + indent..base + mark_end),
         });
     }
 
@@ -572,11 +587,7 @@ fn ranges_overlap(a: &Range<usize>, b: &Range<usize>) -> bool {
     a.start < b.end && a.end > b.start
 }
 
-fn find_delimited<'a>(
-    line: &'a str,
-    open: &str,
-    close: &str,
-) -> Vec<(Range<usize>, Range<usize>)> {
+fn find_delimited(line: &str, open: &str, close: &str) -> Vec<(Range<usize>, Range<usize>)> {
     let mut out = Vec::new();
     let bytes = line.as_bytes();
     let open_b = open.as_bytes();
@@ -709,8 +720,7 @@ fn find_wikilinks(line: &str) -> Vec<(Range<usize>, Range<usize>)> {
 pub fn selection_touches(selection: &Range<usize>, reveal: &Range<usize>) -> bool {
     if selection.start == selection.end {
         let caret = selection.start;
-        caret >= reveal.start && caret < reveal.end
-            || (!reveal.is_empty() && caret == reveal.end)
+        caret >= reveal.start && caret < reveal.end || (!reveal.is_empty() && caret == reveal.end)
     } else {
         selection.start < reveal.end && selection.end > reveal.start
     }
@@ -749,8 +759,12 @@ mod tests {
             .expect("heading");
         assert_eq!(&text[heading.markers[0].clone()], "# ");
         assert!(spans.iter().any(|s| s.kind == SpanKind::Blockquote));
-        assert!(spans.iter().any(|s| matches!(s.kind, SpanKind::ListMark { ordered: false })));
-        assert!(spans.iter().any(|s| matches!(s.kind, SpanKind::ListMark { ordered: true })));
+        assert!(spans
+            .iter()
+            .any(|s| matches!(s.kind, SpanKind::ListMark { ordered: false })));
+        assert!(spans
+            .iter()
+            .any(|s| matches!(s.kind, SpanKind::ListMark { ordered: true })));
     }
 
     #[test]

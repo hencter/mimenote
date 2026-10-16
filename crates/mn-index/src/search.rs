@@ -2020,7 +2020,10 @@ mod tests {
         let index = index_of(&refs);
 
         let outcome = index.search("关键词", 50).unwrap();
-        assert_eq!(outcome.total, 120, "total 是全部命中行数（含被每篇上限砍掉的）");
+        assert_eq!(
+            outcome.total, 120,
+            "total 是全部命中行数（含被每篇上限砍掉的）"
+        );
         assert_eq!(outcome.hits.len(), 50, "上限是 limit，不是每篇上限");
         assert_eq!(
             outcome
@@ -2085,8 +2088,12 @@ mod tests {
             let (first, second) = (&pair[0], &pair[1]);
             let ordered = second.score < first.score
                 || (second.score == first.score
-                    && (first.rel_path.as_str(), first.line) <= (second.rel_path.as_str(), second.line));
-            assert!(ordered, "截断后仍然必须是全序子序列：{first:?} / {second:?}");
+                    && (first.rel_path.as_str(), first.line)
+                        <= (second.rel_path.as_str(), second.line));
+            assert!(
+                ordered,
+                "截断后仍然必须是全序子序列：{first:?} / {second:?}"
+            );
         }
     }
 
@@ -2096,7 +2103,11 @@ mod tests {
         assert_eq!(fetch_budget(0), 0);
         assert_eq!(fetch_budget(1), FETCH_SLACK);
         assert_eq!(fetch_budget(50), 400);
-        assert_eq!(fetch_budget(200), MAX_FETCH_ROWS, "200 × 8 = 1600 被硬上限截住");
+        assert_eq!(
+            fetch_budget(200),
+            MAX_FETCH_ROWS,
+            "200 × 8 = 1600 被硬上限截住"
+        );
         assert_eq!(fetch_budget(MAX_FETCH_ROWS + 1), MAX_FETCH_ROWS + 1);
         assert_eq!(
             fetch_budget(u32::MAX),
