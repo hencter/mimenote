@@ -1,4 +1,5 @@
 /// <reference types="vitest/config" />
+import { availableParallelism } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 import react from '@vitejs/plugin-react'
@@ -66,12 +67,17 @@ export default defineConfig({
     /**
      * 同时跑几个测试文件（默认 = CPU 核数，本机 16）。
      *
-     * 为什么要压到 6：这个套件里有一批**挂真编辑器/真预览**的重文件（CodeMirror + Lezer +
-     * Live Preview 装饰），16 个文件同时抢 CPU 时它们会互相把对方饿到超时 —— 表现为
+     * 为什么要压：这个套件里有一批**挂真编辑器/真预览**的重文件（CodeMirror + Lezer +
+     * Live Preview 装饰），同时跑的文件数超过核数时它们会互相把对方饿住 —— 表现为
      * "全量跑必有一个随机的编辑器用例失败、单独跑必过"。这类假红最贵的地方在于：
-     * 它教人忽略红色。压到 6 之后整轮仍然只要一分钟上下（本机实测 40–60s），
-     * 换来的是"红色就是真的坏了"。
+     * 它教人忽略红色。
+     *
+     * 为什么是"核数 - 1"而不是写死的 6：写死只对**调它时的那台机器**成立。CI 的
+     * `windows-latest` 是 4 核、macOS runner 更少，写死 6 等于每个文件都拿不到一个核 ——
+     * 实测（2026-10-16 的 CI）由此连挂 `live-preview-table`（装饰没建好就断言）与
+     * `lightbox-gallery`（只 hydrate 出 1/3 张图），**同一提交重跑就过**。
+     * 跟着核数走之后本机仍是 6（16 核 → min(6, 15)），CI 自动降到 3 / 2。
      */
-    maxWorkers: 6,
+    maxWorkers: Math.max(2, Math.min(6, availableParallelism() - 1)),
   },
 })
