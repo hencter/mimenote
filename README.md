@@ -185,7 +185,7 @@ git tag v0.2.0 && git push origin v0.2.0   # 触发 Release 工作流：构建 N
 pnpm check        # 版本检查 + IPC 契约检查 + 类型检查 + 脚本测试 + 前端测试 + Rust 测试
 pnpm check:version # 四处版本一致性检查（可选参数：发布标签）
 pnpm check:ipc    # IPC 契约一致性检查（命令三方 / 错误码 / 53 组 DTO / 字符串枚举）
-pnpm typecheck    # tsc --noEmit（TS 严格模式，含 noUncheckedIndexedAccess）
+pnpm typecheck    # tsc-rs --noEmit（TS 严格模式，含 noUncheckedIndexedAccess）
 pnpm test         # Node 脚本回归测试 + vitest（前端单元 + 集成测试）
 pnpm test:scripts # 版本校验脚本的回归测试
 pnpm test:rust    # cargo test --workspace

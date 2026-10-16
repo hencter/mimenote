@@ -51,6 +51,9 @@
      它一旦 `overflow: visible` 就无处可滚 —— 跳转落点在屏幕外，用户只看到"跳了但没滚"；
   2. CM 的视口窗口化按 scroller 的**可视高度**算：高度等于全文时它会把所有行都渲染出来，
      大文档的 DOM 量直接回到"整篇都在 DOM 里"（ADR-0020 那笔账）。
+
+  属性区通过 portal 挂进 `.cm-scroller`（`.mn-editor__meta-mount`），与正文共用这一条滚动条，
+  而不是钉在 scroller 外面单独占一层 —— 否则属性钉死、正文自己滚，看起来像"中间一块独立滚动"。
 */
 .mn-editor__surface {
   flex: 1 1 auto;
@@ -60,6 +63,13 @@
 
 .mn-editor__surface .cm-editor {
   height: 100%;
+}
+
+/* scroller 的 flex-wrap 在 `cm/theme.ts`；这里只规定属性挂载点如何独占第一行 */
+.mn-editor__meta-mount {
+  flex: 1 0 100%;
+  width: 100%;
+  box-sizing: border-box;
 }
 /* CodeMirror 的 layer() 写入行内 z-index:-2，必须明确覆盖才能让选区位于块底色上方。 */
 .mn-editor__surface .cm-selectionLayer { z-index: 3 !important; pointer-events: none; }

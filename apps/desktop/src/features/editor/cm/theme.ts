@@ -23,6 +23,8 @@ export const mnEditorTheme = EditorView.theme({
     fontFamily: 'var(--mn-font-ui)',
     lineHeight: '1.78',
     overflow: 'auto',
+    /* 属性区（`.mn-editor__meta-mount`）要独占第一行，见 editor-shell.css */
+    flexWrap: 'wrap',
   },
   /*
    * 左右内边距与最大宽度改由 `.mn-editor__column` 统一给（与属性区对齐）。

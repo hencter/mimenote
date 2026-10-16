@@ -9,9 +9,9 @@
  *   （分栏之后几格可以同时脏几篇，`note-store` 按篇记账 —— 只标当前那篇会让别格里的
  *   未保存修改在界面上完全看不见）。
  * - **模块标签**：点击 → 这一格切到它；右键 / `Enter` 是位置菜单（搬到主叶左/右/下、
- *   条内前移/后移、隐藏这一块）；标签上**没有 ×**。侧栏折叠图标见 `sideCollapse`：
- *   左缘挂在**左栏标签条最左**（`panelLeft`），右缘挂在**主叶标签条最右**（`sidebarRight`），
- *   显隐仍走 `module-visibility`。
+ *   条内前移/后移、隐藏这一块）；标签上**没有 ×**。侧栏折叠图标见 `sideToggle`：
+ *   **左右都挂在内容叶标签条上**——左在标签滚动区左侧（`panelLeft`），右在滚动区右侧
+ *   （`sidebarRight`，窗口按钮之前）；收起后同一颗按钮原地变「展开」，不另开边缘窄轨。
  * - 键盘：`←/→/Home/End` 在条内移动焦点并顺手激活（roving tabindex，选中即切换 ——
  *   与旧标签栏同一模型）；`Alt+1/2/3` 搬到主叶左/右/下、`Alt+←/→` 条内换位置
  *   （判据只有 `tree-keys.ts` 一份，模块菜单的置灰也用它）。
@@ -20,19 +20,19 @@
  * 并入或切一刀，见 `drop-target.ts`）。本组件只负责**渲染**：拖动状态与落点 hint
  * 都由父组件持有并作为 props 传进来。
  *
- * ## 顶部空间的三段（ADR-0038）
+ * ## 顶部空间（ADR-0038）
  *
  * ```
- * ┌──────────────────────────── 36px ────────────────────────────┐
- * │ [标签滚动区 role=tablist]            │ [窗口按钮槽（只有主叶）] │
- * └──────────────────────────────────────────────────────────────┘
+ * ┌─────────────────────────────────── 36px ───────────────────────────────────┐
+ * │ [左折叠?] [标签滚动区 role=tablist] [右折叠?] │ [窗口按钮槽（右上叶）] │
+ * └────────────────────────────────────────────────────────────────────────────┘
  * ```
  *
  * - 整条标签条带 `data-tauri-drag-region="deep"`：空白处按住拖动窗口、双击最大化。
  *   Tauri 的拖动脚本会**自动跳过**可点击元素（`role=tab`、`button` 等，见 tauri 的
  *   `window/scripts/drag.js`），所以标签、关闭按钮、窗口按钮都不会被拖动吞掉点击；
  * - 窗口按钮槽**不参与横向滚动**（它在 `.mn-tabs__scroll` 外面）：标签再多也挤不掉
- *   最小化/最大化/关闭（ADR-0038：这三个按钮住进**主叶标签条**的右端）。
+ *   最小化/最大化/关闭（ADR-0038：这三个按钮住进**右上叶标签条**的右端）。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -55,21 +55,25 @@ import { useUiStore } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
 
 import { useLayoutDrag } from './layout-drag'
-import { hideModule, moduleVisible, showModule } from './module-visibility'
+import { hideModule, showModule } from './module-visibility'
 import { adjustNewSplitRatio } from './split-size'
 import { keyboardMoveItem, LAYOUT_KEYBOARD_HINT } from './tree-keys'
 import {
-  findLeaf,
   isViewModule,
   leafOfItem,
   notePathOf,
-  rightEdgeLeafId,
   setActive,
   VIEW_MODULES,
   type LayoutItemId,
   type LeafNode,
   type ViewModuleId,
 } from '@/domain/layout/tree-layout'
+
+/** 内容叶标签条上的一侧折叠/展开控件（模块名单来自布局树的纯模块侧栏）。 */
+export type SideToggle = {
+  mode: 'collapse' | 'expand'
+  modules: readonly ViewModuleId[]
+}
 
 // 标签条样式表仍住在 `features/tabs/`（它是旧全局标签栏那批样式的幸存者，坐标没跟着搬）。
 // **这一行是它进包的唯一原因**：ADR-0035 删掉 `TabBar.tsx` 时把唯一的导入方一起删了，
@@ -107,17 +111,18 @@ export interface LeafTabsProps {
   /** 拖动中的插入位（`null` = 没有在拖/不落在本条上）。 */
   dropIndex: number | null
   /**
-   * 这一格是不是**主叶**：是则右端常驻三个窗口按钮（ADR-0038）。
-   * 主叶即使一个标签都没有也会渲染标签条 —— 否则窗口按钮会随"空态"一起消失。
+   * 这一格是不是**右上叶**：是则右端常驻三个窗口按钮（ADR-0038）。
+   * 右上叶即使一个标签都没有也会渲染标签条 —— 否则窗口按钮会随"空态"一起消失。
    */
   windowControls?: boolean
   /**
-   * 侧栏折叠图标：
-   * - `left` = 本条最左挂 `panelLeft`（左缘模块格），收起本格模块；
-   * - `right` = 本条最右挂 `sidebarRight`（主叶），收起**右缘叶**里的模块；
-   * - `null` = 不挂。
+   * 左侧栏折叠/展开（挂在本条最左，通常是内容叶）。`null` = 没有独立左栏。
    */
-  sideCollapse?: 'left' | 'right' | null
+  leftSide?: SideToggle | null
+  /**
+   * 右侧栏折叠/展开（挂在本条滚动区右侧、窗口按钮之前）。`null` = 没有独立右栏。
+   */
+  rightSide?: SideToggle | null
 }
 
 export function LeafTabs({
@@ -125,7 +130,8 @@ export function LeafTabs({
   items,
   dropIndex,
   windowControls = false,
-  sideCollapse = null,
+  leftSide = null,
+  rightSide = null,
 }: LeafTabsProps) {
   const activate = useTabsStore((state) => state.activate)
   const closeTab = useTabsStore((state) => state.closeTab)
@@ -324,26 +330,13 @@ export function LeafTabs({
     ]
   }
 
-  /**
-   * 左：收起本条可见模块。右：收起**右缘叶**里的模块（按钮挂在主叶上，目标不在本条）。
-   */
-  const collapseSide = (): void => {
-    if (sideCollapse === 'right') {
-      const layout = useUiStore.getState().layout
-      const isVisible = (item: LayoutItemId): boolean =>
-        isViewModule(item) ? moduleVisible(item) : true
-      const edgeId = rightEdgeLeafId(layout, isVisible)
-      if (edgeId === null || edgeId === leaf.id) return
-      const edge = findLeaf(layout, edgeId)
-      if (edge === null) return
-      for (const item of edge.items) {
-        if (isViewModule(item)) hideModule(item)
-      }
+  /** 折叠或展开一侧纯模块侧栏（名单来自布局树，不认本条标签）。 */
+  const toggleSide = (side: SideToggle): void => {
+    if (side.mode === 'expand') {
+      for (const id of side.modules) showModule(id)
       return
     }
-    for (const item of items) {
-      if (isViewModule(item)) hideModule(item)
-    }
+    for (const id of side.modules) hideModule(id)
   }
 
   // -------------------------------------------------------------------------
@@ -359,14 +352,20 @@ export function LeafTabs({
       data-tauri-drag-region="deep"
       ref={stripRef}
     >
-      {sideCollapse === 'left' && (
-        <Tooltip label="折叠左侧栏（Ctrl+Shift+B）">
+      {leftSide !== null && (
+        <Tooltip
+          label={
+            leftSide.mode === 'collapse'
+              ? '折叠左侧栏（Ctrl+Shift+B）'
+              : '展开左侧栏（Ctrl+Shift+B）'
+          }
+        >
           <button
             type="button"
             className="mn-tabs__side-collapse"
-            aria-label="折叠左侧栏"
+            aria-label={leftSide.mode === 'collapse' ? '折叠左侧栏' : '展开左侧栏'}
             data-side-collapse="left"
-            onClick={collapseSide}
+            onClick={() => toggleSide(leftSide)}
           >
             <Icon name="panelLeft" size="md" />
           </button>
@@ -485,14 +484,14 @@ export function LeafTabs({
         })}
         {dropIndex === items.length && <div className="mn-tabs__drop-line" data-drop-line="end" />}
       </div>
-      {sideCollapse === 'right' && (
-        <Tooltip label="折叠右侧栏">
+      {rightSide !== null && (
+        <Tooltip label={rightSide.mode === 'collapse' ? '折叠右侧栏' : '展开右侧栏'}>
           <button
             type="button"
             className="mn-tabs__side-collapse"
-            aria-label="折叠右侧栏"
+            aria-label={rightSide.mode === 'collapse' ? '折叠右侧栏' : '展开右侧栏'}
             data-side-collapse="right"
-            onClick={collapseSide}
+            onClick={() => toggleSide(rightSide)}
           >
             <Icon name="sidebarRight" size="md" />
           </button>

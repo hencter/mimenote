@@ -213,7 +213,8 @@ export function subtreeRenderable(
 
 /**
  * 这一支是不是**纯模块侧栏**（没有笔记标签）。
- * 左右抽屉折叠时只对这种半边保留窄轨：混了笔记的格子收起模块后仍可能要显示笔记。
+ * 折叠/展开按钮认的是这种半边：混了笔记的格子收起模块后仍可能要显示笔记，
+ * 不能整栏卸掉。
  */
 export function isModuleOnlySubtree(node: TreeLayout): boolean {
   if (node.kind === 'leaf') {
@@ -222,7 +223,7 @@ export function isModuleOnlySubtree(node: TreeLayout): boolean {
   return isModuleOnlySubtree(node.a) && isModuleOnlySubtree(node.b)
 }
 
-/** 一支里出现过的全部视图模块（折叠轨点开时按这份名单 `showModule`）。 */
+/** 一支里出现过的全部视图模块（折叠/展开按这份名单 `hideModule` / `showModule`）。 */
 export function viewModulesIn(node: TreeLayout): ViewModuleId[] {
   const found: ViewModuleId[] = []
   walk(node, (n) => {
@@ -232,6 +233,81 @@ export function viewModulesIn(node: TreeLayout): ViewModuleId[] {
     }
   })
   return found
+}
+
+/**
+ * **内容叶左侧**的视图模块名单（无视显隐）。
+ *
+ * 折叠按钮挂在内容叶标签条最左；收起后同一颗按钮原地变「展开」，不另开窄轨。
+ * 判据是几何位置（`row` 切割里落在内容叶左边的整支），不是"紧邻的一棵纯模块子树"——
+ * 模块被逐个 `attachItem(..., right)` 挂上去时，右侧会嵌成 `main|outline|tags|links`，
+ * 只认最外一格会漏掉内侧的大纲/标签。
+ */
+export function leftDrawerModules(layout: TreeLayout): ViewModuleId[] | null {
+  return drawerModulesOnSide(layout, 'left')
+}
+
+/**
+ * **内容叶右侧**的视图模块名单（无视显隐）。与 {@link leftDrawerModules} 对称。
+ */
+export function rightDrawerModules(layout: TreeLayout): ViewModuleId[] | null {
+  return drawerModulesOnSide(layout, 'right')
+}
+
+function drawerModulesOnSide(
+  layout: TreeLayout,
+  side: 'left' | 'right',
+): ViewModuleId[] | null {
+  const contentId = contentLeafId(layout)
+  if (contentId === null) return null
+  const found: ViewModuleId[] = []
+  collectDrawerModules(layout, contentId, side, found)
+  return found.length > 0 ? found : null
+}
+
+/** 这一支里有没有指定 id 的叶子。 */
+function subtreeHasLeaf(node: TreeLayout, leafId: string): boolean {
+  if (node.kind === 'leaf') return node.id === leafId
+  return subtreeHasLeaf(node.a, leafId) || subtreeHasLeaf(node.b, leafId)
+}
+
+/**
+ * 收集落在内容叶左/右侧的全部视图模块。
+ * `row`：内容在 `a` 则整支 `b` 都在右边（反之亦然）；`column` 不改变左右，两边都递归。
+ */
+function collectDrawerModules(
+  node: TreeLayout,
+  contentId: string,
+  side: 'left' | 'right',
+  out: ViewModuleId[],
+): void {
+  if (node.kind === 'leaf') return
+  if (node.axis === 'column') {
+    collectDrawerModules(node.a, contentId, side, out)
+    collectDrawerModules(node.b, contentId, side, out)
+    return
+  }
+  const contentInA = subtreeHasLeaf(node.a, contentId)
+  const contentInB = subtreeHasLeaf(node.b, contentId)
+  if (side === 'left') {
+    if (contentInB) {
+      for (const id of viewModulesIn(node.a)) {
+        if (!out.includes(id)) out.push(id)
+      }
+      collectDrawerModules(node.b, contentId, side, out)
+    } else if (contentInA) {
+      collectDrawerModules(node.a, contentId, side, out)
+    }
+    return
+  }
+  if (contentInA) {
+    for (const id of viewModulesIn(node.b)) {
+      if (!out.includes(id)) out.push(id)
+    }
+    collectDrawerModules(node.a, contentId, side, out)
+  } else if (contentInB) {
+    collectDrawerModules(node.b, contentId, side, out)
+  }
 }
 
 // ---------------------------------------------------------------------------

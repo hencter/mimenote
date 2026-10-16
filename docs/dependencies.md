@@ -33,7 +33,7 @@
 | 依赖 | 许可证 | 用途 |
 | --- | --- | --- |
 | `vite` / `@vitejs/plugin-react` | MIT | 构建与 HMR |
-| `typescript` | Apache-2.0 | 类型门禁（`pnpm typecheck`） |
+| `tsc-rs` | MIT AND Apache-2.0 | 类型门禁（`pnpm typecheck`）：TypeScript 7 的 Rust 移植（[ts-rust](https://github.com/pingdotgg/ts-rust)） |
 | `vitest` | MIT | 单元/集成测试 |
 | `jsdom` | MIT | 让 Markdown 净化测试（DOMPurify）有 DOM 环境 |
 | `@testing-library/react` | MIT | 组件测试（仅在需要渲染时使用） |

@@ -2,7 +2,7 @@
   "name": "mimenote",
   "version": "0.3.0",
   "private": true,
-  "description": "本地优先的 Markdown 知识库桌面应用（M1：可运行骨架）",
+  "description": "本地优先的 Markdown 知识库桌面应用",
   "license": "MIT",
   "packageManager": "pnpm@11.7.0",
   "engines": {

@@ -13,10 +13,10 @@
  *
  * ## 隐藏 ≠ 移除（收缩规则）
  *
- * 面板可见性仍归各自的开关（`Ctrl+B` 等）。**纯模块侧栏**（只有视图模块、没有笔记）
- * 收起时不卸掉半边：缩成 36px 图标轨（抽屉动画），折叠按钮仍在，点一下再展开。
- * 其它情况（半边不可渲染且不是模块侧栏）仍是另一边吃满、分隔条不画。
- * **空叶永远渲染**—— 判据是 `tree-layout.ts` 的 `subtreeRenderable`。
+ * 面板可见性仍归各自的开关（`Ctrl+B` 等）。半边不可渲染时另一边吃满、分隔条不画。
+ * **纯模块侧栏**收起后整栏卸掉（不另开边缘窄轨）；折叠/展开按钮固定在**内容叶标签条**
+ * 左右两端，收起后同一颗按钮原地变「展开」。**空叶永远渲染**—— 判据是
+ * `tree-layout.ts` 的 `subtreeRenderable`。
  *
  * ## 顶部空间（ADR-0038）
  *
@@ -66,31 +66,28 @@ import { useUiStore } from '@/state/ui-store'
 
 import { contentDropAt, tabIndexAt, type DropEdge } from './drop-target'
 import { useLayoutDrag } from './layout-drag'
-import { LeafTabs } from './LeafTabs'
-import { showModule, useModuleVisibility } from './module-visibility'
+import { LeafTabs, type SideToggle } from './LeafTabs'
+import { useModuleVisibility } from './module-visibility'
 import { adjustNewSplitRatio } from './split-size'
 import { TREE_TOOLBAR_MIN_WIDTH_PX } from '@/features/vault/TreeToolbar'
 import {
   clampRatioForExtent,
   evenSplit,
-  isModuleOnlySubtree,
   isViewModule,
   leafOfItem,
-  leaves,
+  leftDrawerModules,
   MIN_LEAF_PIXELS,
   moveItem,
   NARROW_LEAF_PIXELS,
   nodeContainsItem,
   noteItem,
   notePathOf,
+  rightDrawerModules,
   setActive,
   setRatio,
   subtreeRenderable,
   contentLeafId as resolveContentLeafId,
-  leftEdgeLeafId,
-  rightEdgeLeafId,
   topRightLeafId,
-  viewModulesIn,
   type LayoutItemId,
   type LeafNode,
   type SplitNode,
@@ -123,14 +120,28 @@ interface RenderContext {
    * 三个窗口按钮挂在它的标签条右端（ADR-0038）。
    */
   windowControlsLeafId: string | null
-  /** 左缘叶：标签条最左挂「折叠左侧栏」图标按钮。 */
-  leftEdgeLeafId: string | null
-  /** 右缘叶 id（有独立右栏时，折叠按钮挂在主叶最右，目标是这一格）。 */
-  rightEdgeLeafId: string | null
-  /** 内容主叶：右侧栏折叠按钮挂在这里（不在右栏自己身上）。 */
+  /**
+   * 内容主叶：左右侧栏折叠/展开按钮都挂在它的标签条上（左在标签左侧、右在滚动区右侧）。
+   */
   contentLeafId: string | null
+  /** 内容叶左侧折叠控件（`null` = 没有独立左栏）。 */
+  leftSide: SideToggle | null
+  /** 内容叶右侧折叠控件（`null` = 没有独立右栏）。 */
+  rightSide: SideToggle | null
   /** 当前文档的相对路径（`null` = 没有打开）。 */
   currentDoc: string | null
+}
+
+/** 侧栏模块名单 → 折叠/展开控件；任一模块可见则「折叠」，否则「展开」。 */
+function sideToggleFor(
+  modules: ViewModuleId[] | null,
+  visibility: Record<ViewModuleId, boolean>,
+): SideToggle | null {
+  if (modules === null || modules.length === 0) return null
+  return {
+    mode: modules.some((id) => visibility[id]) ? 'collapse' : 'expand',
+    modules,
+  }
 }
 
 export function TreeHost() {
@@ -178,16 +189,23 @@ export function TreeHost() {
     () => topRightLeafId(layout, isVisibleItem),
     [layout, isVisibleItem],
   )
-  const leftEdgeId = useMemo(() => leftEdgeLeafId(layout, isVisibleItem), [layout, isVisibleItem])
-  const rightEdgeId = useMemo(() => rightEdgeLeafId(layout, isVisibleItem), [layout, isVisibleItem])
   const contentId = useMemo(() => resolveContentLeafId(layout), [layout])
+  // 侧栏开/关会改 visibility，但不改 layout 树 —— 依赖 visibility 才能在折叠后切成「展开」
+  const leftSide = useMemo(
+    () => sideToggleFor(leftDrawerModules(layout), visibility),
+    [layout, visibility],
+  )
+  const rightSide = useMemo(
+    () => sideToggleFor(rightDrawerModules(layout), visibility),
+    [layout, visibility],
+  )
 
   const ctx: RenderContext = {
     isVisibleItem,
     windowControlsLeafId,
-    leftEdgeLeafId: leftEdgeId,
-    rightEdgeLeafId: rightEdgeId,
     contentLeafId: contentId,
+    leftSide,
+    rightSide,
     currentDoc,
   }
 
@@ -222,12 +240,10 @@ function NodeView({ node, ctx }: { node: TreeLayout; ctx: RenderContext }) {
   const aOk = subtreeRenderable(node.a, ctx.isVisibleItem)
   const bOk = subtreeRenderable(node.b, ctx.isVisibleItem)
   if (!aOk && !bOk) return null
-  // 左右纯模块侧栏：收起后仍占一窄轨（折叠图标还在），走 SplitView 抽屉动画
-  const aDrawer = node.axis === 'row' && isModuleOnlySubtree(node.a)
-  const bDrawer = node.axis === 'row' && isModuleOnlySubtree(node.b)
-  if (!aOk && !aDrawer) return <NodeView node={node.b} ctx={ctx} />
-  if (!bOk && !bDrawer) return <NodeView node={node.a} ctx={ctx} />
-  return <SplitView node={node} ctx={ctx} aCollapsed={!aOk} bCollapsed={!bOk} />
+  // 半边不可渲染（含纯模块侧栏收起）→ 另一边吃满；折叠按钮在内容叶标签条上，不另开窄轨
+  if (!aOk) return <NodeView node={node.b} ctx={ctx} />
+  if (!bOk) return <NodeView node={node.a} ctx={ctx} />
+  return <SplitView node={node} ctx={ctx} />
 }
 
 /** 左右（或上下）两侧各自的像素下限：装着文件树的那侧抬到工具栏图标条宽度。 */
@@ -240,22 +256,8 @@ function splitMins(node: SplitNode): { a: number; b: number } {
 }
 
 /** 一刀 split：两个半格 + 中间一条分隔条（拖它改比例、双击均分）。 */
-function SplitView({
-  node,
-  ctx,
-  aCollapsed = false,
-  bCollapsed = false,
-}: {
-  node: SplitNode
-  ctx: RenderContext
-  aCollapsed?: boolean
-  bCollapsed?: boolean
-}) {
+function SplitView({ node, ctx }: { node: SplitNode; ctx: RenderContext }) {
   const ref = useRef<HTMLDivElement | null>(null)
-  const bothOpen = !aCollapsed && !bCollapsed
-  // 纯模块侧栏始终带 `--drawer`，开/合都能走宽度过渡（不能只在 collapsed 时才挂）
-  const aDrawerPane = isModuleOnlySubtree(node.a)
-  const bDrawerPane = isModuleOnlySubtree(node.b)
 
   /** 指针位置 → 这一刀的比例（前半占多少）。容器量不到时不改（jsdom 里没有布局）。 */
   const ratioFrom = (event: PointerEvent): number | null => {
@@ -269,12 +271,6 @@ function SplitView({
     return Number.isFinite(ratio) ? ratio : null
   }
 
-  const paneFlex = (collapsed: boolean, openFlex: string): string | undefined => {
-    if (collapsed) return undefined // 宽度交给 `.mn-tree-split__pane--drawer-collapsed`
-    if (!bothOpen) return '1 1 0' // 对侧是窄轨时，这一侧吃满
-    return openFlex
-  }
-
   return (
     <div
       className={`mn-tree-split mn-tree-split--${node.axis}`}
@@ -282,109 +278,46 @@ function SplitView({
       data-axis={node.axis}
       ref={ref}
     >
-      <div
-        className={[
-          'mn-tree-split__pane',
-          aDrawerPane ? 'mn-tree-split__pane--drawer' : '',
-          aCollapsed ? 'mn-tree-split__pane--drawer-collapsed' : '',
-        ]
-          .filter(Boolean)
-          .join(' ')}
-        style={{ flex: paneFlex(aCollapsed, `${node.ratio} 1 0`) }}
-        data-drawer={aDrawerPane ? 'left' : undefined}
-      >
-        {aCollapsed ? (
-          <SideDrawerRail side="left" node={node.a} />
-        ) : (
-          <NodeView node={node.a} ctx={ctx} />
-        )}
+      <div className="mn-tree-split__pane" style={{ flex: `${node.ratio} 1 0` }}>
+        <NodeView node={node.a} ctx={ctx} />
       </div>
-      {bothOpen && (
-        <Splitter
-          orientation={node.axis === 'row' ? 'vertical' : 'horizontal'}
-          ariaLabel="调整分栏比例（双击均分）"
-          onDrag={(event) => {
-            const ratio = ratioFrom(event)
-            if (ratio === null) return
-            const el = ref.current
-            const rect = el?.getBoundingClientRect()
-            const extent = node.axis === 'row' ? (rect?.width ?? 0) : (rect?.height ?? 0)
-            const ui = useUiStore.getState()
-            ui.setLayout(
-              setRatio(ui.layout, node.id, clampRatioForExtent(ratio, extent, splitMins(node))),
-            )
-          }}
-          onNudge={(delta) => {
-            const el = ref.current
-            if (el === null) return
-            const rect = el.getBoundingClientRect()
-            const size = node.axis === 'row' ? rect.width : rect.height
-            if (size <= 0) return
-            const ui = useUiStore.getState()
-            ui.setLayout(
-              setRatio(
-                ui.layout,
-                node.id,
-                clampRatioForExtent(node.ratio + delta / size, size, splitMins(node)),
-              ),
-            )
-          }}
-          onEven={() => {
-            const ui = useUiStore.getState()
-            ui.setLayout(evenSplit(ui.layout, node.id))
-          }}
-        />
-      )}
-      <div
-        className={[
-          'mn-tree-split__pane',
-          bDrawerPane ? 'mn-tree-split__pane--drawer' : '',
-          bCollapsed ? 'mn-tree-split__pane--drawer-collapsed' : '',
-        ]
-          .filter(Boolean)
-          .join(' ')}
-        style={{ flex: paneFlex(bCollapsed, `${1 - node.ratio} 1 0`) }}
-        data-drawer={bDrawerPane ? 'right' : undefined}
-      >
-        {bCollapsed ? (
-          <SideDrawerRail side="right" node={node.b} />
-        ) : (
-          <NodeView node={node.b} ctx={ctx} />
-        )}
+      <Splitter
+        orientation={node.axis === 'row' ? 'vertical' : 'horizontal'}
+        ariaLabel="调整分栏比例（双击均分）"
+        onDrag={(event) => {
+          const ratio = ratioFrom(event)
+          if (ratio === null) return
+          const el = ref.current
+          const rect = el?.getBoundingClientRect()
+          const extent = node.axis === 'row' ? (rect?.width ?? 0) : (rect?.height ?? 0)
+          const ui = useUiStore.getState()
+          ui.setLayout(
+            setRatio(ui.layout, node.id, clampRatioForExtent(ratio, extent, splitMins(node))),
+          )
+        }}
+        onNudge={(delta) => {
+          const el = ref.current
+          if (el === null) return
+          const rect = el.getBoundingClientRect()
+          const size = node.axis === 'row' ? rect.width : rect.height
+          if (size <= 0) return
+          const ui = useUiStore.getState()
+          ui.setLayout(
+            setRatio(
+              ui.layout,
+              node.id,
+              clampRatioForExtent(node.ratio + delta / size, size, splitMins(node)),
+            ),
+          )
+        }}
+        onEven={() => {
+          const ui = useUiStore.getState()
+          ui.setLayout(evenSplit(ui.layout, node.id))
+        }}
+      />
+      <div className="mn-tree-split__pane" style={{ flex: `${1 - node.ratio} 1 0` }}>
+        <NodeView node={node.b} ctx={ctx} />
       </div>
-    </div>
-  )
-}
-
-/**
- * 侧栏收起后的窄轨：只留折叠/展开图标，点一下把该侧模块全部 `showModule` 回来。
- * `data-leaf-id` 挂在这份子树里的第一个叶上，方便测试与定位仍认同一格。
- */
-function SideDrawerRail({ side, node }: { side: 'left' | 'right'; node: TreeLayout }) {
-  const modules = viewModulesIn(node)
-  const anchorLeafId = leaves(node)[0]?.id
-  return (
-    <div
-      className={`mn-side-rail mn-side-rail--${side}`}
-      data-side-rail={side}
-      data-leaf-id={anchorLeafId}
-      data-drawer-collapsed=""
-    >
-      <Tooltip
-        label={side === 'left' ? '展开左侧栏（Ctrl+Shift+B）' : '展开右侧栏'}
-      >
-        <button
-          type="button"
-          className="mn-tabs__side-collapse"
-          aria-label={side === 'left' ? '展开左侧栏' : '展开右侧栏'}
-          data-side-collapse={side}
-          onClick={() => {
-            for (const id of modules) showModule(id)
-          }}
-        >
-          <Icon name={side === 'left' ? 'panelLeft' : 'sidebarRight'} size="md" />
-        </button>
-      </Tooltip>
     </div>
   )
 }
@@ -538,16 +471,15 @@ function LeafPane({ leaf, ctx }: { leaf: LeafNode; ctx: RenderContext }) {
       ? leaf.active
       : (visibleItems[0] ?? null)
 
-  // 左：左缘模块格最左。右：主叶最右（有独立右栏时），不挂在右栏自己身上。
-  const sideCollapse: 'left' | 'right' | null =
-    leaf.id === ctx.leftEdgeLeafId && visibleItems.some((item) => isViewModule(item))
-      ? 'left'
-      : leaf.id === ctx.contentLeafId &&
-          ctx.rightEdgeLeafId !== null &&
-          ctx.rightEdgeLeafId !== leaf.id
-        ? 'right'
-        : null
-  const showTabs = visibleItems.length > 0 || hostsWindowControls || sideCollapse !== null
+  // 左右折叠都只挂在内容叶：左在标签左侧、右在滚动区右侧（收起后原地变「展开」）。
+  const isContentLeaf = leaf.id === ctx.contentLeafId
+  const leftSide = isContentLeaf ? ctx.leftSide : null
+  const rightSide = isContentLeaf ? ctx.rightSide : null
+  const showTabs =
+    visibleItems.length > 0 ||
+    hostsWindowControls ||
+    leftSide !== null ||
+    rightSide !== null
 
   return (
     <section
@@ -562,7 +494,7 @@ function LeafPane({ leaf, ctx }: { leaf: LeafNode; ctx: RenderContext }) {
       {/*
         右上叶**即使没有标签也渲染标签条**：三个窗口按钮住在它的右端（ADR-0038），
         空态下不能让它们消失；顺带它也是整窗唯一保证存在的拖动区。
-        主叶在只有右侧折叠按钮、尚无笔记标签时也要有条。
+        内容叶在只有折叠按钮、尚无笔记标签时也要有条。
       */}
       {showTabs && (
         <LeafTabs
@@ -570,7 +502,8 @@ function LeafPane({ leaf, ctx }: { leaf: LeafNode; ctx: RenderContext }) {
           items={visibleItems}
           dropIndex={dragging !== null && hint?.kind === 'tab' ? hint.index : null}
           windowControls={hostsWindowControls}
-          sideCollapse={sideCollapse}
+          leftSide={leftSide}
+          rightSide={rightSide}
         />
       )}
       <div className="mn-leaf__content">

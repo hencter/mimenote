@@ -11,7 +11,8 @@
 
 import { Compartment, EditorState, type Extension } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 import { Icon } from '@/components/Icon'
 import { metadataBlock } from '@/domain/frontmatter-edit'
@@ -41,6 +42,11 @@ export function MarkdownEditor({ notePath }: { notePath?: string } = {}) {
   /** 这一格显示的是哪一篇（CodeMirror 的 facet，插件按它解析图片与链接）。 */
   const notePathCompartment = useRef(new Compartment())
   const isDarkRef = useRef(true)
+  /**
+   * 属性区挂在 `.cm-scroller` 里（与正文共用滚动条）。
+   * `null` = 编辑器还没建好 / 已销毁。见 `attachSurface` 里的挂载说明。
+   */
+  const [metaMount, setMetaMount] = useState<HTMLDivElement | null>(null)
   // 创建编辑器那一瞬间要用"当下"的 Tab 宽度：值放 ref 里，回调 ref 才能读到最新值
   // （回调 ref 的依赖是空的，不能把 tabWidth 当闭包变量捕获进去 —— 那会把它冻在首次渲染）
   const tabWidthRef = useRef(useSettingsStore.getState().tabWidth)
@@ -100,6 +106,7 @@ export function MarkdownEditor({ notePath }: { notePath?: string } = {}) {
     if (viewRef.current !== null) {
       viewRef.current.destroy()
       viewRef.current = null
+      setMetaMount(null)
     }
     if (node !== null) delete (node as HTMLElement & { __mnDocText?: () => string }).__mnDocText
     if (node === null) return
@@ -138,20 +145,34 @@ export function MarkdownEditor({ notePath }: { notePath?: string } = {}) {
     extensions.push(metadataRef.current.of(metadataFold), metadataFoldKeymap)
     // 这一格显示的是哪一篇：live-preview / wiki 补全 / 粘贴附件都按它解析相对路径
     extensions.push(notePathCompartment.current.of(notePathFacet.of(pathRef.current ?? '')))
-    viewRef.current = new EditorView({
+    const view = new EditorView({
       parent: node,
       state: EditorState.create({
         doc: initialDoc?.text ?? '',
         extensions,
       }),
     })
+    viewRef.current = view
     // e2e 读完整文档（含默认折叠的 frontmatter）：DOM `.cm-content` 看不到折叠段
     ;(node as HTMLElement & { __mnDocText?: () => string }).__mnDocText = () =>
       viewRef.current?.state.doc.toString() ?? ''
     // 装上就上报一次初值：否则"打开一篇笔记、什么都没点"时大纲里没有任何高亮
     if (loaded !== null && useNoteStore.getState().doc?.relPath === loaded) {
-      useCursorStore.getState().setLine(currentCursorLine(viewRef.current))
+      useCursorStore.getState().setLine(currentCursorLine(view))
     }
+
+    /*
+     * 属性区挂进 `.cm-scroller`（与正文同一条滚动条）。
+     *
+     * 为什么不是整页滚动（`.mn-editor { overflow:auto }` + CM 长到全文高）：那条路会
+     * 弄坏 `EditorView.scrollIntoView` 与视口窗口化（见 `docs/handoff.md` §10、
+     * `editor-shell.css`）。scroller 默认是横向 flex（行号 | 正文）；给它开 `flex-wrap`，
+     * 属性用 `flex: 1 0 100%` 独占第一行，行号与正文落到第二行 —— 仍是同一条纵向滚动。
+     */
+    const mount = document.createElement('div')
+    mount.className = 'mn-editor__meta-mount'
+    view.scrollDOM.prepend(mount)
+    setMetaMount(mount)
   }, [])
 
   // 每一格自己的文档：进仓库（读盘）由 store 负责，读到的正文由下面那条 effect 整篇替换。
@@ -183,6 +204,7 @@ export function MarkdownEditor({ notePath }: { notePath?: string } = {}) {
     () => () => {
       viewRef.current?.destroy()
       viewRef.current = null
+      setMetaMount(null)
     },
     [],
   )
@@ -245,21 +267,25 @@ export function MarkdownEditor({ notePath }: { notePath?: string } = {}) {
         <div className="mn-editor__column">
           {/*
             属性面板**每一格都有**（用户要求：分栏两边同时看得到 frontmatter）。
-            `docLoaded` 之前不渲染：那一刻正文还没到，先渲染会闪一下"折叠态"。
+            挂在 `.cm-scroller` 里（`metaMount`），与正文共用滚动条 —— 不再钉在编辑器上方
+            单独滚。`docLoaded` 之前不渲染：那一刻正文还没到，先渲染会闪一下"折叠态"。
           */}
-          {docLoaded && (
-            <FrontmatterEditor
-              key={relPath}
-              seed={metadataSeed}
-              read={() => viewRef.current?.state.doc.toString() ?? openNoteText(relPath) ?? ''}
-              apply={(text) => {
-                const view = viewRef.current
-                if (view) {
-                  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } })
-                }
-              }}
-            />
-          )}
+          {docLoaded &&
+            metaMount !== null &&
+            createPortal(
+              <FrontmatterEditor
+                key={relPath}
+                seed={metadataSeed}
+                read={() => viewRef.current?.state.doc.toString() ?? openNoteText(relPath) ?? ''}
+                apply={(text) => {
+                  const view = viewRef.current
+                  if (view) {
+                    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } })
+                  }
+                }}
+              />,
+              metaMount,
+            )}
           <div className="mn-editor__surface" ref={attachSurface} />
         </div>
       )}

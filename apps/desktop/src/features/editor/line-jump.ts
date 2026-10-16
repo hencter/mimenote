@@ -101,6 +101,38 @@ function editorViewHolding(relPath: string): EditorView | null {
   return view.state.doc.toString() === doc.text ? view : null
 }
 
+export interface LocateLineOptions {
+  /**
+   * 平滑滚到目标行（大纲目录跳转用）。默认瞬时 —— 搜索/反向链接要立刻落到命中行，
+   * 动画反而让人觉得"还没跳完"。系统 `prefers-reduced-motion: reduce` 时强制瞬时。
+   */
+  smooth?: boolean
+}
+
+/** 系统要求少动效时退回瞬时滚动。 */
+function prefersReducedMotion(): boolean {
+  return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+/**
+ * 把编辑器 scroller 平滑滚到某文档位置的视口正中。
+ *
+ * CM 自带的 `EditorView.scrollIntoView` 是瞬时的；大纲跳转要动画时走这里。
+ * `coordsAtPos` 拿不到（行还在视口外未测量）时返回 `false`，调用方退回瞬时 effect。
+ */
+function smoothScrollToCenter(view: EditorView, pos: number): boolean {
+  if (prefersReducedMotion()) return false
+  const coords = view.coordsAtPos(pos)
+  if (coords === null) return false
+  const scroller = view.scrollDOM
+  if (typeof scroller.scrollTo !== 'function') return false
+  const rect = scroller.getBoundingClientRect()
+  const lineMid = (coords.top + coords.bottom) / 2
+  const nextTop = scroller.scrollTop + (lineMid - rect.top - scroller.clientHeight / 2)
+  scroller.scrollTo({ top: nextTop, behavior: 'smooth' })
+  return true
+}
+
 /**
  * 把光标放到第 `line` 行行首、把这一行滚到视口正中，并让它闪一下。
  *
@@ -111,21 +143,31 @@ function editorViewHolding(relPath: string): EditorView | null {
  * - `Transaction.addToHistory.of(false)`：只改选区的事务**默认会进撤销历史**
  *   （`@codemirror/commands` 的 history 会把 `tr.selection` 记成一条 selection 事件）。
  *   那样用户跳转后按 `Ctrl+Z` 会先把光标弹回原处，而不是撤销上一次真正的编辑。
- * - 滚动交给 `EditorView.scrollIntoView(..., { y: 'center' })`：视口正中而不是贴边
+ * - 滚动默认交给 `EditorView.scrollIntoView(..., { y: 'center' })`：视口正中而不是贴边
  *   （贴边时目标行的上下文全在屏幕外，用户还得自己再滚一下确认"是不是这里"）。
  *   也刻意**不**自己算 `scrollTop`：CodeMirror 会先按行高估算滚一次、再在测量后修正，
  *   远在屏外的行也能滚准；手写一套平行的 `scrollTop` 计算只会造出第二个真相源。
+ *   大纲目录跳转可开 {@link LocateLineOptions.smooth}，改用 scroller 的平滑 `scrollTo`。
  */
-export function locateLine(view: LineJumpView, line: number): LineTarget {
+export function locateLine(
+  view: LineJumpView,
+  line: number,
+  options: LocateLineOptions = {},
+): LineTarget {
   const target = resolveLineTarget(line, view.state.doc.lines, (n) => view.state.doc.line(n).from)
+  const wantSmooth = options.smooth === true
+  const editor = view instanceof EditorView ? view : null
+  const scrolledSmooth =
+    wantSmooth && editor !== null ? smoothScrollToCenter(editor, target.from) : false
+
   view.dispatch({
     selection: { anchor: target.from },
     effects: [
       flashLineEffect.of(target.line),
-      EditorView.scrollIntoView(target.from, { y: 'center' }),
+      ...(scrolledSmooth ? [] : [EditorView.scrollIntoView(target.from, { y: 'center' })]),
     ],
     annotations: Transaction.addToHistory.of(false),
-    // 选区自己别滚（那是 `nearest` 语义）：滚动只由上面那条显式 effect 负责
+    // 选区自己别滚（那是 `nearest` 语义）：滚动只由上面那条显式 effect / smoothScroll 负责
     scrollIntoView: false,
   })
   // 跳转之后焦点落在编辑器上：用户多半想直接开始改这一行。
@@ -148,12 +190,12 @@ export interface JumpOptions {
  *
  * @returns 是否真的跳了（编辑器不在场、或装的不是当前文档时返回 `false`）
  */
-export function jumpToLineInOpenNote(line: number): boolean {
+export function jumpToLineInOpenNote(line: number, options: LocateLineOptions = {}): boolean {
   const doc = useNoteStore.getState().doc
   if (doc === null) return false
   const view = editorViewHolding(doc.relPath)
   if (view === null) return false
-  locateLine(view, line)
+  locateLine(view, line, options)
   return true
 }
 
