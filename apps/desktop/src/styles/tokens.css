@@ -54,9 +54,9 @@
   --mn-brand-sand: #E7D5BD;
 
   /* 默认主题的首帧兜底；正常启动时由 mimenote-light.json 覆盖。 */
-  --mn-bg: #FFFFFF;
+  --mn-bg: #F8F7F4;
   --mn-fg: var(--mn-brand-ink);
-  --mn-border: color-mix(in srgb, #FFFFFF 52%, var(--mn-brand-sand) 48%);
+  --mn-border: color-mix(in srgb, var(--mn-bg) 52%, var(--mn-brand-sand) 48%);
   --mn-accent: var(--mn-brand-ink);
 
   --mn-font-ui: 'Segoe UI', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
