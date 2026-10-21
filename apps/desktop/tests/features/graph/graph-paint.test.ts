@@ -625,10 +625,12 @@ describe('paletteFrom / calloutAccent', () => {
 
     expect(neutral).toBe(calloutAccent(() => null, 'danger'))
     expect(neutral).toBe(paletteFrom(() => null).muted)
-    // 第二档：`--mn-callout-accent`（调用方可以给它一个"挂了 callout 类的探针元素"的实现）
+    // 第二档：元素级 `--mn-callout-accent`。
     expect(calloutAccent((name) => (name === '--mn-callout-accent' ? '#123456' : null), 'tip')).toBe(
       '#123456',
     )
+    // 第三档：若当前主题的类型 Token 缺失，使用当前主题自己的次级文字色。
+    expect(calloutAccent((name) => (name === '--mn-fg-muted' ? '#654321' : null), 'tip')).toBe('#654321')
   })
 })
 
