@@ -18,7 +18,7 @@
  * 读不到令牌是**正常**会发生的事，不是异常：
  * - 主题 JSON 还没被应用（`<html data-theme>` 还没设）时的首帧；
  * - 元素还没挂进文档 / 样式表还没加载完（`getComputedStyle` 一律返回空串）；
- * - 某个令牌被主题作者漏掉（`REQUIRED_TOKENS` 里那些有单测兜着，可 callout 那 13 个不在其中）。
+ * - 某个令牌被主题作者漏掉（`REQUIRED_TOKENS` 里那些有单测兜着，可选 Callout Token 不在其中）。
  *
  * 这三种情况下如果返回空串，`fillStyle = ''` 会被静默忽略、画笔继续用**上一次**的颜色 ——
  * 表现为"整幅图颜色错乱"或"卡片是黑的"，而且第一眼看上去像是绘制逻辑坏了。
@@ -27,11 +27,9 @@
  *
  * ## callout 强调色：一处必须知道的落差（不是 bug，见 {@link calloutAccent}）
  *
- * features/preview/preview.css 里 13 种 callout 的写法是 `--mn-callout-accent: var(--mn-callout-note, #448aff)` ——
- * 具体颜色写在 `var()` 的**兜底位置**上，而 `--mn-callout-note` 这个变量**没有任何主题真的定义过**。
- * JS 的 `getComputedStyle` 读不到 `var()` 里的兜底值，所以 `token('--mn-callout-note')` 得到空串。
- * 本文件不去"补一份 13 色的表"（那正是要避免的第二份真源），而是按下面的链条降级 ——
- * 完整的取舍与两条修法写在 {@link calloutAccent} 上。
+ * features/preview/preview.css 里 13 种 callout 只声明类型到强调色的映射；实际颜色由主题 JSON 的可选 `--mn-callout-*` Token 提供。
+ * 四套内置主题都定义了这些 Token，因此阅读视图与图谱能读取同一颜色。自定义主题若未定义对应 Token，CSS 与图谱都回落到可读的次级文字色。
+ * 本文件不另写一份 13 色表（那正是要避免的第二份真源）；降级链见 {@link calloutAccent}。
  */
 
 import {
@@ -153,14 +151,13 @@ const FALLBACK: GraphPalette = {
 const CALLOUT_ACCENT_VAR = '--mn-callout-accent'
 
 /**
- * callout 强调色全部读不到时的兜底：**引用竖线色**。
+ * callout 强调色全部读不到时的兜底：**次级文字色**。
  *
- * 这个选择不是随手取的，而是与 features/preview/preview.css 的兜底链逐字一致：
- * `var(--mn-callout-accent, var(--mn-quote-border))` ——
- * 阅读视图在"强调色缺失"时染的也是这个中性色。两边同时降级到同一个颜色，
- * 才不会出现"阅读视图是灰的、画布是蓝的"这种只有一处坏掉才会有的分歧。
+ * 这是与 features/preview/preview.css 的可选 Token 兜底保持一致的可读中性色：
+ * `var(--mn-callout-accent, var(--mn-fg-muted))`。自定义主题漏掉某个 Callout Token 时，
+ * 阅读视图与图谱都回落到次级文字色，不会一边出现高饱和亮色、另一边却是中性色。
  */
-const FALLBACK_CALLOUT_ACCENT = FALLBACK.quoteBorder
+const FALLBACK_CALLOUT_ACCENT = FALLBACK.muted
 
 /**
  * 纯函数：给定"取令牌"的函数，产出调色板。
@@ -247,13 +244,11 @@ export function readPalette(element: Element): GraphPalette {
  *    调用方完全可以把 `token` 的实现换成"在挂了 `mn-callout--<type>` 类的探针元素上读这个变量"
  *    （所见即所得编辑器 `live-preview/callout.ts` 用的就是这条路，连颜色表都不用抄），
  *    那一档就能拿到真正的 13 种颜色；
- * 3. **引用竖线色**：与 features/preview/preview.css 的 `var(--mn-callout-accent, var(--mn-quote-border))` 逐字一致。
+ * 3. **次级文字色**：与 features/preview/preview.css 的 `var(--mn-callout-accent, var(--mn-fg-muted))` 逐字一致。
  *
- * ⚠️ 已知落差（写清楚免得后人来查）：用 `readPalette` 直接产出的 `token` 只能走到第 3 档 ——
- * 内置主题既不定义 `--mn-callout-note`，元素上也没有 callout 类名。
- * 想让画布真的上色，二选一（都不需要改本文件）：
- * - 在主题 JSON 里把 13 个 `--mn-callout-*` 真的定义出来（最干净：颜色仍然只有一份）；
- * - 给画笔传一个 `token`（见 `paint.ts` 的 `PaintInput.token`），它内部走上面第 2 档。
+ * `readPalette` 直接读取主题作用域中的 `--mn-callout-*`；内置主题定义了全部 13 个可选 Token，所以第 1 档即可命中。
+ * 若自定义主题没有定义某个 Token，且调用方没有提供带 callout 类的探针元素，最终回落到次级文字色。
+ * 若调用方提供探针元素，则第 2 档可以读取 CSS 计算出的 `--mn-callout-accent`，仍然不需要在画布代码里复制颜色表。
  *
  * 未知类型（用户手写 `[!摘录]`，或插件带来任意类型名）回落 `FALLBACK_CALLOUT_TYPE`：
  * 与 `blocks.ts` 的口径一致 —— 那时块上的 `type` 本来就已经是规范化后的类型了，
