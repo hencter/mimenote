@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { DEFAULT_THEME_ID, THEMES, getTheme, nextThemeId } from '@/theme/apply'
+import { DEFAULT_THEME_ID, THEMES, getTheme, nextThemeId, themeLabel } from '@/theme/apply'
 import { REQUIRED_TOKENS, validateTheme } from '@/theme/tokens'
 
 describe('主题', () => {
@@ -69,6 +69,15 @@ describe('主题', () => {
       expect(theme.appearance, id).toBe(appearance)
       expect(theme.name, id).toBe(id.includes('paper') ? '纸墨' : '默认')
     }
+  })
+
+  it('主题显示名带明暗后缀：两套家族各有日夜，名字必须互不相同', () => {
+    const labels = THEMES.map(themeLabel)
+    expect(new Set(labels).size).toBe(THEMES.length)
+    expect(themeLabel(getTheme('mimenote-light'))).toBe('默认（浅色）')
+    expect(themeLabel(getTheme('mimenote-dark'))).toBe('默认（深色）')
+    expect(themeLabel(getTheme('mimenote-paper'))).toBe('纸墨（浅色）')
+    expect(themeLabel(getTheme('mimenote-paper-dark'))).toBe('纸墨（深色）')
   })
 
   it('「纸墨」主题的日间和夜间版本都在内置清单里且令牌完整', () => {

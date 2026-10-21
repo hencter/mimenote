@@ -32,6 +32,14 @@ export function getTheme(id: string): ThemeManifest {
   return THEMES.find((theme) => theme.id === id) ?? THEMES[0] ?? FALLBACK_THEME
 }
 
+/**
+ * 选择项里显示的名字。主题名只写配色家族（「默认」/「纸墨」），
+ * 而每个家族都有日间与夜间两套 —— 不补后缀的话下拉里会出现两个一模一样的名字。
+ */
+export function themeLabel(theme: ThemeManifest): string {
+  return `${theme.name}（${theme.appearance === 'light' ? '浅色' : '深色'}）`
+}
+
 /** 极端情况下的兜底主题（主题文件全部损坏时仍能渲染）。 */
 const FALLBACK_THEME: ThemeManifest = {
   id: 'fallback',
