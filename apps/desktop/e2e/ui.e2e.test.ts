@@ -1295,49 +1295,66 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
     }
   })
 
-  it('纸墨主题下光标行与底色的对比度必须看得见（用户报的原 scene）', async () => {
+  it('四套主题下光标行与底色的对比度都必须看得见', async () => {
     await ensureVaultOpen(page)
-    // 切到纸墨（设置页下拉是 Base Select：点开选"纸墨"）
+    // 先通过设置页选择纸墨浅色，保留设置页选择路径的回归覆盖。
     await page.keyboard.press('Control+,')
     await page.waitForSelector('.mn-settings', { state: 'visible', timeout: 10_000 })
     await page.getByRole('combobox', { name: '配色主题' }).click()
-    // Base Select 还藏了一个原生 select（表单语义），名字会撞车：限定弹层里的 div option
-    await page.locator('.mn-select__popup [role="option"]', { hasText: '纸墨' }).click()
+    await page.locator('.mn-select__popup [role="option"]', { hasText: '纸墨（浅色）' }).click()
     await page.keyboard.press('Escape')
 
     await openNoteInTree(page, '项目/设计.md')
     await page.waitForSelector('.cm-content', { state: 'visible' })
-    await page.locator('.cm-content').click({ position: { x: 60, y: 40 } })
 
-    const contrast = await page.evaluate(() => {
-      const luminance = (rgb: string): number => {
-        const matched = /rgba?\(([^)]+)\)/.exec(rgb)
-        const parts = (matched?.[1] ?? '0,0,0').split(',').map(Number)
-        const [r, g, b] = [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0].map((v) => {
-          const s = v / 255
-          return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
-        })
-        return 0.2126 * (r ?? 0) + 0.7152 * (g ?? 0) + 0.0722 * (b ?? 0)
-      }
-      const line = document.querySelector('.cm-content .cm-activeLine')
-      if (!(line instanceof HTMLElement)) return { found: false as const, ratio: 0 }
-      const bg = getComputedStyle(line).backgroundColor
-      const editorBg = getComputedStyle(document.documentElement).getPropertyValue('--mn-editor-bg')
-      // 把编辑器底色也算成 rgb（变量可能是 hex）
-      const canvas = document.createElement('canvas')
-      const context = canvas.getContext('2d')
-      context!.fillStyle = '#000'
-      context!.fillStyle = editorBg.trim()
-      const editorRgb = context!.fillStyle
-      const l1 = luminance(bg)
-      const l2 = luminance(editorRgb.startsWith('#') ? editorRgb : `rgb(${editorRgb})`)
-      const ratio = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)
-      return { found: true as const, ratio, bg, editorBg: editorBg.trim() }
-    })
-    expect(contrast.found).toBe(true)
-    // 光标行必须一眼看得见：对比度 1.2（此前的三套主题全在 1.08~1.10，
-    // 人眼不可辨 —— 用户报的就是它；用 WCAG 公式算，不是肉眼估）
-    expect(contrast.ratio).toBeGreaterThan(1.2)
+    const themeIds = [
+      'mimenote-light',
+      'mimenote-dark',
+      'mimenote-paper',
+      'mimenote-paper-dark',
+    ] as const
+
+    for (const themeId of themeIds) {
+      await page.selectOption('.mn-statusbar select', themeId)
+      await waitUntil(
+        async () => (await page.evaluate(() => document.documentElement.dataset['theme'])) === themeId,
+        5_000,
+        `主题切换为 ${themeId}`,
+      )
+      await page.locator('.cm-content').click({ position: { x: 60, y: 40 } })
+
+      const contrast = await page.evaluate(() => {
+        const luminance = (rgb: string): number => {
+          const matched = /rgba?\(([^)]+)\)/u.exec(rgb)
+          const parts = (matched?.[1] ?? '0,0,0').split(',').map(Number)
+          const [red, green, blue] = [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0].map((channel) => {
+            const srgb = channel / 255
+            return srgb <= 0.04045 ? srgb / 12.92 : ((srgb + 0.055) / 1.055) ** 2.4
+          })
+          return 0.2126 * (red ?? 0) + 0.7152 * (green ?? 0) + 0.0722 * (blue ?? 0)
+        }
+
+        const line = document.querySelector('.cm-content .cm-activeLine')
+        const editor = document.querySelector('.cm-editor')
+        if (!(line instanceof HTMLElement) || !(editor instanceof HTMLElement)) {
+          return { found: false as const, ratio: 0 }
+        }
+
+        const lineLuminance = luminance(getComputedStyle(line).backgroundColor)
+        const editorLuminance = luminance(getComputedStyle(editor).backgroundColor)
+        const ratio =
+          (Math.max(lineLuminance, editorLuminance) + 0.05) /
+          (Math.min(lineLuminance, editorLuminance) + 0.05)
+        return { found: true as const, ratio }
+      })
+
+      expect(contrast.found, `${themeId} 应有活动行`).toBe(true)
+      // 活动行不是正文文字对比度标准；这里用 1.2 作为产品内部的可辨识下限。
+      expect(contrast.ratio, `${themeId} 活动行应明显区别于编辑器底色`).toBeGreaterThan(1.2)
+    }
+
+    // 避免把测试末尾的主题状态带到后续用例。
+    await page.selectOption('.mn-statusbar select', 'mimenote-dark')
   })
 
   it('工具栏图标悬停出现提示（Base Tooltip，真浏览器里才看得到内容）', async () => {
@@ -1737,7 +1754,9 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
   })
 
   it('全文搜索：Ctrl+Shift+F → 输入 → 回车打开命中的笔记', async () => {
-    await page.keyboard.press('Control+Shift+f')
+    // `Mod` 在 macOS 上是 ⌘（`chordFromEvent` 读 `metaKey`）：这里写死 Control 的话，
+    // macOS 上命令根本不会触发，`.mn-palette` 永远等不到（macOS job 就是这么红的）。
+    await page.keyboard.press(`${process.platform === 'darwin' ? 'Meta' : 'Control'}+Shift+f`)
     await page.waitForSelector('.mn-palette', { state: 'visible' })
     expect(await page.locator('.mn-palette').getAttribute('aria-label')).toBe('全文搜索')
 

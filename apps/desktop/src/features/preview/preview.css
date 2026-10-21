@@ -40,10 +40,6 @@
   padding: 20px 28px 64px;
 }
 
-.mn-preview--stale .mn-preview__body {
-  opacity: 0.72;
-}
-
 .mn-preview__stale-hint {
   position: absolute;
   right: 12px;
@@ -60,7 +56,8 @@
 }
 
 .mn-preview__body {
-  max-width: 820px;
+  /* 以字体大小为基准限制行长：中文约 40 个字，字号变化时宽度同步变化。 */
+  max-width: min(100%, 40em);
   margin: 0 auto;
   color: var(--mn-fg);
   /* 阅读视图有**自己**的字号（设置页里可单独调）：写作时要一屏看到更多上下文，
@@ -123,7 +120,7 @@
    层级靠**染色 + 留白**表达，不靠描边（Refactoring UI 的那条规则：
    "高亮某一条边不是优雅的视觉哲学" —— 边框只会把内容框住，染色才分得出主次）：
    强调色 12% 染在透明上，底下是什么背景就染什么背景（深色/纸墨/编辑器通吃）。
-   不支持 `color-mix` 的旧浏览器整条声明失效，会回落到上一行的纯色（仍可读）。
+   不支持 `color-mix` 的旧浏览器整条声明失效，会回落到语义色（仍可读）；即使自定义主题没有提供可选 Callout Token，也不会使用刺眼的高饱和硬编码色。
    --------------------------------------------------------------------------- */
 
 .mn-callout {
@@ -176,43 +173,43 @@
 }
 
 .mn-callout--note {
-  --mn-callout-accent: var(--mn-callout-note, #448aff);
+  --mn-callout-accent: var(--mn-callout-note, var(--mn-fg-muted));
 }
 .mn-callout--abstract {
-  --mn-callout-accent: var(--mn-callout-abstract, #00b8d4);
+  --mn-callout-accent: var(--mn-callout-abstract, var(--mn-fg-muted));
 }
 .mn-callout--info {
-  --mn-callout-accent: var(--mn-callout-info, #00b8d4);
+  --mn-callout-accent: var(--mn-callout-info, var(--mn-fg-muted));
 }
 .mn-callout--todo {
-  --mn-callout-accent: var(--mn-callout-todo, #448aff);
+  --mn-callout-accent: var(--mn-callout-todo, var(--mn-fg-muted));
 }
 .mn-callout--tip {
-  --mn-callout-accent: var(--mn-callout-tip, #00bfa5);
+  --mn-callout-accent: var(--mn-callout-tip, var(--mn-fg-muted));
 }
 .mn-callout--success {
-  --mn-callout-accent: var(--mn-callout-success, #00c853);
+  --mn-callout-accent: var(--mn-callout-success, var(--mn-fg-muted));
 }
 .mn-callout--question {
-  --mn-callout-accent: var(--mn-callout-question, #64dd17);
+  --mn-callout-accent: var(--mn-callout-question, var(--mn-fg-muted));
 }
 .mn-callout--warning {
-  --mn-callout-accent: var(--mn-callout-warning, #ff9100);
+  --mn-callout-accent: var(--mn-callout-warning, var(--mn-fg-muted));
 }
 .mn-callout--failure {
-  --mn-callout-accent: var(--mn-callout-failure, #ff5252);
+  --mn-callout-accent: var(--mn-callout-failure, var(--mn-fg-muted));
 }
 .mn-callout--danger {
-  --mn-callout-accent: var(--mn-callout-danger, #ff1744);
+  --mn-callout-accent: var(--mn-callout-danger, var(--mn-fg-muted));
 }
 .mn-callout--bug {
-  --mn-callout-accent: var(--mn-callout-bug, #f50057);
+  --mn-callout-accent: var(--mn-callout-bug, var(--mn-fg-muted));
 }
 .mn-callout--example {
-  --mn-callout-accent: var(--mn-callout-example, #7c4dff);
+  --mn-callout-accent: var(--mn-callout-example, var(--mn-fg-muted));
 }
 .mn-callout--quote {
-  --mn-callout-accent: var(--mn-callout-quote, var(--mn-quote-border));
+  --mn-callout-accent: var(--mn-callout-quote, var(--mn-fg-muted));
 }
 
 .mn-preview__body code {

@@ -11,7 +11,7 @@ import {
   useSettingsStore,
 } from '@/state/settings-store'
 import { useUiStore } from '@/state/ui-store'
-import { THEMES } from '@/theme/apply'
+import { THEMES, themeLabel } from '@/theme/apply'
 
 export function AppearanceSection() {
   const themeId = useUiStore((state) => state.themeId)
@@ -49,10 +49,7 @@ export function AppearanceSection() {
               label="配色主题"
               value={themeId}
               onChange={(next) => setThemeId(next)}
-              options={THEMES.map((theme) => ({
-                value: theme.id,
-                label: `${theme.name}${theme.appearance === 'light' ? '（浅色）' : '（深色）'}`,
-              }))}
+              options={THEMES.map((theme) => ({ value: theme.id, label: themeLabel(theme) }))}
             />
           </span>
         </div>

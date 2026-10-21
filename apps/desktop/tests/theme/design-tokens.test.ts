@@ -189,7 +189,7 @@ describe('默认字号：三档统一 16（VI 2.3 / 用户诉求）', () => {
 })
 
 describe('首要字体 Maple Mono（用户指定，OFL-1.1 捆绑）', () => {
-  it('三套主题的等宽栈都以 Maple Mono 打头', async () => {
+  it('所有内置主题的等宽栈都以 Maple Mono 打头', async () => {
     const { THEMES } = await import('@/theme/apply')
     expect(THEMES.length).toBeGreaterThan(0)
     for (const theme of THEMES) {

@@ -13,25 +13,23 @@
  * 只会看起来怪。所以本文件里一个具体颜色都不写死（唯一允许的是"令牌读不到"时的兜底常量，
  * 见下），全部经由 `token(name)` 问出来。
  *
- * ## 为什么兜底值是"深色主题的那一份"
+ * ## 为什么兜底值是"默认日间主题的那一份"
  *
  * 读不到令牌是**正常**会发生的事，不是异常：
  * - 主题 JSON 还没被应用（`<html data-theme>` 还没设）时的首帧；
  * - 元素还没挂进文档 / 样式表还没加载完（`getComputedStyle` 一律返回空串）；
- * - 某个令牌被主题作者漏掉（`REQUIRED_TOKENS` 里那些有单测兜着，可 callout 那 13 个不在其中）。
+ * - 某个令牌被主题作者漏掉（`REQUIRED_TOKENS` 里那些有单测兜着，可选 Callout Token 不在其中）。
  *
  * 这三种情况下如果返回空串，`fillStyle = ''` 会被静默忽略、画笔继续用**上一次**的颜色 ——
  * 表现为"整幅图颜色错乱"或"卡片是黑的"，而且第一眼看上去像是绘制逻辑坏了。
- * 所以兜底是**可读的深色主题颜色**（本应用默认深色）：宁可颜色不完全对，
+ * 所以兜底是**可读的默认日间主题颜色**（新安装默认）：宁可颜色不完全对，
  * 也要保证"画得出来、看得清"。
  *
  * ## callout 强调色：一处必须知道的落差（不是 bug，见 {@link calloutAccent}）
  *
- * features/preview/preview.css 里 13 种 callout 的写法是 `--mn-callout-accent: var(--mn-callout-note, #448aff)` ——
- * 具体颜色写在 `var()` 的**兜底位置**上，而 `--mn-callout-note` 这个变量**没有任何主题真的定义过**。
- * JS 的 `getComputedStyle` 读不到 `var()` 里的兜底值，所以 `token('--mn-callout-note')` 得到空串。
- * 本文件不去"补一份 13 色的表"（那正是要避免的第二份真源），而是按下面的链条降级 ——
- * 完整的取舍与两条修法写在 {@link calloutAccent} 上。
+ * features/preview/preview.css 里 13 种 callout 只声明类型到强调色的映射；实际颜色由主题 JSON 的可选 `--mn-callout-*` Token 提供。
+ * 四套内置主题都定义了这些 Token，因此阅读视图与图谱能读取同一颜色。自定义主题若未定义对应 Token，CSS 与图谱都回落到可读的次级文字色。
+ * 本文件不另写一份 13 色表（那正是要避免的第二份真源）；降级链见 {@link calloutAccent}。
  */
 
 import {
@@ -103,8 +101,8 @@ const TOKENS: Readonly<Record<Exclude<keyof GraphPalette, 'edgeOut' | 'edgeIn'>,
 /**
  * 语义色相那两个令牌是**可选**的：`graph.css` 写的是
  * `stroke: var(--mn-edge-out, var(--mn-warning))` —— 主题不定义也能用，落到既有的
- * 暖/冷两色上。`REQUIRED_TOKENS` 因此**不能**加它们（加了会让所有用户自定义主题在启动时报缺令牌）。
- * 这里的映射顺序就是那条兜底链：可选令牌 → 兜底令牌 → 内置深色主题的值。
+ * 警告色与链接色上。`REQUIRED_TOKENS` 因此**不能**加它们（加了会让所有用户自定义主题在启动时报缺令牌）。
+ * 这里的映射顺序就是那条兜底链：可选令牌 → 兜底令牌 → 默认日间主题的值。
  */
 const HUE_TOKENS: Readonly<
   Record<'edgeOut' | 'edgeIn', readonly [string, Exclude<keyof GraphPalette, 'edgeOut' | 'edgeIn'>]>
@@ -114,53 +112,51 @@ const HUE_TOKENS: Readonly<
 }
 
 /**
- * 读不到令牌时用的兜底（就是内置深色主题 `mimenote-dark.json` 的那一组值，逐字抄来）。
+ * 读不到令牌时用的兜底（对齐默认日间主题 `mimenote-light.json` 的视觉结果）。
  *
- * 为什么逐字抄而不是"随便给个灰"：首帧读不到令牌时画出来的应当**正好是用户马上要看到的那个主题**，
+ * 为什么使用与主题相对应的解析值，而不是"随便给个灰"：首帧读不到令牌时画出来的应当**正好是用户马上要看到的那个主题**，
  * 否则打开图谱会先闪一下另一套配色。抄的是主题 JSON 的公开事实，不是又一份色表 ——
- * 主题一改这里就有个"可见的差异"要跟（而不是悄悄地不一致）。
+ * 混色令牌在这里使用预期的 sRGB 解析结果；主题一改这里就有个"可见的差异"要跟（而不是悄悄地不一致）。
  */
 const FALLBACK: GraphPalette = {
-  background: '#14161a',
-  cardBg: '#1b1e24',
-  cardBorder: '#272b33',
-  cardBorderFocus: '#7aa2f7',
-  title: '#7aa2f7',
-  text: '#d7dce5',
-  muted: '#98a2b3',
-  link: '#7dcfff',
-  codeBg: '#1b1f27',
-  codeText: '#d7dce5',
-  quoteBorder: '#3a4358',
-  edge: '#6b7480',
-  edgeActive: '#7aa2f7',
-  // 可选色相：深色主题没定义 `--mn-edge-out` / `--mn-edge-in`，兜底到暖色与冷色
+  background: '#FFFFFF',
+  cardBg: '#FEFDFA',
+  cardBorder: '#F3EBDF',
+  cardBorderFocus: '#593719',
+  title: '#593719',
+  text: '#593719',
+  muted: '#6B5039',
+  link: '#66401B',
+  codeBg: '#F6EDDF',
+  codeText: '#593719',
+  quoteBorder: '#C5AF96',
+  edge: '#6E5A46',
+  edgeActive: '#593719',
+  // 可选色相：默认日间主题未定义 `--mn-edge-out` / `--mn-edge-in`，回落到警告色与链接色
   // —— 与 `graph.css` 的 `var(--mn-edge-out, var(--mn-warning))` 是同一个结论
-  edgeOut: '#e0af68',
-  edgeIn: '#7dcfff',
-  warning: '#e0af68',
+  edgeOut: '#80511D',
+  edgeIn: '#66401B',
+  warning: '#80511D',
   uiFont: "'Segoe UI', 'Microsoft YaHei', system-ui, -apple-system, sans-serif",
-  imageBox: '#1b1e24',
+  imageBox: '#FEFDFA',
 }
 
 /**
- * features/preview/preview.css 里那条"只声明 `--mn-callout-accent`"的规则所赋值的变量名。
+ * features/preview/preview.css 根据 `.mn-callout--<type>` 计算出的元素级强调色。
  *
- * 单独列出来是因为它是**唯一**真的能被读到的 callout 变量：类型类名挂在元素上时
- * （`.mn-callout--note`）`--mn-callout-accent` 才有值，而 `CALLOUT_TYPES[type].token`
- * 给出的 `--mn-callout-note` 谁也读不到（理由见文件顶部）。
+ * 内置主题通常先通过 `CALLOUT_TYPES[type].token` 命中 `--mn-callout-*`；这个变量是给
+ * 自定义主题漏掉类型 Token、但调用方仍提供了带 Callout 类名的探针元素时使用的第二档。
  */
 const CALLOUT_ACCENT_VAR = '--mn-callout-accent'
 
 /**
- * callout 强调色全部读不到时的兜底：**引用竖线色**。
+ * callout 强调色全部读不到时的兜底：**次级文字色**。
  *
- * 这个选择不是随手取的，而是与 features/preview/preview.css 的兜底链逐字一致：
- * `var(--mn-callout-accent, var(--mn-quote-border))` ——
- * 阅读视图在"强调色缺失"时染的也是这个中性色。两边同时降级到同一个颜色，
- * 才不会出现"阅读视图是灰的、画布是蓝的"这种只有一处坏掉才会有的分歧。
+ * 这是与 features/preview/preview.css 的可选 Token 兜底保持一致的可读中性色：
+ * `var(--mn-callout-accent, var(--mn-fg-muted))`。自定义主题漏掉某个 Callout Token 时，
+ * 阅读视图与图谱都回落到次级文字色，不会一边出现高饱和亮色、另一边却是中性色。
  */
-const FALLBACK_CALLOUT_ACCENT = FALLBACK.quoteBorder
+const FALLBACK_CALLOUT_ACCENT = FALLBACK.muted
 
 /**
  * 纯函数：给定"取令牌"的函数，产出调色板。
@@ -242,18 +238,14 @@ export function readPalette(element: Element): GraphPalette {
  *
  * 降级链（每一档都有理由，别把它简化成一句 `token(...) ?? 常量`）：
  *
- * 1. **类型自己的令牌**（`--mn-callout-note`）：主题若真的定义了它，这是最准的来源；
- * 2. **`--mn-callout-accent`**：features/preview/preview.css 里那条"只声明 `--mn-callout-accent`"的规则。
- *    调用方完全可以把 `token` 的实现换成"在挂了 `mn-callout--<type>` 类的探针元素上读这个变量"
- *    （所见即所得编辑器 `live-preview/callout.ts` 用的就是这条路，连颜色表都不用抄），
- *    那一档就能拿到真正的 13 种颜色；
- * 3. **引用竖线色**：与 features/preview/preview.css 的 `var(--mn-callout-accent, var(--mn-quote-border))` 逐字一致。
+ * 1. **类型自己的令牌**（例如 `--mn-callout-note`）：内置主题定义了全部 13 个可选 Token；
+ * 2. **元素级 `--mn-callout-accent`**：调用方若提供挂了 `mn-callout--<type>` 类的探针元素，
+ *    可直接读取 CSS 计算后的强调色（所见即所得编辑器也走这条路），不必复制颜色表；
+ * 3. **`--mn-fg-muted` 次级文字色**：自定义主题漏掉某个类型 Token 时，使用当前主题的可读文字色；
+ * 4. **内置日间兜底**：只有主题 Token 完全不可读时，才使用 `FALLBACK.muted`。
  *
- * ⚠️ 已知落差（写清楚免得后人来查）：用 `readPalette` 直接产出的 `token` 只能走到第 3 档 ——
- * 内置主题既不定义 `--mn-callout-note`，元素上也没有 callout 类名。
- * 想让画布真的上色，二选一（都不需要改本文件）：
- * - 在主题 JSON 里把 13 个 `--mn-callout-*` 真的定义出来（最干净：颜色仍然只有一份）；
- * - 给画笔传一个 `token`（见 `paint.ts` 的 `PaintInput.token`），它内部走上面第 2 档。
+ * `readPalette` 直接读取主题作用域中的 `--mn-callout-*`；自定义主题若未定义类型 Token，且调用方没有提供探针元素，则落到当前主题的次级文字色。
+ * 整个降级链不在画布代码里复制 13 色表。
  *
  * 未知类型（用户手写 `[!摘录]`，或插件带来任意类型名）回落 `FALLBACK_CALLOUT_TYPE`：
  * 与 `blocks.ts` 的口径一致 —— 那时块上的 `type` 本来就已经是规范化后的类型了，
@@ -268,7 +260,8 @@ export function calloutAccent(token: (name: string) => string | null, type: stri
   const shared = usable(token(CALLOUT_ACCENT_VAR))
   if (shared !== null) return shared
 
-  return FALLBACK_CALLOUT_ACCENT
+  const muted = usable(token('--mn-fg-muted'))
+  return muted ?? FALLBACK_CALLOUT_ACCENT
 }
 
 /**

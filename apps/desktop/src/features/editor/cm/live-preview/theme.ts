@@ -231,9 +231,8 @@ export const livePreviewThemeSpec: { [selector: string]: { [property: string]: s
     userSelect: 'none',
   },
 
-  /* 已勾选的任务：整行淡出（用 opacity 而不是 color，否则行内的粗体/链接会各自保留颜色），
-     文字加删除线（用户明确要求；为什么不挂在行上见 MD.taskDoneText 的注释） */
-  '.cm-line.mn-md-task--done': { opacity: '0.62' },
+  /* 已勾选的任务：使用次级文字色与删除线表达完成状态，不降低整行 opacity，避免链接/注释文字对比度失守。 */
+  '.cm-line.mn-md-task--done': { color: 'var(--mn-fg-muted)' },
   '.mn-md-task-done-text': { textDecoration: 'line-through' },
   '.mn-md-task-box': {
     display: 'inline-flex',

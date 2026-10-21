@@ -15,7 +15,7 @@ import { useNoteStore } from '@/state/note-store'
 import { toggleSnippets } from '@/app/actions'
 import { useUiStore, type ViewMode } from '@/state/ui-store'
 import { useVaultStore } from '@/state/vault-store'
-import { THEMES } from '@/theme/apply'
+import { THEMES, themeLabel } from '@/theme/apply'
 
 /**
  * 提示语里的键位：取**解析后的当前键位**（ADR-0055），而不是写死字符串。
@@ -224,7 +224,7 @@ export function StatusBar() {
           >
             {THEMES.map((theme) => (
               <option key={theme.id} value={theme.id}>
-                {theme.name}
+                {themeLabel(theme)}
               </option>
             ))}
           </select>

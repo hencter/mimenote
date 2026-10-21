@@ -39,7 +39,9 @@
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
-  width: min(852px, 100%);
+  /* 正文区域约 40 个中文字符宽；42em 总宽减去左右各 1em 内边距。 */
+  box-sizing: border-box;
+  width: min(42em, 100%);
   margin: 0 auto;
   padding: 0 16px;
 }
