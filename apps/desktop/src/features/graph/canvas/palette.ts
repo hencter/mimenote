@@ -142,11 +142,10 @@ const FALLBACK: GraphPalette = {
 }
 
 /**
- * features/preview/preview.css 里那条"只声明 `--mn-callout-accent`"的规则所赋值的变量名。
+ * features/preview/preview.css 根据 `.mn-callout--<type>` 计算出的元素级强调色。
  *
- * 单独列出来是因为它是**唯一**真的能被读到的 callout 变量：类型类名挂在元素上时
- * （`.mn-callout--note`）`--mn-callout-accent` 才有值，而 `CALLOUT_TYPES[type].token`
- * 给出的 `--mn-callout-note` 谁也读不到（理由见文件顶部）。
+ * 内置主题通常先通过 `CALLOUT_TYPES[type].token` 命中 `--mn-callout-*`；这个变量是给
+ * 自定义主题漏掉类型 Token、但调用方仍提供了带 Callout 类名的探针元素时使用的第二档。
  */
 const CALLOUT_ACCENT_VAR = '--mn-callout-accent'
 
@@ -239,16 +238,14 @@ export function readPalette(element: Element): GraphPalette {
  *
  * 降级链（每一档都有理由，别把它简化成一句 `token(...) ?? 常量`）：
  *
- * 1. **类型自己的令牌**（`--mn-callout-note`）：主题若真的定义了它，这是最准的来源；
- * 2. **`--mn-callout-accent`**：features/preview/preview.css 里那条"只声明 `--mn-callout-accent`"的规则。
- *    调用方完全可以把 `token` 的实现换成"在挂了 `mn-callout--<type>` 类的探针元素上读这个变量"
- *    （所见即所得编辑器 `live-preview/callout.ts` 用的就是这条路，连颜色表都不用抄），
- *    那一档就能拿到真正的 13 种颜色；
- * 3. **次级文字色**：与 features/preview/preview.css 的 `var(--mn-callout-accent, var(--mn-fg-muted))` 逐字一致。
+ * 1. **类型自己的令牌**（例如 `--mn-callout-note`）：内置主题定义了全部 13 个可选 Token；
+ * 2. **元素级 `--mn-callout-accent`**：调用方若提供挂了 `mn-callout--<type>` 类的探针元素，
+ *    可直接读取 CSS 计算后的强调色（所见即所得编辑器也走这条路），不必复制颜色表；
+ * 3. **`--mn-fg-muted` 次级文字色**：自定义主题漏掉某个类型 Token 时，使用当前主题的可读文字色；
+ * 4. **内置日间兜底**：只有主题 Token 完全不可读时，才使用 `FALLBACK.muted`。
  *
- * `readPalette` 直接读取主题作用域中的 `--mn-callout-*`；内置主题定义了全部 13 个可选 Token，所以第 1 档即可命中。
- * 若自定义主题没有定义某个 Token，且调用方没有提供带 callout 类的探针元素，最终回落到次级文字色。
- * 若调用方提供探针元素，则第 2 档可以读取 CSS 计算出的 `--mn-callout-accent`，仍然不需要在画布代码里复制颜色表。
+ * `readPalette` 直接读取主题作用域中的 `--mn-callout-*`；自定义主题若未定义类型 Token，且调用方没有提供探针元素，则落到当前主题的次级文字色。
+ * 整个降级链不在画布代码里复制 13 色表。
  *
  * 未知类型（用户手写 `[!摘录]`，或插件带来任意类型名）回落 `FALLBACK_CALLOUT_TYPE`：
  * 与 `blocks.ts` 的口径一致 —— 那时块上的 `type` 本来就已经是规范化后的类型了，
@@ -263,7 +260,8 @@ export function calloutAccent(token: (name: string) => string | null, type: stri
   const shared = usable(token(CALLOUT_ACCENT_VAR))
   if (shared !== null) return shared
 
-  return FALLBACK_CALLOUT_ACCENT
+  const muted = usable(token('--mn-fg-muted'))
+  return muted ?? FALLBACK_CALLOUT_ACCENT
 }
 
 /**
