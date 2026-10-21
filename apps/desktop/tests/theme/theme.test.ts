@@ -49,14 +49,64 @@ describe('主题', () => {
     expect(getTheme('不存在的主题').id).toBe(DEFAULT_THEME_ID)
   })
 
-  it('「纸墨」阅读主题在内置清单里：浅色、令牌完整', () => {
-    // 通用校验（上面的"每个内置主题都完整"）只能发现"缺令牌"，发现不了"主题根本没被
-    // import.meta.glob 收进来"（例如文件放错了目录）—— 所以按 id 点名一次
-    const paper = THEMES.find((theme) => theme.id === 'mimenote-paper')
-    expect(paper).toBeDefined()
-    if (paper === undefined) return
-    expect(paper.appearance).toBe('light')
-    expect(validateTheme(paper)).toEqual([])
+  it('默认与纸墨均支持日间/夜间，且默认日间优先', () => {
+    expect(DEFAULT_THEME_ID).toBe('mimenote-light')
+    expect(THEMES.map((theme) => theme.id)).toEqual([
+      'mimenote-light',
+      'mimenote-dark',
+      'mimenote-paper',
+      'mimenote-paper-dark',
+    ])
+
+    const expected: Record<string, 'light' | 'dark'> = {
+      'mimenote-light': 'light',
+      'mimenote-dark': 'dark',
+      'mimenote-paper': 'light',
+      'mimenote-paper-dark': 'dark',
+    }
+    for (const [id, appearance] of Object.entries(expected)) {
+      const theme = getTheme(id)
+      expect(theme.appearance, id).toBe(appearance)
+      expect(theme.name, id).toBe(id.includes('paper') ? '纸墨' : '默认')
+    }
+  })
+
+  it('「纸墨」主题的日间和夜间版本都在内置清单里且令牌完整', () => {
+    for (const [id, appearance] of [
+      ['mimenote-paper', 'light'],
+      ['mimenote-paper-dark', 'dark'],
+    ] as const) {
+      const theme = THEMES.find((candidate) => candidate.id === id)
+      expect(theme, id).toBeDefined()
+      if (theme === undefined) continue
+      expect(theme.appearance).toBe(appearance)
+      expect(validateTheme(theme)).toEqual([])
+    }
+  })
+
+  it('派生表面、交互和阴影颜色使用 color-mix()', () => {
+    const derivedTokens = ['--mn-hover', '--mn-active', '--mn-selection', '--mn-shadow']
+    for (const theme of THEMES) {
+      for (const token of derivedTokens) {
+        expect(theme.tokens[token], `${theme.id} 的 ${token} 应使用 color-mix()`).toContain('color-mix(')
+      }
+    }
+  })
+
+  it('固定品牌基色由 CSS 令牌层提供', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/styles/tokens.css').replace(/\\/gu, '/'),
+      'utf8',
+    )
+    for (const [token, value] of [
+      ['--mn-brand-ink', '#593719'],
+      ['--mn-brand-paper', '#FCF7ED'],
+      ['--mn-brand-ochre', '#C37F2C'],
+      ['--mn-brand-carbon', '#171614'],
+      ['--mn-brand-sand', '#E7D5BD'],
+    ] as const) {
+      expect(source).toContain(`${token}: ${value};`)
+    }
   })
 
   it('nextThemeId 循环切换（走满一圈回到起点，中途不重复）', () => {
