@@ -108,7 +108,7 @@ color-mix(in srgb, var(--mn-brand-carbon) 16%, transparent)
 
 - 正文、标题等主要文字对背景的设计目标为至少 7:1；次级文字、链接、行号、状态色与 Callout 强调文字至少 4.5:1。计算应使用最终解析后的颜色，而不是对 HEX 或混色公式进行目测判断。
 - 活动行是整行背景而非正文文字：四套主题都通过真实浏览器计算其与编辑器底色的亮度差，内部验收阈值为 1.2:1。该阈值是 MimeNote 的可辨识性判据，不是 WCAG 正文对比度标准。
-- 内置 Callout 不再依赖高饱和的蓝、青、荧光绿、粉红等硬编码文字色；使用主题语义色（链接、次级文字、成功、警告、危险），并保留低比例的背景染色。自定义主题仍可覆盖可选 Callout Token。
+- 内置 Callout 不再依赖高饱和的蓝、青、荧光绿、粉红等硬编码文字色；使用主题语义色（链接、次级文字、成功、警告、危险），并保留低比例的背景染色。Callout 文字与实际 12% 染色后的背景仍须达到 4.5:1。自定义主题仍可覆盖可选 Callout Token。
 - 普通文字对比度至少 4.5:1；大字号文字至少 3:1；关键控件边界与焦点指示目标至少 3:1。
 - 不得仅通过颜色表达选中、错误、成功或警告；同时使用图形、文字或形状。
 
@@ -123,6 +123,10 @@ color-mix(in srgb, var(--mn-brand-carbon) 16%, transparent)
 静态测试和 WCAG 对比度不能证明所有人的主观舒适度；人工长文本测试与实际设备检查是合并前的必要门槛。
 ## 7. 参考
 
+- [W3C: WCAG 2.2 Contrast Minimum](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html) — 普通文字至少 4.5:1，大字号至少 3:1；主要文字采用更高的设计目标。
+- [W3C: Visual Presentation](https://www.w3.org/WAI/WCAG21/Understanding/visual-presentation.html) — AAA 指引包含 CJK 行长约 40 个字、至少 1.5 倍行距及段落间距。
+- [Apple Human Interface Guidelines: Dark Mode](https://developer.apple.com/design/human-interface-guidelines/dark-mode) — 强调两种外观下的舒适可读性，并建议避免过亮的白色背景。
+- [Material Design: Dark Theme](https://codelabs.developers.google.com/codelabs/design-material-darktheme) — 说明纯白文字在深色背景上可能产生视觉光晕，因此使用柔和的高强调文字色。
 - [MDN: CSS `color-mix()`](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Values/color_value/color-mix) — 语法、混色空间与浏览器支持。
 - [Obsidian Developer Docs: Colors](https://docs.obsidian.md/Reference/CSS%20variables/Foundations/Colors) — 以基础色构建语义表面、并使用 `color-mix()` 替代重复的透明色值。
 - [GitHub Primer: Base color scales](https://github.com/primer/design/blob/main/content/foundations/color/base-scales.mdx) — 将中性色阶与语义角色分离，并分别验证浅色/深色模式。
