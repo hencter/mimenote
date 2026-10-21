@@ -620,11 +620,11 @@ describe('paletteFrom / calloutAccent', () => {
     expect(asked[0]).toBe('--mn-callout-warning')
   })
 
-  it('calloutAccent：类型令牌读不到时退到引用竖线那一档（与 app.css 的兜底一致），不抛', () => {
+  it('calloutAccent：类型令牌读不到时退到次级文字色（与预览兜底一致），不抛', () => {
     const neutral = calloutAccent(() => null, 'tip')
 
     expect(neutral).toBe(calloutAccent(() => null, 'danger'))
-    expect(neutral).toBe(paletteFrom(() => null).quoteBorder)
+    expect(neutral).toBe(paletteFrom(() => null).muted)
     // 第二档：`--mn-callout-accent`（调用方可以给它一个"挂了 callout 类的探针元素"的实现）
     expect(calloutAccent((name) => (name === '--mn-callout-accent' ? '#123456' : null), 'tip')).toBe(
       '#123456',
