@@ -173,40 +173,40 @@
 }
 
 .mn-callout--note {
-  --mn-callout-accent: var(--mn-callout-note, var(--mn-link));
+  --mn-callout-accent: var(--mn-callout-note, var(--mn-fg-muted));
 }
 .mn-callout--abstract {
   --mn-callout-accent: var(--mn-callout-abstract, var(--mn-fg-muted));
 }
 .mn-callout--info {
-  --mn-callout-accent: var(--mn-callout-info, var(--mn-link));
+  --mn-callout-accent: var(--mn-callout-info, var(--mn-fg-muted));
 }
 .mn-callout--todo {
-  --mn-callout-accent: var(--mn-callout-todo, var(--mn-link));
+  --mn-callout-accent: var(--mn-callout-todo, var(--mn-fg-muted));
 }
 .mn-callout--tip {
-  --mn-callout-accent: var(--mn-callout-tip, var(--mn-success));
+  --mn-callout-accent: var(--mn-callout-tip, var(--mn-fg-muted));
 }
 .mn-callout--success {
-  --mn-callout-accent: var(--mn-callout-success, var(--mn-success));
+  --mn-callout-accent: var(--mn-callout-success, var(--mn-fg-muted));
 }
 .mn-callout--question {
-  --mn-callout-accent: var(--mn-callout-question, var(--mn-link));
+  --mn-callout-accent: var(--mn-callout-question, var(--mn-fg-muted));
 }
 .mn-callout--warning {
-  --mn-callout-accent: var(--mn-callout-warning, var(--mn-warning));
+  --mn-callout-accent: var(--mn-callout-warning, var(--mn-fg-muted));
 }
 .mn-callout--failure {
-  --mn-callout-accent: var(--mn-callout-failure, var(--mn-danger));
+  --mn-callout-accent: var(--mn-callout-failure, var(--mn-fg-muted));
 }
 .mn-callout--danger {
-  --mn-callout-accent: var(--mn-callout-danger, var(--mn-danger));
+  --mn-callout-accent: var(--mn-callout-danger, var(--mn-fg-muted));
 }
 .mn-callout--bug {
-  --mn-callout-accent: var(--mn-callout-bug, var(--mn-danger));
+  --mn-callout-accent: var(--mn-callout-bug, var(--mn-fg-muted));
 }
 .mn-callout--example {
-  --mn-callout-accent: var(--mn-callout-example, var(--mn-link));
+  --mn-callout-accent: var(--mn-callout-example, var(--mn-fg-muted));
 }
 .mn-callout--quote {
   --mn-callout-accent: var(--mn-callout-quote, var(--mn-fg-muted));
