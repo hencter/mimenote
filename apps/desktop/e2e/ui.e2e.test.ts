@@ -1754,7 +1754,9 @@ describe('UI 层（Edge + dist + Mock Vault）', () => {
   })
 
   it('全文搜索：Ctrl+Shift+F → 输入 → 回车打开命中的笔记', async () => {
-    await page.keyboard.press('Control+Shift+f')
+    // `Mod` 在 macOS 上是 ⌘（`chordFromEvent` 读 `metaKey`）：这里写死 Control 的话，
+    // macOS 上命令根本不会触发，`.mn-palette` 永远等不到（macOS job 就是这么红的）。
+    await page.keyboard.press(`${process.platform === 'darwin' ? 'Meta' : 'Control'}+Shift+f`)
     await page.waitForSelector('.mn-palette', { state: 'visible' })
     expect(await page.locator('.mn-palette').getAttribute('aria-label')).toBe('全文搜索')
 
