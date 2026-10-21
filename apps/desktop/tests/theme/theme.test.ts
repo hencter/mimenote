@@ -223,14 +223,18 @@ describe('主题', () => {
       resolve(process.cwd(), 'src/features/editor/cm/theme.ts').replace(/\\/gu, '/'),
       'utf8',
     )
+    const livePreviewTheme = readFileSync(
+      resolve(process.cwd(), 'src/features/editor/cm/live-preview/theme.ts').replace(/\\/gu, '/'),
+      'utf8',
+    )
 
     expect(preview).toContain('max-width: min(100%, 40em);')
     expect(preview).toContain('line-height: 1.78;')
     expect(editor).toContain('width: min(42em, 100%);')
     expect(editor).toContain('box-sizing: border-box;')
     expect(editorTheme).toContain("lineHeight: '1.78'")
-    expect(preview).not.toContain('.mn-preview--stale .mn-preview__body {\\n  opacity: 0.72;')
-    expect(editorTheme).not.toContain("opacity: '0.62'")
+    expect(preview).not.toContain('opacity: 0.72;')
+    expect(livePreviewTheme).not.toContain("opacity: '0.62'")
   })
 
   it('派生表面、交互和阴影颜色使用 color-mix()', () => {
