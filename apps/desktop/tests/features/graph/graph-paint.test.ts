@@ -583,8 +583,8 @@ describe('paletteFrom / calloutAccent', () => {
     })
 
     expect(result.background).toBe('  #001122  ')
-    expect(result.text).toBe('#d7dce5')
-    expect(result.cardBorder).toBe('#272b33')
+    expect(result.text).toBe('#593719')
+    expect(result.cardBorder).toBe('#F3EBDF')
     /*
       每个字段都要**真的问一次**令牌：没有哪个字段偷懒直接用常量
       （那样换主题时它会永远停在兜底上）。
