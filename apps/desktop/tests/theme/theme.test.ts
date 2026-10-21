@@ -189,8 +189,13 @@ describe('主题', () => {
 
     for (const theme of THEMES) {
       for (const pair of pairs) {
+        const foreground = theme.tokens[pair.foreground]
+        const background = theme.tokens[pair.background]
+        expect(foreground, `${theme.id} 缺少 ${pair.foreground}`).toBeDefined()
+        expect(background, `${theme.id} 缺少 ${pair.background}`).toBeDefined()
+        if (foreground === undefined || background === undefined) continue
         expect(
-          themeContrastRatio(theme.tokens[pair.foreground], theme.tokens[pair.background], theme.tokens),
+          themeContrastRatio(foreground, background, theme.tokens),
           `${theme.id} ${pair.label} 至少应达到 ${pair.minimum}:1`,
         ).toBeGreaterThanOrEqual(pair.minimum)
       }
@@ -223,10 +228,12 @@ describe('主题', () => {
 
     for (const theme of THEMES) {
       for (const token of CALLOUT_TOKENS) {
-        expect(theme.tokens[token], `${theme.id} 缺少 ${token}`).toBeDefined()
+        const accent = theme.tokens[token]
+        expect(accent, `${theme.id} 缺少 ${token}`).toBeDefined()
+        if (accent === undefined) continue
         const tintedBackground = `color-mix(in srgb, var(--mn-bg) 88%, var(${token}) 12%)`
         expect(
-          themeContrastRatio(theme.tokens[token], tintedBackground, theme.tokens),
+          themeContrastRatio(accent, tintedBackground, theme.tokens),
           `${theme.id} ${token} 在 Callout 染色背景上的文字对比度至少应达到 4.5:1`,
         ).toBeGreaterThanOrEqual(4.5)
       }
