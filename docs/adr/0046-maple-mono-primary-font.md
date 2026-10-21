@@ -21,7 +21,7 @@
   `src/styles/fonts/` 试过但构建期解析失败（issuer 识别错乱，见提交说明），public 是正道；
 - `font-display: swap`（解码中先用回退顶着，不白屏）；CSP 的 `font-src 'self'` 本来就有。
 
-### 2. 三套主题的等宽栈首位都是 `'Maple Mono'`
+### 2. 所有内置主题的等宽栈首位都是 `'Maple Mono'`
 
 `design-tokens.test.ts` 钉住（首位 + `@font-face` + 文件存在三连）。
 UI 字体（`--mn-font-ui`）不动：等宽中文做正文牺牲可读性，首要字体指等宽栈。
