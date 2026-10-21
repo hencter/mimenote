@@ -46,10 +46,19 @@
 }
 
 :root {
-  --mn-bg: #14161a;
-  --mn-fg: #d7dce5;
-  --mn-border: #272b33;
-  --mn-accent: #7aa2f7;
+  /* 固定品牌色不随主题明暗变化；派生表面/状态色在主题 JSON 中使用 color-mix()。 */
+  --mn-brand-ink: #593719;
+  --mn-brand-paper: #FCF7ED;
+  --mn-brand-ochre: #C37F2C;
+  --mn-brand-carbon: #171614;
+  --mn-brand-sand: #E7D5BD;
+
+  /* 默认主题的首帧兜底；正常启动时由 mimenote-light.json 覆盖。 */
+  --mn-bg: #FFFFFF;
+  --mn-fg: var(--mn-brand-ink);
+  --mn-border: color-mix(in srgb, #FFFFFF 52%, var(--mn-brand-sand) 48%);
+  --mn-accent: var(--mn-brand-ink);
+
   --mn-font-ui: 'Segoe UI', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
   --mn-font-mono: 'Maple Mono', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
   /* 默认字号：**三档统一 16**（阅读视图没被设置页写过时回落到编辑器那一档，
@@ -65,7 +74,7 @@
  *
  * 规则：
  * 1. `--mn-*` 是**存储格式** —— 主题 JSON 的键、`REQUIRED_TOKENS` 的清单、用户 CSS 片段里
- *    写的东西，一律不动（三套内置主题与既有片段因此一个字都不用改）；
+ *    写的东西，一律不动（内置主题与既有片段因此一个字都不用改）；
  * 2. VI 规范名（`--bg-base` / `--text-primary` / `--brand-primary` / `--radius-md` / `--space-4` …）
  *    是**公开的书写面**：插件、用户样式片段、新写的组件都用它，语义更清楚；
  * 3. 值一律是 `var(--mn-…)`，**不许写死颜色** —— 单测（`tests/theme/design-tokens.test.ts`）会拦住；
