@@ -13,7 +13,7 @@ import { validateTheme } from './tokens'
 const modules = import.meta.glob<{ default: ThemeManifest }>('./themes/*.json', { eager: true })
 
 /** 默认主题 ID（必须先于 THEMES 声明，排序回调会用到）。 */
-export const DEFAULT_THEME_ID = 'mimenote-dark'
+export const DEFAULT_THEME_ID = 'mimenote-light'
 
 /** 全部内置主题（按名称排序，默认主题排在最前）。 */
 export const THEMES: readonly ThemeManifest[] = Object.values(modules)
@@ -22,7 +22,10 @@ export const THEMES: readonly ThemeManifest[] = Object.values(modules)
   .sort((a, b) => {
     if (a.id === DEFAULT_THEME_ID) return -1
     if (b.id === DEFAULT_THEME_ID) return 1
-    return a.name.localeCompare(b.name, 'zh-Hans-CN')
+    const byFamily = a.name.localeCompare(b.name, 'zh-Hans-CN')
+    if (byFamily !== 0) return byFamily
+    if (a.appearance === b.appearance) return 0
+    return a.appearance === 'light' ? -1 : 1
   })
 
 export function getTheme(id: string): ThemeManifest {
