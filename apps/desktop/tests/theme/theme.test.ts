@@ -198,6 +198,29 @@ describe('主题', () => {
   })
 
   it('内置 Callout 强调文字使用主题语义色，不回落到刺眼的高饱和默认色', () => {
+    const preview = readFileSync(
+      resolve(process.cwd(), 'src/features/preview/preview.css').replace(/\\/gu, '/'),
+      'utf8',
+    )
+    const semanticFallbacks = [
+      'var(--mn-callout-note, var(--mn-link))',
+      'var(--mn-callout-abstract, var(--mn-fg-muted))',
+      'var(--mn-callout-info, var(--mn-link))',
+      'var(--mn-callout-todo, var(--mn-link))',
+      'var(--mn-callout-tip, var(--mn-success))',
+      'var(--mn-callout-success, var(--mn-success))',
+      'var(--mn-callout-question, var(--mn-link))',
+      'var(--mn-callout-warning, var(--mn-warning))',
+      'var(--mn-callout-failure, var(--mn-danger))',
+      'var(--mn-callout-danger, var(--mn-danger))',
+      'var(--mn-callout-bug, var(--mn-danger))',
+      'var(--mn-callout-example, var(--mn-link))',
+      'var(--mn-callout-quote, var(--mn-fg-muted))',
+    ]
+    for (const fallback of semanticFallbacks) {
+      expect(preview, `Callout 应使用语义回退色：${fallback}`).toContain(fallback)
+    }
+
     for (const theme of THEMES) {
       for (const token of CALLOUT_TOKENS) {
         expect(theme.tokens[token], `${theme.id} 缺少 ${token}`).toBeDefined()
