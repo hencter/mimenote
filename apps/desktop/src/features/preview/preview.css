@@ -60,7 +60,8 @@
 }
 
 .mn-preview__body {
-  max-width: 820px;
+  /* 以字体大小为基准限制行长：中文约 40 个字，字号变化时宽度同步变化。 */
+  max-width: min(100%, 40em);
   margin: 0 auto;
   color: var(--mn-fg);
   /* 阅读视图有**自己**的字号（设置页里可单独调）：写作时要一屏看到更多上下文，
