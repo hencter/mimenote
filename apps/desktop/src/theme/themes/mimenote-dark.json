@@ -8,7 +8,7 @@
     "--mn-bg-sidebar": "color-mix(in srgb, var(--mn-brand-carbon) 72%, var(--mn-brand-ink) 28%)",
     "--mn-fg": "var(--mn-brand-paper)",
     "--mn-fg-muted": "var(--mn-brand-sand)",
-    "--mn-fg-subtle": "color-mix(in srgb, var(--mn-brand-sand) 72%, var(--mn-brand-carbon) 28%)",
+    "--mn-fg-subtle": "color-mix(in srgb, var(--mn-brand-sand) 88%, var(--mn-brand-carbon) 12%)",
     "--mn-border": "color-mix(in srgb, var(--mn-brand-carbon) 82%, var(--mn-brand-sand) 18%)",
     "--mn-accent": "color-mix(in srgb, var(--mn-brand-sand) 65%, var(--mn-brand-paper) 35%)",
     "--mn-accent-fg": "var(--mn-brand-carbon)",
