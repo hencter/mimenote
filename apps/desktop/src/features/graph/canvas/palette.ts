@@ -13,7 +13,7 @@
  * 只会看起来怪。所以本文件里一个具体颜色都不写死（唯一允许的是"令牌读不到"时的兜底常量，
  * 见下），全部经由 `token(name)` 问出来。
  *
- * ## 为什么兜底值是"深色主题的那一份"
+ * ## 为什么兜底值是"默认日间主题的那一份"
  *
  * 读不到令牌是**正常**会发生的事，不是异常：
  * - 主题 JSON 还没被应用（`<html data-theme>` 还没设）时的首帧；
@@ -22,7 +22,7 @@
  *
  * 这三种情况下如果返回空串，`fillStyle = ''` 会被静默忽略、画笔继续用**上一次**的颜色 ——
  * 表现为"整幅图颜色错乱"或"卡片是黑的"，而且第一眼看上去像是绘制逻辑坏了。
- * 所以兜底是**可读的深色主题颜色**（本应用默认深色）：宁可颜色不完全对，
+ * 所以兜底是**可读的默认日间主题颜色**（新安装默认）：宁可颜色不完全对，
  * 也要保证"画得出来、看得清"。
  *
  * ## callout 强调色：一处必须知道的落差（不是 bug，见 {@link calloutAccent}）
@@ -104,7 +104,7 @@ const TOKENS: Readonly<Record<Exclude<keyof GraphPalette, 'edgeOut' | 'edgeIn'>,
  * 语义色相那两个令牌是**可选**的：`graph.css` 写的是
  * `stroke: var(--mn-edge-out, var(--mn-warning))` —— 主题不定义也能用，落到既有的
  * 暖/冷两色上。`REQUIRED_TOKENS` 因此**不能**加它们（加了会让所有用户自定义主题在启动时报缺令牌）。
- * 这里的映射顺序就是那条兜底链：可选令牌 → 兜底令牌 → 内置深色主题的值。
+ * 这里的映射顺序就是那条兜底链：可选令牌 → 兜底令牌 → 默认日间主题的值。
  */
 const HUE_TOKENS: Readonly<
   Record<'edgeOut' | 'edgeIn', readonly [string, Exclude<keyof GraphPalette, 'edgeOut' | 'edgeIn'>]>
@@ -114,33 +114,33 @@ const HUE_TOKENS: Readonly<
 }
 
 /**
- * 读不到令牌时用的兜底（就是内置深色主题 `mimenote-dark.json` 的那一组值，逐字抄来）。
+ * 读不到令牌时用的兜底（对齐默认日间主题 `mimenote-light.json` 的视觉结果）。
  *
  * 为什么逐字抄而不是"随便给个灰"：首帧读不到令牌时画出来的应当**正好是用户马上要看到的那个主题**，
  * 否则打开图谱会先闪一下另一套配色。抄的是主题 JSON 的公开事实，不是又一份色表 ——
- * 主题一改这里就有个"可见的差异"要跟（而不是悄悄地不一致）。
+ * 混色令牌在这里使用预期的 sRGB 解析结果；主题一改这里就有个"可见的差异"要跟（而不是悄悄地不一致）。
  */
 const FALLBACK: GraphPalette = {
-  background: '#14161a',
-  cardBg: '#1b1e24',
-  cardBorder: '#272b33',
-  cardBorderFocus: '#7aa2f7',
-  title: '#7aa2f7',
-  text: '#d7dce5',
-  muted: '#98a2b3',
-  link: '#7dcfff',
-  codeBg: '#1b1f27',
-  codeText: '#d7dce5',
-  quoteBorder: '#3a4358',
-  edge: '#6b7480',
-  edgeActive: '#7aa2f7',
-  // 可选色相：深色主题没定义 `--mn-edge-out` / `--mn-edge-in`，兜底到暖色与冷色
+  background: '#FFFFFF',
+  cardBg: '#FEFDFA',
+  cardBorder: '#F3EBDF',
+  cardBorderFocus: '#593719',
+  title: '#593719',
+  text: '#593719',
+  muted: '#6B5039',
+  link: '#66401B',
+  codeBg: '#F6EDDF',
+  codeText: '#593719',
+  quoteBorder: '#C5AF96',
+  edge: '#6E5A46',
+  edgeActive: '#593719',
+  // 可选色相：默认日间主题未定义 `--mn-edge-out` / `--mn-edge-in`，回落到警告色与链接色
   // —— 与 `graph.css` 的 `var(--mn-edge-out, var(--mn-warning))` 是同一个结论
-  edgeOut: '#e0af68',
-  edgeIn: '#7dcfff',
-  warning: '#e0af68',
+  edgeOut: '#80511D',
+  edgeIn: '#66401B',
+  warning: '#80511D',
   uiFont: "'Segoe UI', 'Microsoft YaHei', system-ui, -apple-system, sans-serif",
-  imageBox: '#1b1e24',
+  imageBox: '#FEFDFA',
 }
 
 /**
