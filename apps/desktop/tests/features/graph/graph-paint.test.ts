@@ -546,30 +546,30 @@ function bodyHeight(blocks: readonly LaidOutBlock[]): number {
 // ---------------------------------------------------------------------------
 
 describe('paletteFrom / calloutAccent', () => {
-  it('令牌全是 null 时整块退到内置深色主题的兜底值（已声明为深色、可读）', () => {
+  it('令牌全是 null 时整块退到默认日间主题的兜底值（浅色、可读）', () => {
     const fallback = paletteFrom(() => null)
 
     expect(fallback).toEqual({
-      background: '#14161a',
-      cardBg: '#1b1e24',
-      cardBorder: '#272b33',
-      cardBorderFocus: '#7aa2f7',
-      title: '#7aa2f7',
-      text: '#d7dce5',
-      muted: '#98a2b3',
-      link: '#7dcfff',
-      codeBg: '#1b1f27',
-      codeText: '#d7dce5',
-      quoteBorder: '#3a4358',
-      edge: '#6b7480',
-      edgeActive: '#7aa2f7',
-      // 两个可选色相：深色主题里没有 `--mn-edge-out` / `--mn-edge-in`，
-      // 兜底与 `graph.css` 的 `var(--mn-edge-out, var(--mn-warning))` 同值（暖色 / 冷色）
-      edgeOut: '#e0af68',
-      edgeIn: '#7dcfff',
-      warning: '#e0af68',
+      background: '#FFFFFF',
+      cardBg: '#FEFDFA',
+      cardBorder: '#F3EBDF',
+      cardBorderFocus: '#593719',
+      title: '#593719',
+      text: '#593719',
+      muted: '#6B5039',
+      link: '#66401B',
+      codeBg: '#F6EDDF',
+      codeText: '#593719',
+      quoteBorder: '#C5AF96',
+      edge: '#6E5A46',
+      edgeActive: '#593719',
+      // 两个可选色相：默认日间主题没有 `--mn-edge-out` / `--mn-edge-in`，
+      // 兜底与 `graph.css` 的 `var(--mn-edge-out, var(--mn-warning))` 同值（警告色 / 链接色）
+      edgeOut: '#80511D',
+      edgeIn: '#66401B',
+      warning: '#80511D',
       uiFont: "'Segoe UI', 'Microsoft YaHei', system-ui, -apple-system, sans-serif",
-      imageBox: '#1b1e24',
+      imageBox: '#FEFDFA',
     })
   })
 
