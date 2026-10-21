@@ -201,9 +201,10 @@ describe('主题', () => {
     for (const theme of THEMES) {
       for (const token of CALLOUT_TOKENS) {
         expect(theme.tokens[token], `${theme.id} 缺少 ${token}`).toBeDefined()
+        const tintedBackground = `color-mix(in srgb, var(--mn-bg) 88%, var(${token}) 12%)`
         expect(
-          themeContrastRatio(theme.tokens[token], theme.tokens['--mn-bg'], theme.tokens),
-          `${theme.id} ${token} 的文字对比度至少应达到 4.5:1`,
+          themeContrastRatio(theme.tokens[token], tintedBackground, theme.tokens),
+          `${theme.id} ${token} 在 Callout 染色背景上的文字对比度至少应达到 4.5:1`,
         ).toBeGreaterThanOrEqual(4.5)
       }
     }
@@ -228,6 +229,8 @@ describe('主题', () => {
     expect(editor).toContain('width: min(42em, 100%);')
     expect(editor).toContain('box-sizing: border-box;')
     expect(editorTheme).toContain("lineHeight: '1.78'")
+    expect(preview).not.toContain('.mn-preview--stale .mn-preview__body {\\n  opacity: 0.72;')
+    expect(editorTheme).not.toContain("opacity: '0.62'")
   })
 
   it('派生表面、交互和阴影颜色使用 color-mix()', () => {
