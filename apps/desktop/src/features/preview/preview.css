@@ -40,10 +40,6 @@
   padding: 20px 28px 64px;
 }
 
-.mn-preview--stale .mn-preview__body {
-  opacity: 0.72;
-}
-
 .mn-preview__stale-hint {
   position: absolute;
   right: 12px;
