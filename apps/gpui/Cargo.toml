@@ -17,8 +17,8 @@ path = "src/main.rs"
 [dependencies]
 mn-core = { workspace = true }
 mn-index = { workspace = true }
-gpui-kit = { version = "0.7.3", features = ["tree-sitter-markdown"] }
+gpui-kit = { version = "0.8.0", features = ["tree-sitter-markdown"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-gpui-kit = { version = "0.7.3", features = ["tree-sitter-markdown", "test-support"] }
+gpui-kit = { version = "0.8.0", features = ["tree-sitter-markdown", "test-support"] }
